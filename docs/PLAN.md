@@ -27,7 +27,8 @@ magnify. It shows the pinned apps from the settings file and the running
 windows, with their real icons. Clicks work: launch, activate, minimise, and
 cycle through an app's windows. A tray icon offers Quit.
 
-**Status.** Not done.
+**Status.** Done. A left click on the tray icon also shows or hides the dock,
+and its menu also has _Settings…_ and _Restart_.
 
 **Exit criterion.** A person installs Stem on Windows 11 with the NSIS
 installer that CI builds, and finds everything above working.
