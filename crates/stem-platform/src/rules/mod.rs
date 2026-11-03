@@ -8,6 +8,7 @@
 
 pub mod eligibility;
 pub mod events;
+pub mod hit_region;
 pub mod icons;
 pub mod identity;
 pub mod theme;

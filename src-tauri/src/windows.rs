@@ -8,13 +8,17 @@
 //! the main thread, right after creation) adds the rest. It never
 //! closes: close requests are refused (this is a tray app; see `lib.rs`).
 //!
-//! Sizing (`docs/ipc/sizing-protocol.md`): the frontend owns the layout and reports
-//! its content size in CSS pixels through `set_dock_content_size`. This
-//! module converts it to physical pixels with the window's scale factor,
-//! clamps it to the monitor's work area and places the window bottom-centred
-//! on that work area ([`plan_dock_rect`], pure and unit-tested). The last
-//! reported size is remembered ([`DockGeometry`]) so the layout can be redone
-//! when the service reports a monitor change.
+//! Sizing (`docs/ipc/sizing-protocol.md`, v1.3): the window always spans the **full
+//! width of the work area** and sits on its bottom edge, so the UI can
+//! centre the panel and animate items in and out without any window resize.
+//! The frontend reports its content size in CSS pixels through
+//! `set_dock_content_size`; this module scales the *height* by the window's
+//! scale factor and clamps it to the work area ([`plan_dock_rect`], pure and
+//! unit-tested); the width is informational (logged; a lower bound only on
+//! hosts without a monitor list). The last reported size is remembered
+//! ([`DockGeometry`]) so the layout can be redone when the service reports a
+//! monitor change. Clicks outside the panel fall through to the desktop via
+//! the hit region ([`apply_hit_region`]).
 //!
 //! The settings window (`settings`) is an ordinary decorated window,
 //! created on demand and destroyed when closed.
@@ -31,7 +35,9 @@ use tauri::{
 pub const DOCK_LABEL: &str = "dock";
 pub const SETTINGS_LABEL: &str = "settings";
 
-/// Initial dock window size (logical px) before the UI reports its content.
+/// Initial dock window size (logical px): the height stands until the UI
+/// reports its content; the width is replaced by the work area's as soon as
+/// the window is placed.
 const INITIAL_SIZE: (f64, f64) = (640.0, 96.0);
 /// What the UI may ask for, in CSS px (anything else is clamped).
 const MIN_CONTENT: (f64, f64) = (64.0, 32.0);
@@ -272,7 +278,8 @@ pub fn on_monitors_changed(app: &AppHandle, monitors: Vec<MonitorInfo>) {
     }
 }
 
-/// Size and place the window for a content size in CSS px.
+/// Size and place the window for a content size in CSS px: the work area's
+/// full width, the content height.
 fn layout(
     window: &WebviewWindow,
     monitors: &[MonitorInfo],
@@ -280,7 +287,7 @@ fn layout(
     height: f64,
 ) -> tauri::Result<()> {
     let monitor = primary_monitor(monitors);
-    let work_area = match &monitor {
+    let mut work_area = match &monitor {
         Some(m) => m.work_area,
         None => fallback_work_area(window)?,
     };
@@ -295,25 +302,36 @@ fn layout(
             monitor.as_ref().map_or(1.0, |m| m.scale_factor)
         }
     };
-    let rect = plan_dock_rect(work_area, scale, width, height);
-    log::debug!("dock window: {width}x{height} css at {scale}x -> {rect:?} in {work_area:?}");
-    window.set_size(PhysicalSize::new(
-        rect.width.unsigned_abs(),
-        rect.height.unsigned_abs(),
-    ))?;
-    window.set_position(PhysicalPosition::new(rect.x, rect.y))
+    if monitor.is_none() {
+        // No monitor list to trust: the content width is the lower bound,
+        // so the panel is never cut (`docs/ipc/sizing-protocol.md`).
+        work_area.width = work_area.width.max(physical_px(width, scale));
+    }
+    let rect = plan_dock_rect(work_area, scale, height);
+    log::debug!(
+        "dock window: {width}x{height} css at {scale}x -> {rect:?} in {work_area:?} (full width)"
+    );
+    place(window, rect)
 }
 
-/// Centre the window, at its current size, at the bottom of the work area.
-/// Used before the UI has reported a content size.
+/// Span the work area's width at the window's current height, on the work
+/// area's bottom edge. Used before the UI has reported a content size.
 fn position_window(window: &WebviewWindow, monitor: Option<&MonitorInfo>) -> tauri::Result<()> {
     let size: PhysicalSize<u32> = window.outer_size()?;
     let work_area = match monitor {
         Some(m) => m.work_area,
         None => fallback_work_area(window)?,
     };
-    let (x, y) = bottom_center(work_area, size.width as i32, size.height as i32);
-    window.set_position(PhysicalPosition::new(x, y))
+    let height = i32::try_from(size.height).unwrap_or(i32::MAX);
+    place(window, full_width_rect(work_area, height))
+}
+
+fn place(window: &WebviewWindow, rect: Rect) -> tauri::Result<()> {
+    window.set_size(PhysicalSize::new(
+        rect.width.unsigned_abs(),
+        rect.height.unsigned_abs(),
+    ))?;
+    window.set_position(PhysicalPosition::new(rect.x, rect.y))
 }
 
 /// Before the platform reported monitors, fall back to Tauri's own view: the
@@ -334,21 +352,25 @@ fn fallback_work_area(window: &WebviewWindow) -> tauri::Result<Rect> {
     })
 }
 
-/// Physical window rectangle for a content size in CSS px: scaled by the
-/// window's scale factor, clamped to the work area, bottom-centred. Pure.
-pub fn plan_dock_rect(work_area: Rect, scale: f64, css_width: f64, css_height: f64) -> Rect {
-    let physical = |css: f64, max: i32| ((css * scale).round() as i32).clamp(1, max.max(1));
-    let width = physical(css_width, work_area.width);
-    let height = physical(css_height, work_area.height);
-    let (x, y) = bottom_center(work_area, width, height);
-    Rect::new(x, y, width, height)
+/// Physical window rectangle for a content height in CSS px: the work
+/// area's full width; the height scaled by the window's scale factor and
+/// clamped to the work area; flush with the work area's bottom edge. Pure.
+pub fn plan_dock_rect(work_area: Rect, scale: f64, css_height: f64) -> Rect {
+    full_width_rect(work_area, physical_px(css_height, scale))
 }
 
+/// The rectangle spanning the full width of `work_area`, `height` physical
+/// pixels high (clamped to the work area, never empty), on its bottom edge.
 /// Pure placement rule, unit-tested below.
-pub fn bottom_center(work_area: Rect, width: i32, height: i32) -> (i32, i32) {
-    let x = work_area.x + (work_area.width - width) / 2;
-    let y = work_area.bottom() - height;
-    (x, y)
+pub fn full_width_rect(work_area: Rect, height: i32) -> Rect {
+    let width = work_area.width.max(1);
+    let height = height.clamp(1, work_area.height.max(1));
+    Rect::new(work_area.x, work_area.bottom() - height, width, height)
+}
+
+/// CSS px → physical px, rounded to the nearest pixel (never negative).
+fn physical_px(css: f64, scale: f64) -> i32 {
+    ((css * scale).round().max(0.0)).min(f64::from(i32::MAX)) as i32
 }
 
 // ---------------------------------------------------------------------------
@@ -414,23 +436,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bottom_center_places_window_centred_on_the_bottom_edge() {
+    fn full_width_rect_spans_the_work_area_on_its_bottom_edge() {
         let wa = Rect::new(100, 50, 1000, 900);
-        assert_eq!(bottom_center(wa, 400, 80), (400, 870));
-        // Wider than the work area: still centred (negative x is allowed).
-        assert_eq!(bottom_center(wa, 1200, 80), (0, 870));
+        assert_eq!(full_width_rect(wa, 80), Rect::new(100, 870, 1000, 80));
+        // A secondary monitor left of the primary: negative x is kept.
+        let left = Rect::new(-1920, 0, 1920, 1040);
+        assert_eq!(full_width_rect(left, 96), Rect::new(-1920, 944, 1920, 96));
+        // Taller than the work area: clamped to it.
+        assert_eq!(full_width_rect(wa, 5000), Rect::new(100, 50, 1000, 900));
+        // Degenerate heights never produce an empty window.
+        assert_eq!(full_width_rect(wa, 0).height, 1);
+        assert_eq!(full_width_rect(wa, -5).height, 1);
+        assert_eq!(
+            full_width_rect(Rect::new(0, 0, 0, 0), 10),
+            Rect::new(0, -1, 1, 1)
+        );
     }
 
     #[test]
-    fn plan_dock_rect_scales_css_to_physical_and_centres() {
+    fn plan_dock_rect_scales_the_css_height_and_keeps_the_full_width() {
         let wa = Rect::new(0, 0, 2560, 1400);
-        // 150 % scaling: 640x96 css -> 960x144 physical, centred at the bottom.
-        assert_eq!(
-            plan_dock_rect(wa, 1.5, 640.0, 96.0),
-            Rect::new(800, 1256, 960, 144)
-        );
+        // 150 % scaling: 96 css -> 144 physical, the work area's width.
+        assert_eq!(plan_dock_rect(wa, 1.5, 96.0), Rect::new(0, 1256, 2560, 144));
         // Fractional results round to the nearest pixel.
-        assert_eq!(plan_dock_rect(wa, 1.25, 641.0, 97.0).width, 801);
+        assert_eq!(plan_dock_rect(wa, 1.25, 97.0).height, 121);
+        assert_eq!(physical_px(641.0, 1.25), 801);
+        assert_eq!(physical_px(-3.0, 1.0), 0);
     }
 
     #[test]
@@ -473,13 +504,11 @@ mod tests {
     #[test]
     fn plan_dock_rect_clamps_to_the_work_area() {
         let wa = Rect::new(-1920, 0, 1920, 1040);
-        let rect = plan_dock_rect(wa, 2.0, 8192.0, 1024.0);
+        let rect = plan_dock_rect(wa, 2.0, 1024.0);
         assert_eq!(rect, Rect::new(-1920, 0, 1920, 1040));
         // Degenerate sizes never produce a zero-sized window.
-        assert_eq!(plan_dock_rect(wa, 1.0, 0.0, 0.0).width, 1);
-        assert_eq!(
-            plan_dock_rect(Rect::new(0, 0, 0, 0), 1.0, 10.0, 10.0).height,
-            1
-        );
+        assert_eq!(plan_dock_rect(wa, 1.0, 0.0).height, 1);
+        assert_eq!(plan_dock_rect(Rect::new(0, 0, 0, 0), 1.0, 10.0).height, 1);
+        assert_eq!(plan_dock_rect(Rect::new(0, 0, 0, 0), 1.0, 10.0).width, 1);
     }
 }

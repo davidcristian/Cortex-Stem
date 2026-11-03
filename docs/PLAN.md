@@ -50,8 +50,13 @@ the stock taskbar auto-hidden.
 
 ## M3: Multiple monitors and refinements
 
+The dock window spans the whole length of its screen edge and is thicker
+than the panel. The
+transparent part of it, the **headroom**, is where magnified icons, tooltips
+and the bounce are drawn.
+
 **Scope.** A dock per monitor, handling of DPI changes, monitor hot-plug,
-hit-test passthrough for the transparent headroom (clicks there reach the windows behind
+hit-test passthrough for the headroom (clicks there reach the windows behind
 the dock), filtering by virtual desktop, fullscreen detection, window
 thumbnails on hover (research first), keyboard navigation and accessibility,
 a performance pass (event coalescing, a disk icon cache, a measurement of
@@ -60,6 +65,8 @@ without failures.
 
 **Status.**
 
+- Clicks outside the panel and the magnified icons reach the desktop and the
+  windows behind the dock.
 - Each dock item has `role="button"` and an `aria-label`.
 - Bursts of window events are coalesced: title changes per
   window, and the service sends at most one state update per 16 ms.
@@ -114,6 +121,6 @@ area, stacks and folders, widgets (clock, battery, volume), and theming.
 | Most checks run on Linux, where the Windows code cannot run ([ADR-0004](adr/0004-linux-first-verification.md)) | Behaviour lives in `stem-core` and `stem-service`, which are tested on Linux with the mock platform; the Windows code is linted for the Windows target from Linux; CI builds the installer on Windows; the M1 exit criterion is a run on Windows by a person |
 | `SetForegroundWindow` restrictions make "activate" unreliable | Activation tries plain `SetForegroundWindow`, then `AttachThreadInput`, then `SetForegroundWindow` while a synthetic ALT key press is held, and logs which step worked (`crates/stem-platform/src/windows/actions.rs`) |
 | WebView2 takes the focus despite `WS_EX_NOACTIVATE` | The dock window's subclass returns `MA_NOACTIVATE` for `WM_MOUSEACTIVATE` and sets `WS_EX_NOACTIVATE` on the WebView2 child windows (`crates/stem-platform/src/windows/dock_window.rs`) |
-| The transparent headroom blocks clicks on the windows beneath it | The headroom is only as large as the magnified icons, the tooltips and the bounce need (`HEADROOM` in `src/dock/Dock.svelte`); hit-test passthrough sends clicks on it to the windows beneath |
+| The transparent headroom blocks clicks on the windows beneath it | The headroom is only as large as the magnified icons, the tooltips and the bounce need (`HEADROOM` in `src/dock/Dock.svelte`); a hit-test thread makes the dock window click-through while the cursor is outside the panel and the magnified icons |
 | Icon extraction is slow or fails for UWP or elevated apps | Icons are extracted on demand, off the UI thread, and cached; each icon source has a documented fallback |
 | Win32 or `windows` crate names are guessed wrong | The compiler checks them: `cargo clippy --workspace --all-targets --target x86_64-pc-windows-msvc -- -D warnings` must pass |

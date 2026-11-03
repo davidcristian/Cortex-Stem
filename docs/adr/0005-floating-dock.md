@@ -11,9 +11,11 @@ the stock taskbar) is a different product with different layout rules
 
 ## Decision
 
-- The dock window is sized to its content plus the magnification headroom
-  and centred on the bottom edge of its monitor's work area. The UI reports
-  that size (`set_dock_content_size`), and Rust places the window.
+- The dock window spans the full width of its monitor's work area, at the
+  bottom edge, and is as thick as the content plus the magnification
+  headroom. The UI reports that size (`set_dock_content_size`), Rust places
+  the window, and the UI centres the panel in it, so items animating in and
+  out never resize the window.
 - No AppBar reservation by default; the dock overlays other windows.
   Reservation (`system.reserveScreenSpace`) and hiding the stock taskbar
   are planned as opt-in settings for M4.
@@ -25,8 +27,9 @@ the stock taskbar) is a different product with different layout rules
 
 ## Consequences
 
-- The window's transparent regions take clicks until hit-test passthrough
-  exists. The headroom is kept minimal.
+- The window's transparent regions would take clicks. The platform makes
+  the window click-through outside the panel (the hit region,
+  `docs/ipc/hit-region.md`). The headroom is kept minimal.
 - Maximised windows sit under the dock unless auto-hide or reservation is
   on.
 - Vertical positions (left and right) are a later layout variant.

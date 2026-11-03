@@ -18,12 +18,14 @@
 //! - `appbar`      SHAppBarMessage space reservation (M4)
 //! - `shell`       Start menu, Task View, Show Desktop
 //! - `dock_window` extended styles + subclass of our own windows
+//! - `hit_test`    cursor-tracking thread for the hit region
 
 pub mod actions;
 pub mod appbar;
 pub mod dock_window;
 pub mod enumerate;
 pub mod events;
+pub mod hit_test;
 pub mod icons;
 pub mod identity;
 pub mod launch;
@@ -44,10 +46,12 @@ use crate::{
     PlatformResult,
 };
 
-/// The real platform. Cheap to construct; `start` spins up the event thread.
+/// The real platform. Cheap to construct; `start` spins up the event thread;
+/// the hit-test thread starts lazily on the first `set_dock_hit_region`.
 #[derive(Debug, Default)]
 pub struct WindowsPlatform {
     hook: Mutex<Option<events::EventHookThread>>,
+    hit_test: Mutex<Option<hit_test::HitTestThread>>,
     icons: icons::IconCache,
 }
 
@@ -74,6 +78,9 @@ impl Platform for WindowsPlatform {
     fn stop(&self) {
         if let Some(thread) = self.hook.lock().take() {
             thread.stop();
+        }
+        if let Some(tracker) = self.hit_test.lock().take() {
+            tracker.stop();
         }
     }
 
@@ -134,12 +141,34 @@ impl Platform for WindowsPlatform {
         dock_window::prepare(handle, options)
     }
 
+    /// `Some`: hand the region to the tracker thread (started on the first
+    /// call); `None`: stop tracking the window and make it clickable. With
+    /// `STEM_HIT_REGION=off` nothing starts and the window stays clickable.
     fn set_dock_hit_region(
         &self,
-        _handle: NativeWindowHandle,
-        _region: Option<HitRegion>,
+        handle: NativeWindowHandle,
+        region: Option<HitRegion>,
     ) -> PlatformResult<()> {
-        Err(PlatformError::Unsupported("click-through"))
+        if hit_test::disabled_by_env() {
+            return Ok(());
+        }
+        let mut guard = self.hit_test.lock();
+        match region {
+            Some(region) => {
+                if guard.is_none() {
+                    *guard = Some(hit_test::HitTestThread::start()?);
+                }
+                if let Some(tracker) = guard.as_ref() {
+                    tracker.track(handle, region);
+                }
+            }
+            None => {
+                if let Some(tracker) = guard.as_ref() {
+                    tracker.untrack(handle);
+                }
+            }
+        }
+        Ok(())
     }
 
     fn foreground_native_window(&self) -> Option<NativeWindowHandle> {
