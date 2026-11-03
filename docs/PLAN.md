@@ -59,6 +59,7 @@ without failures.
 **Status.**
 
 - Each dock item has `role="button"` and an `aria-label`.
+- Elevated windows appear with their name and icon.
 
 **Exit criterion.** Everything above works on a setup with two monitors at
 different DPI.
