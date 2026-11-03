@@ -23,10 +23,19 @@
 //!   to other processes without sending `WM_GETTEXT`, so a hung app cannot
 //!   stall enumeration. Windows of our own process (where those calls *would*
 //!   send a message) are rejected before the title is read.
-//! - The process image path comes from `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)`
-//!   and `QueryFullProcessImageNameW`; access denied (protected processes)
-//!   yields `exe_path = None`, never an error.
-//! - The AUMID read needs a COM apartment on the calling thread
+//! - The process is opened once per window with
+//!   `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)`; the handle serves both
+//!   `QueryFullProcessImageNameW` (the image path) and
+//!   `GetApplicationUserModelId` (the package application identity).
+//!   Access denied (protected processes) yields `exe_path = None` and no
+//!   process AUMID, never an error.
+//! - `app_user_model_id` is the window's `System.AppUserModel.ID` property
+//!   when set (UWP frames, apps that opt in), else the process's AUMID when
+//!   the process runs with package identity (packaged Win32 apps such as the
+//!   Windows 11 Notepad, Terminal, Paint; `APPMODEL_ERROR_NO_APPLICATION`
+//!   for everything else), else `None`. `stem_core::app_id_for` then groups
+//!   packaged apps by `aumid:` and `identity` names them from the AppsFolder.
+//! - The property-store read needs a COM apartment on the calling thread
 //!   (`util::ComApartment::sta`); the `PROPVARIANT` goes through
 //!   `util::property_store_string` (shared with `identity`, so both accept
 //!   the same variant types) and is always cleared.
@@ -36,11 +45,16 @@
 use std::path::PathBuf;
 
 use stem_core::RawWindow;
-use windows::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, HWND, LPARAM};
+use windows::Win32::Foundation::{
+    APPMODEL_ERROR_NO_APPLICATION, ERROR_INSUFFICIENT_BUFFER, HWND, LPARAM,
+};
 use windows::Win32::Graphics::Dwm::{
     DWM_CLOAKED_APP, DWM_CLOAKED_INHERITED, DWM_CLOAKED_SHELL, DWMWA_CLOAKED, DwmGetWindowAttribute,
 };
 use windows::Win32::Storage::EnhancedStorage::PKEY_AppUserModel_ID;
+use windows::Win32::Storage::Packaging::Appx::{
+    APPLICATION_USER_MODEL_ID_MAX_LENGTH, GetApplicationUserModelId,
+};
 use windows::Win32::System::Threading::{
     GetCurrentProcessId, PROCESS_NAME_WIN32, QueryFullProcessImageNameW,
 };
@@ -71,6 +85,9 @@ const MAX_CLASS_CHARS: usize = 256;
 /// Initial / maximum buffer for `QueryFullProcessImageNameW` (NT path limit).
 const PATH_BUF_INITIAL: usize = 1024;
 const PATH_BUF_MAX: usize = 32 * 1024;
+/// Largest AUMID buffer we grow to on `ERROR_INSUFFICIENT_BUFFER` (the
+/// documented maximum is `APPLICATION_USER_MODEL_ID_MAX_LENGTH`, 130).
+const AUMID_BUF_MAX: usize = 1024;
 
 pub fn enumerate_taskbar_windows() -> PlatformResult<Vec<RawWindow>> {
     let mut handles: Vec<HWND> = Vec::new();
@@ -148,13 +165,24 @@ impl QueryContext {
         }
         let id = util::window_id(hwnd);
         let is_cloaked = probe.facts.is_cloaked();
+        let process_id = probe.facts.process_id;
+        // One handle for everything the process can tell us.
+        let process = open_process(process_id);
+        let exe_path = process
+            .as_ref()
+            .and_then(|h| process_image_path(h, process_id));
+        let app_user_model_id = read_app_user_model_id(hwnd).or_else(|| {
+            process
+                .as_ref()
+                .and_then(|h| process_app_user_model_id(h, process_id))
+        });
         Some(RawWindow {
             id,
             title: probe.facts.title,
             class_name: probe.facts.class_name,
-            process_id: probe.facts.process_id,
-            exe_path: process_image_path(probe.facts.process_id),
-            app_user_model_id: read_app_user_model_id(hwnd),
+            process_id,
+            exe_path,
+            app_user_model_id,
             is_visible: probe.facts.is_visible,
             is_minimized: probe.is_minimized,
             is_cloaked,
@@ -273,20 +301,26 @@ fn window_title(hwnd: HWND) -> String {
     String::from_utf16_lossy(&buf[..(copied as usize).min(buf.len())])
 }
 
-/// Full image path of a process, or `None` when it cannot be read (protected
-/// or exited process). Never an error: identity degrades to title and class.
-pub(crate) fn process_image_path(process_id: u32) -> Option<PathBuf> {
-    let handle = match util::ProcessHandle::open_limited(process_id) {
-        Ok(h) => h,
+/// A limited-query handle to a process, or `None` when it cannot be opened
+/// (protected or exited process). Never an error: identity degrades to
+/// title and class.
+fn open_process(process_id: u32) -> Option<util::ProcessHandle> {
+    match util::ProcessHandle::open_limited(process_id) {
+        Ok(h) => Some(h),
         Err(PlatformError::AccessDenied) => {
-            log::debug!("process {process_id}: access denied, no image path");
-            return None;
+            log::debug!("process {process_id}: access denied, no image path or AUMID");
+            None
         }
         Err(e) => {
             log::debug!("process {process_id}: OpenProcess failed: {e}");
-            return None;
+            None
         }
-    };
+    }
+}
+
+/// Full image path of a process through an open handle, or `None` when it
+/// cannot be read.
+fn process_image_path(handle: &util::ProcessHandle, process_id: u32) -> Option<PathBuf> {
     let mut buf = vec![0u16; PATH_BUF_INITIAL];
     loop {
         let mut len = buf.len() as u32;
@@ -316,6 +350,39 @@ pub(crate) fn process_image_path(process_id: u32) -> Option<PathBuf> {
                 return None;
             }
         }
+    }
+}
+
+/// The AppUserModelID of a process that runs with package identity
+/// (`GetApplicationUserModelId`), or `None` for a plain desktop process
+/// (`APPMODEL_ERROR_NO_APPLICATION`) and on any other failure. A buffer
+/// too small is retried once with the length the API asks for, within
+/// [`AUMID_BUF_MAX`]. Sends no messages; cannot block on a hung target.
+fn process_app_user_model_id(handle: &util::ProcessHandle, process_id: u32) -> Option<String> {
+    let mut buf = vec![0u16; APPLICATION_USER_MODEL_ID_MAX_LENGTH as usize];
+    loop {
+        let mut len = buf.len() as u32;
+        // SAFETY: `buf` is writable for `len` UTF-16 units and `len` is a
+        // live in/out pointer; the handle is open for the guard's lifetime.
+        let err = unsafe {
+            GetApplicationUserModelId(handle.raw(), &mut len, Some(PWSTR(buf.as_mut_ptr())))
+        };
+        if err.is_ok() {
+            let aumid = util::from_wide(&buf[..(len as usize).min(buf.len())]);
+            let aumid = aumid.trim();
+            return (!aumid.is_empty()).then(|| aumid.to_owned());
+        }
+        let needed = len as usize;
+        if err == ERROR_INSUFFICIENT_BUFFER && needed > buf.len() && needed <= AUMID_BUF_MAX {
+            buf.resize(needed, 0);
+            continue;
+        }
+        if err == APPMODEL_ERROR_NO_APPLICATION {
+            log::trace!("process {process_id}: no package identity");
+        } else {
+            log::trace!("process {process_id}: GetApplicationUserModelId failed: {err:?}");
+        }
+        return None;
     }
 }
 
