@@ -3,6 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- WebView2 asks for /favicon.ico otherwise, which Tauri logs as a missing asset. -->
+    <link rel="icon" href="data:," />
     <title>Settings</title>
   </head>
   <body>
