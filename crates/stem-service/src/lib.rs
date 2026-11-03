@@ -121,6 +121,9 @@ enum ResolveMsg {
 struct Inner {
     platform: Arc<dyn Platform>,
     store: Box<dyn SettingsStore>,
+    /// The authoritative settings document; see `mutate_settings`. Never
+    /// locked while `engine` is held (the other order is fine).
+    settings: Mutex<Settings>,
     engine: Mutex<DockEngine>,
     /// Shared so `notify` can call listeners without holding the lock
     /// (a listener may call back into the service).
@@ -168,6 +171,7 @@ impl DockService {
         let inner = Arc::new(Inner {
             platform: Arc::clone(&platform),
             store,
+            settings: Mutex::new(settings.clone()),
             engine: Mutex::new(DockEngine::new(settings)),
             listeners: Mutex::new(Vec::new()),
             worker_tx,
@@ -228,8 +232,10 @@ impl DockService {
         self.inner.engine.lock().snapshot()
     }
 
+    /// The authoritative settings: what the last successful mutation
+    /// produced, which the engine may not have applied yet.
     pub fn settings(&self) -> Settings {
-        self.inner.engine.lock().settings().clone()
+        self.inner.settings.lock().clone()
     }
 
     pub fn theme(&self) -> ThemeInfo {
@@ -241,11 +247,11 @@ impl DockService {
     }
 
     /// Validate, persist, and apply new settings. Returns the validated copy.
-    pub fn update_settings(&self, mut settings: Settings) -> ServiceResult<Settings> {
-        settings.migrate();
-        settings.validate();
-        self.inner.persist_and_apply(settings.clone())?;
-        Ok(settings)
+    pub fn update_settings(&self, settings: Settings) -> ServiceResult<Settings> {
+        self.inner.mutate_settings(|current| {
+            *current = settings;
+            true
+        })
     }
 
     /// The dock's "click": launch, activate, minimise, or run a shell action.
@@ -290,21 +296,20 @@ impl DockService {
 
     /// Pin a running app (its identity must already be resolved).
     pub fn pin_app(&self, app_id: &AppId) -> ServiceResult<()> {
-        let (mut settings, launch) = {
-            let engine = self.inner.engine.lock();
-            (
-                engine.settings().clone(),
-                engine.identity(app_id).and_then(|i| i.launch.clone()),
-            )
-        };
-        let launch = launch.ok_or_else(|| ServiceError::NotLaunchable(app_id.clone()))?;
-        if settings.pin(stem_core::settings::PinnedApp {
-            id: app_id.clone(),
-            label: None,
-            launch,
-        }) {
-            self.inner.persist_and_apply(settings)?;
-        }
+        let launch = self
+            .inner
+            .engine
+            .lock()
+            .identity(app_id)
+            .and_then(|i| i.launch.clone())
+            .ok_or_else(|| ServiceError::NotLaunchable(app_id.clone()))?;
+        self.inner.mutate_settings(|settings| {
+            settings.pin(stem_core::settings::PinnedApp {
+                id: app_id.clone(),
+                label: None,
+                launch,
+            })
+        })?;
         Ok(())
     }
 
@@ -314,37 +319,49 @@ impl DockService {
         let identity = self.inner.platform.identify_target(&target)?;
         let app_id = identity.id.clone();
         let launch = identity.launch.clone().unwrap_or(target);
-        let mut settings = self.settings();
-        if settings.pin(stem_core::settings::PinnedApp {
-            id: app_id.clone(),
-            label: None,
-            launch,
-        }) {
-            // Make the identity known before the new item renders.
-            let _ = self
-                .inner
+        let inner = &self.inner;
+        inner.mutate_settings(|settings| {
+            if !settings.pin(stem_core::settings::PinnedApp {
+                id: app_id.clone(),
+                label: None,
+                launch,
+            }) {
+                return false;
+            }
+            // Make the identity known before the new item renders: this is
+            // queued ahead of the `SettingsChanged` that `mutate_settings`
+            // sends on the same channel.
+            let _ = inner
                 .worker_tx
                 .send(WorkerMsg::Input(EngineInput::IdentityResolved {
                     app_id: app_id.clone(),
                     identity,
                 }));
-            self.inner.persist_and_apply(settings)?;
-        }
+            true
+        })?;
         Ok(app_id)
     }
 
     pub fn unpin_app(&self, app_id: &AppId) -> ServiceResult<()> {
-        let mut settings = self.settings();
-        if !settings.unpin(app_id) {
-            return Err(ServiceError::NotPinned(app_id.clone()));
+        let mut was_pinned = false;
+        self.inner.mutate_settings(|settings| {
+            was_pinned = settings.unpin(app_id);
+            was_pinned
+        })?;
+        if was_pinned {
+            Ok(())
+        } else {
+            Err(ServiceError::NotPinned(app_id.clone()))
         }
-        self.inner.persist_and_apply(settings)
     }
 
     pub fn reorder_pinned(&self, order: &[AppId]) -> ServiceResult<()> {
-        let mut settings = self.settings();
-        settings.reorder_pinned(order);
-        self.inner.persist_and_apply(settings)
+        self.inner.mutate_settings(|settings| {
+            let before = settings.pinned.clone();
+            settings.reorder_pinned(order);
+            settings.pinned != before
+        })?;
+        Ok(())
     }
 
     pub fn icon_png(&self, key: &IconKey, size: u32) -> ServiceResult<Option<Vec<u8>>> {
@@ -408,23 +425,53 @@ impl Inner {
         }
     }
 
-    fn persist_and_apply(&self, settings: Settings) -> ServiceResult<()> {
-        self.store.save(&settings.to_json_pretty())?;
+    /// The one way settings change. `mutate` edits a copy of the current
+    /// document and says whether it changed anything; if so the copy is
+    /// migrated, validated, persisted and handed to the engine (which then
+    /// notifies `Settings` listeners). All of it happens under the settings
+    /// lock, so mutations and saves are serialised: a second call always
+    /// sees the first one's result, and `settings.json.tmp` has one writer.
+    /// Returns the document as it stands afterwards.
+    ///
+    /// A failed save leaves the authoritative copy untouched (the caller
+    /// gets the store error), so memory and disk never disagree.
+    fn mutate_settings(
+        &self,
+        mutate: impl FnOnce(&mut Settings) -> bool,
+    ) -> ServiceResult<Settings> {
+        let mut current = self.settings.lock();
+        let mut next = current.clone();
+        if !mutate(&mut next) {
+            return Ok(next);
+        }
+        next.migrate();
+        next.validate();
+        self.store.save(&next.to_json_pretty())?;
+        *current = next.clone();
         let _ = self
             .worker_tx
-            .send(WorkerMsg::Input(EngineInput::SettingsChanged(settings)));
-        Ok(())
+            .send(WorkerMsg::Input(EngineInput::SettingsChanged(next.clone())));
+        Ok(next)
     }
 
-    fn launch_target_for(&self, app_id: &AppId) -> Option<LaunchTarget> {
-        let engine = self.engine.lock();
-        engine
-            .settings()
+    /// The launch target of a pinned app (from the authoritative settings),
+    /// else what its identity says.
+    fn pinned_launch_target(&self, app_id: &AppId) -> Option<LaunchTarget> {
+        self.settings
+            .lock()
             .pinned
             .iter()
             .find(|p| &p.id == app_id)
             .map(|p| p.launch.clone())
-            .or_else(|| engine.identity(app_id).and_then(|i| i.launch.clone()))
+    }
+
+    fn launch_target_for(&self, app_id: &AppId) -> Option<LaunchTarget> {
+        self.pinned_launch_target(app_id).or_else(|| {
+            self.engine
+                .lock()
+                .identity(app_id)
+                .and_then(|i| i.launch.clone())
+        })
     }
 
     /// Apply a batch of inputs, hand new identity requests to the identity
@@ -666,6 +713,7 @@ fn resolver_loop(rx: &Receiver<ResolveMsg>, inner: &Weak<Inner>) {
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
@@ -880,6 +928,37 @@ mod tests {
         (service, rx)
     }
 
+    /// A memory store the test keeps a handle to, so it can read back what
+    /// the service persisted.
+    #[derive(Debug, Default)]
+    struct SharedStore(Arc<MemorySettingsStore>);
+
+    impl SettingsStore for SharedStore {
+        fn load(&self) -> Result<Option<String>, StoreError> {
+            self.0.load()
+        }
+
+        fn save(&self, json: &str) -> Result<(), StoreError> {
+            self.0.save(json)
+        }
+
+        fn location(&self) -> String {
+            self.0.location()
+        }
+    }
+
+    fn exe_target(path: &str) -> LaunchTarget {
+        LaunchTarget::Exe {
+            path: PathBuf::from(path),
+            args: vec![],
+            working_dir: None,
+        }
+    }
+
+    fn pinned_ids(settings: &Settings) -> Vec<AppId> {
+        settings.pinned.iter().map(|p| p.id.clone()).collect()
+    }
+
     #[test]
     fn startup_resolves_identities_and_groups_windows() {
         let (service, _platform, rx) = start();
@@ -1011,6 +1090,85 @@ mod tests {
         s.icon_size = 64;
         let saved = service.update_settings(s).unwrap();
         assert_eq!(saved.icon_size, 64);
+    }
+
+    // ----- settings mutations are serialised ----------------------------------
+
+    #[test]
+    fn back_to_back_pins_and_a_reorder_never_lose_a_change() {
+        let platform = Arc::new(MockPlatform::with_demo_scenario());
+        let store = SharedStore::default();
+        let document = Arc::clone(&store.0);
+        let service = DockService::start(platform, Box::new(store)).unwrap();
+        let rx = record(&service);
+        wait_state(&rx, resolved);
+
+        // Two pins in a row, before the engine has applied the first one.
+        let a = service.pin_target(exe_target(r"C:\Apps\a.exe")).unwrap();
+        let b = service.pin_target(exe_target(r"C:\Apps\b.exe")).unwrap();
+        assert_eq!(a, AppId::for_exe(Path::new(r"C:\Apps\a.exe")));
+        assert_eq!(pinned_ids(&service.settings()), vec![a.clone(), b.clone()]);
+
+        // A reorder right away keeps both pins and applies the new order.
+        service.reorder_pinned(&[b.clone(), a.clone()]).unwrap();
+        assert_eq!(pinned_ids(&service.settings()), vec![b.clone(), a.clone()]);
+        // Pinning again is a no-op that changes nothing.
+        assert_eq!(service.pin_target(exe_target(r"C:\Apps\a.exe")).unwrap(), a);
+        assert_eq!(pinned_ids(&service.settings()), vec![b.clone(), a.clone()]);
+
+        // The store holds exactly the authoritative document.
+        let saved = Settings::from_json(&document.document().expect("a saved document")).unwrap();
+        assert_eq!(saved, service.settings());
+
+        // The engine catches up: both items, in that order, with the names
+        // `pin_target` resolved (sent ahead of the settings).
+        let state = wait_state(&rx, |s| {
+            let pinned: Vec<&str> = app_items(s)
+                .iter()
+                .filter(|i| i.pinned)
+                .map(|i| i.key.as_str())
+                .collect();
+            pinned == ["app:exe:c:/apps/b.exe", "app:exe:c:/apps/a.exe"]
+        });
+        assert_eq!(app_items(&state)[0].title, "b");
+        assert_eq!(app_items(&state)[1].title, "a");
+
+        // Unpinning one, then the other, straight after each other.
+        service.unpin_app(&a).unwrap();
+        service.unpin_app(&b).unwrap();
+        assert!(service.settings().pinned.is_empty());
+        assert!(matches!(
+            service.unpin_app(&b),
+            Err(ServiceError::NotPinned(_))
+        ));
+        wait_state(&rx, |s| app_items(s).iter().all(|i| !i.pinned));
+        let saved = Settings::from_json(&document.document().unwrap()).unwrap();
+        assert!(saved.pinned.is_empty());
+        service.shutdown();
+    }
+
+    #[test]
+    fn update_settings_and_pins_compose_in_order() {
+        let (service, _platform, rx) = start();
+        let state = wait_state(&rx, resolved);
+        let spotify = item_titled(&state, "Spotify")
+            .unwrap()
+            .app_id
+            .clone()
+            .unwrap();
+
+        let mut s = service.settings();
+        s.icon_size = 64;
+        service.update_settings(s).unwrap();
+        service.pin_app(&spotify).unwrap();
+        let mut s = service.settings();
+        s.icon_size = 72;
+        let saved = service.update_settings(s).unwrap();
+        // The pin made between the two updates survives both.
+        assert_eq!(saved.icon_size, 72);
+        assert!(saved.is_pinned(&spotify));
+        assert_eq!(saved, service.settings());
+        service.shutdown();
     }
 
     #[test]
