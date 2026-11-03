@@ -182,6 +182,11 @@ impl DockEngine {
                 self.identity_requested.remove(&app_id);
                 self.identities.insert(app_id, identity);
             }
+            EngineInput::IdentityUnavailable { app_id } => {
+                // Only forget the request. If the app is still (or again)
+                // present, `take_new_unresolved` below asks for it afresh.
+                self.identity_requested.remove(&app_id);
+            }
         }
         self.rebuild_running_order();
         let unresolved_apps = self.take_new_unresolved();
@@ -1167,6 +1172,46 @@ mod tests {
             identity: identity(&a, "App A", "k"),
         });
         assert!(!out.changed);
+    }
+
+    #[test]
+    fn identity_unavailable_forgets_the_request_without_a_fallback() {
+        let mut engine = DockEngine::new(minimal_settings());
+        let a = exe_id(r"C:\a.exe");
+        let out = engine.apply(added(win(1, r"C:\a.exe", "A")));
+        assert_eq!(out.unresolved_apps, vec![a.clone()]);
+        engine.apply(removed(1));
+        let r = engine.snapshot().revision;
+
+        // The resolver found nothing to ask (no window, no pin): nothing is
+        // stored, nothing is shown, nothing is re-requested yet.
+        let out = engine.apply(EngineInput::IdentityUnavailable { app_id: a.clone() });
+        assert!(!out.changed);
+        assert!(out.unresolved_apps.is_empty());
+        assert_eq!(engine.snapshot().revision, r);
+        assert_eq!(engine.identity(&a), None);
+        assert!(engine.unresolved_apps().is_empty());
+
+        // The app comes back: its identity is requested again, and the item
+        // shows the window title until it is resolved (no fallback name).
+        let out = engine.apply(added(win(2, r"C:\a.exe", "A again")));
+        assert!(out.changed);
+        assert_eq!(out.unresolved_apps, vec![a.clone()]);
+        assert_eq!(engine.snapshot().items[0].title, "A again");
+        assert_eq!(engine.unresolved_apps(), vec![a.clone()]);
+
+        // Unavailable while the app is present (it re-appeared before the
+        // message arrived): the same input re-requests it immediately.
+        let out = engine.apply(EngineInput::IdentityUnavailable { app_id: a.clone() });
+        assert!(!out.changed);
+        assert_eq!(out.unresolved_apps, vec![a.clone()]);
+
+        // An unknown id is ignored.
+        let out = engine.apply(EngineInput::IdentityUnavailable {
+            app_id: exe_id(r"C:\none.exe"),
+        });
+        assert!(!out.changed);
+        assert!(out.unresolved_apps.is_empty());
     }
 
     #[test]

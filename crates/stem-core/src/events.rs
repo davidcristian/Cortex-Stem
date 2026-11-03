@@ -41,6 +41,13 @@ pub enum EngineInput {
         app_id: AppId,
         identity: AppIdentity,
     },
+    /// The request for `app_id` could not even be attempted (the app had no
+    /// window and no pin by the time the resolver got to it). The engine
+    /// forgets that it asked, so the next appearance of the app requests the
+    /// identity again; no fallback identity is stored.
+    IdentityUnavailable {
+        app_id: AppId,
+    },
 }
 
 impl From<PlatformEvent> for EngineInput {
