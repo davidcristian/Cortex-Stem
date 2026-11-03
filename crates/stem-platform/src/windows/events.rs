@@ -9,6 +9,11 @@
 //!   runs a `GetMessageW` loop.
 //! - Hook callbacks only translate the event and push a [`stem_core::PlatformEvent`]
 //!   into `sink`; all filtering goes through `enumerate::query_window`.
+//! - Foreground reports for windows of our own process (the dock after a
+//!   click, the settings window) are dropped without emitting anything, so
+//!   the app that was active stays active for the engine; the
+//!   WinEvent hook already skips them (`WINEVENT_SKIPOWNPROCESS`), the shell
+//!   hook does not.
 //! - The thread emits an initial `WindowsSnapshot`, `MonitorsChanged`,
 //!   `ThemeChanged`, `ForegroundChanged` after setup; the initial
 //!   `RecycleBinChanged` comes from the poll thread (below).
@@ -685,6 +690,15 @@ impl ThreadState {
     }
 
     fn emit_foreground(&mut self, hwnd: HWND) {
+        if !hwnd.is_invalid() && util::is_own_process_window(hwnd) {
+            // The dock (or the settings window) got the foreground: not an
+            // app the user switched to, so the previous foreground stays.
+            log::trace!(
+                "foreground report for our own window {:#x} ignored",
+                hwnd.0 as isize
+            );
+            return;
+        }
         let id = (!hwnd.is_invalid() && enumerate::is_taskbar_candidate(hwnd))
             .then(|| util::window_id(hwnd));
         if let Some(id) = id

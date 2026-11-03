@@ -8,14 +8,29 @@ the panel. The other parts of the dock window are described in:
 ## Window flags and focus
 
 The dock is a Tauri `WebviewWindow` labelled `dock`. It is undecorated,
-transparent, always on top, not resizable, `skip_taskbar` and without a
-system shadow. The window is created hidden and shown after it is
-positioned.
+transparent, always on top, not resizable, `skip_taskbar`, without a
+system shadow, and **not focusable**. tao derives `WS_EX_NOACTIVATE` from
+that flag, so its own style rewrites keep the bit. The window is created
+hidden and shown after it is positioned.
 
-`Platform::prepare_dock_window` adds `WS_EX_TOOLWINDOW` and
-`WS_EX_NOACTIVATE`, and turns off DWM corner rounding and the shadow.
+`Platform::prepare_dock_window` runs once, on the main thread, right after
+creation. It:
 
-Clicking the dock must not take the focus from the active app.
+- adds `WS_EX_TOOLWINDOW` and `WS_EX_NOACTIVATE`;
+- turns off DWM corner rounding. Tauri's `shadow(false)` already removes
+  the shadow. DWM non-client rendering stays *on*; otherwise Windows paints
+  the legacy caption of the `WS_CAPTION` window that tao keeps for
+  undecorated windows;
+- subclasses the window (`SetWindowSubclass`). The subclass sets the
+  extended styles again on every `WM_STYLECHANGING`, returns
+  `MA_NOACTIVATE` for `WM_MOUSEACTIVATE` and applies the pass-through
+  transitions;
+- puts `WS_EX_NOACTIVATE` on the WebView2 child windows (Chromium applies
+  it on windows that are not top-level).
+
+Clicking the dock must not take the focus from the active app. The events
+thread ignores foreground reports for windows of Stem's own process, so the
+clicked app stays the active one for the engine.
 
 ## Click-through outside the panel
 

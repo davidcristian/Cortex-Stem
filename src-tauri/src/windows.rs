@@ -3,8 +3,10 @@
 //! One dock window per monitor (label `dock` for the primary, `dock-<id>`
 //! for others; M3). The window is transparent, undecorated, always on top,
 //! hidden from Alt+Tab and the stock taskbar, and does not take focus when
-//! clicked (`Platform::prepare_dock_window`). It never closes: close requests
-//! are refused (this is a tray app; see `lib.rs`).
+//! clicked: `focusable(false)` makes tao itself keep `WS_EX_NOACTIVATE`
+//! across its style rewrites, and `Platform::prepare_dock_window` (called on
+//! the main thread, right after creation) adds the rest. It never
+//! closes: close requests are refused (this is a tray app; see `lib.rs`).
 //!
 //! Sizing (`docs/ipc/sizing-protocol.md`): the frontend owns the layout and reports
 //! its content size in CSS pixels through `set_dock_content_size`. This
@@ -61,6 +63,9 @@ pub fn create_dock_windows(app: &AppHandle, service: &DockService) -> tauri::Res
         .minimizable(false)
         .shadow(false)
         .focused(false)
+        // tao derives WS_EX_NOACTIVATE from this flag, so the bit survives
+        // its own style rewrites (`show`, `hide`, `set_always_on_top`, …).
+        .focusable(false)
         .visible(false)
         .inner_size(INITIAL_SIZE.0, INITIAL_SIZE.1)
         .build()?;
@@ -73,6 +78,8 @@ pub fn create_dock_windows(app: &AppHandle, service: &DockService) -> tauri::Res
         }
     });
 
+    // On the main thread (inside `setup`), which created the window: the
+    // platform subclasses it and that is only allowed from its own thread.
     apply_native_styles(service, &window);
     position_window(&window, primary_monitor(&service.monitors()).as_ref())?;
     window.show()?;

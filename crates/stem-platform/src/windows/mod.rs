@@ -17,7 +17,7 @@
 //! - `recycle_bin` SHQueryRecycleBin, open, empty
 //! - `appbar`      SHAppBarMessage space reservation (M4)
 //! - `shell`       Start menu, Task View, Show Desktop
-//! - `dock_window` extended styles for our own windows
+//! - `dock_window` extended styles + subclass of our own windows
 
 pub mod actions;
 pub mod appbar;
@@ -136,10 +136,10 @@ impl Platform for WindowsPlatform {
 
     fn set_dock_hit_region(
         &self,
-        handle: NativeWindowHandle,
-        region: Option<HitRegion>,
+        _handle: NativeWindowHandle,
+        _region: Option<HitRegion>,
     ) -> PlatformResult<()> {
-        dock_window::set_hit_region(handle, region)
+        Err(PlatformError::Unsupported("click-through"))
     }
 
     fn foreground_native_window(&self) -> Option<NativeWindowHandle> {

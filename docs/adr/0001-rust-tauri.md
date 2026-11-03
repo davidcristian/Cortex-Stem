@@ -29,7 +29,10 @@ stable.
 - Tauri 2 supports transparent, undecorated, always-on-top windows
   directly.
 - The dock window is `WS_EX_NOACTIVATE`, and WebView2 has child windows of
-  its own. Assumes a click on the web content does not take the foreground
-  either; if it does, the fallback is to subclass the dock window.
+  its own. So that a click on the web content does not take the foreground
+  either, the platform subclasses the dock window (its window procedure
+  returns `MA_NOACTIVATE` for `WM_MOUSEACTIVATE`) and sets
+  `WS_EX_NOACTIVATE` on the WebView2 child windows
+  (`crates/stem-platform/src/windows/dock_window.rs`).
 - Everything OS-specific is behind a trait (ADR-0003), so most code is
   testable without Windows (ADR-0004).

@@ -135,6 +135,12 @@ pub trait Platform: Send + Sync + 'static {
     fn shell_action(&self, action: ShellAction) -> PlatformResult<()>;
 
     /// Apply OS-level styles to a dock window the app layer created.
+    ///
+    /// Must be called **once per window, on the thread that created the
+    /// window** (the Tauri main thread, inside `setup`): the Windows
+    /// implementation subclasses the window, which the OS only allows from
+    /// the window's own thread, and the subclass stays installed for the
+    /// window's lifetime.
     fn prepare_dock_window(
         &self,
         handle: NativeWindowHandle,
