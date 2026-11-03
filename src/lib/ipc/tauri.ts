@@ -19,19 +19,9 @@ import type { ThemeInfo } from '$lib/ipc/generated/ThemeInfo';
 import type { WindowAction } from '$lib/ipc/generated/WindowAction';
 import type { WindowId } from '$lib/ipc/generated/WindowId';
 
-import type { Backend, BackendEvent, BackendEvents, EventHandler, Unsubscribe } from './backend';
+import { integerRect } from '$lib/dock/geometry';
 
-/** Round a rect outwards to whole CSS pixels (left/top down, right/bottom up). */
-export function integerRect(rect: Rect): Rect {
-  const x = Math.floor(rect.x);
-  const y = Math.floor(rect.y);
-  return {
-    x,
-    y,
-    width: Math.max(0, Math.ceil(rect.x + rect.width) - x),
-    height: Math.max(0, Math.ceil(rect.y + rect.height) - y),
-  };
-}
+import type { Backend, BackendEvent, BackendEvents, EventHandler, Unsubscribe } from './backend';
 
 export class TauriBackend implements Backend {
   getDockState(): Promise<DockState> {
