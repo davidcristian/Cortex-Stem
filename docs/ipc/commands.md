@@ -23,8 +23,9 @@ arguments are named and how a failed command rejects.
 | `open_settings`         | none                                        | `void`             | opens the settings window, or focuses it if it is already open |
 | `reset_settings`        | none                                        | `Settings`         | restores and persists the defaults; emits `dock://settings` |
 | `quit`                  | none                                        | none               | exits the application |
+| `show_item_menu`        | `{ itemKey: string, x: number, y: number }` | `void`             | shows the native context menu of one item at `(x, y)` (see [Context menus](context-menus.md)); resolves when the menu has closed |
+| `show_dock_menu`        | `{ x: number, y: number }`                  | `void`             | shows the dock's own menu (on the panel background): *Stem settings…*, *Quit Stem* |
 
-Three commands are planned and not implemented in Rust: `show_item_menu { itemKey, x, y }`,
-`show_dock_menu { x, y }` and `set_dock_hover { hovering }`. They are listed so that the mock
-can stub them: their `Backend` methods are optional, `MockBackend` records them, `TauriBackend`
-does not have them, and the dock page calls them only where they exist.
+One command is planned and not implemented in Rust: `set_dock_hover { hovering }`. It is listed
+so that the mock can stub it: `Backend.setDockHover` is optional, `MockBackend` records it,
+`TauriBackend` does not have it, and the dock page calls it only where it exists.
