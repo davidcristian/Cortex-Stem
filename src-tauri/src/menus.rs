@@ -27,10 +27,12 @@
 //! Windows: `TrackPopupMenu` only dismisses on an outside click when the
 //! owning window is the foreground window, which a `WS_EX_NOACTIVATE` dock
 //! window never is on its own (the classic "menu does not close" bug). muda
-//! calls `SetForegroundWindow` before `TrackPopupMenu`; [`native`] adds the
-//! other half of the documented recipe (`PostMessage(WM_NULL)` after the
-//! menu closes) and hands the foreground back to the window that had it, so
-//! opening a menu does not leave the dock focused.
+//! calls `SetForegroundWindow` before `TrackPopupMenu`; the platform's
+//! `finish_popup` adds the other half of the documented recipe
+//! (`PostMessage(WM_NULL)` after the menu closes) and hands the foreground
+//! back to the window that had it (`foreground_native_window`, captured
+//! before the popup), so opening a menu does not leave the dock focused.
+//! All of that Win32 lives in `stem-platform` (AGENTS.md §4).
 
 use std::sync::Arc;
 
@@ -84,7 +86,7 @@ pub(crate) fn show_item_menu(
             log::debug!("no context menu for {item_key}");
             return Ok(());
         };
-        popup(&window, &menu, point)
+        popup(&service.0, &window, &menu, point)
     })();
     checked("show_item_menu", &args, shown)
 }
@@ -94,6 +96,7 @@ pub(crate) fn show_item_menu(
 pub(crate) fn show_dock_menu(
     app: AppHandle,
     window: WebviewWindow,
+    service: State<'_, AppService>,
     x: f64,
     y: f64,
 ) -> Result<(), String> {
@@ -101,7 +104,7 @@ pub(crate) fn show_dock_menu(
     let shown = (|| {
         let point = popup_point(&window, x, y)?;
         let menu = dock_menu(&app)?;
-        popup(&window, &menu, point)
+        popup(&service.0, &window, &menu, point)
     })();
     checked("show_dock_menu", &args, shown)
 }
@@ -147,6 +150,7 @@ fn popup_point(window: &WebviewWindow, x: f64, y: f64) -> Result<PhysicalPositio
 /// Pop the menu up and block until it closes; see the module docs for the
 /// foreground handling around it.
 fn popup(
+    service: &DockService,
     window: &WebviewWindow,
     menu: &Menu<Wry>,
     point: PhysicalPosition<i32>,
@@ -158,9 +162,13 @@ fn popup(
         point.y
     );
     let target = AsRef::<tauri::Webview>::as_ref(window).window();
-    let focus = native::before_popup(window);
+    let platform = service.platform();
+    let dock = crate::windows::native_handle(window);
+    let previous = platform.foreground_native_window();
     let shown = menu.popup_at(target, point);
-    native::after_popup(focus);
+    if let Some(dock) = dock {
+        platform.finish_popup(dock, previous);
+    }
     shown.map_err(|e| e.to_string())
 }
 
@@ -437,85 +445,6 @@ fn close_all(service: &DockService, app_id: &AppId) -> ServiceResult<()> {
         }
     }
     first_error.map_or(Ok(()), Err)
-}
-
-// ---------------------------------------------------------------------------
-// Win32 popup helper (the only Win32 outside stem-platform; see module docs)
-// ---------------------------------------------------------------------------
-
-#[cfg(windows)]
-mod native {
-    use tauri::WebviewWindow;
-    use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GetForegroundWindow, IsWindow, PostMessageW, SetForegroundWindow, WM_NULL,
-    };
-
-    /// The windows involved in one popup: ours, and the one that had the
-    /// foreground before muda gave it to ours.
-    #[derive(Debug)]
-    pub struct Foreground {
-        dock: HWND,
-        previous: HWND,
-    }
-
-    pub fn before_popup(window: &WebviewWindow) -> Option<Foreground> {
-        let dock = match window.hwnd() {
-            Ok(hwnd) => HWND(hwnd.0),
-            Err(e) => {
-                log::warn!("no HWND for {:?}: {e}", window.label());
-                return None;
-            }
-        };
-        // SAFETY: GetForegroundWindow has no preconditions; it returns a null
-        // handle when no window is in the foreground.
-        let previous = unsafe { GetForegroundWindow() };
-        Some(Foreground { dock, previous })
-    }
-
-    /// After `TrackPopupMenu` returned: the `WM_NULL` of the documented
-    /// recipe (KB 135788) so the next click outside a menu is delivered as
-    /// such, then hand the foreground back to whoever had it. The dock is
-    /// `WS_EX_NOACTIVATE`; it should never stay focused.
-    pub fn after_popup(focus: Option<Foreground>) {
-        let Some(Foreground { dock, previous }) = focus else {
-            return;
-        };
-        // SAFETY: posts a no-op message to a window of this process; the
-        // handle came from Tauri's live window. A dead handle only fails.
-        if let Err(e) = unsafe { PostMessageW(Some(dock), WM_NULL, WPARAM(0), LPARAM(0)) } {
-            log::debug!("PostMessage(WM_NULL) after the context menu failed: {e}");
-        }
-        if previous.0.is_null() || previous == dock {
-            return;
-        }
-        // SAFETY: IsWindow accepts any handle value.
-        if !unsafe { IsWindow(Some(previous)) }.as_bool() {
-            return;
-        }
-        // SAFETY: SetForegroundWindow has no memory preconditions; it merely
-        // fails when this process no longer holds the foreground right.
-        if !unsafe { SetForegroundWindow(previous) }.as_bool() {
-            log::debug!(
-                "could not hand the foreground back to {:#x} after the context menu",
-                previous.0 as isize
-            );
-        }
-    }
-}
-
-#[cfg(not(windows))]
-mod native {
-    use tauri::WebviewWindow;
-
-    #[derive(Debug)]
-    pub struct Foreground;
-
-    pub fn before_popup(_window: &WebviewWindow) -> Option<Foreground> {
-        None
-    }
-
-    pub fn after_popup(_focus: Option<Foreground>) {}
 }
 
 #[cfg(test)]

@@ -9,7 +9,7 @@ which work may run on which thread.
 | `stem-platform-events` | platform | the hidden event window, the WinEvent hooks, the shell hook and timers; posts `PlatformEvent`s |
 | `dock-recycle-bin` | platform | queries the Recycle Bin (`SHQueryRecycleBinW`) every 5 s and emits `RecycleBinChanged` when it changes; the query walks every drive and can block for seconds, so it never runs on the events thread |
 | `stem-service` worker | service | engine updates (it drains every queued input in one batch), calls the listeners (`State` coalesced to at most one per 16 ms) |
-| `dock-identity` | service | platform identity queries (`identify_window`, `identify_target`), one retry after 2 s, then a fallback identity; never blocks the event drain |
+| `dock-identity` | service | platform identity queries (`identify_window`, `identify_target`), one retry after 2 s, then a fallback identity; `IdentityUnavailable` when there was nothing to query; never blocks the event drain |
 | `dock-empty-recycle-bin` | platform | one per `ShellAction::EmptyRecycleBin`: a COM single-threaded apartment (STA) that runs `SHEmptyRecycleBinW` with the shell's confirmation |
 | WebView2 threads | WebView2 | rendering |
 

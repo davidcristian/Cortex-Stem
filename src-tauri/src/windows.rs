@@ -79,6 +79,26 @@ pub fn create_dock_windows(app: &AppHandle, service: &DockService) -> tauri::Res
     Ok(())
 }
 
+/// The OS handle of a Tauri window, for `Platform` calls. `None` where the
+/// platform has no native handles (non-Windows hosts) or the lookup fails.
+pub fn native_handle(window: &WebviewWindow) -> Option<NativeWindowHandle> {
+    #[cfg(windows)]
+    {
+        match window.hwnd() {
+            Ok(hwnd) => Some(NativeWindowHandle(hwnd.0 as isize)),
+            Err(e) => {
+                log::warn!("no HWND for {:?}: {e}", window.label());
+                None
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = window;
+        None
+    }
+}
+
 fn apply_native_styles(service: &DockService, window: &WebviewWindow) {
     #[cfg(windows)]
     {

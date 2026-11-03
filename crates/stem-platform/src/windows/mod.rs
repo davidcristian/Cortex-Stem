@@ -140,4 +140,12 @@ impl Platform for WindowsPlatform {
     ) -> PlatformResult<()> {
         dock_window::set_hit_region(handle, region)
     }
+
+    fn foreground_native_window(&self) -> Option<NativeWindowHandle> {
+        dock_window::foreground_handle()
+    }
+
+    fn finish_popup(&self, dock: NativeWindowHandle, previous: Option<NativeWindowHandle>) {
+        dock_window::finish_popup(dock, previous);
+    }
 }

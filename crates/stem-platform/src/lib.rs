@@ -136,6 +136,19 @@ pub trait Platform: Send + Sync + 'static {
     ) -> PlatformResult<()> {
         Err(PlatformError::Unsupported("click-through"))
     }
+
+    /// The native window that currently has the foreground, if any. Captured
+    /// before a native popup menu is shown on a `no_activate` dock window so
+    /// that [`Platform::finish_popup`] can hand the foreground back.
+    fn foreground_native_window(&self) -> Option<NativeWindowHandle> {
+        None
+    }
+
+    /// Complete the native popup-menu protocol right after the menu closed:
+    /// whatever the OS needs so the next outside click is delivered normally,
+    /// then give the foreground back to `previous` (the dock must never stay
+    /// focused). A no-op where there is nothing to do.
+    fn finish_popup(&self, _dock: NativeWindowHandle, _previous: Option<NativeWindowHandle>) {}
 }
 
 /// Whether `platform` is the scripted [`mock::MockPlatform`] (by its
