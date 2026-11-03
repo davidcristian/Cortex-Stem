@@ -1,0 +1,67 @@
+[workspace]
+resolver = "2"
+members = ["crates/stem-core", "crates/stem-platform", "crates/stem-service", "src-tauri"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "AGPL-3.0-only"
+repository = "https://github.com/davidcristian/Cortex-Stem"
+authors = ["David Cristian Horvath"]
+
+# Every third-party crate is declared here once and referenced from member
+# crates with `workspace = true`. Adding a dependency is a reviewed decision:
+# see docs/development/dependency-policy.md.
+[workspace.dependencies]
+stem-core = { path = "crates/stem-core" }
+stem-platform = { path = "crates/stem-platform" }
+stem-service = { path = "crates/stem-service" }
+
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+log = "0.4"
+parking_lot = "0.13"
+crossbeam-channel = "0.5"
+ts-rs = { version = "12.0", features = ["no-serde-warnings"] }
+png = "0.18"
+base64 = "0.23"
+pretty_assertions = "1.4"
+
+tauri = { version = "2.12" }
+tauri-build = { version = "2.7", features = [] }
+tauri-plugin-log = "2.10"
+tauri-plugin-single-instance = "2.5"
+tauri-plugin-autostart = "2.7"
+tauri-plugin-opener = "2.7"
+tauri-plugin-global-shortcut = "2.4"
+window-vibrancy = "0.8"
+
+windows = "0.62"
+
+# Lints apply to every member crate that opts in with `[lints] workspace = true`.
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "warn"
+dbg_macro = "deny"
+todo = "warn"
+unimplemented = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+opt-level = 3
+panic = "abort"
+strip = true
+
+# Faster debug builds: optimise dependencies a little, keep our crates unoptimised.
+[profile.dev.package."*"]
+opt-level = 1

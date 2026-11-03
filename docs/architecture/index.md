@@ -1,0 +1,25 @@
+# Architecture
+
+Stem is a floating dock for Windows 11. The files in this folder describe how its
+parts fit together. [`docs/ipc/`](../ipc/index.md) defines the exact contract
+between Rust and the UI, [`docs/PLAN.md`](../PLAN.md) lists the milestones, and
+the records in `docs/adr/` give the reasons for the main decisions.
+
+## Files
+
+- [layers.md](layers.md): the layers of the code, what each crate depends on and how it
+  is tested.
+- [data-flow.md](data-flow.md): how events from Windows reach the UI and how a click
+  reaches Windows.
+- [threads.md](threads.md): every thread Stem starts, what runs on it, and the rules for
+  which work runs where.
+- [identity.md](identity.md): how windows and pins are grouped into apps.
+- [icons.md](icons.md): how icons are loaded and cached.
+- [dock-window.md](dock-window.md): the dock's native window, its flags and focus.
+- [dock-placement.md](dock-placement.md): where the dock window is placed.
+- [settings.md](settings.md): how settings are stored.
+- [error-handling.md](error-handling.md): the error type of each layer.
+- [performance.md](performance.md): the performance budgets.
+- [security.md](security.md): what the webview and Stem's commands may do.
+- [development-hosts.md](development-hosts.md): how the Windows-only product is developed
+  and checked.

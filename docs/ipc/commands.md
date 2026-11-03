@@ -1,0 +1,26 @@
+# Commands (UI → Rust)
+
+These are the commands that the pages call. [Principles](index.md#principles) says how their
+arguments are named and how a failed command rejects.
+
+| Command                 | Arguments                                   | Returns            | Semantics |
+|-------------------------|---------------------------------------------|--------------------|-----------|
+| `get_dock_state`        | none                                        | `DockState`        | the current snapshot |
+| `get_settings`          | none                                        | `Settings`         | |
+| `update_settings`       | `{ settings: Settings }`                    | `Settings`         | validates and persists the settings; emits `dock://settings`, and `dock://state` if the items change |
+| `get_theme`             | none                                        | `ThemeInfo`        | |
+| `get_monitors`          | none                                        | `MonitorInfo[]`    | |
+| `primary_click`         | `{ itemKey: string }`                       | `void`             | the engine chooses the action (launch, activate, minimise, cycle windows or a shell action) |
+| `window_action`         | `{ windowId: WindowId, action: WindowAction }` | `void`          | a direct action on one window (the window list in a menu, a middle click, and so on) |
+| `launch_app`            | `{ appId: AppId }`                          | `void`             | starts a new instance; emits `dock://item-bounce` |
+| `pin_app`               | `{ appId: AppId }`                          | `void`             | pins a running app (the app needs a known launch target) |
+| `pin_target`            | `{ target: LaunchTarget }`                  | `AppId`            | pins a dropped or chosen file, shortcut or Store app; returns the canonical id |
+| `unpin_app`             | `{ appId: AppId }`                          | `void`             | |
+| `reorder_pinned`        | `{ order: AppId[] }`                        | `void`             | the new order of the pinned apps; pinned ids that are not listed keep their relative order at the end |
+| `get_icon`              | `{ iconKey: IconKey, size: number }`        | `string \| null`   | a PNG as a `data:` URL; `null` for `shell:*` keys and unknown keys |
+| `set_dock_content_size` | `{ width: number, height: number }` (CSS px)| `void`             | Rust resizes the calling window and centres it again (see [Sizing protocol](sizing-protocol.md)) |
+| `quit`                  | none                                        | none               | exits the application |
+
+Five commands are planned and not implemented in Rust: `show_item_menu { itemKey, x, y }`,
+`show_dock_menu { x, y }`, `open_settings`, `set_dock_hover { hovering }` and
+`shell_action { action }`. They are listed so that the mock can stub them.

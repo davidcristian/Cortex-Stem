@@ -1,0 +1,362 @@
+//! Domain model shared by every layer: platform adapters, the Tauri app, and
+//! (through generated TypeScript bindings) the frontend.
+//!
+//! Conventions:
+//! - Everything is `serde`-serialisable with `camelCase` field names, because
+//!   these types are the IPC payloads described in `docs/ipc/`.
+//! - Geometry is in **physical pixels**; the Tauri layer converts to CSS pixels.
+//! - No platform handle types. A window is a [`WindowId`] (an opaque `u64`),
+//!   an icon is an [`IconKey`] (an opaque string the platform knows how to
+//!   resolve), a monitor is a [`MonitorId`].
+
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+// TypeScript bindings are exported to `src/lib/ipc/generated/` (relative to
+// the repository root) by `cargo test -p stem-core --features ts`.
+
+/// Opaque identifier of a top-level window. On Windows this is the `HWND`
+/// value, but nothing outside `stem-platform` may rely on that.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(transparent)]
+pub struct WindowId(#[cfg_attr(feature = "ts", ts(type = "number"))] pub u64);
+
+/// Stable identity of an application, used to group windows and to match
+/// pinned entries with running windows. See [`AppId::for_exe`] and
+/// [`AppId::for_app_user_model_id`] for the canonical forms.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(transparent)]
+pub struct AppId(pub String);
+
+impl AppId {
+    /// Identity for a classic desktop application identified by its executable.
+    /// The path is normalised (lower-cased, forward slashes) so that the same
+    /// binary always yields the same id regardless of how it was spelled.
+    pub fn for_exe(path: &Path) -> Self {
+        Self(format!("exe:{}", normalize_path(path)))
+    }
+
+    /// Identity for an application that declares an AppUserModelID (Store/UWP
+    /// apps and desktop apps that opt in, e.g. browsers with profiles).
+    pub fn for_app_user_model_id(aumid: &str) -> Self {
+        Self(format!("aumid:{}", aumid.trim()))
+    }
+
+    /// Last-resort identity based on the window class name.
+    pub fn for_window_class(class_name: &str) -> Self {
+        Self(format!("class:{}", class_name.trim().to_lowercase()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Normalise a filesystem path for identity purposes.
+pub fn normalize_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/").to_lowercase()
+}
+
+/// Opaque key the platform can turn into PNG bytes (see `Platform::icon_png`).
+/// Keys starting with `shell:` are rendered by the frontend from built-in
+/// vector art (`shell:start`, `shell:task-view`, `shell:show-desktop`,
+/// `shell:recycle-bin-empty`, `shell:recycle-bin-full`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(transparent)]
+pub struct IconKey(pub String);
+
+impl IconKey {
+    pub fn shell(name: &str) -> Self {
+        Self(format!("shell:{name}"))
+    }
+
+    pub fn is_shell(&self) -> bool {
+        self.0.starts_with("shell:")
+    }
+}
+
+/// Opaque monitor identifier (stable across sessions where the OS allows).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(transparent)]
+pub struct MonitorId(pub String);
+
+/// Axis-aligned rectangle in physical pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub struct Rect {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+impl Rect {
+    pub const fn new(x: i32, y: i32, width: i32, height: i32) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    pub fn right(&self) -> i32 {
+        self.x + self.width
+    }
+
+    pub fn bottom(&self) -> i32 {
+        self.y + self.height
+    }
+
+    pub fn contains(&self, x: i32, y: i32) -> bool {
+        x >= self.x && x < self.right() && y >= self.y && y < self.bottom()
+    }
+}
+
+/// A display attached to the system.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub struct MonitorInfo {
+    pub id: MonitorId,
+    pub name: String,
+    /// Full bounds of the monitor in the virtual desktop coordinate space.
+    pub bounds: Rect,
+    /// Bounds minus reserved areas (stock taskbar, app bars).
+    pub work_area: Rect,
+    /// DPI scale factor (1.0 = 96 DPI, 1.5 = 144 DPI, ...).
+    pub scale_factor: f64,
+    pub is_primary: bool,
+}
+
+/// What a platform knows about a top-level window, with no OS types.
+/// Produced by `Platform::windows()` and by platform events.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub struct RawWindow {
+    pub id: WindowId,
+    pub title: String,
+    pub class_name: String,
+    pub process_id: u32,
+    /// Full path of the owning process image, when it could be read.
+    pub exe_path: Option<PathBuf>,
+    /// Explicit AppUserModelID set on the window or its process, if any.
+    pub app_user_model_id: Option<String>,
+    pub is_visible: bool,
+    pub is_minimized: bool,
+    /// Cloaked by the compositor: on another virtual desktop, or a suspended
+    /// Store app. Cloaked windows are normally not shown.
+    pub is_cloaked: bool,
+    pub monitor: Option<MonitorId>,
+    /// Icon of this specific window (may differ from the app icon).
+    pub icon_key: Option<IconKey>,
+}
+
+/// How to start an application.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum LaunchTarget {
+    /// A classic desktop executable.
+    #[serde(rename_all = "camelCase")]
+    Exe {
+        path: PathBuf,
+        #[serde(default)]
+        args: Vec<String>,
+        #[serde(default)]
+        working_dir: Option<PathBuf>,
+    },
+    /// A `.lnk` shortcut. Windows resolves it when Stem launches it, and
+    /// Stem reads the shortcut to identify the app it starts.
+    #[serde(rename_all = "camelCase")]
+    Shortcut { path: PathBuf },
+    /// A packaged (Store or UWP) app, launched by its AppUserModelID.
+    #[serde(rename_all = "camelCase")]
+    StoreApp { app_user_model_id: String },
+    /// Anything that `ShellExecute` can open, such as `ms-settings:`,
+    /// `shell:AppsFolder` or a web URL.
+    #[serde(rename_all = "camelCase")]
+    Uri { uri: String },
+}
+
+/// Resolved facts about an application: how to show it and how to start it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub struct AppIdentity {
+    pub id: AppId,
+    pub display_name: String,
+    pub icon_key: Option<IconKey>,
+    /// `None` when the app cannot be (re)launched, e.g. identity came only
+    /// from a window class.
+    pub launch: Option<LaunchTarget>,
+}
+
+/// A window as presented inside a dock item.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub struct WindowInfo {
+    pub id: WindowId,
+    pub title: String,
+    pub is_minimized: bool,
+    pub is_active: bool,
+    pub monitor: Option<MonitorId>,
+    pub icon_key: Option<IconKey>,
+}
+
+/// Kind of a dock item. Everything that is not `App` is a fixed item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub enum DockItemKind {
+    App,
+    Launcher,
+    TaskView,
+    ShowDesktop,
+    RecycleBin,
+    Separator,
+}
+
+/// One slot in the dock, ready to render.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub struct DockItem {
+    /// Stable, unique key for keyed rendering (`app:<id>`, `fixed:launcher`, `sep:1`).
+    pub key: String,
+    pub kind: DockItemKind,
+    pub app_id: Option<AppId>,
+    /// Tooltip / accessible name.
+    pub title: String,
+    pub icon_key: Option<IconKey>,
+    pub pinned: bool,
+    /// Running windows of this app, in first-seen order. Empty for pinned-only
+    /// apps and for fixed items.
+    pub windows: Vec<WindowInfo>,
+    /// One of this item's windows is the foreground window.
+    pub is_active: bool,
+    /// A window of this app requested attention (taskbar flash).
+    pub needs_attention: bool,
+    /// Small text badge (e.g. unread count). Reserved; currently unused.
+    pub badge: Option<String>,
+}
+
+/// Full snapshot of what the dock should show. Emitted as `dock://state`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub struct DockState {
+    /// Monotonic counter; the UI may drop snapshots with a lower revision.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub revision: u64,
+    pub items: Vec<DockItem>,
+    pub foreground: Option<WindowId>,
+}
+
+/// Current OS theme facts, emitted as `dock://theme`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub struct ThemeInfo {
+    /// Accent colour as `#RRGGBB`.
+    pub accent: String,
+    pub dark: bool,
+    pub high_contrast: bool,
+    /// Whether the OS has transparency effects enabled.
+    pub transparency: bool,
+}
+
+impl Default for ThemeInfo {
+    fn default() -> Self {
+        Self {
+            accent: "#0078D4".to_owned(),
+            dark: true,
+            high_contrast: false,
+            transparency: true,
+        }
+    }
+}
+
+/// Recycle Bin contents summary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub struct RecycleBinState {
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub item_count: u64,
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub size_bytes: u64,
+}
+
+impl RecycleBinState {
+    pub fn is_empty(&self) -> bool {
+        self.item_count == 0
+    }
+}
+
+/// Something the user can do to a window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub enum WindowAction {
+    Activate,
+    Minimize,
+    Restore,
+    Close,
+}
+
+/// Shell-level actions behind the fixed items.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub enum ShellAction {
+    OpenStartMenu,
+    OpenTaskView,
+    ToggleShowDesktop,
+    OpenRecycleBin,
+    EmptyRecycleBin,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn app_id_for_exe_is_case_and_slash_insensitive() {
+        let a = AppId::for_exe(Path::new(r"C:\Program Files\Foo\Foo.exe"));
+        let b = AppId::for_exe(Path::new("c:/program files/foo/foo.exe"));
+        assert_eq!(a, b);
+        assert_eq!(a.as_str(), "exe:c:/program files/foo/foo.exe");
+    }
+
+    #[test]
+    fn launch_target_serialises_with_kind_tag() {
+        let t = LaunchTarget::StoreApp {
+            app_user_model_id: "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App".into(),
+        };
+        let json = serde_json::to_string(&t).unwrap();
+        assert_eq!(
+            json,
+            r#"{"kind":"storeApp","appUserModelId":"Microsoft.WindowsCalculator_8wekyb3d8bbwe!App"}"#
+        );
+        let back: LaunchTarget = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, t);
+    }
+
+    #[test]
+    fn rect_contains_is_half_open() {
+        let r = Rect::new(10, 10, 5, 5);
+        assert!(r.contains(10, 10));
+        assert!(r.contains(14, 14));
+        assert!(!r.contains(15, 14));
+        assert!(!r.contains(9, 10));
+    }
+}

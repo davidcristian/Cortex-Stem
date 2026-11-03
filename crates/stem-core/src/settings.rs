@@ -1,0 +1,447 @@
+//! User settings: the stored document, its defaults, validation (clamping)
+//! and version migration. The Tauri app chooses where the file lives
+//! (`settings.json` in its config folder), `stem-service` writes it after
+//! every change, and this module defines what it contains.
+//!
+//! The document and each object in it use `#[serde(default)]`, so that a
+//! file written by an older Stem or edited by hand still loads: a missing
+//! key takes its default. The entries of `pinned` are the exception: each
+//! needs its `id` and a `launch` object with the keys its `kind` requires.
+//! Unknown fields are ignored.
+
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+use crate::model::{AppId, LaunchTarget};
+
+/// The document format version this build writes. Increase it when a
+/// breaking change needs a migration step in [`Settings::migrate`].
+pub const SETTINGS_VERSION: u32 = 1;
+
+#[derive(Debug, Error)]
+pub enum SettingsError {
+    #[error("settings file is not valid JSON: {0}")]
+    Parse(#[from] serde_json::Error),
+    #[error("settings version {found} is newer than supported version {supported}")]
+    TooNew { found: u32, supported: u32 },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase", default)]
+pub struct Settings {
+    pub version: u32,
+    pub position: DockPosition,
+    /// Base icon size in CSS pixels, before magnification (24..=128).
+    pub icon_size: u32,
+    pub magnification: Magnification,
+    pub auto_hide: AutoHide,
+    pub monitors: MonitorMode,
+    pub theme: ThemeMode,
+    pub appearance: Appearance,
+    pub items: FixedItems,
+    pub behavior: Behavior,
+    pub pinned: Vec<PinnedApp>,
+    pub system: SystemIntegration,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            version: SETTINGS_VERSION,
+            position: DockPosition::Bottom,
+            icon_size: 48,
+            magnification: Magnification::default(),
+            auto_hide: AutoHide::default(),
+            monitors: MonitorMode::Primary,
+            theme: ThemeMode::System,
+            appearance: Appearance::default(),
+            items: FixedItems::default(),
+            behavior: Behavior::default(),
+            pinned: Vec::new(),
+            system: SystemIntegration::default(),
+        }
+    }
+}
+
+impl Settings {
+    /// Parse, migrate, and validate a settings document.
+    pub fn from_json(json: &str) -> Result<Self, SettingsError> {
+        let mut settings: Self = serde_json::from_str(json)?;
+        if settings.version > SETTINGS_VERSION {
+            return Err(SettingsError::TooNew {
+                found: settings.version,
+                supported: SETTINGS_VERSION,
+            });
+        }
+        settings.migrate();
+        settings.validate();
+        Ok(settings)
+    }
+
+    pub fn to_json_pretty(&self) -> String {
+        // Serialising our own plain data cannot fail.
+        serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".to_owned())
+    }
+
+    /// Upgrade an older document in place. Each new version adds a step.
+    pub fn migrate(&mut self) {
+        // v0 (no version field) -> v1: nothing to do beyond defaults.
+        self.version = SETTINGS_VERSION;
+    }
+
+    /// Clamp every numeric field into its supported range and drop invalid
+    /// entries. Idempotent: validating a validated document changes nothing.
+    pub fn validate(&mut self) {
+        self.icon_size = self.icon_size.clamp(24, 128);
+        self.magnification.max_scale = self.magnification.max_scale.clamp(1.0, 2.5);
+        self.magnification.range_icons = self.magnification.range_icons.clamp(1, 6);
+        self.auto_hide.delay_ms = self.auto_hide.delay_ms.min(5_000);
+        self.appearance.opacity = self.appearance.opacity.clamp(0.0, 1.0);
+        self.appearance.corner_radius = self.appearance.corner_radius.min(64);
+        let mut seen = std::collections::HashSet::new();
+        self.pinned
+            .retain(|p| !p.id.as_str().is_empty() && seen.insert(p.id.clone()));
+    }
+
+    pub fn is_pinned(&self, id: &AppId) -> bool {
+        self.pinned.iter().any(|p| &p.id == id)
+    }
+
+    /// Append a pin. Returns `false` (and changes nothing) if already pinned.
+    pub fn pin(&mut self, app: PinnedApp) -> bool {
+        if self.is_pinned(&app.id) {
+            return false;
+        }
+        self.pinned.push(app);
+        true
+    }
+
+    /// Remove a pin. Returns `false` if it was not pinned.
+    pub fn unpin(&mut self, id: &AppId) -> bool {
+        let before = self.pinned.len();
+        self.pinned.retain(|p| &p.id != id);
+        self.pinned.len() != before
+    }
+
+    /// Reorder pins to match `order`. Ids not in `order` keep their relative
+    /// order after the listed ones; unknown ids are ignored.
+    pub fn reorder_pinned(&mut self, order: &[AppId]) {
+        let mut remaining = std::mem::take(&mut self.pinned);
+        let mut result = Vec::with_capacity(remaining.len());
+        for id in order {
+            if let Some(pos) = remaining.iter().position(|p| &p.id == id) {
+                result.push(remaining.remove(pos));
+            }
+        }
+        result.extend(remaining);
+        self.pinned = result;
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub enum DockPosition {
+    Bottom,
+    Left,
+    Right,
+    Top,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase", default)]
+pub struct Magnification {
+    pub enabled: bool,
+    /// Scale of the icon directly under the cursor (1.0..=2.5).
+    pub max_scale: f32,
+    /// How many neighbouring icons on each side of that icon grow too
+    /// (1..=6).
+    pub range_icons: u32,
+}
+
+impl Default for Magnification {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_scale: 1.6,
+            range_icons: 3,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub enum AutoHideMode {
+    Off,
+    /// The dock hides whenever the cursor leaves it, and comes back when
+    /// the cursor touches the dock's screen edge.
+    Always,
+    /// The dock hides only while a window of another program overlaps the
+    /// panel, and comes back as soon as none does.
+    WhenOverlapped,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase", default)]
+pub struct AutoHide {
+    pub mode: AutoHideMode,
+    /// How long the dock waits before it hides, in milliseconds
+    /// (0..=5000). The wait starts when the cursor leaves the dock, or when
+    /// a window starts to overlap it.
+    pub delay_ms: u32,
+}
+
+impl Default for AutoHide {
+    fn default() -> Self {
+        Self {
+            mode: AutoHideMode::Off,
+            delay_ms: 250,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub enum MonitorMode {
+    Primary,
+    All,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub enum ThemeMode {
+    System,
+    Light,
+    Dark,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub enum Backdrop {
+    /// A translucent CSS background only. It works on every Windows version
+    /// and on every dock.
+    Css,
+    /// The acrylic material of DWM (the Desktop Window Manager, which draws
+    /// the windows on screen) behind the window, on Windows 11.
+    Acrylic,
+    /// The mica material of DWM behind the window, on Windows 11.
+    Mica,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase", default)]
+pub struct Appearance {
+    /// Panel background opacity (0.0..=1.0).
+    pub opacity: f32,
+    /// Panel corner radius in CSS pixels (0..=64).
+    pub corner_radius: u32,
+    pub backdrop: Backdrop,
+    /// Show an item's name in a tooltip while the cursor is over the item
+    /// or the item has the keyboard focus.
+    pub tooltips: bool,
+    /// Bounce the icon of an app that the dock launched while the app
+    /// starts. No icon bounces while Windows' *Animation effects* are off.
+    pub bounce_on_launch: bool,
+}
+
+impl Default for Appearance {
+    fn default() -> Self {
+        Self {
+            opacity: 0.72,
+            corner_radius: 22,
+            backdrop: Backdrop::Css,
+            tooltips: true,
+            bounce_on_launch: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase", default)]
+pub struct FixedItems {
+    pub launcher: bool,
+    pub task_view: bool,
+    pub show_desktop: bool,
+    pub recycle_bin: bool,
+    pub separators: bool,
+}
+
+impl Default for FixedItems {
+    fn default() -> Self {
+        Self {
+            launcher: true,
+            task_view: false,
+            show_desktop: false,
+            recycle_bin: true,
+            separators: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase", default)]
+pub struct Behavior {
+    /// A click on the icon of the app in front minimises its window when
+    /// the app has one window. Off, the click brings that window to the
+    /// front again. When the app in front has several windows, the click
+    /// brings its next window to the front, whatever this setting.
+    pub click_active_minimizes: bool,
+    /// Hide windows that are on another virtual desktop.
+    pub show_only_current_desktop: bool,
+    /// Each monitor's dock shows only the windows on that monitor.
+    pub show_only_current_monitor: bool,
+    /// Show the dots between a running app's icon and the screen edge.
+    pub running_indicators: bool,
+}
+
+impl Default for Behavior {
+    fn default() -> Self {
+        Self {
+            click_active_minimizes: true,
+            show_only_current_desktop: true,
+            show_only_current_monitor: false,
+            running_indicators: true,
+        }
+    }
+}
+
+/// An app pinned to the dock.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub struct PinnedApp {
+    /// Must match the id Stem gives the app's windows, so that the pin and
+    /// the running windows share one item: `exe:` followed by the
+    /// program's path in lower case with forward slashes
+    /// (`AppId::for_exe`), or `aumid:` followed by the app's AppUserModelID
+    /// (`AppId::for_app_user_model_id`). An AppUserModelID is the
+    /// identifier Windows uses to group an app's windows on the taskbar.
+    pub id: AppId,
+    /// A name that replaces the app's own name on the dock, or `null` to
+    /// use the app's own name.
+    #[serde(default)]
+    pub label: Option<String>,
+    pub launch: LaunchTarget,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase", default)]
+pub struct SystemIntegration {
+    /// Start Stem when the user signs in.
+    pub autostart: bool,
+    /// Hide the stock Windows taskbar while Stem runs, by turning on
+    /// Windows' own *Automatically hide the taskbar* option. Turning this
+    /// off, or quitting Stem, sets that option back to what it was.
+    pub hide_windows_taskbar: bool,
+    /// Register as an AppBar (an application desktop toolbar: Windows takes
+    /// a band at the dock's screen edge out of the work area, as it does for
+    /// the stock taskbar), so that maximised windows end at the dock instead
+    /// of going under it.
+    pub reserve_screen_space: bool,
+    /// Write a log file in the app data directory.
+    pub file_logging: bool,
+}
+
+impl Default for SystemIntegration {
+    fn default() -> Self {
+        Self {
+            autostart: false,
+            hide_windows_taskbar: false,
+            reserve_screen_space: false,
+            file_logging: true,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use pretty_assertions::assert_eq;
+
+    use super::*;
+
+    fn pin(id: &str) -> PinnedApp {
+        PinnedApp {
+            id: AppId(id.to_owned()),
+            label: None,
+            launch: LaunchTarget::Exe {
+                path: PathBuf::from(id),
+                args: vec![],
+                working_dir: None,
+            },
+        }
+    }
+
+    #[test]
+    fn empty_document_yields_defaults() {
+        let s = Settings::from_json("{}").unwrap();
+        assert_eq!(s, Settings::default());
+    }
+
+    #[test]
+    fn unknown_fields_are_ignored_and_partial_structs_fill_in() {
+        let s = Settings::from_json(
+            r#"{"iconSize": 64, "magnification": {"maxScale": 2.0}, "bogus": 1}"#,
+        )
+        .unwrap();
+        assert_eq!(s.icon_size, 64);
+        assert_eq!(s.magnification.max_scale, 2.0);
+        assert!(s.magnification.enabled);
+    }
+
+    #[test]
+    fn validate_clamps_and_dedupes() {
+        let mut s = Settings {
+            icon_size: 999,
+            ..Default::default()
+        };
+        s.magnification.max_scale = 9.0;
+        s.pinned = vec![pin("a"), pin("a"), pin(""), pin("b")];
+        s.validate();
+        assert_eq!(s.icon_size, 128);
+        assert_eq!(s.magnification.max_scale, 2.5);
+        assert_eq!(
+            s.pinned.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+            vec!["a", "b"]
+        );
+    }
+
+    #[test]
+    fn newer_version_is_rejected() {
+        let err = Settings::from_json(r#"{"version": 99}"#).unwrap_err();
+        assert!(matches!(err, SettingsError::TooNew { found: 99, .. }));
+    }
+
+    #[test]
+    fn reorder_keeps_unlisted_pins_at_the_end() {
+        let mut s = Settings {
+            pinned: vec![pin("a"), pin("b"), pin("c"), pin("d")],
+            ..Default::default()
+        };
+        s.reorder_pinned(&[AppId("c".into()), AppId("zzz".into()), AppId("a".into())]);
+        assert_eq!(
+            s.pinned.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+            vec!["c", "a", "b", "d"]
+        );
+    }
+
+    #[test]
+    fn round_trips_through_json() {
+        let mut s = Settings::default();
+        s.pinned.push(pin("exe:c:/x.exe"));
+        let back = Settings::from_json(&s.to_json_pretty()).unwrap();
+        assert_eq!(back, s);
+    }
+}

@@ -1,0 +1,22 @@
+[package]
+name = "stem-service"
+description = "Platform-independent orchestration: engine thread, identity resolution, settings persistence, command semantics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+stem-core = { workspace = true }
+stem-platform = { workspace = true }
+crossbeam-channel = { workspace = true }
+log = { workspace = true }
+parking_lot = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+
+[lints]
+workspace = true

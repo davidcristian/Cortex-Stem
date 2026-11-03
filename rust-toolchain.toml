@@ -1,0 +1,6 @@
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
+# The Windows target is installed everywhere so that Linux/macOS hosts can run
+# `cargo check --target x86_64-pc-windows-msvc` (type-check without linking).
+targets = ["x86_64-pc-windows-msvc"]

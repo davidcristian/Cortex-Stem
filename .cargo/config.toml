@@ -1,0 +1,7 @@
+# Workspace-wide cargo configuration.
+
+[env]
+# `cargo test -p stem-core --features ts` writes TypeScript bindings here
+# (relative to the workspace root). The frontend imports them from
+# `src/lib/ipc/generated/`; never edit those files by hand.
+TS_RS_EXPORT_DIR = { value = "src/lib/ipc/generated", relative = true }
