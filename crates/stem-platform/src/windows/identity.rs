@@ -3,10 +3,12 @@
 //! Contract:
 //! - [`identify_window`] takes the `RawWindow` facts already collected by
 //!   `enumerate` and produces an [`AppIdentity`]: `id` via
-//!   `stem_core::app_id_for`, `display_name` from the exe's `FileDescription`
-//!   version resource (fallback: `ProductName`, then file stem, then window
-//!   title), `icon_key` (`aumid:` for packaged apps, otherwise `exe:`), and a
-//!   `launch` target (`StoreApp` for packaged apps, otherwise `Exe`).
+//!   `stem_core::app_id_for`, `display_name` from the AppsFolder for an
+//!   AUMID the shell knows, else the exe's `FileDescription` version
+//!   resource (fallback: `ProductName`, then file stem, then window title,
+//!   then class name, never ending in `.exe`), `icon_key` (`aumid:` for
+//!   packaged apps, otherwise `exe:`), and a `launch` target (`StoreApp` for
+//!   packaged apps, otherwise `Exe`).
 //! - [`identify_target`] resolves what the user wants to pin: `.lnk` files are
 //!   resolved through `IShellLinkW` (target path, arguments, working dir, icon
 //!   location); `shell:AppsFolder\<aumid>` and `StoreApp` map to `aumid:`;
@@ -15,8 +17,18 @@
 //!   windows will not merge.
 //! - Elevated/protected processes: `exe_path` may be `None`; degrade to the
 //!   window title and class without failing.
+//! - No display name ends in `.exe`: every name, from whichever
+//!   source, goes through `rules::identity::clean_display_name`, and
+//!   `PLACEHOLDER_DISPLAY_NAME` is the last resort.
 //!
 //! Decisions:
+//! - Packaged Win32 apps (the Windows 11 Notepad, Terminal, Paint, Snipping
+//!   Tool, Photos) carry no `System.AppUserModel.ID` window property;
+//!   `enumerate` fills `RawWindow::app_user_model_id` from the process's
+//!   package identity instead, so they take the AUMID branch below like UWP
+//!   apps do: AppsFolder name, `aumid:` icon, `StoreApp` launch. Their exe
+//!   under `WindowsApps` is unreadable for a normal user (no version
+//!   resource, no icon), which is why the exe branch is wrong for them.
 //! - A window with an AppUserModelID whose `shell:AppsFolder\<aumid>` item
 //!   resolves (Store apps, and desktop apps that registered an AUMID such as
 //!   browser profiles) gets its name from the shell, an `aumid:` icon and a
@@ -57,10 +69,11 @@ use windows::core::{Interface, PCWSTR, w};
 use super::util::{self, CoTaskWideString};
 use crate::PlatformResult;
 use crate::rules::identity::{
-    ShortcutSource, VERSION_NAME_FIELDS, apps_folder_parsing_name, aumid_fallback_name,
-    aumid_icon_key, display_name_fallback, exe_icon_key, file_icon_key, file_stem, first_non_empty,
-    has_extension, hwnd_icon_key, needs_env_expansion, parse_apps_folder, plan_shortcut,
-    split_command_line, translation_candidates, translations, version_string_path,
+    PLACEHOLDER_DISPLAY_NAME, ShortcutSource, VERSION_NAME_FIELDS, apps_folder_parsing_name,
+    aumid_fallback_name, aumid_icon_key, clean_display_name, display_name_fallback, exe_icon_key,
+    file_icon_key, file_stem, first_display_name, has_extension, hwnd_icon_key,
+    needs_env_expansion, parse_apps_folder, plan_shortcut, split_command_line,
+    translation_candidates, translations, version_string_path,
 };
 
 /// Buffer size for `IShellLinkW` string getters (long paths included).
@@ -160,8 +173,9 @@ fn identity_for_exe(
     preferred_name: Option<&str>,
 ) -> AppIdentity {
     let from_version = exe_display_name(path);
-    let display_name = first_non_empty([from_version.as_deref(), preferred_name])
-        .unwrap_or_else(|| file_stem(path));
+    let stem = file_stem(path);
+    let display_name = first_display_name([from_version.as_deref(), preferred_name, Some(&stem)])
+        .unwrap_or_else(|| PLACEHOLDER_DISPLAY_NAME.to_owned());
     AppIdentity {
         id: AppId::for_exe(Path::new(path)),
         display_name,
@@ -232,10 +246,15 @@ fn identify_shortcut(path: &Path) -> PlatformResult<AppIdentity> {
     let display_name = match (plan.name, apps_folder_name, target) {
         (ShortcutSource::AppUserModelId, Some(name), _) => name,
         (ShortcutSource::Target, _, Some(t)) => {
-            first_non_empty([exe_display_name(t).as_deref(), Some(&link_name)])
-                .unwrap_or_else(|| file_stem(t))
+            let target_stem = file_stem(t);
+            first_display_name([
+                exe_display_name(t).as_deref(),
+                Some(&link_name),
+                Some(&target_stem),
+            ])
+            .unwrap_or_else(|| PLACEHOLDER_DISPLAY_NAME.to_owned())
         }
-        _ => link_name,
+        _ => clean_display_name(&link_name).unwrap_or_else(|| PLACEHOLDER_DISPLAY_NAME.to_owned()),
     };
     let icon_key = match (plan.icon, aumid, target) {
         (ShortcutSource::AppUserModelId, Some(a), _) => aumid_icon_key(a),
@@ -321,7 +340,7 @@ fn link_app_user_model_id(link: &IShellLinkW) -> Option<String> {
 }
 
 /// Display name of `shell:AppsFolder\<aumid>`; `None` when the shell does
-/// not know the AUMID.
+/// not know the AUMID (or names it `.exe`-only, which no name may be).
 fn apps_folder_display_name(aumid: &str) -> Option<String> {
     let name = util::to_wide(&apps_folder_parsing_name(aumid));
     // SAFETY: `name` is NUL-terminated and outlives the call; no bind context.
@@ -332,11 +351,11 @@ fn apps_folder_display_name(aumid: &str) -> Option<String> {
     // freed by the guard.
     let display = unsafe { item.GetDisplayName(SIGDN_NORMALDISPLAY) }.ok()?;
     let display = CoTaskWideString::new(display)?.to_string_lossy();
-    let display = display.trim();
-    (!display.is_empty()).then(|| display.to_owned())
+    clean_display_name(&display)
 }
 
-/// `FileDescription`, else `ProductName`, from the exe's version resource.
+/// `FileDescription`, else `ProductName`, from the exe's version resource,
+/// cleaned (some resources repeat the file name, `.exe` included).
 fn exe_display_name(path: &str) -> Option<String> {
     let block = version_block(path)?;
     let declared = query_bytes(&block, w!(r"\VarFileInfo\Translation"))
@@ -345,11 +364,10 @@ fn exe_display_name(path: &str) -> Option<String> {
     for field in VERSION_NAME_FIELDS {
         for (lang, codepage) in translation_candidates(&declared) {
             let sub_block = util::to_wide(&version_string_path(lang, codepage, field));
-            if let Some(value) = query_string(&block, util::pcwstr(&sub_block)) {
-                let value = value.trim();
-                if !value.is_empty() {
-                    return Some(value.to_owned());
-                }
+            if let Some(value) =
+                query_string(&block, util::pcwstr(&sub_block)).and_then(|v| clean_display_name(&v))
+            {
+                return Some(value);
             }
         }
     }

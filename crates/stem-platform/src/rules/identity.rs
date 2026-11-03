@@ -88,24 +88,64 @@ where
         .map(str::to_owned)
 }
 
+/// The name shown when nothing better is known.
+pub const PLACEHOLDER_DISPLAY_NAME: &str = "Application";
+
+/// A display name fit to show: trimmed, with every trailing `.exe`
+/// (case-insensitive) removed, and non-empty. `None` when nothing is left.
+/// Every name the identity code produces passes through here, so no item is
+/// ever titled `Notepad.exe`: the file name of an unreadable
+/// executable, a window title that is a program name, a shortcut called
+/// `app.exe.lnk` and a version resource that repeats the file name are all
+/// cleaned the same way.
+pub fn clean_display_name(name: &str) -> Option<String> {
+    let mut name = name.trim();
+    while let Some(stripped) = strip_exe_suffix(name) {
+        name = stripped.trim_end();
+    }
+    (!name.is_empty()).then(|| name.to_owned())
+}
+
+/// `name` without one trailing `.exe` (any case); `None` when it has none.
+fn strip_exe_suffix(name: &str) -> Option<&str> {
+    let cut = name.len().checked_sub(4)?;
+    let (head, tail) = name.split_at_checked(cut)?;
+    tail.eq_ignore_ascii_case(".exe").then_some(head)
+}
+
+/// First candidate that [`clean_display_name`] accepts.
+pub fn first_display_name<'a, I>(candidates: I) -> Option<String>
+where
+    I: IntoIterator<Item = Option<&'a str>>,
+{
+    candidates
+        .into_iter()
+        .flatten()
+        .find_map(clean_display_name)
+}
+
 /// Display name when no version resource is available: exe stem, then the
-/// window title, then the class name, then a fixed placeholder.
+/// window title, then the class name, then a fixed placeholder; each
+/// candidate cleaned by [`clean_display_name`].
 pub fn display_name_fallback(exe_path: Option<&str>, title: &str, class_name: &str) -> String {
     let stem = exe_path.map(file_stem);
-    first_non_empty([stem.as_deref(), Some(title), Some(class_name)])
-        .unwrap_or_else(|| "Application".to_owned())
+    first_display_name([stem.as_deref(), Some(title), Some(class_name)])
+        .unwrap_or_else(|| PLACEHOLDER_DISPLAY_NAME.to_owned())
 }
 
 /// A readable fallback name for an AppUserModelID when the shell cannot
 /// resolve it: `Microsoft.WindowsCalculator_8wekyb3d8bbwe!App` →
 /// `WindowsCalculator`, `Chrome.Profile1` → `Profile1`, `Chrome` → `Chrome`.
 pub fn aumid_fallback_name(aumid: &str) -> String {
-    let aumid = aumid.trim();
-    let family = aumid.split('!').next().unwrap_or(aumid);
+    let Some(aumid) = clean_display_name(aumid) else {
+        return PLACEHOLDER_DISPLAY_NAME.to_owned();
+    };
+    let family = aumid.split('!').next().unwrap_or(&aumid);
     let name = family.split('_').next().unwrap_or(family);
     let last = name.rsplit('.').next().unwrap_or(name);
-    let chosen = if last.is_empty() { aumid } else { last };
-    chosen.to_owned()
+    let chosen = if last.is_empty() { &aumid } else { last };
+    first_display_name([Some(chosen), Some(&aumid)])
+        .unwrap_or_else(|| PLACEHOLDER_DISPLAY_NAME.to_owned())
 }
 
 /// Sub-block path for `VerQueryValueW`: `\StringFileInfo\{lang}{codepage}\{name}`.
@@ -408,6 +448,56 @@ mod tests {
             first_non_empty([None, Some(" "), Some(" a ")]),
             Some("a".into())
         );
+        // No fallback ends in `.exe`; a candidate that is nothing but
+        // the suffix is skipped.
+        assert_eq!(
+            display_name_fallback(Some(r"C:\x\notepad.exe.exe"), "", "Notepad"),
+            "notepad"
+        );
+        assert_eq!(
+            display_name_fallback(None, "Notepad.exe", "Notepad"),
+            "Notepad"
+        );
+        assert_eq!(
+            display_name_fallback(Some(r"C:\x\.exe"), "TASKMGR.EXE", ""),
+            "TASKMGR"
+        );
+        assert_eq!(
+            display_name_fallback(Some(".EXE"), ".exe", ".Exe"),
+            "Application"
+        );
+    }
+
+    #[test]
+    fn clean_display_name_strips_every_exe_suffix() {
+        assert_eq!(clean_display_name("Notepad.exe"), Some("Notepad".into()));
+        assert_eq!(clean_display_name("  TASKMGR.EXE "), Some("TASKMGR".into()));
+        assert_eq!(clean_display_name("a.exe.Exe"), Some("a".into()));
+        assert_eq!(clean_display_name("app.exe "), Some("app".into()));
+        assert_eq!(
+            clean_display_name("Windows Terminal"),
+            Some("Windows Terminal".into())
+        );
+        // Not a suffix: untouched.
+        assert_eq!(clean_display_name("exe"), Some("exe".into()));
+        assert_eq!(clean_display_name("Exec"), Some("Exec".into()));
+        assert_eq!(clean_display_name("my.exe.txt"), Some("my.exe.txt".into()));
+        assert_eq!(clean_display_name("日本語.exe"), Some("日本語".into()));
+        assert_eq!(clean_display_name("日本語"), Some("日本語".into()));
+        // Nothing left.
+        assert_eq!(clean_display_name(".exe"), None);
+        assert_eq!(clean_display_name(" .EXE.exe "), None);
+        assert_eq!(clean_display_name("   "), None);
+        assert_eq!(clean_display_name(""), None);
+        assert_eq!(
+            first_display_name([None, Some("x.exe.exe"), Some(".exe"), Some("Second")]),
+            Some("x".into())
+        );
+        assert_eq!(
+            first_display_name([Some(".exe"), Some(" "), Some("Second.EXE")]),
+            Some("Second".into())
+        );
+        assert_eq!(first_display_name([Some(".exe"), None]), None);
     }
 
     #[test]
@@ -419,6 +509,10 @@ mod tests {
         assert_eq!(aumid_fallback_name("Chrome"), "Chrome");
         assert_eq!(aumid_fallback_name("Chrome.Profile1"), "Profile1");
         assert_eq!(aumid_fallback_name("!App"), "!App");
+        // Never `.exe`, never empty.
+        assert_eq!(aumid_fallback_name("Vendor.Tool.exe"), "Tool");
+        assert_eq!(aumid_fallback_name(".exe"), "Application");
+        assert_eq!(aumid_fallback_name(""), "Application");
     }
 
     #[test]
