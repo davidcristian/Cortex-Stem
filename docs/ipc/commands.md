@@ -19,10 +19,11 @@ arguments are named and how a failed command rejects.
 | `reorder_pinned`        | `{ order: AppId[] }`                        | `void`             | the new order of the pinned apps; pinned ids that are not listed keep their relative order at the end |
 | `get_icon`              | `{ iconKey: IconKey, size: number }`        | `string \| null`   | a PNG as a `data:` URL; `null` for `shell:*` keys and unknown keys |
 | `set_dock_content_size` | `{ width: number, height: number }` (CSS px)| `void`             | Rust resizes the calling window and centres it again (see [Sizing protocol](sizing-protocol.md)) |
+| `shell_action`          | `{ action: ShellAction }`                   | `void`             | runs a shell action directly (menus, the Recycle Bin's "Empty") |
+| `open_settings`         | none                                        | `void`             | opens the settings window, or focuses it if it is already open |
 | `quit`                  | none                                        | none               | exits the application |
 
-Five commands are planned and not implemented in Rust: `show_item_menu { itemKey, x, y }`,
-`show_dock_menu { x, y }`, `open_settings`, `set_dock_hover { hovering }` and
-`shell_action { action }`. They are listed so that the mock can stub them: their `Backend`
-methods are optional, `MockBackend` records them, `TauriBackend` does not have them, and the dock
-page calls them only where they exist.
+Three commands are planned and not implemented in Rust: `show_item_menu { itemKey, x, y }`,
+`show_dock_menu { x, y }` and `set_dock_hover { hovering }`. They are listed so that the mock
+can stub them: their `Backend` methods are optional, `MockBackend` records them, `TauriBackend`
+does not have them, and the dock page calls them only where they exist.
