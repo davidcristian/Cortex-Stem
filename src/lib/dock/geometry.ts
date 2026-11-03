@@ -70,3 +70,56 @@ export function hitRegionFor(panel: Rect, growth: number, rise: number): HitRegi
 export function magnifiedRise(iconSize: number, maxScale: number, slack: number): number {
   return iconSize * Math.max(0, maxScale - 1) + slack;
 }
+
+/** The inline margins (CSS px) that place the panel on whole device pixels. */
+export interface SnapMargins {
+  marginLeft: number;
+  marginBottom: number;
+}
+
+/**
+ * The margins that move a panel whose top-left corner is at (`left`, `top`)
+ * CSS px onto a whole device pixel, so that the bitmaps inside it are drawn
+ * 1:1 instead of being resampled by a fraction of a pixel.
+ *
+ * The panel is centred by its flex container, so a left margin of m moves
+ * it by m/2; it is anchored to the bottom, so its top edge follows the
+ * bottom margin one to one (a smaller bottom margin moves the top edge
+ * down). Both are corrections of the margins the panel has *now*: calling
+ * this again with the snapped rect and the margins it returned changes
+ * nothing. The fractional part is cancelled towards the nearest device
+ * pixel, so the panel never moves by more than half a device pixel.
+ */
+export function snapOffsets(
+  left: number,
+  top: number,
+  dpr: number,
+  currentMarginLeft: number,
+  currentMarginBottom: number,
+): SnapMargins {
+  const scale = Number.isFinite(dpr) && dpr > 0 ? dpr : 1;
+  const dx = (Math.round(left * scale) - left * scale) / scale;
+  const dy = (Math.round(top * scale) - top * scale) / scale;
+  return { marginLeft: currentMarginLeft + 2 * dx, marginBottom: currentMarginBottom - dy };
+}
+
+/**
+ * Chromium lays out in 1/64 CSS px (LayoutUnit). At a fractional device
+ * pixel ratio the ideal margins are not on that grid: the margin is
+ * rounded to it (≤ ½ unit, ¼ unit on the position once the centring halves
+ * it) and the centring's division floors (< ½ unit), so the laid-out edge
+ * misses the ideal one by < ¾ unit and the next measurement asks for a
+ * correction of < 1½ units (horizontal: twice the miss). Applying it would
+ * only flip the quantised margin to its neighbour and back, so a change of
+ * up to two units is "the same" margins: nothing visible can come of it
+ * (two units are 1/32 of a device pixel at 100 %, 3/64 at 150 %).
+ */
+export const LAYOUT_UNIT = 1 / 64;
+
+/** `true` when applying `next` instead of `current` could not move the panel (see `LAYOUT_UNIT`). */
+export function sameSnap(current: SnapMargins, next: SnapMargins): boolean {
+  return (
+    Math.abs(next.marginLeft - current.marginLeft) <= 2 * LAYOUT_UNIT &&
+    Math.abs(next.marginBottom - current.marginBottom) <= 2 * LAYOUT_UNIT
+  );
+}

@@ -198,6 +198,8 @@ describe('DockStore', () => {
       ['missing', 96],
     ]);
     expect(store.icon('mock:a', 96)).toBe('data:mock:a@96');
+    // Two sizes of one key are two entries (rest and magnified bitmaps).
+    expect(store.icon('mock:a', 48)).toBe('data:mock:a@48');
     expect(store.icons.get(iconId('mock:a', 48))).toBe('data:mock:a@48');
     expect(store.icon('missing', 96)).toBeNull();
     expect(store.icon('shell:start', 96)).toBeUndefined();

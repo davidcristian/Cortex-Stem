@@ -34,3 +34,27 @@ export function iconRequestSize(iconSize: number, maxScale: number, dpr: number)
   // (48 × 1.6 × 1.25 = 96.00000000000001); such noise must not bump the rung.
   return pickIconSize(Math.ceil(iconSize * Math.max(1, maxScale) * Math.max(1, dpr) - 1e-6));
 }
+
+/** The two bitmaps an app icon is drawn from. */
+export interface IconSources {
+  /** Exactly the icon's size in device pixels: drawn 1:1 at rest, never resampled. */
+  rest: number;
+  /** The ladder size that covers the magnified box; equals `rest` when one bitmap serves both. */
+  magnified: number;
+}
+
+/**
+ * Which sizes to request for icons rendered at `iconSize` CSS px on a
+ * display with `dpr` device pixels per CSS px, magnified up to `maxScale`.
+ * A ladder source downscaled by the browser (64 → 39 px, 96 → 48 px) goes
+ * soft at rest, so the rest image is requested at its exact device size;
+ * the magnified image keeps the ladder (`iconRequestSize`) so it covers the
+ * magnified box. With magnification off (which is also what reduced motion
+ * does) the rest bitmap is the only one.
+ */
+export function iconSources(iconSize: number, maxScale: number, dpr: number): IconSources {
+  const scale = Number.isFinite(dpr) && dpr > 0 ? dpr : 1;
+  const rest = Math.max(1, Math.round(iconSize * scale));
+  const magnified = maxScale > 1 ? iconRequestSize(iconSize, maxScale, scale) : rest;
+  return { rest, magnified };
+}

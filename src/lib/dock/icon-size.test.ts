@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { ICON_SIZE_LADDER, iconRequestSize, pickIconSize } from './icon-size';
+import { ICON_SIZE_LADDER, iconRequestSize, iconSources, pickIconSize } from './icon-size';
 
 describe('pickIconSize', () => {
   it('returns the smallest ladder entry that covers the need', () => {
@@ -55,5 +55,41 @@ describe('iconRequestSize', () => {
 
   it('caps large settings at the top of the ladder', () => {
     expect(iconRequestSize(128, 2.5, 2)).toBe(256);
+  });
+});
+
+describe('iconSources', () => {
+  it('requests the exact device size for rest and the ladder size for magnification', () => {
+    // The defaults (48 px, 1.6×) at 100 %, 150 % and 200 %.
+    expect(iconSources(48, 1.6, 1)).toEqual({ rest: 48, magnified: 96 });
+    expect(iconSources(48, 1.6, 1.5)).toEqual({ rest: 72, magnified: 128 });
+    expect(iconSources(48, 1.6, 2)).toEqual({ rest: 96, magnified: 192 });
+    // 39 px icons: 39 at rest (not the 64 of the ladder), 64 magnified.
+    expect(iconSources(39, 1.6, 1)).toEqual({ rest: 39, magnified: 64 });
+    expect(iconSources(39, 1.6, 2)).toEqual({ rest: 78, magnified: 128 });
+  });
+
+  it('rounds the rest size to whole pixels', () => {
+    expect(iconSources(39, 1.6, 1.5)).toEqual({ rest: 59, magnified: 96 }); // 58.5
+    expect(iconSources(41, 1.6, 1.25)).toEqual({ rest: 51, magnified: 96 }); // 51.25
+    expect(iconSources(45, 1.6, 1.25)).toEqual({ rest: 56, magnified: 96 }); // 56.25
+  });
+
+  it('uses one bitmap when magnification is off or reduced motion turned it off', () => {
+    expect(iconSources(48, 1, 1)).toEqual({ rest: 48, magnified: 48 });
+    expect(iconSources(48, 1, 1.5)).toEqual({ rest: 72, magnified: 72 }); // not the ladder's 96
+    expect(iconSources(48, 1, 2)).toEqual({ rest: 96, magnified: 96 });
+    expect(iconSources(39, 1, 1.5)).toEqual({ rest: 59, magnified: 59 });
+    expect(iconSources(48, 0.5, 1)).toEqual({ rest: 48, magnified: 48 });
+  });
+
+  it('uses one bitmap when the two sizes coincide at the top of the ladder', () => {
+    expect(iconSources(128, 2, 2)).toEqual({ rest: 256, magnified: 256 });
+  });
+
+  it('never asks for less than a pixel and treats a nonsense DPR as 1', () => {
+    expect(iconSources(48, 1.6, 0)).toEqual({ rest: 48, magnified: 96 });
+    expect(iconSources(48, 1.6, NaN)).toEqual({ rest: 48, magnified: 96 });
+    expect(iconSources(0, 1, 1).rest).toBe(1);
   });
 });
