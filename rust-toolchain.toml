@@ -1,5 +1,6 @@
 [toolchain]
-channel = "stable"
+# Pinned on purpose: the compiler is the project's oracle (AGENTS.md §5).
+channel = "1.99.1"
 components = ["rustfmt", "clippy"]
 # The Windows target is installed everywhere so that Linux/macOS hosts can run
 # `cargo check --target x86_64-pc-windows-msvc` (type-check without linking).

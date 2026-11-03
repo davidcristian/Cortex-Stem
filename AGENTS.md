@@ -86,7 +86,7 @@ Process:
 The verification ladder is the ordered list of checks, rungs 1 to 9, from `cargo fmt` to a person
 running the manual tests on Windows.
 [docs/development/verification-ladder.md](docs/development/verification-ladder.md) gives each
-rung's command and what it proves, and the scripts that run the rungs.
+rung's command and what it proves, the scripts that run the rungs and the Rust toolchain.
 
 - Run the rungs in order; a task is done only when every rung its brief lists passes. Rungs 1 to 7
   are required for every task that touches the matching area.

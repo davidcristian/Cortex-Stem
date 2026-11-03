@@ -30,3 +30,9 @@ separate steps. `scripts/check-all.ps1` runs the same rungs on a Windows host, t
 On a non-Windows host rung 4 needs `llvm-rc` (package `llvm`, or
 `RC_x86_64_pc_windows_msvc=/path/to/llvm-rc-NN`), because tauri-build compiles a Windows resource
 file in its build script.
+
+## The Rust toolchain
+
+`rust-toolchain.toml` sets the toolchain to an exact version, so every machine and CI use the same
+compiler; a floating `stable` differs between machines and can fail the build on a new lint or
+deprecation. Change the version on purpose, in its own commit, after running the whole ladder.

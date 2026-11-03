@@ -74,8 +74,8 @@ installer and `stem.exe` as artifacts.
 
 You need Windows 11 with:
 
-- Rust through `rustup`, on the `stable` channel that [`rust-toolchain.toml`](rust-toolchain.toml)
-  names.
+- Rust through `rustup`. [`rust-toolchain.toml`](rust-toolchain.toml) sets the toolchain to an
+  exact version; `rustup toolchain install`, run in the repository, installs it if it is missing.
 - Node.js 22 and pnpm.
 - The Tauri prerequisites for Windows: the Microsoft C++ Build Tools and the WebView2 runtime.
 
