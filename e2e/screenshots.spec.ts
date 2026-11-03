@@ -5,11 +5,12 @@ import { expect, test, type Page } from '@playwright/test';
 const OUT = 'e2e/output';
 const APP_SLOT = '.slot[data-kind="app"]';
 
-/** What `src/dock/main.ts` exposes in mock mode (structural, for `page.evaluate`). */
+/** What the pages expose in mock mode (`src/lib/ipc/demo.ts`; structural, for `page.evaluate`). */
 interface DemoWindow {
   __dockMock?: {
     calls: Array<{ type: string }>;
     failNextCommand: (message: string) => void;
+    getSettings: () => Promise<{ iconSize: number; theme: string; pinned: Array<{ id: string }> }>;
   };
 }
 
@@ -223,6 +224,15 @@ test.describe('dock in mock mode', () => {
     });
   });
 
+  test('the running indicator dots reflect the window count', async ({ page }) => {
+    await openDock(page);
+    const dots = (index: number) => page.locator(APP_SLOT).nth(index).locator('.dots i');
+    await expect(dots(0)).toHaveCount(1); // explorer, one window
+    await expect(dots(1)).toHaveCount(2); // firefox, two windows
+    await expect(dots(3)).toHaveCount(0); // notepad, pinned only
+    await expect(page.locator(APP_SLOT).nth(6).locator('.dots')).toHaveClass(/dim/); // Spotify minimised
+  });
+
   test('a failed command shows a toast that goes away by itself', async ({ page }) => {
     await page.emulateMedia({ colorScheme: 'dark' });
     await openDock(page);
@@ -260,5 +270,129 @@ test.describe('dock in mock mode', () => {
       ),
     );
     expect(sizes.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+test.describe('settings window', () => {
+  // The settings window is a normal, opaque window: 760×600 at 2× DPR.
+  test.use({ viewport: { width: 760, height: 600 } });
+
+  const SETTINGS_MOCK = () => (window as unknown as DemoWindow).__dockMock?.getSettings();
+
+  async function openSettings(page: Page): Promise<void> {
+    await page.goto('/settings.html?mock=1');
+    await expect(page.locator('.page[data-ready="true"]')).toBeVisible();
+    await expect(page.locator('.status')).toHaveText('Saved');
+  }
+
+  test('dark', async ({ page }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openSettings(page);
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+    await page.screenshot({ path: `${OUT}/settings-dark.png` });
+    // Every section, for review: unclip the page (app.css fixes html/body/#app
+    // to the window) so the scroll area is captured at its full height.
+    await page.evaluate(() => {
+      for (const el of document.querySelectorAll<HTMLElement>(
+        'html, body, #app, .page, .content',
+      )) {
+        el.style.height = 'auto';
+        el.style.overflow = 'visible';
+      }
+    });
+    await page.screenshot({ path: `${OUT}/settings-full.png`, fullPage: true });
+  });
+
+  test('light', async ({ page }) => {
+    await page.emulateMedia({ colorScheme: 'light' });
+    await openSettings(page);
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+    await page.screenshot({ path: `${OUT}/settings-light.png` });
+  });
+
+  test('edits apply live and come back validated from the backend', async ({ page }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openSettings(page);
+
+    // Slider with the keyboard: value label follows, the save is debounced.
+    const iconSize = page.locator('#icon-size');
+    await iconSize.focus();
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('ArrowRight');
+    await expect(page.locator('output[for="icon-size"]')).toHaveText('50 px');
+    await expect(page.locator('.status')).toHaveText('Saved');
+    expect((await page.evaluate(SETTINGS_MOCK))?.iconSize).toBe(50);
+
+    // Switch.
+    const tooltips = page.locator('#tooltips');
+    await expect(tooltips).toBeChecked();
+    await tooltips.click();
+    await expect(tooltips).not.toBeChecked();
+    await expect(page.locator('.status')).toHaveText('Saved');
+
+    // Select: the theme applies to this window as well.
+    await page.locator('#theme').selectOption('light');
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+    await expect(page.locator('.status')).toHaveText('Saved');
+    expect((await page.evaluate(SETTINGS_MOCK))?.theme).toBe('light');
+
+    // Disabled, not-yet-available options stay disabled.
+    await expect(page.locator('#current-monitor')).toBeDisabled();
+    await expect(page.locator('#autostart')).toBeDisabled();
+    await expect(page.locator('#position option[value="left"]')).toBeDisabled();
+    await expect(page.locator('#auto-hide option[value="always"]')).toBeDisabled();
+  });
+
+  test('pinned apps can be moved and unpinned', async ({ page }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openSettings(page);
+    const names = () => page.locator('.pin-name').allTextContents();
+    const before = await names();
+    expect(before).toHaveLength(5);
+    expect(before[4]).toBe('Settings'); // the labelled entry shows its label
+
+    await page.getByRole('button', { name: `Move ${before[0]} down` }).click();
+    await expect.poll(names).toEqual([before[1], before[0], before[2], before[3], before[4]]);
+    await page.getByRole('button', { name: 'Move Settings up' }).click();
+    await expect.poll(names).toEqual([before[1], before[0], before[2], before[4], before[3]]);
+    await page.getByRole('button', { name: `Unpin ${before[2]}` }).click();
+    await expect.poll(names).toEqual([before[1], before[0], before[4], before[3]]);
+    await expect(page.locator('.status')).toHaveText('Saved');
+    expect((await page.evaluate(SETTINGS_MOCK))?.pinned.map((p) => p.id)).toHaveLength(4);
+
+    await page.locator('#h-pinned').scrollIntoViewIfNeeded();
+    await page.screenshot({ path: `${OUT}/settings-pinned.png` });
+  });
+
+  test('reset asks first, then restores the defaults', async ({ page }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openSettings(page);
+    await page.locator('#icon-size').focus();
+    await page.keyboard.press('ArrowRight');
+    await expect(page.locator('output[for="icon-size"]')).toHaveText('49 px');
+
+    await page.getByRole('button', { name: 'Reset to defaults' }).click();
+    await expect(page.getByRole('alertdialog')).toBeVisible();
+    await page.screenshot({ path: `${OUT}/settings-reset.png` });
+    await page.getByRole('button', { name: 'Cancel' }).click();
+    await expect(page.locator('output[for="icon-size"]')).toHaveText('49 px');
+
+    await page.getByRole('button', { name: 'Reset to defaults' }).click();
+    await page.getByRole('button', { name: 'Reset', exact: true }).click();
+    await expect(page.locator('output[for="icon-size"]')).toHaveText('48 px');
+    await expect(page.locator('.empty')).toHaveText('Nothing is pinned yet.');
+    await expect(page.locator('.status')).toHaveText('Saved');
+  });
+
+  test('every control has a name and the keyboard reaches the first one', async ({ page }) => {
+    await openSettings(page);
+    const controls = page.locator('input, select, button');
+    const count = await controls.count();
+    expect(count).toBeGreaterThan(30);
+    for (let i = 0; i < count; i += 1) {
+      await expect(controls.nth(i)).toHaveAccessibleName(/\S/);
+    }
+    await page.keyboard.press('Tab');
+    await expect(page.locator('#icon-size')).toBeFocused();
   });
 });
