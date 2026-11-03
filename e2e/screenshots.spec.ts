@@ -2,8 +2,16 @@ import { mkdirSync } from 'node:fs';
 
 import { expect, test, type Page } from '@playwright/test';
 
+import type { RawWindow } from '../src/lib/ipc/generated/RawWindow';
+import type { Rect } from '../src/lib/ipc/generated/Rect';
+
 const OUT = 'e2e/output';
 const APP_SLOT = '.slot[data-kind="app"]';
+
+// The dock's layout constants (src/dock/Dock.svelte) the assertions below rely on.
+const ICON = 48;
+const SLOT_GAP = 8;
+const PANEL_PADDING = 8;
 
 /** What the pages expose in mock mode (`src/lib/ipc/demo.ts`; structural, for `page.evaluate`). */
 interface DemoWindow {
@@ -11,6 +19,8 @@ interface DemoWindow {
     calls: Array<{ type: string } & Record<string, unknown>>;
     failNextCommand: (message: string) => void;
     getSettings: () => Promise<{ iconSize: number; theme: string; pinned: Array<{ id: string }> }>;
+    pushWindow: (raw: RawWindow) => void;
+    pushWindowRemoved: (id: number) => void;
   };
 }
 
@@ -23,6 +33,49 @@ function callsOfType(page: Page, type: string): Promise<number> {
     type,
   );
 }
+
+interface HitRegionCall {
+  panel: Rect;
+  envelope: Rect;
+}
+
+/** Every `set_dock_hit_region` the mock recorded so far, oldest first. */
+function hitRegions(page: Page): Promise<HitRegionCall[]> {
+  return page.evaluate(
+    () =>
+      ((window as unknown as DemoWindow).__dockMock?.calls ?? []).filter(
+        (c) => c.type === 'setDockHitRegion',
+      ) as unknown as HitRegionCall[],
+  );
+}
+
+function contains(outer: Rect, inner: Rect): boolean {
+  return (
+    inner.x >= outer.x &&
+    inner.y >= outer.y &&
+    inner.x + inner.width <= outer.x + outer.width &&
+    inner.y + inner.height <= outer.y + outer.height
+  );
+}
+
+/** A window the mock has never seen: pushing it adds a running, unpinned app. */
+const PAINT_WINDOW: RawWindow = {
+  id: 99,
+  title: 'Untitled - Paint',
+  className: 'MSPaintApp',
+  processId: 1099,
+  exePath: 'C:\\Windows\\System32\\mspaint.exe',
+  appUserModelId: null,
+  isVisible: true,
+  isMinimized: false,
+  isCloaked: false,
+  monitor: 'mock-primary',
+  iconKey: null,
+};
+const PAINT_SLOT = `${APP_SLOT}[data-key="app:exe:c:/windows/system32/mspaint.exe"]`;
+/** Code's only window in the demo scenario; closing it removes the (unpinned) item. */
+const CODE_WINDOW_ID = 4;
+const CODE_KEY = 'app:exe:c:/users/me/appdata/local/programs/microsoft vs code/code.exe';
 
 test.beforeAll(() => {
   mkdirSync(OUT, { recursive: true });
@@ -47,18 +100,26 @@ function scaleOf(page: Page, index: number): Promise<number> {
     .evaluate((el) => Number(el.style.getPropertyValue('--scale') || '1'));
 }
 
+/** The natural width of every app icon bitmap on the page (what `get_icon` was asked for). */
+function iconSourceWidths(page: Page): Promise<number[]> {
+  return page.$$eval('.icon img', (imgs) =>
+    imgs.map((img) => (img as HTMLImageElement).naturalWidth),
+  );
+}
+
 test.describe('dock at 1× device pixel ratio', () => {
   test.use({ deviceScaleFactor: 1 });
 
-  test('dark theme at rest requests icons at the base size', async ({ page }) => {
+  test('dark theme at rest requests icons at the ladder size the magnification needs', async ({
+    page,
+  }) => {
     await page.emulateMedia({ colorScheme: 'dark' });
     await openDock(page);
-    // Icons are requested at iconSize × devicePixelRatio = 48 × 1.
-    const widths = await page.$$eval('.icon img', (imgs) =>
-      imgs.map((img) => (img as HTMLImageElement).naturalWidth),
-    );
+    // Icons render at their true magnified size, so the source must cover
+    // iconSize × maxScale × DPR = 48 × 1.6 × 1 = 76.8 px: the next ladder rung is 96.
+    const widths = await iconSourceWidths(page);
     expect(widths.length).toBeGreaterThan(0);
-    expect(new Set(widths)).toEqual(new Set([48]));
+    expect(new Set(widths)).toEqual(new Set([96]));
     await page.screenshot({ path: `${OUT}/dock-dark-1x.png` });
   });
 });
@@ -68,7 +129,125 @@ test.describe('dock in mock mode', () => {
     await page.emulateMedia({ colorScheme: 'dark' });
     await openDock(page);
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+    // At 2× the source covers 48 × 1.6 × 2 = 153.6 px: ladder rung 192.
+    expect(new Set(await iconSourceWidths(page))).toEqual(new Set([192]));
     await page.screenshot({ path: `${OUT}/dock-dark.png` });
+  });
+
+  test('the panel is padded evenly, with the running dots inside the bottom padding', async ({
+    page,
+  }) => {
+    await openDock(page);
+    const panel = (await page.locator('.dock-panel').boundingBox())!;
+    expect(panel.height).toBe(ICON + 2 * PANEL_PADDING);
+    const explorer = page.locator(APP_SLOT).nth(0);
+    const icon = (await explorer.locator('.icon').boundingBox())!;
+    expect(icon.height).toBe(ICON);
+    expect(icon.y - panel.y).toBe(PANEL_PADDING);
+    expect(panel.y + panel.height - (icon.y + icon.height)).toBe(PANEL_PADDING);
+    // Explorer is running: its dot sits below the icon, inside the panel.
+    const dots = (await explorer.locator('.dots').boundingBox())!;
+    expect(dots.y).toBeGreaterThanOrEqual(icon.y + icon.height + 2);
+    expect(dots.y + dots.height).toBeLessThanOrEqual(panel.y + panel.height - 2);
+    // A separator is centred on the icons.
+    const separator = (await page.locator('[role="separator"]').first().boundingBox())!;
+    expect(separator.y + separator.height / 2).toBeCloseTo(icon.y + icon.height / 2, 0);
+  });
+
+  test('reports where it accepts clicks (docs/ipc/hit-region.md, v1.3)', async ({ page }) => {
+    await openDock(page);
+    // One report at startup; the identity snapshot that follows changes no geometry.
+    await expect.poll(() => hitRegions(page)).toHaveLength(1);
+    const [region] = await hitRegions(page);
+    const box = (await page.locator('.dock-panel').boundingBox())!;
+    const viewport = page.viewportSize()!;
+    const windowRect = { x: 0, y: 0, width: viewport.width, height: viewport.height };
+    // The panel: its bounding box rounded outwards to whole CSS px.
+    const x = Math.floor(box.x);
+    const y = Math.floor(box.y);
+    expect(region!.panel).toEqual({
+      x,
+      y,
+      width: Math.ceil(box.x + box.width) - x,
+      height: Math.ceil(box.y + box.height) - y,
+    });
+    // The envelope: contains the panel, lies in the window, grows up and sideways only.
+    expect(contains(region!.envelope, region!.panel)).toBe(true);
+    expect(contains(windowRect, region!.panel)).toBe(true);
+    expect(contains(windowRect, region!.envelope)).toBe(true);
+    expect(region!.envelope.y + region!.envelope.height).toBe(
+      region!.panel.y + region!.panel.height,
+    );
+    expect(region!.envelope.x).toBeLessThan(region!.panel.x);
+    expect(region!.envelope.y).toBeLessThan(region!.panel.y);
+    expect(region!.envelope.x + region!.envelope.width).toBeGreaterThan(
+      region!.panel.x + region!.panel.width,
+    );
+  });
+
+  test('app items animate in and out and the panel follows', async ({ page }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openDock(page);
+    const panel = page.locator('.dock-panel');
+    const widthBefore = (await panel.boundingBox())!.width;
+    await expect(page.locator(APP_SLOT)).toHaveCount(7);
+    const reportsBefore = (await hitRegions(page)).length;
+
+    // Closing Code's only window removes its item: the slot stays while it
+    // shrinks away, marked `data-leaving` and inert.
+    const leaving = await page.evaluate(async (id) => {
+      (window as unknown as DemoWindow).__dockMock?.pushWindowRemoved(id);
+      for (let i = 0; i < 3; i += 1) {
+        await new Promise(requestAnimationFrame);
+      }
+      const el = document.querySelector<HTMLElement>('.slot[data-leaving]');
+      return el === null
+        ? null
+        : {
+            key: el.dataset.key,
+            inert: el.inert,
+            pointerEvents: getComputedStyle(el).pointerEvents,
+            width: el.getBoundingClientRect().width,
+          };
+    }, CODE_WINDOW_ID);
+    expect(leaving).not.toBeNull();
+    expect(leaving!.key).toBe(CODE_KEY);
+    expect(leaving!.inert).toBe(true);
+    expect(leaving!.pointerEvents).toBe('none');
+    expect(leaving!.width).toBeLessThan(ICON + SLOT_GAP);
+    // Gone once the animation ended; the panel is one slot narrower.
+    await expect(page.locator('[data-leaving]')).toHaveCount(0);
+    await expect(page.locator(APP_SLOT)).toHaveCount(6);
+    await expect(page.locator(`[data-key="${CODE_KEY}"]`)).toHaveCount(0);
+    await expect
+      .poll(async () => (await panel.boundingBox())!.width)
+      .toBe(widthBefore - (ICON + SLOT_GAP));
+    // The new rest geometry was reported once the animation had ended.
+    await expect.poll(() => hitRegions(page)).toHaveLength(reportsBefore + 1);
+
+    // A window of an app the dock has never seen: its item grows into place.
+    const entering = await page.evaluate(
+      async ([raw, selector]) => {
+        (window as unknown as DemoWindow).__dockMock?.pushWindow(raw as RawWindow);
+        for (let i = 0; i < 3; i += 1) {
+          await new Promise(requestAnimationFrame);
+        }
+        const el = document.querySelector<HTMLElement>(selector as string);
+        return el === null
+          ? null
+          : { animations: el.getAnimations().length, width: el.getBoundingClientRect().width };
+      },
+      [PAINT_WINDOW, PAINT_SLOT] as const,
+    );
+    expect(entering).not.toBeNull();
+    expect(entering!.width).toBeLessThan(ICON + SLOT_GAP);
+    expect(entering!.animations).toBeGreaterThan(0);
+    const paint = page.locator(PAINT_SLOT);
+    await expect(paint).toHaveAttribute('aria-label', /Paint|mspaint/);
+    await expect.poll(async () => (await paint.boundingBox())!.width).toBe(ICON + SLOT_GAP);
+    await expect(page.locator(APP_SLOT)).toHaveCount(7);
+    expect((await panel.boundingBox())!.width).toBe(widthBefore);
+    await expect.poll(() => hitRegions(page)).toHaveLength(reportsBefore + 2);
   });
 
   test('light theme at rest', async ({ page }) => {
@@ -102,13 +281,24 @@ test.describe('dock in mock mode', () => {
     await page.screenshot({ path: `${OUT}/dock-many.png` });
   });
 
-  test('reduced motion disables magnification', async ({ page }) => {
+  test('reduced motion disables magnification and the item animations', async ({ page }) => {
     await page.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' });
     await openDock(page);
     await page.locator(APP_SLOT).nth(3).hover();
     await expect(page.locator('.tooltip')).toHaveText('notepad');
     expect(await scaleOf(page, 3)).toBe(1);
+    // No magnification means the source only has to cover 48 × 2 = 96 px.
+    expect(new Set(await iconSourceWidths(page))).toEqual(new Set([96]));
     await page.screenshot({ path: `${OUT}/dock-reduced-motion.png` });
+
+    // Items come and go at once: no leaving slot ever lingers.
+    const gone = await page.evaluate(async (id) => {
+      (window as unknown as DemoWindow).__dockMock?.pushWindowRemoved(id);
+      await new Promise(requestAnimationFrame);
+      return document.querySelectorAll('.slot[data-leaving]').length;
+    }, CODE_WINDOW_ID);
+    expect(gone).toBe(0);
+    await expect(page.locator(APP_SLOT)).toHaveCount(6);
   });
 
   test('every item is labelled and reachable', async ({ page }) => {
@@ -170,6 +360,12 @@ test.describe('dock in mock mode', () => {
       expect(await transformOf(page, 3)).toBe('');
       expect(await scaleOf(page, 1)).toBe(1); // no magnification while dragging
       await expect(page.locator('.tooltip')).toHaveCount(0);
+      // While the drag is on, the whole window accepts clicks (docs/ipc/hit-region.md, v1.3).
+      const viewport = page.viewportSize()!;
+      const whole = { x: 0, y: 0, width: viewport.width, height: viewport.height };
+      const atRest = (await hitRegions(page))[0]!;
+      await expect.poll(async () => (await hitRegions(page)).at(-1)?.envelope).toEqual(whole);
+      expect((await hitRegions(page)).at(-1)!.panel).toEqual(atRest.panel);
       await page.screenshot({ path: `${OUT}/dock-drag.png` });
 
       await page.mouse.up();
@@ -181,18 +377,24 @@ test.describe('dock in mock mode', () => {
       await expect(page.locator('[data-drag]')).toHaveCount(0);
       // The release that ended the drag was not a click: nothing launched.
       expect(await callsOfType(page, 'launch')).toBe(0);
+      // The real hit region is back once the DOM settled (same geometry as before).
+      await expect.poll(async () => (await hitRegions(page)).at(-1)).toEqual(atRest);
     });
 
     test('Escape puts everything back', async ({ page }) => {
       await openDock(page);
       const before = await pinnedKeys(page);
+      const atRest = (await hitRegions(page))[0]!;
       await dragPinned(page, 3, 1);
       await expect.poll(() => transformOf(page, 1)).toBe('translateX(56px)');
+      await expect.poll(() => hitRegions(page)).toHaveLength(2);
       await page.keyboard.press('Escape');
       await expect(page.locator('[data-drag]')).toHaveCount(0);
       await expect.poll(() => transformOf(page, 1)).toBe('');
       await page.mouse.up();
       expect(await pinnedKeys(page)).toEqual(before);
+      // A cancelled drag restores the real hit region too.
+      await expect.poll(async () => (await hitRegions(page)).at(-1)).toEqual(atRest);
     });
 
     test('releasing far from the dock cancels', async ({ page }) => {

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { itemTransition } from '$lib/dock/item-transition';
   import ShellIcon from '$lib/icons/ShellIcon.svelte';
   import { isShellIconKey } from '$lib/ipc/backend';
   import type { DockItem } from '$lib/ipc/generated/DockItem';
@@ -13,8 +14,13 @@
     tooltip: boolean;
     /** Changes on every `dock://item-bounce` for this item; 0 = never. */
     bounce: number;
-    /** False under `prefers-reduced-motion` (no bounce, no wiggle). */
+    /** False under `prefers-reduced-motion` (no bounce, no wiggle, no enter/leave). */
     animate: boolean;
+    /**
+     * Play the enter animation if this item appears now. Off until the dock
+     * has rendered its first snapshot, so startup does not cascade icons in.
+     */
+    enter: boolean;
     /** Being dragged to a new place: raised, shadowed, no dots. */
     lifted: boolean;
     onprimary: (item: DockItem) => void;
@@ -23,6 +29,8 @@
     onhover: (item: DockItem | null) => void;
     /** A pointer went down on the item (the dock may start a drag from it). */
     onpress: (item: DockItem, e: PointerEvent) => void;
+    /** An enter or leave animation of this slot has finished (the panel is at rest again). */
+    onsettled: () => void;
   }
 
   let {
@@ -32,12 +40,14 @@
     tooltip,
     bounce,
     animate,
+    enter,
     lifted,
     onprimary,
     onmiddle,
     oncontext,
     onhover,
     onpress,
+    onsettled,
   }: Props = $props();
 
   const shellName = $derived(
@@ -76,8 +86,8 @@
   let bouncer = $state<HTMLDivElement>();
 
   // Bounce through the Web Animations API: it restarts cleanly when a second
-  // launch happens mid-flight and composes with the magnification transform,
-  // which lives on a different element.
+  // launch happens mid-flight and composes with the magnification, which
+  // sizes the same element rather than transforming it.
   $effect(() => {
     const el = bouncer;
     if (bounce === 0 || !animate || !el) {
@@ -126,6 +136,11 @@
   }
 </script>
 
+<!-- `in:` and `out:` rather than `transition:` so the function learns the
+     direction and can mark the slot as leaving (see item-transition.ts).
+     `|global`: the dock's item list decides when this slot comes and goes,
+     and an `{#if}` sits between that `{#each}` and this element, which a
+     local transition would not play through. -->
 <div
   class="slot"
   role="button"
@@ -138,6 +153,10 @@
   data-active={item.isActive || undefined}
   data-pinned={item.pinned || undefined}
   data-drag={lifted ? 'lifted' : undefined}
+  in:itemTransition|global={{ enabled: animate && enter }}
+  out:itemTransition|global={{ enabled: animate }}
+  onintroend={onsettled}
+  onoutroend={onsettled}
   onpointerdown={(e) => onpress(item, e)}
   {onpointerup}
   {onmousedown}
@@ -175,16 +194,19 @@
     display: flex;
     flex-direction: column;
     align-items: center;
+    /* The icon sits on the slot's bottom edge and grows upwards out of it. */
     justify-content: flex-end;
     box-sizing: border-box;
     /* Neighbours make room for a magnified icon: the slot grows with --scale. */
     width: calc(var(--icon) * var(--scale, 1) + var(--slot-gap));
-    height: calc(var(--icon) + var(--dots-area));
+    height: var(--icon);
     flex: none;
     border-radius: 8px;
     outline: none;
     cursor: default;
     -webkit-tap-highlight-color: transparent;
+    /* The enter/leave keyframes scale the whole slot from its bottom centre. */
+    transform-origin: 50% 100%;
   }
 
   .slot:focus-visible .icon {
@@ -193,16 +215,24 @@
     border-radius: 22%;
   }
 
-  .bouncer,
+  /* True-size magnification: the box is laid out at its magnified
+     size, so the bitmap inside is resampled by the image decoder at that size
+     instead of a composited layer being stretched by a transform. */
+  .bouncer {
+    flex: none;
+    width: calc(var(--icon) * var(--scale, 1));
+    height: calc(var(--icon) * var(--scale, 1));
+  }
+
   .wiggler,
   .icon {
-    width: var(--icon);
-    height: var(--icon);
+    width: 100%;
+    height: 100%;
   }
 
   /* The lift while dragging lives on the bouncer, a different element
-     from the magnification scale, so the two never fight. The dock positions
-     the slot itself with an inline transform. */
+     from the slot the dock moves with an inline transform, so the two never
+     fight. */
   .bouncer {
     transition:
       transform 120ms ease,
@@ -220,12 +250,6 @@
 
   .slot[data-drag='lifted'] .dots {
     opacity: 0;
-  }
-
-  .icon {
-    transform: scale(var(--scale, 1));
-    transform-origin: 50% 100%;
-    will-change: transform;
   }
 
   .icon img {
@@ -275,17 +299,25 @@
     }
   }
 
+  /* Running indicators live in the panel's bottom padding, under the icon,
+     so the slot itself is exactly the icon's height and the panel's padding
+     reads the same above and below. */
   .dots {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: calc(100% + var(--dots-gap));
     display: flex;
+    justify-content: center;
     gap: 3px;
-    height: 4px;
-    margin-top: calc(var(--dots-area) - 4px);
+    height: var(--dot-size);
+    pointer-events: none;
   }
 
   .dots i {
     display: block;
-    width: 4px;
-    height: 4px;
+    width: var(--dot-size);
+    height: var(--dot-size);
     border-radius: 50%;
     background: var(--accent);
     opacity: 0.72;

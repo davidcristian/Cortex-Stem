@@ -2,6 +2,9 @@
   import { onMount } from 'svelte';
 
   import DockItem from '$lib/components/DockItem.svelte';
+  import { hitRegionFor, magnifiedRise, sameHitRegion, type HitRegion } from '$lib/dock/geometry';
+  import { iconRequestSize } from '$lib/dock/icon-size';
+  import { itemTransition } from '$lib/dock/item-transition';
   import { computeScales, maxGrowth, type MagnifyParams } from '$lib/dock/magnify';
   import {
     DRAG_START,
@@ -15,6 +18,7 @@
   import { accentColor, effectiveOpacity, resolveTheme } from '$lib/dock/theme';
   import type { Backend } from '$lib/ipc/backend';
   import type { DockItem as DockItemModel } from '$lib/ipc/generated/DockItem';
+  import type { Rect } from '$lib/ipc/generated/Rect';
   import type { DockStore } from '$lib/stores/dock.svelte';
   import { describeError, Toasts } from '$lib/stores/toasts.svelte';
 
@@ -28,16 +32,22 @@
   let { store, demo = false }: Props = $props();
   const backend: Backend = $derived(store.backend);
 
-  // Layout constants (CSS px). The slot gap and dots area are also CSS
-  // variables so the stylesheet and the sizing maths cannot drift apart.
+  // Layout constants (CSS px). They are also CSS variables on the stage so
+  // the stylesheet and the sizing maths cannot drift apart. A slot is exactly
+  // the icon's height; the running dots hang below it inside the panel's
+  // bottom padding, which is why the padding is the same all round.
   const SLOT_GAP = 8;
-  const DOTS_AREA = 7;
-  const PANEL_PADDING = 6;
+  const PANEL_PADDING = 8;
+  const DOTS_GAP = 2;
+  const DOT_SIZE = 4;
+  const SEPARATOR_MARGIN = 6;
   const BOTTOM_MARGIN = 8;
   /** Room for the tooltip and the bounce above a magnified icon. */
   const HEADROOM = 48;
   /** Room on each side for the drop shadow. */
   const SIDE_SLACK = 24;
+  /** Extra height of the hit envelope above a fully magnified icon. */
+  const HIT_SLACK = 8;
   const TOOLTIP_DELAY_MS = 300;
 
   // --- Environment facts ----------------------------------------------------
@@ -54,15 +64,17 @@
   const opacity = $derived(effectiveOpacity(settings?.appearance.opacity ?? 0.72, store.theme));
   const cornerRadius = $derived(settings?.appearance.cornerRadius ?? 22);
   const iconSize = $derived(settings?.iconSize ?? 48);
-  const requestSize = $derived(Math.max(16, Math.round(iconSize * dpr)));
   const slotPx = $derived(iconSize + SLOT_GAP);
   const magnify = $derived<MagnifyParams>({
     maxScale:
       settings?.magnification.enabled && !reducedMotion ? settings.magnification.maxScale : 1,
     rangeIcons: settings?.magnification.rangeIcons ?? 3,
   });
+  // Icons render at their true magnified size, so the source must cover it.
+  const requestSize = $derived(iconRequestSize(iconSize, magnify.maxScale, dpr));
   const tooltipsEnabled = $derived(settings?.appearance.tooltips ?? true);
   const bounceEnabled = $derived((settings?.appearance.bounceOnLaunch ?? true) && !reducedMotion);
+  const itemMotion = $derived(!reducedMotion);
   const showDots = $derived(settings?.behavior.runningIndicators ?? true);
 
   // --- Theme on <html> --------------------------------------------------------
@@ -90,9 +102,29 @@
     }
   });
 
-  // --- Magnification controller (imperative, transform/width only) ----------
+  // --- Item enter/leave animations ---------------------------------------------
+  // Items that are in the first snapshot are simply there; intros start with
+  // the first change after that, so startup never cascades icons in.
+  let introsEnabled = $state(false);
+  $effect(() => {
+    if (store.state === null || introsEnabled) {
+      return;
+    }
+    const frame = requestAnimationFrame(() => {
+      introsEnabled = true;
+    });
+    return () => cancelAnimationFrame(frame);
+  });
+
+  /** An enter or leave animation ended: the panel's rest geometry may have changed. */
+  function onItemSettled(): void {
+    scheduleMeasure();
+  }
+
+  // --- Magnification controller (imperative, width only) ----------------------
   let panelEl = $state<HTMLDivElement>();
   let settling = $state(false);
+  /** The slots that take part in layout: leaving ones are excluded. */
   let slots: HTMLElement[] = [];
   let scalable: boolean[] = [];
   let centres = new Float64Array(0);
@@ -103,20 +135,22 @@
   let frame = 0;
   let settleTimer: ReturnType<typeof setTimeout> | null = null;
 
-  // Re-collect the slot elements whenever the item list changed (not per frame).
+  // Re-collect the slot elements whenever the item list changed (not per
+  // frame). This runs after the DOM was updated, so a slot that is on its
+  // way out already carries `data-leaving` (item-transition.ts).
   $effect(() => {
     void items;
     const panel = panelEl;
     if (!panel) {
       return;
     }
-    slots = Array.from(panel.querySelectorAll<HTMLElement>('.slot'));
+    slots = Array.from(panel.querySelectorAll<HTMLElement>('.slot:not([data-leaving])'));
     scalable = slots.map((el) => el.dataset.kind !== 'separator');
-    if (centres.length !== slots.length) {
-      centres = new Float64Array(slots.length);
-      scales = new Float64Array(slots.length);
-      applied = new Float64Array(slots.length).fill(1);
-    }
+    centres = new Float64Array(slots.length);
+    scales = new Float64Array(slots.length);
+    // Slots keep whatever scale they last had; start from that, not from 1,
+    // so a slot the pointer has left is still eased back.
+    applied = Float64Array.from(slots, (el) => Number(el.style.getPropertyValue('--scale') || '1'));
     if (hovering) {
       scheduleFrame();
     }
@@ -272,6 +306,8 @@
   /** Pinned keys expected from the snapshot after a drop; transforms stay until it arrives. */
   let pendingOrder: string[] | null = null;
   let pendingTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The hit region reported for this drag is the whole viewport; restore it when the drag is over. */
+  let dragHitReported = false;
 
   function pinnedSlots(): HTMLElement[] {
     return slots.filter((el) => el.dataset.kind === 'app' && el.dataset.pinned === 'true');
@@ -364,6 +400,9 @@
         el.style.transition = transition;
       }
     }
+    // The lifted icon may be dropped anywhere in the window: keep all of it clickable.
+    dragHitReported = true;
+    reportHitRegion();
     applyDrag();
   }
 
@@ -492,6 +531,7 @@
     pendingTimer = setTimeout(clearDragStyles, 220);
   }
 
+  /** The drag is over and the DOM is in its final order: drop every inline style it set. */
   function clearDragStyles(): void {
     if (pendingTimer !== null) {
       clearTimeout(pendingTimer);
@@ -502,6 +542,11 @@
     for (const el of slots) {
       el.style.transform = '';
       el.style.transition = '';
+    }
+    if (dragHitReported) {
+      // Back to the real hit region once the DOM has settled (next frame).
+      dragHitReported = false;
+      scheduleMeasure();
     }
   }
 
@@ -572,37 +617,94 @@
     }
   }
 
-  // --- Sizing protocol (docs/ipc/) --------------------------------------------
-  let measured = { width: 0, height: 0 };
+  // --- Sizing and hit region (docs/ipc/sizing-protocol.md, docs/ipc/hit-region.md) ---
+  // Both are reported from the panel's *rest* geometry: never while the
+  // pointer magnifies icons, while they ease back, or while an item is
+  // animating in or out. Each report goes out only when its values changed.
+  /** The panel's bounding box at rest, viewport-relative CSS px (fractional). */
+  let measured: Rect | null = null;
   let reported = { width: 0, height: 0 };
+  let reportedHit: HitRegion | null = null;
   let measureFrame = 0;
+
+  /** Measure on the next frame, at most once per frame. */
+  function scheduleMeasure(): void {
+    if (measureFrame === 0) {
+      measureFrame = requestAnimationFrame(() => {
+        measureFrame = 0;
+        measurePanel();
+      });
+    }
+  }
+
+  /** A slot is still animating in or out (its keyframes run on the slot element itself). */
+  function itemsInFlight(panel: HTMLElement): boolean {
+    return (
+      panel.querySelector('.slot[data-leaving]') !== null ||
+      slots.some((el) => el.getAnimations().length > 0)
+    );
+  }
 
   function measurePanel(): void {
     const panel = panelEl;
-    if (!panel || hovering || settling) {
+    if (!panel || hovering || settling || drag?.started || itemsInFlight(panel)) {
       return;
     }
     const rect = panel.getBoundingClientRect();
-    measured = { width: rect.width, height: rect.height };
+    measured = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
     reportSize();
   }
 
   function reportSize(): void {
-    if (measured.width === 0) {
+    if (measured === null || measured.width === 0) {
       return;
     }
     const width = Math.ceil(measured.width + 2 * SIDE_SLACK + maxGrowth(slotPx, magnify));
     const height = Math.ceil(
       measured.height + BOTTOM_MARGIN + iconSize * (magnify.maxScale - 1) + HEADROOM,
     );
-    if (width === reported.width && height === reported.height) {
-      return;
+    if (width !== reported.width || height !== reported.height) {
+      reported = { width, height };
+      void backend.setDockContentSize(width, height).catch(report('set_dock_content_size', false));
     }
-    reported = { width, height };
-    void backend.setDockContentSize(width, height).catch(report('set_dock_content_size', false));
+    reportHitRegion();
   }
 
-  // Settings can change the headroom without changing the panel box.
+  /**
+   * The panel rounded outwards, and the envelope its magnified icons can
+   * reach. A drag in progress makes the whole window clickable instead: the
+   * lifted icon can be anywhere in it.
+   */
+  function currentHitRegion(): HitRegion | null {
+    if (measured === null || measured.width === 0) {
+      return null;
+    }
+    const region = hitRegionFor(
+      measured,
+      maxGrowth(slotPx, magnify),
+      magnifiedRise(iconSize, magnify.maxScale, HIT_SLACK),
+    );
+    if (drag?.started) {
+      return {
+        panel: region.panel,
+        envelope: { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight },
+      };
+    }
+    return region;
+  }
+
+  function reportHitRegion(): void {
+    const region = currentHitRegion();
+    if (region === null || (reportedHit !== null && sameHitRegion(reportedHit, region))) {
+      return;
+    }
+    reportedHit = region;
+    void backend
+      .setDockHitRegion(region.panel, region.envelope)
+      .catch(report('set_dock_hit_region', false));
+  }
+
+  // Settings can change the headroom and the envelope without changing the panel box.
   $effect(() => {
     void magnify;
     void iconSize;
@@ -614,15 +716,7 @@
     if (!panel) {
       return;
     }
-    const observer = new ResizeObserver(() => {
-      // At most one report per animation frame.
-      if (measureFrame === 0) {
-        measureFrame = requestAnimationFrame(() => {
-          measureFrame = 0;
-          measurePanel();
-        });
-      }
-    });
+    const observer = new ResizeObserver(scheduleMeasure);
     observer.observe(panel);
     return () => {
       observer.disconnect();
@@ -679,8 +773,10 @@
   style:--radius="{cornerRadius}px"
   style:--icon="{iconSize}px"
   style:--slot-gap="{SLOT_GAP}px"
-  style:--dots-area="{DOTS_AREA}px"
   style:--panel-padding="{PANEL_PADDING}px"
+  style:--dots-gap="{DOTS_GAP}px"
+  style:--dot-size="{DOT_SIZE}px"
+  style:--separator-margin="{SEPARATOR_MARGIN}px"
   style:--bottom-margin="{BOTTOM_MARGIN}px"
 >
   {#if store.state !== null && settings !== null}
@@ -707,6 +803,10 @@
             aria-orientation="vertical"
             data-key={item.key}
             data-kind="separator"
+            in:itemTransition|global={{ enabled: itemMotion && introsEnabled }}
+            out:itemTransition|global={{ enabled: itemMotion }}
+            onintroend={onItemSettled}
+            onoutroend={onItemSettled}
           ></div>
         {:else}
           <DockItem
@@ -715,13 +815,15 @@
             {showDots}
             tooltip={tooltipKey === item.key}
             bounce={bounceEnabled && store.bounceKey === item.key ? store.bounceSerial : 0}
-            animate={!reducedMotion}
+            animate={itemMotion}
+            enter={introsEnabled}
             lifted={liftedKey === item.key}
             {onprimary}
             {onmiddle}
             {oncontext}
             {onhover}
             {onpress}
+            onsettled={onItemSettled}
           />
         {/if}
       {/each}
@@ -751,10 +853,8 @@
     position: absolute;
     left: 8px;
     right: 8px;
-    /* The panel's top edge plus a small gap; the panel box is icon + dots + padding. */
-    bottom: calc(
-      var(--bottom-margin) + var(--icon) + var(--dots-area) + 2 * var(--panel-padding) + 6px
-    );
+    /* The panel's top edge plus a small gap; the panel box is icon + padding. */
+    bottom: calc(var(--bottom-margin) + var(--icon) + 2 * var(--panel-padding) + 6px);
     display: flex;
     flex-direction: column;
     align-items: flex-end;
@@ -809,6 +909,8 @@
     }
   }
 
+  /* Content-sized and centred by the stage: items animating in and out
+     widen and narrow it without the window ever resizing (docs/ipc/sizing-protocol.md). */
   .dock-panel {
     position: relative;
     display: flex;
@@ -843,12 +945,18 @@
     border: 2px solid var(--text);
   }
 
+  /* Centred on the icons: 80 % of their height, 10 % off the bottom. */
   .separator {
     flex: none;
     width: 1px;
     height: calc(var(--icon) * 0.8);
-    margin: 0 6px calc(var(--dots-area) + var(--icon) * 0.1);
+    margin: 0 var(--separator-margin) calc(var(--icon) * 0.1);
     background: var(--separator);
+  }
+
+  /* Playing its leave animation (item-transition.ts): still painted, no longer a target. */
+  .dock-panel :global(.slot[data-leaving]) {
+    pointer-events: none;
   }
 
   /* Ease back to rest after the pointer left; instant while tracking it. */
@@ -856,13 +964,17 @@
     transition: width 120ms ease;
   }
 
-  .dock-panel.settling :global(.icon) {
-    transition: transform 120ms ease;
+  .dock-panel.settling :global(.bouncer) {
+    transition:
+      width 120ms ease,
+      height 120ms ease,
+      transform 120ms ease,
+      filter 120ms ease;
   }
 
   @media (prefers-reduced-motion: reduce) {
     .dock-panel.settling :global(.slot),
-    .dock-panel.settling :global(.icon) {
+    .dock-panel.settling :global(.bouncer) {
       transition: none;
     }
   }
