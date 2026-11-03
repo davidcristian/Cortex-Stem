@@ -22,8 +22,8 @@ Cortex-Stem/
 │                           windows, lib/ipc/ (the `Backend` interface, Tauri and mock
 │                           implementations), lib/ipc/generated/ (ts-rs output; never edit).
 ├── e2e/                    Playwright specs: mock-mode screenshots.
-├── scripts/                check-all.sh (the ladder), prosecheck.mjs and linecap.mjs (run by
-│                           `pnpm lint`).
+├── scripts/                check-all.sh and check-all.ps1 (the ladder), prosecheck.mjs and
+│                           linecap.mjs (run by `pnpm lint`).
 ├── docs/                   architecture/ (read before writing code), ipc/ (the IPC contract,
 │                           AGENTS.md §8), development/ (the detail behind AGENTS.md),
 │                           PLAN.md (milestones), adr/.
