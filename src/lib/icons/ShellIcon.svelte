@@ -60,47 +60,76 @@
     <path d="M26 48h12M32 42v6" stroke="currentColor" stroke-width="3" stroke-linecap="round" />
     <rect x="36" y="30" width="10" height="8" rx="1.5" fill="currentColor" opacity="0.8" />
   {:else if name === 'recycle-bin-empty' || name === 'recycle-bin-full'}
-    {#if name === 'recycle-bin-full'}
+    <!-- A free-standing silver bin, like the macOS Trash: fluted body with a
+         horizontal "cylinder" gradient, a flared rim, and a lid that sits flat
+         when empty or rests tilted on crumpled paper when full. Fixed greys
+         with a dark outline and white highlights read on both panel tints. -->
+    <defs>
+      <linearGradient id="shell-bin-body" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0" stop-color="#8d8f98" />
+        <stop offset="0.22" stop-color="#d6d7dd" />
+        <stop offset="0.5" stop-color="#c2c3ca" />
+        <stop offset="0.8" stop-color="#a7a8b0" />
+        <stop offset="1" stop-color="#7e8089" />
+      </linearGradient>
+      <linearGradient id="shell-bin-lid" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#eef0f4" />
+        <stop offset="0.5" stop-color="#cfd1d8" />
+        <stop offset="1" stop-color="#9c9ea7" />
+      </linearGradient>
+      <linearGradient id="shell-bin-rim" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#e3e5ea" />
+        <stop offset="1" stop-color="#a1a3ac" />
+      </linearGradient>
+    </defs>
+    <!-- Drawn in a 64-unit box and scaled 8 % about its centre to match the weight of app tiles. -->
+    <g transform="translate(-2.56 -2.64) scale(1.08)" stroke-width="1" stroke="rgba(0,0,0,0.32)">
+      <!-- body: tapered, rounded bottom corners -->
       <path
-        d="M23 21 L25 10 L37 7 L41 21 Z"
-        fill="currentColor"
-        fill-opacity="0.28"
-        stroke="currentColor"
-        stroke-width="2.5"
+        d="M15.5 22.5 H48.5 L45.9 53.6 A4 4 0 0 1 41.9 57.3 H22.1 A4 4 0 0 1 18.1 53.6 Z"
+        fill="url(#shell-bin-body)"
         stroke-linejoin="round"
       />
+      <!-- fluting: shadow and highlight lines following the taper -->
       <path
-        d="M29 11l2 5M34 9l1 6"
-        stroke="currentColor"
-        stroke-width="2"
-        stroke-linecap="round"
-        opacity="0.7"
-      />
-    {:else}
-      <path
-        d="M26 20v-4a3 3 0 0 1 3-3h6a3 3 0 0 1 3 3v4"
+        d="M21.5 27 L22.9 52.5 M27.5 27 L28.1 52.5 M33.5 27 L33.3 52.5 M39.5 27 L38.7 52.5"
         fill="none"
-        stroke="currentColor"
-        stroke-width="3"
+        stroke="rgba(0,0,0,0.16)"
+        stroke-width="1.8"
         stroke-linecap="round"
       />
-    {/if}
-    <path d="M14 21h36" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" />
-    <path
-      d="M18 21h28l-2.6 32.5A4 4 0 0 1 39.4 57H24.6a4 4 0 0 1-4-3.5Z"
-      fill="currentColor"
-      fill-opacity="0.12"
-      stroke="currentColor"
-      stroke-width="3"
-      stroke-linejoin="round"
-    />
-    <path
-      d="M26 28v22M32 28v22M38 28v22"
-      stroke="currentColor"
-      stroke-width="2.5"
-      stroke-linecap="round"
-      opacity="0.55"
-    />
+      <path
+        d="M24.3 27 L25.3 52.5 M30.3 27 L30.5 52.5 M36.3 27 L35.8 52.5 M42.3 27 L41.2 52.5"
+        fill="none"
+        stroke="rgba(255,255,255,0.45)"
+        stroke-width="1.4"
+        stroke-linecap="round"
+      />
+      {#if name === 'recycle-bin-full'}
+        <!-- crumpled paper above the rim -->
+        <path
+          d="M19 20 L22.5 12.5 L29 14.5 L33 7.5 L39.5 12 L45.5 10.5 L46 20 Z"
+          fill="#f6f6f8"
+          stroke-linejoin="round"
+        />
+        <path
+          d="M22.5 12.5 L27 18 L29 14.5 M33 7.5 L34.5 15 L39.5 12 M34.5 15 L38 19.5 M45.5 10.5 L41 16"
+          fill="none"
+          stroke="rgba(0,0,0,0.2)"
+          stroke-linejoin="round"
+          stroke-linecap="round"
+        />
+      {/if}
+      <!-- rim -->
+      <rect x="12.5" y="18.5" width="39" height="5.5" rx="2.2" fill="url(#shell-bin-rim)" />
+      <path d="M14.5 19.6 H49.5" stroke="rgba(255,255,255,0.7)" stroke-linecap="round" />
+      <!-- lid: flat when empty, tilted and resting on the paper when full -->
+      <g transform={name === 'recycle-bin-full' ? 'translate(1 -3) rotate(-16 16 19)' : undefined}>
+        <rect x="14.5" y="12.5" width="35" height="6.5" rx="2.6" fill="url(#shell-bin-lid)" />
+        <rect x="26.5" y="8.5" width="11" height="4.5" rx="2" fill="url(#shell-bin-lid)" />
+        <path d="M16.5 13.6 H47.5" stroke="rgba(255,255,255,0.75)" stroke-linecap="round" />
+      </g>
+    </g>
   {:else}
     <rect x="2" y="2" width="60" height="60" rx="14" fill="var(--tile-neutral)" />
     <circle cx="32" cy="32" r="10" fill="none" stroke="currentColor" stroke-width="3" />
