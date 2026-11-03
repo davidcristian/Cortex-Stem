@@ -82,8 +82,10 @@
         <stop offset="1" stop-color="#a1a3ac" />
       </linearGradient>
     </defs>
-    <!-- Drawn in a 64-unit box and scaled 8 % about its centre to match the weight of app tiles. -->
-    <g transform="translate(-2.56 -2.64) scale(1.08)" stroke-width="1" stroke="rgba(0,0,0,0.32)">
+    <!-- Drawn in a 64-unit box and scaled 8 % to match the weight of app tiles; the
+         bin sits on the tiles' baseline (y = 62) so the tilted lid of the full
+         variant stays inside the box at the top. -->
+    <g transform="translate(-2.56 0.6) scale(1.08)" stroke-width="1" stroke="rgba(0,0,0,0.32)">
       <!-- body: tapered, rounded bottom corners -->
       <path
         d="M15.5 22.5 H48.5 L45.9 53.6 A4 4 0 0 1 41.9 57.3 H22.1 A4 4 0 0 1 18.1 53.6 Z"
@@ -124,7 +126,7 @@
       <rect x="12.5" y="18.5" width="39" height="5.5" rx="2.2" fill="url(#shell-bin-rim)" />
       <path d="M14.5 19.6 H49.5" stroke="rgba(255,255,255,0.7)" stroke-linecap="round" />
       <!-- lid: flat when empty, tilted and resting on the paper when full -->
-      <g transform={name === 'recycle-bin-full' ? 'translate(1 -3) rotate(-16 16 19)' : undefined}>
+      <g transform={name === 'recycle-bin-full' ? 'translate(1 -2) rotate(-14 16 19)' : undefined}>
         <rect x="14.5" y="12.5" width="35" height="6.5" rx="2.6" fill="url(#shell-bin-lid)" />
         <rect x="26.5" y="8.5" width="11" height="4.5" rx="2" fill="url(#shell-bin-lid)" />
         <path d="M16.5 13.6 H47.5" stroke="rgba(255,255,255,0.75)" stroke-linecap="round" />
