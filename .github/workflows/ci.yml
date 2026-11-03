@@ -44,6 +44,22 @@ jobs:
           targets: x86_64-pc-windows-msvc
           components: rustfmt, clippy
 
+      # Rung 4 cross-checks the Tauri crate for the MSVC target. tauri-build
+      # compiles a Windows resource file in its build script, and on a
+      # non-Windows host embed-resource needs `llvm-rc` (that exact name on
+      # PATH, or the path in RC_x86_64_pc_windows_msvc). Without it the build
+      # script panics with NotAttempted("llvm-rc").
+      - name: Install llvm-rc (Windows resource compiler for rung 4)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends llvm
+          if ! command -v llvm-rc >/dev/null 2>&1; then
+            rc=$(ls /usr/bin/llvm-rc-* /usr/lib/llvm-*/bin/llvm-rc 2>/dev/null | head -1)
+            if [ -z "$rc" ]; then echo "::error::no llvm-rc found after installing llvm" >&2; exit 1; fi
+            echo "RC_x86_64_pc_windows_msvc=$rc" >> "$GITHUB_ENV"
+          fi
+          command -v llvm-rc || echo "using RC_x86_64_pc_windows_msvc=$rc"
+
       - uses: Swatinem/rust-cache@v2
 
       # pnpm/action-setup reads package.json#packageManager when `version` is

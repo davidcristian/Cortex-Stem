@@ -24,3 +24,9 @@ The rules for running it, and which rungs a task needs, are in
 `scripts/check-all.sh` runs rungs 1 to 7 on Linux, and CI's `linux` job runs the same commands as
 separate steps. `scripts/check-all.ps1` runs the same rungs on a Windows host, then
 `pnpm tauri build --debug`.
+
+## Rung 4 on a host other than Windows
+
+On a non-Windows host rung 4 needs `llvm-rc` (package `llvm`, or
+`RC_x86_64_pc_windows_msvc=/path/to/llvm-rc-NN`), because tauri-build compiles a Windows resource
+file in its build script.

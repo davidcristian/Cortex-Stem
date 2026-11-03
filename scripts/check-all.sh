@@ -61,6 +61,16 @@ if [[ -n "$(git status --porcelain -- src/lib/ipc/generated)" ]]; then
 fi
 
 step "4/7 clippy (Windows target, whole workspace incl. Tauri app)"
+# tauri-build compiles a Windows resource file in its build script; on a
+# non-Windows host that needs `llvm-rc` on PATH (apt/brew package `llvm`) or
+# RC_x86_64_pc_windows_msvc pointing at it, otherwise it panics with
+# NotAttempted("llvm-rc").
+if [[ "$(uname -s)" != MINGW* && "$(uname -s)" != MSYS* ]] \
+  && ! command -v llvm-rc >/dev/null 2>&1 \
+  && [[ -z "${RC_x86_64_pc_windows_msvc:-}" ]]; then
+  echo "rung 4 needs llvm-rc: install the 'llvm' package or set RC_x86_64_pc_windows_msvc=/path/to/llvm-rc-NN" >&2
+  exit 1
+fi
 cargo clippy --workspace --all-targets --target x86_64-pc-windows-msvc -- -D warnings
 
 if [[ $FRONTEND -eq 0 ]]; then
