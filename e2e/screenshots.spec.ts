@@ -7,7 +7,20 @@ const APP_SLOT = '.slot[data-kind="app"]';
 
 /** What `src/dock/main.ts` exposes in mock mode (structural, for `page.evaluate`). */
 interface DemoWindow {
-  __dockMock?: { calls: Array<{ type: string }> };
+  __dockMock?: {
+    calls: Array<{ type: string }>;
+    failNextCommand: (message: string) => void;
+  };
+}
+
+/** The mock's recorded side effects of one type so far. */
+function callsOfType(page: Page, type: string): Promise<number> {
+  return page.evaluate(
+    (t) =>
+      ((window as unknown as DemoWindow).__dockMock?.calls ?? []).filter((c) => c.type === t)
+        .length,
+    type,
+  );
 }
 
 test.beforeAll(() => {
@@ -114,15 +127,30 @@ test.describe('dock in mock mode', () => {
     await page.keyboard.press('Tab');
     await expect(buttons.first()).toBeFocused();
     await page.keyboard.press('Enter');
-    await expect
-      .poll(() =>
-        page.evaluate(
-          () =>
-            (window as unknown as DemoWindow).__dockMock?.calls.filter((c) => c.type === 'shell')
-              .length,
-        ),
-      )
-      .toBe(1);
+    await expect.poll(() => callsOfType(page, 'shell')).toBe(1);
+
+    // Ctrl+, opens the settings window while the dock has focus.
+    await page.keyboard.press('Control+,');
+    await expect.poll(() => callsOfType(page, 'openSettings')).toBe(1);
+  });
+
+  test('a failed command shows a toast that goes away by itself', async ({ page }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openDock(page);
+    // Hover first: entering the panel sends `set_dock_hover`, which must not
+    // be the command that fails.
+    const code = page.locator(APP_SLOT).nth(5);
+    await code.hover();
+    await page.evaluate(() =>
+      (window as unknown as DemoWindow).__dockMock?.failNextCommand('window not found: 4'),
+    );
+    await code.click();
+    const toast = page.getByRole('status');
+    await expect(toast).toHaveText('Code failed: window not found: 4');
+    await page.screenshot({ path: `${OUT}/dock-toast.png` });
+    // Auto-dismiss after 4 s; it never captures the pointer.
+    await expect(toast).toHaveCSS('pointer-events', 'none');
+    await expect(toast).toHaveCount(0, { timeout: 6_000 });
   });
 
   test('clicking the active app minimises it; the mock reports window sizing', async ({ page }) => {

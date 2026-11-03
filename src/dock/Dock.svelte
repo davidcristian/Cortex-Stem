@@ -7,6 +7,7 @@
   import type { Backend } from '$lib/ipc/backend';
   import type { DockItem as DockItemModel } from '$lib/ipc/generated/DockItem';
   import type { DockStore } from '$lib/stores/dock.svelte';
+  import { describeError, Toasts } from '$lib/stores/toasts.svelte';
 
   interface Props {
     /** Created once by the page entry; it owns the backend subscription. */
@@ -169,7 +170,7 @@
   }
 
   function onpanelpointerenter(): void {
-    void backend.setDockHover?.(true).catch(report('set_dock_hover'));
+    void backend.setDockHover?.(true).catch(report('set_dock_hover', false));
   }
 
   function onpanelpointerleave(): void {
@@ -185,7 +186,7 @@
         measurePanel();
       }, 160);
     }
-    void backend.setDockHover?.(false).catch(report('set_dock_hover'));
+    void backend.setDockHover?.(false).catch(report('set_dock_hover', false));
   }
 
   // --- Tooltip ----------------------------------------------------------------
@@ -219,31 +220,53 @@
     tooltipKey = null;
   }
 
-  // --- Intents ------------------------------------------------------------------
+  // --- Intents and failure notices ---------------------------------------------
+  const toasts = new Toasts();
+
+  /**
+   * Failed commands are logged and, when the user asked for something, shown
+   * as a toast (docs/architecture/error-handling.md). Housekeeping calls
+   * (hover, sizing) only log: a toast would be noise the user cannot act on.
+   */
   const report =
-    (what: string) =>
+    (what: string, toast = true) =>
     (err: unknown): void => {
       console.warn(`${what} failed:`, err);
+      if (toast) {
+        toasts.push(`${what} failed: ${describeError(err)}`);
+      }
     };
 
   function onprimary(item: DockItemModel): void {
-    void backend.primaryClick(item.key).catch(report(`primary_click(${item.key})`));
+    void backend.primaryClick(item.key).catch(report(item.title));
   }
 
   function onmiddle(item: DockItemModel): void {
     if (item.appId !== null) {
-      void backend.launchApp(item.appId).catch(report(`launch_app(${item.appId})`));
+      void backend.launchApp(item.appId).catch(report(`Launching ${item.title}`));
     }
   }
 
   function oncontext(item: DockItemModel, x: number, y: number): void {
-    void backend.showItemMenu?.(item.key, x, y).catch(report('show_item_menu'));
+    void backend.showItemMenu?.(item.key, x, y).catch(report('Menu'));
   }
 
   function onpanelcontextmenu(e: MouseEvent): void {
     e.preventDefault();
     if (e.target === panelEl) {
-      void backend.showDockMenu?.(e.clientX, e.clientY).catch(report('show_dock_menu'));
+      void backend.showDockMenu?.(e.clientX, e.clientY).catch(report('Menu'));
+    }
+  }
+
+  function openSettings(): void {
+    void backend.openSettings().catch(report('Opening Settings'));
+  }
+
+  /** Keyboard shortcuts while the dock window has focus. */
+  function onwindowkeydown(e: KeyboardEvent): void {
+    if (e.key === ',' && e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
+      e.preventDefault();
+      openSettings();
     }
   }
 
@@ -274,7 +297,7 @@
       return;
     }
     reported = { width, height };
-    void backend.setDockContentSize(width, height).catch(report('set_dock_content_size'));
+    void backend.setDockContentSize(width, height).catch(report('set_dock_content_size', false));
   }
 
   // Settings can change the headroom without changing the panel box.
@@ -332,10 +355,13 @@
       if (settleTimer !== null) {
         clearTimeout(settleTimer);
       }
+      toasts.clear();
       store.stop();
     };
   });
 </script>
+
+<svelte:window onkeydown={onwindowkeydown} />
 
 <div
   class="dock-stage"
@@ -390,16 +416,86 @@
       {/each}
     </div>
   {/if}
+
+  <!-- Failure notices: right-aligned just above the panel, never in the way. -->
+  <div class="toasts" aria-live="polite">
+    {#each toasts.items as toast (toast.id)}
+      <div class="toast" role="status">{toast.message}</div>
+    {/each}
+  </div>
 </div>
 
 <style>
   .dock-stage {
+    position: relative;
     display: flex;
     align-items: flex-end;
     justify-content: center;
     width: 100%;
     height: 100%;
     color: var(--text);
+  }
+
+  .toasts {
+    position: absolute;
+    left: 8px;
+    right: 8px;
+    /* The panel's top edge plus a small gap; the panel box is icon + dots + padding. */
+    bottom: calc(
+      var(--bottom-margin) + var(--icon) + var(--dots-area) + 2 * var(--panel-padding) + 6px
+    );
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;
+    pointer-events: none;
+  }
+
+  .toast {
+    box-sizing: border-box;
+    max-width: 100%;
+    padding: 5px 10px 5px 22px;
+    position: relative;
+    border-radius: 7px;
+    border: 1px solid var(--tooltip-border);
+    background: var(--tooltip-bg);
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.28);
+    animation: toast-in 160ms ease-out;
+  }
+
+  .toast::before {
+    content: '';
+    position: absolute;
+    left: 9px;
+    top: 50%;
+    width: 7px;
+    height: 7px;
+    margin-top: -3.5px;
+    border-radius: 50%;
+    background: #f7630c;
+  }
+
+  @keyframes toast-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .toast {
+      animation: none;
+    }
   }
 
   .dock-panel {
