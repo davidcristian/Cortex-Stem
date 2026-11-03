@@ -13,8 +13,9 @@ the records in `docs/adr/` give the reasons for the main decisions.
   reaches Windows.
 - [threads.md](threads.md): every thread Stem starts, what runs on it, and the rules for
   which work runs where.
-- [identity.md](identity.md): how windows and pins are grouped into apps.
-- [icons.md](icons.md): how icons are loaded and cached.
+- [identity.md](identity.md): how windows and pins are grouped into apps, and how an app
+  gets its name.
+- [icons.md](icons.md): how icons are loaded, sized and cached.
 - [dock-window.md](dock-window.md): the dock's native window, its flags and focus,
   and click-through outside the panel.
 - [dock-placement.md](dock-placement.md): where the dock window is placed.
