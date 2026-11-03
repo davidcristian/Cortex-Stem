@@ -293,12 +293,10 @@ test.describe('settings window', () => {
     // Every section, for review: unclip the page (app.css fixes html/body/#app
     // to the window) so the scroll area is captured at its full height.
     await page.evaluate(() => {
-      for (const el of document.querySelectorAll<HTMLElement>(
-        'html, body, #app, .page, .content',
-      )) {
+      document.querySelectorAll<HTMLElement>('html, body, #app, .page, .content').forEach((el) => {
         el.style.height = 'auto';
         el.style.overflow = 'visible';
-      }
+      });
     });
     await page.screenshot({ path: `${OUT}/settings-full.png`, fullPage: true });
   });
