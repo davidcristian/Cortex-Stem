@@ -39,7 +39,6 @@ use windows::Win32::Storage::EnhancedStorage::PKEY_AppUserModel_ID;
 use windows::Win32::Storage::FileSystem::{
     GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
 };
-use windows::Win32::System::Com::StructuredStorage::PropVariantToStringAlloc;
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, CoCreateInstance, IPersistFile, STGM_READ,
 };
@@ -51,7 +50,7 @@ use windows::Win32::UI::Shell::{
 };
 use windows::core::{Interface, PCWSTR, w};
 
-use super::util::{self, CoTaskWideString, PropVariantGuard};
+use super::util::{self, CoTaskWideString};
 use crate::PlatformResult;
 use crate::rules::identity::{
     VERSION_NAME_FIELDS, apps_folder_parsing_name, aumid_fallback_name, aumid_icon_key,
@@ -282,16 +281,7 @@ fn read_shortcut(path: &str) -> PlatformResult<ShortcutInfo> {
 /// `System.AppUserModel.ID` from the shortcut's property store, if set.
 fn link_app_user_model_id(link: &IShellLinkW) -> Option<String> {
     let store: IPropertyStore = link.cast().ok()?;
-    // SAFETY: the key is a static PROPERTYKEY; the returned PROPVARIANT is
-    // owned by us and cleared by the guard.
-    let value = unsafe { store.GetValue(&PKEY_AppUserModel_ID) }.ok()?;
-    let value = PropVariantGuard::new(value);
-    // SAFETY: `value` is a live PROPVARIANT; the returned string is
-    // CoTaskMem-allocated and freed by the guard.
-    let text = unsafe { PropVariantToStringAlloc(value.as_ptr()) }.ok()?;
-    let text = CoTaskWideString::new(text)?.to_string_lossy();
-    let text = text.trim();
-    (!text.is_empty()).then(|| text.to_owned())
+    util::property_store_string(&store, &PKEY_AppUserModel_ID)
 }
 
 /// Display name of `shell:AppsFolder\<aumid>`; `None` when the shell does

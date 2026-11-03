@@ -27,8 +27,9 @@
 //!   and `QueryFullProcessImageNameW`; access denied (protected processes)
 //!   yields `exe_path = None`, never an error.
 //! - The AUMID read needs a COM apartment on the calling thread
-//!   (`util::ComApartment::sta`); the `PROPVARIANT` is read only when its
-//!   type is `VT_LPWSTR` and is always cleared.
+//!   (`util::ComApartment::sta`); the `PROPVARIANT` goes through
+//!   `util::property_store_string` (shared with `identity`, so both accept
+//!   the same variant types) and is always cleared.
 //! - `icon_key` is `hwnd:<id>:<pid>` (`rules::identity::hwnd_icon_key`,
 //!   resolved by `icons`); `monitor` comes from `monitors::monitor_for_window`.
 
@@ -40,13 +41,9 @@ use windows::Win32::Graphics::Dwm::{
     DWM_CLOAKED_APP, DWM_CLOAKED_INHERITED, DWM_CLOAKED_SHELL, DWMWA_CLOAKED, DwmGetWindowAttribute,
 };
 use windows::Win32::Storage::EnhancedStorage::PKEY_AppUserModel_ID;
-use windows::Win32::System::Com::StructuredStorage::{
-    PROPVARIANT, PROPVARIANT_0_0, PropVariantClear,
-};
 use windows::Win32::System::Threading::{
     GetCurrentProcessId, PROCESS_NAME_WIN32, QueryFullProcessImageNameW,
 };
-use windows::Win32::System::Variant::VT_LPWSTR;
 use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyStore, SHGetPropertyStoreForWindow};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GA_ROOT, GW_OWNER, GWL_EXSTYLE, GetAncestor, GetClassNameW, GetWindow,
@@ -334,39 +331,5 @@ fn read_app_user_model_id(hwnd: HWND) -> Option<String> {
             return None;
         }
     };
-    // SAFETY: the key is a static PROPERTYKEY; the returned PROPVARIANT is
-    // owned by us and cleared below.
-    let mut value: PROPVARIANT = match unsafe { store.GetValue(&PKEY_AppUserModel_ID) } {
-        Ok(value) => value,
-        Err(e) => {
-            log::trace!("PKEY_AppUserModel_ID read failed for {:?}: {e}", hwnd.0);
-            return None;
-        }
-    };
-    let aumid = propvariant_lpwstr(&value);
-    // SAFETY: `value` was produced by GetValue and is cleared exactly once.
-    if let Err(e) = unsafe { PropVariantClear(&mut value) } {
-        log::debug!("PropVariantClear failed: {e}");
-    }
-    aumid.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty())
-}
-
-/// The string payload of a `VT_LPWSTR` `PROPVARIANT`; `None` for any other
-/// type (including `VT_EMPTY`, the usual answer for windows without an AUMID).
-fn propvariant_lpwstr(value: &PROPVARIANT) -> Option<String> {
-    // SAFETY: a PROPVARIANT produced by COM always uses the tagged layout
-    // (`vt` + payload union), never the DECIMAL overlay, so this member is
-    // the initialised one.
-    let tagged: &PROPVARIANT_0_0 = unsafe { &value.Anonymous.Anonymous };
-    if tagged.vt != VT_LPWSTR {
-        return None;
-    }
-    // SAFETY: vt == VT_LPWSTR guarantees `pwszVal` is the active member.
-    let ptr = unsafe { tagged.Anonymous.pwszVal };
-    if ptr.is_null() {
-        return None;
-    }
-    // SAFETY: a non-null VT_LPWSTR payload is a NUL-terminated UTF-16 string
-    // owned by the PROPVARIANT, which outlives this read.
-    unsafe { ptr.to_string() }.ok()
+    util::property_store_string(&store, &PKEY_AppUserModel_ID)
 }
