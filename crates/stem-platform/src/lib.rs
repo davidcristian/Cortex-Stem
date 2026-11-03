@@ -21,6 +21,7 @@ use stem_core::{
 };
 
 pub mod mock;
+pub mod rules;
 #[cfg(windows)]
 pub mod windows;
 
