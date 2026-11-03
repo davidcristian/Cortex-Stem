@@ -413,7 +413,7 @@ fn apply_pass_through(hwnd: HWND, state: &SubclassState) {
         return;
     }
     frame_changed(hwnd);
-    log::trace!(
+    log::debug!(
         "dock window {:#x}: ex-style {:#010x} -> {:#010x} ({})",
         state.handle,
         current.0,

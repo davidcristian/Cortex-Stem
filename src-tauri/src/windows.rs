@@ -41,7 +41,10 @@ pub const SETTINGS_LABEL: &str = "settings";
 const INITIAL_SIZE: (f64, f64) = (640.0, 96.0);
 /// What the UI may ask for, in CSS px (anything else is clamped).
 const MIN_CONTENT: (f64, f64) = (64.0, 32.0);
-const MAX_CONTENT: (f64, f64) = (8192.0, 1024.0);
+// The height is generous on purpose: during a drag-to-reorder the UI asks
+// for a very tall window so the lifted icon can go anywhere on screen; the
+// work area clamps it further.
+const MAX_CONTENT: (f64, f64) = (8192.0, 4096.0);
 
 const SETTINGS_SIZE: (f64, f64) = (760.0, 600.0);
 const SETTINGS_MIN_SIZE: (f64, f64) = (560.0, 420.0);

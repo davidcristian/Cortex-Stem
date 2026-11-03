@@ -178,6 +178,12 @@ impl HitTestThread {
     /// Track `handle` with `region` (or replace its region) and evaluate at
     /// once. Returns immediately.
     pub fn track(&self, handle: NativeWindowHandle, region: HitRegion) {
+        log::debug!(
+            "hit region of window {:#x}: panel {:?}, envelope {:?} (physical px, window-local)",
+            handle.0,
+            region.panel,
+            region.envelope
+        );
         {
             let mut windows = self.shared.windows.lock();
             windows
@@ -393,7 +399,9 @@ fn evaluate_window(raw: isize, tracked: &mut Tracked, cursor: POINT) -> bool {
         && dock_window::post_pass_through(NativeWindowHandle(raw), pass_through)
     {
         tracked.posted = Some(pass_through);
-        log::trace!(
+        // Debug, not trace: one line per crossing of the panel edge is rare
+        // and is what a human needs to see when click-through misbehaves.
+        log::debug!(
             "hit region: window {raw:#x} {} at ({}, {})",
             if pass_through {
                 "click-through"

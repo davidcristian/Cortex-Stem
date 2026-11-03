@@ -49,6 +49,16 @@ function hitRegions(page: Page): Promise<HitRegionCall[]> {
   );
 }
 
+/** Every `set_dock_content_size` the mock recorded so far, oldest first. */
+function contentSizes(page: Page): Promise<Array<{ width: number; height: number }>> {
+  return page.evaluate(
+    () =>
+      ((window as unknown as DemoWindow).__dockMock?.calls ?? []).filter(
+        (c) => c.type === 'setDockContentSize',
+      ) as unknown as Array<{ width: number; height: number }>,
+  );
+}
+
 function contains(outer: Rect, inner: Rect): boolean {
   return (
     inner.x >= outer.x &&
@@ -183,6 +193,10 @@ test.describe('dock in mock mode', () => {
     expect(region!.envelope.x + region!.envelope.width).toBeGreaterThan(
       region!.panel.x + region!.panel.width,
     );
+    // The envelope ends 2 px above a fully magnified icon's top edge
+    // (48 px icons at 1.6×: 28.8 px above the slot, which sits 8 px below the
+    // panel's top edge), not in an empty band where clicks would be swallowed.
+    expect(region!.panel.y - region!.envelope.y).toBe(Math.ceil(48 * 0.6 - 8 + 2));
   });
 
   test('app items animate in and out and the panel follows', async ({ page }) => {
@@ -366,6 +380,11 @@ test.describe('dock in mock mode', () => {
       const atRest = (await hitRegions(page))[0]!;
       await expect.poll(async () => (await hitRegions(page)).at(-1)?.envelope).toEqual(whole);
       expect((await hitRegions(page)).at(-1)!.panel).toEqual(atRest.panel);
+      // The window is asked to grow to the work area's height so the
+      // lifted icon can be carried anywhere; the width request is unchanged.
+      const restSize = (await contentSizes(page))[0]!;
+      await expect.poll(async () => (await contentSizes(page)).at(-1)?.height).toBe(4096);
+      expect((await contentSizes(page)).at(-1)!.width).toBe(restSize.width);
       await page.screenshot({ path: `${OUT}/dock-drag.png` });
 
       await page.mouse.up();
@@ -379,6 +398,8 @@ test.describe('dock in mock mode', () => {
       expect(await callsOfType(page, 'launch')).toBe(0);
       // The real hit region is back once the DOM settled (same geometry as before).
       await expect.poll(async () => (await hitRegions(page)).at(-1)).toEqual(atRest);
+      // And so is the window's resting height.
+      await expect.poll(async () => (await contentSizes(page)).at(-1)).toEqual(restSize);
     });
 
     test('Escape puts everything back', async ({ page }) => {

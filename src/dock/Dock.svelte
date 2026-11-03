@@ -46,8 +46,19 @@
   const HEADROOM = 48;
   /** Room on each side for the drop shadow. */
   const SIDE_SLACK = 24;
-  /** Extra height of the hit envelope above a fully magnified icon. */
-  const HIT_SLACK = 8;
+  /**
+   * How far above a fully magnified icon's top edge the hit envelope still
+   * counts as "inside" (CSS px). Small on purpose: anything higher is a band
+   * where nothing is drawn but clicks would still be swallowed.
+   */
+  const HIT_SLACK = 2;
+  /**
+   * The window's height (CSS px; Rust clamps it to the work area) while an
+   * icon is being dragged, so the lifted icon can go anywhere on screen.
+   */
+  const DRAG_WINDOW_HEIGHT = 4096;
+  /** A release within this many icon sizes above or below the pinned row still drops; farther cancels. */
+  const DROP_SLACK_ICONS = 3;
   const TOOLTIP_DELAY_MS = 300;
 
   // --- Environment facts ----------------------------------------------------
@@ -298,6 +309,8 @@
     bounds: DropBounds;
     from: number;
     to: number;
+    /** `window.innerHeight` the drag's y coordinates refer to (the window grows during a drag). */
+    viewportHeight: number;
   }
 
   let drag: DragSession | null = null;
@@ -344,6 +357,7 @@
       bounds: { left: 0, right: 0, top: 0, bottom: 0 },
       from: -1,
       to: -1,
+      viewportHeight: window.innerHeight,
     };
   }
 
@@ -400,10 +414,48 @@
         el.style.transition = transition;
       }
     }
-    // The lifted icon may be dropped anywhere in the window: keep all of it clickable.
+    // The lifted icon may go anywhere on screen: the window grows to the
+    // work area's height for the duration of the drag (the panel stays at
+    // the bottom; `onwindowresize` shifts the drag's y origin by the growth)
+    // and all of it accepts clicks.
+    d.viewportHeight = window.innerHeight;
+    growWindowForDrag();
     dragHitReported = true;
     reportHitRegion();
     applyDrag();
+  }
+
+  function growWindowForDrag(): void {
+    if (reported.width === 0) {
+      return;
+    }
+    reported = { width: reported.width, height: DRAG_WINDOW_HEIGHT };
+    void backend
+      .setDockContentSize(reported.width, DRAG_WINDOW_HEIGHT)
+      .catch(report('set_dock_content_size', false));
+  }
+
+  /**
+   * The window grew (or shrank back) during a drag. The viewport's origin
+   * moved, so every stored y coordinate shifts by the change to keep
+   * pointing at the same screen spot, and the whole-window envelope is
+   * reported at its new size.
+   */
+  function onwindowresize(): void {
+    const d = drag;
+    if (d === null || !d.started) {
+      return;
+    }
+    const delta = window.innerHeight - d.viewportHeight;
+    if (delta === 0) {
+      return;
+    }
+    d.viewportHeight = window.innerHeight;
+    d.startY += delta;
+    d.lastY += delta;
+    d.bounds = { ...d.bounds, top: d.bounds.top + delta, bottom: d.bounds.bottom + delta };
+    reportHitRegion();
+    scheduleDragFrame();
   }
 
   function scheduleDragFrame(): void {
@@ -468,7 +520,10 @@
       d.frame = 0;
     }
     applyDrag();
-    if (d.to !== d.from && isInsideWithSlack(d.lastX, d.lastY, d.bounds, slotPx, iconSize)) {
+    if (
+      d.to !== d.from &&
+      isInsideWithSlack(d.lastX, d.lastY, d.bounds, slotPx, DROP_SLACK_ICONS * iconSize)
+    ) {
       drop(d);
     } else {
       cancelDrag(true);
@@ -682,7 +737,9 @@
     const region = hitRegionFor(
       measured,
       maxGrowth(slotPx, magnify),
-      magnifiedRise(iconSize, magnify.maxScale, HIT_SLACK),
+      // A magnified icon's top is iconSize × (maxScale − 1) above its slot's
+      // top edge, and the slot sits PANEL_PADDING below the panel's top edge.
+      magnifiedRise(iconSize, magnify.maxScale, HIT_SLACK - PANEL_PADDING),
     );
     if (drag?.started) {
       return {
@@ -764,6 +821,7 @@
   onpointermove={onwindowpointermove}
   onpointerup={onwindowpointerup}
   onpointercancel={onwindowpointercancel}
+  onresize={onwindowresize}
 />
 
 <div
