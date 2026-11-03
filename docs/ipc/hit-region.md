@@ -17,3 +17,6 @@ transparent parts. The UI tells Rust where the visible dock is:
 - Only dock windows may call it. Rust rejects non-dock windows and negative sizes. On a platform
   without the feature (the mock, non-Windows hosts), the call is recorded or ignored and the
   window stays fully clickable.
+- `Settings.behavior.clickThrough` (default `true`) switches the feature off and on without a
+  restart. While it is off, Rust keeps the window fully clickable and only stores the UI's
+  reports; turning it on applies the latest one. The UI reports regardless of the setting.

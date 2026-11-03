@@ -18,13 +18,16 @@
 //! hosts without a monitor list). The last reported size is remembered
 //! ([`DockGeometry`]) so the layout can be redone when the service reports a
 //! monitor change. Clicks outside the panel fall through to the desktop via
-//! the hit region ([`apply_hit_region`]).
+//! the hit region ([`apply_hit_region`]), which `behavior.clickThrough`
+//! switches off and on without a restart ([`on_settings_changed`]):
+//! the UI's latest report is remembered while the setting is off and
+//! replayed when it is turned on again.
 //!
 //! The settings window (`settings`) is an ordinary decorated window,
 //! created on demand and destroyed when closed.
 
 use parking_lot::Mutex;
-use stem_core::{MonitorInfo, Rect};
+use stem_core::{MonitorInfo, Rect, Settings};
 use stem_platform::{DockWindowOptions, HitRegion, NativeWindowHandle, PlatformError};
 use stem_service::DockService;
 use tauri::{
@@ -49,11 +52,19 @@ const MAX_CONTENT: (f64, f64) = (8192.0, 4096.0);
 const SETTINGS_SIZE: (f64, f64) = (760.0, 600.0);
 const SETTINGS_MIN_SIZE: (f64, f64) = (560.0, 420.0);
 
-/// The last content size the dock UI reported (CSS px), kept in Tauri's
-/// managed state so a monitor change can redo the layout.
+/// What the dock UI reported last (CSS px), kept in Tauri's managed state so
+/// a monitor change can redo the layout and a settings change can apply the
+/// hit region after the fact.
 #[derive(Debug, Default)]
 pub struct DockGeometry {
     content_css: Mutex<Option<(f64, f64)>>,
+    /// `(panel, envelope)` of the latest `set_dock_hit_region`; applied
+    /// while `behavior.clickThrough` is on and replayed when it is turned
+    /// back on.
+    hit_region_css: Mutex<Option<(Rect, Rect)>>,
+    /// `behavior.clickThrough` as currently in effect, so a settings event
+    /// only acts on a change.
+    click_through: Mutex<Option<bool>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -90,9 +101,25 @@ pub fn create_dock_windows(app: &AppHandle, service: &DockService) -> tauri::Res
     // On the main thread (inside `setup`), which created the window: the
     // platform subclasses it and that is only allowed from its own thread.
     apply_native_styles(service, &window);
+    let click_through = service.settings().behavior.click_through;
+    if let Some(geometry) = app.try_state::<DockGeometry>() {
+        *geometry.click_through.lock() = Some(click_through);
+    }
+    log::info!(
+        "click-through outside the panel: {}",
+        describe_click_through(click_through)
+    );
     position_window(&window, primary_monitor(&service.monitors()).as_ref())?;
     window.show()?;
     Ok(())
+}
+
+fn describe_click_through(enabled: bool) -> &'static str {
+    if enabled {
+        "on"
+    } else {
+        "off (the whole dock window takes clicks)"
+    }
 }
 
 /// The OS handle of a Tauri window, for `Platform` calls. `None` where the
@@ -192,10 +219,13 @@ pub fn validate_hit_region(panel: Rect, envelope: Rect) -> Result<(), String> {
     Ok(())
 }
 
-/// Hand the UI's hit region (CSS px, window-local) to the platform in
-/// physical pixels. A platform without the feature (mock, non-Windows
-/// hosts) leaves the window fully clickable; that is logged once at debug
-/// and is not an error for the UI. Runs on the main thread.
+/// Remember the UI's hit region (CSS px, window-local) and, while
+/// `behavior.clickThrough` is on, hand it to the platform in physical
+/// pixels. While the setting is off the window stays fully clickable and
+/// the report waits for the setting to be turned on ([`on_settings_changed`]).
+/// A platform without the feature (mock, non-Windows hosts) leaves the
+/// window fully clickable; that is logged once at debug and is not an error
+/// for the UI. Runs on the main thread.
 pub fn apply_hit_region(
     app: &AppHandle,
     window: &WebviewWindow,
@@ -205,6 +235,28 @@ pub fn apply_hit_region(
     let service = app
         .try_state::<crate::AppService>()
         .ok_or_else(|| "service not available".to_owned())?;
+    if let Some(geometry) = app.try_state::<DockGeometry>() {
+        *geometry.hit_region_css.lock() = Some((panel, envelope));
+    }
+    if !service.0.settings().behavior.click_through {
+        log::trace!(
+            "hit region of {:?} remembered; click-through is off",
+            window.label()
+        );
+        return Ok(());
+    }
+    push_hit_region(&service.0, window, panel, envelope)
+}
+
+/// The platform call behind [`apply_hit_region`]: CSS px → physical px by
+/// the window's scale factor, then `set_dock_hit_region`. Main thread (the
+/// scale factor is a window getter).
+fn push_hit_region(
+    service: &DockService,
+    window: &WebviewWindow,
+    panel: Rect,
+    envelope: Rect,
+) -> Result<(), String> {
     let Some(handle) = native_handle(window) else {
         log::debug!("hit region ignored: no native window handle on this host");
         return Ok(());
@@ -214,11 +266,7 @@ pub fn apply_hit_region(
         panel: scale_rect(panel, scale),
         envelope: scale_rect(envelope, scale),
     };
-    match service
-        .0
-        .platform()
-        .set_dock_hit_region(handle, Some(region))
-    {
+    match service.platform().set_dock_hit_region(handle, Some(region)) {
         Ok(()) => {
             log::trace!("hit region of {:?}: {region:?}", window.label());
             Ok(())
@@ -231,6 +279,70 @@ pub fn apply_hit_region(
             Ok(())
         }
         Err(e) => Err(e.to_string()),
+    }
+}
+
+/// The settings changed (settings window, tray, a command): apply
+/// `behavior.clickThrough` when it differs from what is in effect.
+/// Runs on the service worker thread; the window work hops to the main
+/// thread, where the window getters are direct calls.
+pub fn on_settings_changed(app: &AppHandle, settings: &Settings) {
+    let enabled = settings.behavior.click_through;
+    let Some(geometry) = app.try_state::<DockGeometry>() else {
+        return;
+    };
+    {
+        let mut current = geometry.click_through.lock();
+        if *current == Some(enabled) {
+            return;
+        }
+        *current = Some(enabled);
+    }
+    let handle = app.clone();
+    if let Err(e) = app.run_on_main_thread(move || apply_click_through(&handle, enabled)) {
+        log::warn!("could not schedule the click-through change: {e}");
+    }
+}
+
+/// Turn click-through on (replay the UI's latest hit region) or off (the
+/// whole dock window takes clicks again). Main thread.
+fn apply_click_through(app: &AppHandle, enabled: bool) {
+    let Some(window) = app.get_webview_window(DOCK_LABEL) else {
+        log::debug!("click-through changed before the dock window exists");
+        return;
+    };
+    let Some(service) = app.try_state::<crate::AppService>() else {
+        return;
+    };
+    if enabled {
+        let region = app
+            .try_state::<DockGeometry>()
+            .and_then(|geometry| *geometry.hit_region_css.lock());
+        match region {
+            Some((panel, envelope)) => {
+                match push_hit_region(&service.0, &window, panel, envelope) {
+                    Ok(()) => log::info!(
+                        "click-through outside the panel: {}",
+                        describe_click_through(true)
+                    ),
+                    Err(e) => log::warn!("click-through could not be turned on: {e}"),
+                }
+            }
+            None => {
+                log::info!("click-through outside the panel: on (waiting for the UI's hit region)")
+            }
+        }
+        return;
+    }
+    let Some(handle) = native_handle(&window) else {
+        return;
+    };
+    match service.0.platform().set_dock_hit_region(handle, None) {
+        Ok(()) | Err(PlatformError::Unsupported(_)) => log::info!(
+            "click-through outside the panel: {}",
+            describe_click_through(false)
+        ),
+        Err(e) => log::warn!("click-through could not be turned off: {e}"),
     }
 }
 

@@ -39,3 +39,7 @@ can reach (`set_dock_hit_region`). The platform tracks the cursor on its own
 thread and toggles `WS_EX_LAYERED | WS_EX_TRANSPARENT` with hysteresis
 ([`docs/ipc/hit-region.md`](../ipc/hit-region.md)). The platform's window
 subclass keeps Stem's extended styles across tao's own style rewrites.
+`behavior.clickThrough` (a settings row and a tray check item, on by
+default) switches this off and on at runtime. When it goes off, the Tauri
+layer passes `None` to the platform. When it comes back on, the layer sends
+the UI's latest region again.

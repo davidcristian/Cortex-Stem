@@ -271,7 +271,7 @@ fn file_logging_wanted(store: &FileSettingsStore) -> bool {
     }
 }
 
-fn on_off(flag: bool) -> &'static str {
+pub(crate) fn on_off(flag: bool) -> &'static str {
     if flag { "on" } else { "off" }
 }
 
@@ -317,7 +317,11 @@ fn forward_events(app: AppHandle, service: &DockService) {
     service.subscribe(Box::new(move |event| {
         let result = match event {
             ServiceEvent::State(state) => app.emit(events::STATE, state),
-            ServiceEvent::Settings(settings) => app.emit(events::SETTINGS, settings),
+            ServiceEvent::Settings(settings) => {
+                windows::on_settings_changed(&app, settings);
+                tray::on_settings_changed(&app, settings);
+                app.emit(events::SETTINGS, settings)
+            }
             ServiceEvent::Theme(theme) => app.emit(events::THEME, theme),
             ServiceEvent::Monitors(monitors) => {
                 windows::on_monitors_changed(&app, monitors.clone());

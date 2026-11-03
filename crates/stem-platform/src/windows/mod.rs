@@ -142,16 +142,13 @@ impl Platform for WindowsPlatform {
     }
 
     /// `Some`: hand the region to the tracker thread (started on the first
-    /// call); `None`: stop tracking the window and make it clickable. With
-    /// `STEM_HIT_REGION=off` nothing starts and the window stays clickable.
+    /// call); `None`: stop tracking the window and make it clickable (what
+    /// the app layer sends while `behavior.clickThrough` is off).
     fn set_dock_hit_region(
         &self,
         handle: NativeWindowHandle,
         region: Option<HitRegion>,
     ) -> PlatformResult<()> {
-        if hit_test::disabled_by_env() {
-            return Ok(());
-        }
         let mut guard = self.hit_test.lock();
         match region {
             Some(region) => {

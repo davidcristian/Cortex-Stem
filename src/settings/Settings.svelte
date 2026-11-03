@@ -330,6 +330,20 @@
             />
           </SettingRow>
           <SettingRow
+            id="click-through"
+            label="Click through outside the dock"
+            description="Clicks beside and above the panel reach the desktop and the windows behind it"
+          >
+            <Toggle
+              id="click-through"
+              checked={settings.behavior.clickThrough}
+              onchange={(v) =>
+                edit((s) => {
+                  s.behavior.clickThrough = v;
+                })}
+            />
+          </SettingRow>
+          <SettingRow
             id="auto-hide"
             label="Auto-hide"
             description="Hide the dock until the pointer touches the screen edge"

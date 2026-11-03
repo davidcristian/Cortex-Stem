@@ -143,6 +143,7 @@ export function defaultSettings(): Settings {
       showOnlyCurrentDesktop: true,
       showOnlyCurrentMonitor: false,
       runningIndicators: true,
+      clickThrough: true,
     },
     pinned: [],
     system: {

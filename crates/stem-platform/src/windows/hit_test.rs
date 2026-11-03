@@ -21,9 +21,9 @@
 //!   cursor is elsewhere.
 //! - Windows whose handle is gone (`IsWindow`) are dropped.
 //! - [`HitTestThread::stop`] posts `WM_QUIT` and joins (bounded).
-//! - `STEM_HIT_REGION=off` (case-insensitive) disables the feature:
-//!   [`disabled_by_env`] is checked by the platform before anything starts
-//!   and logged once at info; the window stays fully clickable.
+//! - Switching the feature off is the app layer's business
+//!   (`behavior.clickThrough`): it passes `None`, which untracks the
+//!   window and makes it fully clickable; there is no environment variable.
 //!
 //! # Design
 //!
@@ -54,7 +54,7 @@
 //! id cross threads.
 
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -98,21 +98,6 @@ const STOP_TIMEOUT: Duration = Duration::from_secs(2);
 /// Usage Tables §4); literal so no extra `windows` feature is needed.
 const HID_USAGE_PAGE_GENERIC: u16 = 0x01;
 const HID_USAGE_GENERIC_MOUSE: u16 = 0x02;
-
-/// `STEM_HIT_REGION=off`: the feature is disabled for this process. Read
-/// once; the first call logs the decision at info.
-pub fn disabled_by_env() -> bool {
-    static DISABLED: OnceLock<bool> = OnceLock::new();
-    *DISABLED.get_or_init(|| {
-        let off = std::env::var("STEM_HIT_REGION").is_ok_and(|v| v.trim().eq_ignore_ascii_case("off"));
-        if off {
-            log::info!(
-                "hit region tracking disabled (STEM_HIT_REGION=off); the dock window stays fully clickable"
-            );
-        }
-        off
-    })
-}
 
 /// A dock window under tracking.
 #[derive(Debug)]

@@ -18,7 +18,8 @@ and an in-memory settings store (`MemorySettingsStore`). `src-tauri` only:
 - creates and positions the dock window and the settings window;
 - maps commands to `DockService` methods;
 - forwards `ServiceEvent`s as Tauri events;
-- wires the plugins (single-instance, logging) and the tray icon.
+- wires the plugins (single-instance, logging) and the tray icon, and
+  applies the settings that belong to the shell (click-through).
 
 ## Consequences
 

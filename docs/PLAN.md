@@ -28,7 +28,8 @@ windows, with their real icons. Clicks work: launch, activate, minimise, and
 cycle through an app's windows. A tray icon offers Quit.
 
 **Status.** Done. A left click on the tray icon also shows or hides the dock,
-and its menu also has _Settings…_ and _Restart_.
+and its menu also has _Settings…_, _Click through outside the dock_ and
+_Restart_.
 
 **Exit criterion.** A person installs Stem on Windows 11 with the NSIS
 installer that CI builds, and finds everything above working.
@@ -66,7 +67,7 @@ without failures.
 **Status.**
 
 - Clicks outside the panel and the magnified icons reach the desktop and the
-  windows behind the dock.
+  windows behind the dock (`behavior.clickThrough`).
 - Each dock item has `role="button"` and an `aria-label`.
 - Bursts of window events are coalesced: title changes per
   window, and the service sends at most one state update per 16 ms.

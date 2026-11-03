@@ -455,6 +455,12 @@ pub struct Behavior {
     pub show_only_current_monitor: bool,
     /// Show the dots between a running app's icon and the screen edge.
     pub running_indicators: bool,
+    /// Let clicks outside the panel reach the desktop and the windows
+    /// behind the dock. The dock window spans the whole length of its
+    /// screen edge, so with this off the whole dock window takes every
+    /// click, including on its empty part. Off is meant for diagnosis, not
+    /// as a preference.
+    pub click_through: bool,
 }
 
 impl Default for Behavior {
@@ -464,6 +470,7 @@ impl Default for Behavior {
             show_only_current_desktop: true,
             show_only_current_monitor: false,
             running_indicators: true,
+            click_through: true,
         }
     }
 }
@@ -631,6 +638,7 @@ mod tests {
                 show_only_current_desktop: rng.bool(),
                 show_only_current_monitor: rng.bool(),
                 running_indicators: rng.bool(),
+                click_through: rng.bool(),
             },
             pinned: (0..rng.below(8))
                 .map(|_| {

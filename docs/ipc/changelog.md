@@ -3,6 +3,9 @@
 This file lists every version of the [IPC contract](index.md), newest first. A section name links
 to the file that covers that section now.
 
+- **v1.4 (click-through setting):** `Settings.behavior.clickThrough` added (settings payload
+  only, no new command or event). It replaces the `STEM_HIT_REGION` environment variable, which
+  was removed.
 - **v1.3 (hit region):** `set_dock_hit_region` added. The [Sizing protocol](sizing-protocol.md)
   now gives the dock window the work area's full width, so item animations never resize it
   (`set_dock_content_size` keeps its signature; `width` is informational).

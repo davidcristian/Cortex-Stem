@@ -27,8 +27,9 @@ the stock taskbar) is a different product with different layout rules
 
 ## Consequences
 
-- The window's transparent regions would take clicks. The platform makes
-  the window click-through outside the panel (the hit region,
+- The window's transparent regions would take clicks. With
+  `behavior.clickThrough` on (the default), the platform makes the window
+  click-through outside the panel (the hit region,
   `docs/ipc/hit-region.md`). The headroom is kept minimal.
 - Maximised windows sit under the dock unless auto-hide or reservation is
   on.
