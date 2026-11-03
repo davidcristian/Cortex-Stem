@@ -1,14 +1,18 @@
-//! Tauri commands, one per entry in `docs/ipc/commands.md`. They validate
-//! nothing themselves; they translate and delegate to `stem-service`.
+//! Tauri commands, one per entry in `docs/ipc/commands.md` (v1.1). They
+//! validate and clamp their arguments, then translate and delegate to
+//! `stem-service` (semantics live there).
 //!
-//! Errors cross IPC as plain strings (`Result<T, String>`); the frontend shows
-//! or logs them. Commands must return quickly: anything slow belongs on the
-//! service worker thread or the platform's own threads.
+//! Errors cross IPC as plain strings (`Result<T, String>`); every failure is
+//! also logged here at `warn` with the command name and its arguments.
+//! Commands must return quickly: anything slow belongs on the service worker
+//! thread or the platform's own threads.
+
+use std::fmt::{Debug, Display};
 
 use base64::Engine as _;
 use stem_core::{
-    AppId, DockState, IconKey, LaunchTarget, MonitorInfo, Settings, ThemeInfo, WindowAction,
-    WindowId,
+    AppId, DockState, IconKey, LaunchTarget, MonitorInfo, Settings, ShellAction, ThemeInfo,
+    WindowAction, WindowId,
 };
 use tauri::{AppHandle, State};
 
@@ -16,8 +20,16 @@ use crate::AppService;
 
 type CmdResult<T> = Result<T, String>;
 
-fn err<E: std::fmt::Display>(e: E) -> String {
-    e.to_string()
+/// Icon sizes the UI may request (px); anything else is clamped.
+const ICON_SIZE_RANGE: (u32, u32) = (16, 512);
+
+/// Log a failed command with its arguments and turn the error into the IPC
+/// string.
+fn checked<T, E: Display>(command: &str, args: &dyn Debug, result: Result<T, E>) -> CmdResult<T> {
+    result.map_err(|e| {
+        log::warn!("{command}({args:?}) failed: {e}");
+        e.to_string()
+    })
 }
 
 pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
@@ -36,6 +48,9 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         reorder_pinned,
         get_icon,
         set_dock_content_size,
+        shell_action,
+        open_settings,
+        reset_settings,
         quit,
     ]
 }
@@ -50,9 +65,15 @@ fn get_settings(service: State<'_, AppService>) -> Settings {
     service.0.settings()
 }
 
+/// The service migrates, validates (clamps) and persists; the validated
+/// copy comes back.
 #[tauri::command]
 fn update_settings(service: State<'_, AppService>, settings: Settings) -> CmdResult<Settings> {
-    service.0.update_settings(settings).map_err(err)
+    checked(
+        "update_settings",
+        &settings,
+        service.0.update_settings(settings.clone()),
+    )
 }
 
 #[tauri::command]
@@ -67,7 +88,11 @@ fn get_monitors(service: State<'_, AppService>) -> Vec<MonitorInfo> {
 
 #[tauri::command]
 fn primary_click(service: State<'_, AppService>, item_key: String) -> CmdResult<()> {
-    service.0.primary_click(&item_key).map_err(err)
+    checked(
+        "primary_click",
+        &item_key,
+        service.0.primary_click(&item_key),
+    )
 }
 
 #[tauri::command]
@@ -76,32 +101,36 @@ fn window_action(
     window_id: WindowId,
     action: WindowAction,
 ) -> CmdResult<()> {
-    service.0.window_action(window_id, action).map_err(err)
+    checked(
+        "window_action",
+        &(window_id, action),
+        service.0.window_action(window_id, action),
+    )
 }
 
 #[tauri::command]
 fn launch_app(service: State<'_, AppService>, app_id: AppId) -> CmdResult<()> {
-    service.0.launch_app(&app_id).map_err(err)
+    checked("launch_app", &app_id, service.0.launch_app(&app_id))
 }
 
 #[tauri::command]
 fn pin_app(service: State<'_, AppService>, app_id: AppId) -> CmdResult<()> {
-    service.0.pin_app(&app_id).map_err(err)
+    checked("pin_app", &app_id, service.0.pin_app(&app_id))
 }
 
 #[tauri::command]
 fn pin_target(service: State<'_, AppService>, target: LaunchTarget) -> CmdResult<AppId> {
-    service.0.pin_target(target).map_err(err)
+    checked("pin_target", &target, service.0.pin_target(target.clone()))
 }
 
 #[tauri::command]
 fn unpin_app(service: State<'_, AppService>, app_id: AppId) -> CmdResult<()> {
-    service.0.unpin_app(&app_id).map_err(err)
+    checked("unpin_app", &app_id, service.0.unpin_app(&app_id))
 }
 
 #[tauri::command]
 fn reorder_pinned(service: State<'_, AppService>, order: Vec<AppId>) -> CmdResult<()> {
-    service.0.reorder_pinned(&order).map_err(err)
+    checked("reorder_pinned", &order, service.0.reorder_pinned(&order))
 }
 
 /// PNG icon as a `data:` URL, or `None` for unknown keys and `shell:*` keys.
@@ -111,10 +140,12 @@ fn get_icon(
     icon_key: IconKey,
     size: u32,
 ) -> CmdResult<Option<String>> {
-    let png = service
-        .0
-        .icon_png(&icon_key, size.clamp(16, 512))
-        .map_err(err)?;
+    let size = size.clamp(ICON_SIZE_RANGE.0, ICON_SIZE_RANGE.1);
+    let png = checked(
+        "get_icon",
+        &(&icon_key, size),
+        service.0.icon_png(&icon_key, size),
+    )?;
     Ok(png.map(|bytes| {
         format!(
             "data:image/png;base64,{}",
@@ -124,7 +155,9 @@ fn get_icon(
 }
 
 /// The dock UI reports the size of its visible content (CSS pixels) so the
-/// window can be resized and re-centred. See `docs/ipc/`.
+/// window can be resized and re-centred. See `docs/ipc/sizing-protocol.md`. Only a
+/// dock window may call it, with finite numbers; the range is clamped in
+/// `windows::apply_content_size`.
 #[tauri::command]
 fn set_dock_content_size(
     app: AppHandle,
@@ -132,10 +165,56 @@ fn set_dock_content_size(
     width: f64,
     height: f64,
 ) -> CmdResult<()> {
-    crate::windows::apply_content_size(&app, &window, width, height).map_err(err)
+    let args = (window.label().to_owned(), width, height);
+    if !window.label().starts_with(crate::windows::DOCK_LABEL) {
+        return checked(
+            "set_dock_content_size",
+            &args,
+            Err::<(), _>("only dock windows can be resized"),
+        );
+    }
+    if !(width.is_finite() && height.is_finite()) {
+        return checked(
+            "set_dock_content_size",
+            &args,
+            Err::<(), _>("width and height must be finite numbers"),
+        );
+    }
+    checked(
+        "set_dock_content_size",
+        &args,
+        crate::windows::apply_content_size(&app, &window, width, height),
+    )
+}
+
+/// Run a shell action directly (menus, Recycle Bin "Empty").
+#[tauri::command]
+fn shell_action(service: State<'_, AppService>, action: ShellAction) -> CmdResult<()> {
+    checked("shell_action", &action, service.0.shell_action(action))
+}
+
+/// Open the settings window, or focus it if it is already open.
+#[tauri::command]
+fn open_settings(app: AppHandle) -> CmdResult<()> {
+    checked(
+        "open_settings",
+        &(),
+        crate::windows::open_settings_window(&app),
+    )
+}
+
+/// Restore and persist the defaults; the service emits `dock://settings`.
+#[tauri::command]
+fn reset_settings(service: State<'_, AppService>) -> CmdResult<Settings> {
+    checked(
+        "reset_settings",
+        &(),
+        service.0.update_settings(Settings::default()),
+    )
 }
 
 #[tauri::command]
 fn quit(app: AppHandle) {
-    app.exit(0);
+    log::info!("quit requested from the UI");
+    crate::request_quit(&app);
 }

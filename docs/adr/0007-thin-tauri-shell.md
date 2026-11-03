@@ -22,8 +22,9 @@ and an in-memory settings store (`MemorySettingsStore`). `src-tauri` only:
 
 ## Consequences
 
-- A command's behaviour is tested without Tauri; the Tauri command is one
-  line that calls the service.
+- A command's behaviour is tested without Tauri; the Tauri command only
+  validates and clamps its arguments and calls the service
+  (`src-tauri/src/commands.rs`).
 - `src-tauri` holds only adapter code, so most of the risk of the Windows
   build is in `stem-platform/src/windows`, which is where the manual tests
   on Windows focus.
