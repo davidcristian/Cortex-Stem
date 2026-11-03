@@ -29,6 +29,8 @@ export default defineConfig(
       'target/**',
       'src-tauri/**',
       'crates/**',
+      // Local git worktrees (git-ignored) live inside the repository directory.
+      '.claude/**',
     ],
   },
   js.configs.recommended,

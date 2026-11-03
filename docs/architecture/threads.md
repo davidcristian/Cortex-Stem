@@ -7,7 +7,8 @@ which work may run on which thread.
 |--------|-------|------|
 | Tauri main (UI) thread | tauri | window creation, commands (which must return fast) |
 | `stem-platform-events` | platform | the hidden event window, the WinEvent hooks, the shell hook and timers; posts `PlatformEvent`s |
-| `stem-service` worker | service | engine updates, identity resolution (an icon extraction can take milliseconds), calls the listeners |
+| `stem-service` worker | service | engine updates (it drains every queued input in one batch), calls the listeners (`State` coalesced to at most one per 16 ms) |
+| `dock-identity` | service | platform identity queries (`identify_window`, `identify_target`), one retry after 2 s, then a fallback identity; never blocks the event drain |
 | `dock-empty-recycle-bin` | platform | one per `ShellAction::EmptyRecycleBin`: a COM single-threaded apartment (STA) that runs `SHEmptyRecycleBinW` with the shell's confirmation |
 | WebView2 threads | WebView2 | rendering |
 

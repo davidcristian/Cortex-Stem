@@ -18,3 +18,6 @@ pnpm-lock.yaml
 e2e/output/
 playwright-report/
 test-results/
+
+# Local git worktrees (git-ignored).
+.claude/
