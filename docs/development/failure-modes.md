@@ -19,3 +19,7 @@ These are mistakes to avoid when working in this repository
   `export_to` paths. `#[serde(transparent)]` newtypes export as their inner type.
 - `--workspace` on Linux includes `stem-app`, which cannot build there; use the per-crate commands
   of the [verification ladder](verification-ladder.md) (or `scripts/check-all.sh`).
+- Sharing one `CARGO_TARGET_DIR` between git worktrees of this repository. Cargo hashes
+  workspace-member paths relative to the workspace root, so two worktrees produce identical
+  artifact names and reuse each other's compiled tests and lint results without a warning. Every
+  worktree uses its own `target/`.

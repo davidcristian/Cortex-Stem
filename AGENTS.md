@@ -179,8 +179,8 @@ Adding a Rust crate, a `windows` crate feature or a frontend package follows the
 ## 14. Known agent failure modes to avoid
 
 The [failure modes list](docs/development/failure-modes.md) names the mistakes to avoid, from
-invented `windows` crate paths and Svelte 4 syntax to Windows paths in tests on Linux. Read it
-before you start a task.
+invented `windows` crate paths and Svelte 4 syntax to Windows paths in tests on Linux and a
+`CARGO_TARGET_DIR` shared between worktrees. Read it before you start a task.
 
 ## 15. Prose
 
