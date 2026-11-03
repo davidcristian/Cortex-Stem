@@ -39,7 +39,7 @@ export class DockStore {
   private subscriptions: Unsubscribe[] = [];
   private started = false;
 
-  constructor(private readonly backend: Backend) {
+  constructor(readonly backend: Backend) {
     this.cache = new IconCache(
       (key, size) => backend.getIcon(key, size),
       (id, _key, _size, url) => {

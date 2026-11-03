@@ -24,4 +24,5 @@ arguments are named and how a failed command rejects.
 Five commands are planned and not implemented in Rust: `show_item_menu { itemKey, x, y }`,
 `show_dock_menu { x, y }`, `open_settings`, `set_dock_hover { hovering }` and
 `shell_action { action }`. They are listed so that the mock can stub them: their `Backend`
-methods are optional, `MockBackend` records them, and `TauriBackend` does not have them.
+methods are optional, `MockBackend` records them, `TauriBackend` does not have them, and the dock
+page calls them only where they exist.
