@@ -15,7 +15,7 @@ Tauri 2 and Svelte 5.
 ![Rust](https://img.shields.io/badge/Rust-DEA584?logo=rust&logoColor=white) ![Tauri](https://img.shields.io/badge/Tauri-24C8DB?logo=tauri&logoColor=white) ![Svelte](https://img.shields.io/badge/Svelte-FF3E00?logo=svelte&logoColor=white) ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white) ![Windows 11](https://img.shields.io/badge/Windows_11-0078D4)
 
 [What is Stem?](#what-is-stem) ·
-[How it works](#how-it-works) · [Build from source](#build-from-source) ·
+[How it works](#how-it-works) · [Install](#install) · [Build from source](#build-from-source) ·
 [Development](#development) · [Documentation](#documentation) · [License](#license)
 
 </div>
@@ -26,8 +26,8 @@ Stem is a dock for Windows 11. It is a floating, centred, rounded panel on the b
 screen. It shows Start, your pinned apps, the other running apps and the Recycle Bin. Stem can hide
 the stock taskbar while it runs, or work beside it.
 
-Stem is in early development: milestone M0 is done and M1 is in progress
-([docs/PLAN.md](docs/PLAN.md)). Nothing is released yet.
+Stem is in early development: milestone M0 (foundation) is done, and M1 (the dock appears) is
+implemented and builds on CI ([docs/PLAN.md](docs/PLAN.md)). Nothing is released yet.
 
 ## How it works
 
@@ -64,6 +64,11 @@ platform's events, resolves app names and icons, and saves the settings file. Th
 and the Svelte page. The page draws the `DockState` snapshot it receives and reports what the user
 did. [docs/architecture/](docs/architecture/index.md) describes every part, and
 [docs/ipc/](docs/ipc/index.md) lists every command and event.
+
+## Install
+
+Every run of the _CI_ workflow on GitHub builds the installer, and a green run offers the NSIS
+installer and `stem.exe` as artifacts.
 
 ## Build from source
 
