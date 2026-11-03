@@ -1,5 +1,5 @@
 /**
- * The frontend's only door to the Rust side (docs/ipc/, contract v1).
+ * The frontend's only door to the Rust side (docs/ipc/, contract v1.1).
  *
  * One method per command and one `on` subscription per event. Components
  * never call `invoke`/`listen` themselves (AGENTS.md §4); they talk to a
@@ -49,8 +49,8 @@ export type EventHandler<E extends BackendEvent> = (payload: BackendEvents[E]) =
 export type Unsubscribe = () => void;
 
 /**
- * Commands and events of docs/ipc/ v1. Method names are the command names
- * in camelCase; argument order follows the command's argument list.
+ * Commands and events of docs/ipc/ v1.1. Method names are the command
+ * names in camelCase; argument order follows the command's argument list.
  *
  * Failed commands reject with a `string` (the Rust error message).
  */
@@ -75,6 +75,12 @@ export interface Backend {
   getIcon(iconKey: IconKey, size: number): Promise<string | null>;
   /** CSS pixels; Rust resizes and re-centres the calling window. */
   setDockContentSize(width: number, height: number): Promise<void>;
+  /** Run a shell action directly (menus, Recycle Bin "Empty"). */
+  shellAction(action: ShellAction): Promise<void>;
+  /** Open the settings window, or focus it if it is already open. */
+  openSettings(): Promise<void>;
+  /** Restore and persist the defaults; Rust emits `dock://settings` and returns what it kept. */
+  resetSettings(): Promise<Settings>;
   quit(): Promise<void>;
 
   on<E extends BackendEvent>(event: E, handler: EventHandler<E>): Unsubscribe;
@@ -83,9 +89,7 @@ export interface Backend {
   // UI checks for presence before calling.
   showItemMenu?(itemKey: string, x: number, y: number): Promise<void>;
   showDockMenu?(x: number, y: number): Promise<void>;
-  openSettings?(): Promise<void>;
   setDockHover?(hovering: boolean): Promise<void>;
-  shellAction?(action: ShellAction): Promise<void>;
 }
 
 /** The `shell:` icon namespace is rendered from built-in vector art. */

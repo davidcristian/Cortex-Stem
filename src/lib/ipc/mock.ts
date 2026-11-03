@@ -1,5 +1,5 @@
 /**
- * `MockBackend`: the whole IPC contract (docs/ipc/ v1) without Rust, for
+ * `MockBackend`: the whole IPC contract (docs/ipc/ v1.1) without Rust, for
  * browser runs and Playwright screenshots.
  *
  * It mirrors, deliberately in this one file so the two sides can be compared,
@@ -778,6 +778,7 @@ export class MockBackend implements Backend {
   private readonly logging: boolean;
   private readonly timers = new Set<ReturnType<typeof setTimeout>>();
   private identityTimer: ReturnType<typeof setTimeout> | null = null;
+  private failNext: string | null = null;
   private readonly mediaQuery: MediaQueryList | null;
   private readonly onSchemeChange = (): void => {
     this.setTheme({ ...this.engine.theme, dark: this.mediaQuery?.matches ?? true });
@@ -948,6 +949,26 @@ export class MockBackend implements Backend {
     });
   }
 
+  shellAction(action: ShellAction): Promise<void> {
+    return this.command(() => this.doShellAction(action));
+  }
+
+  openSettings(): Promise<void> {
+    return this.command(() => {
+      this.record({ type: 'openSettings' });
+      this.log('open_settings()');
+    });
+  }
+
+  /** `DockService::reset_settings`: the defaults, validated and applied like any update. */
+  resetSettings(): Promise<Settings> {
+    return this.command(() => {
+      const defaults = validateSettings(defaultSettings());
+      this.applySettings(defaults);
+      return structuredClone(defaults);
+    });
+  }
+
   quit(): Promise<void> {
     return this.command(() => {
       this.record({ type: 'quit' });
@@ -983,24 +1004,18 @@ export class MockBackend implements Backend {
     });
   }
 
-  openSettings(): Promise<void> {
-    return this.command(() => {
-      this.record({ type: 'openSettings' });
-      this.log('open_settings()');
-    });
-  }
-
   setDockHover(hovering: boolean): Promise<void> {
     return this.command(() => {
       this.record({ type: 'setDockHover', hovering });
     });
   }
 
-  shellAction(action: ShellAction): Promise<void> {
-    return this.command(() => this.doShellAction(action));
-  }
-
   // --- Scripting hooks (mirror of `MockPlatform::push`), for tests and demos.
+
+  /** Make the next command reject with `message` (what a Rust error looks like across IPC). */
+  failNextCommand(message: string): void {
+    this.failNext = message;
+  }
 
   pushWindow(raw: RawWindow): void {
     if (this.engine.upsertWindow(raw)) {
@@ -1051,7 +1066,15 @@ export class MockBackend implements Backend {
 
   // --- internals
 
-  private command<T>(run: () => T): Promise<T> {
+  private command<T>(job: () => T): Promise<T> {
+    const failure = this.failNext;
+    this.failNext = null;
+    const run =
+      failure === null
+        ? job
+        : (): T => {
+            throw failure;
+          };
     const [lo, hi] = this.latency;
     const ms = lo + (hi - lo) * this.random();
     if (ms <= 0) {

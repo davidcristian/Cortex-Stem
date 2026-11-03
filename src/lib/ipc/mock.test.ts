@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { DockState } from '$lib/ipc/generated/DockState';
+import type { Settings } from '$lib/ipc/generated/Settings';
 
 import type { BouncePayload } from './backend';
 import {
@@ -333,6 +334,39 @@ describe('revisions and events', () => {
     expect(item(await b.getDockState(), 'fixed:recycle-bin').iconKey).toBe(
       'shell:recycle-bin-empty',
     );
+  });
+
+  it('resetSettings restores the defaults, emits dock://settings and re-renders', async () => {
+    const b = fast();
+    const states = recordStates(b);
+    const events: Settings[] = [];
+    b.on('dock://settings', (s) => {
+      events.push(s);
+    });
+    const before = await b.getSettings();
+    before.iconSize = 64;
+    await b.updateSettings(before);
+
+    const reset = await b.resetSettings();
+    expect(reset).toEqual(defaultSettings());
+    expect(events.at(-1)).toEqual(defaultSettings());
+    expect(await b.getSettings()).toEqual(defaultSettings());
+    // The demo pins are gone, so the pinned group disappeared from the dock.
+    expect(states.at(-1)!.items.filter((i) => i.pinned)).toHaveLength(0);
+    expect(keys(states.at(-1)!)).toContain(app(FIREFOX)); // still running
+  });
+
+  it('openSettings is recorded like the other side effects', async () => {
+    const b = fast();
+    await b.openSettings();
+    expect(b.calls).toEqual([{ type: 'openSettings' }]);
+  });
+
+  it('failNextCommand rejects exactly one command with the given message', async () => {
+    const b = fast();
+    b.failNextCommand('boom');
+    await expect(b.getDockState()).rejects.toBe('boom');
+    await expect(b.getDockState()).resolves.toBeTruthy();
   });
 });
 

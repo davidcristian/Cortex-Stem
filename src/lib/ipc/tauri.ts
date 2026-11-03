@@ -13,6 +13,7 @@ import type { IconKey } from '$lib/ipc/generated/IconKey';
 import type { LaunchTarget } from '$lib/ipc/generated/LaunchTarget';
 import type { MonitorInfo } from '$lib/ipc/generated/MonitorInfo';
 import type { Settings } from '$lib/ipc/generated/Settings';
+import type { ShellAction } from '$lib/ipc/generated/ShellAction';
 import type { ThemeInfo } from '$lib/ipc/generated/ThemeInfo';
 import type { WindowAction } from '$lib/ipc/generated/WindowAction';
 import type { WindowId } from '$lib/ipc/generated/WindowId';
@@ -75,6 +76,18 @@ export class TauriBackend implements Backend {
 
   setDockContentSize(width: number, height: number): Promise<void> {
     return invoke<void>('set_dock_content_size', { width, height });
+  }
+
+  shellAction(action: ShellAction): Promise<void> {
+    return invoke<void>('shell_action', { action });
+  }
+
+  openSettings(): Promise<void> {
+    return invoke<void>('open_settings');
+  }
+
+  resetSettings(): Promise<Settings> {
+    return invoke<Settings>('reset_settings');
   }
 
   quit(): Promise<void> {
