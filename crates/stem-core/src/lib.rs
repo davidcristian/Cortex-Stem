@@ -18,6 +18,9 @@ pub mod engine;
 pub mod events;
 pub mod model;
 pub mod settings;
+/// TypeScript export pipeline: `cargo test -p stem-core --features ts`.
+#[cfg(all(feature = "ts", test))]
+mod ts;
 
 pub use engine::{DockEngine, EngineOutcome, ItemAction, app_id_for};
 pub use events::{EngineInput, PlatformEvent};
