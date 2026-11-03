@@ -1,8 +1,8 @@
 //! Pixel conversion helpers for icons.
 //!
 //! BGRA → RGBA, mask-derived alpha for icons whose colour bitmap carries no
-//! alpha, un-premultiplication, and PNG encoding of an RGBA buffer. Pure and
-//! tested here with synthetic buffers.
+//! alpha, un-premultiplication, an area-averaging downscale, and PNG encoding
+//! of an RGBA buffer. Pure and tested here with synthetic buffers.
 //!
 //! Buffer conventions (what `GetDIBits` produces when asked for a top-down
 //! 32-bit `BITMAPINFOHEADER`):
@@ -10,6 +10,13 @@
 //! - a monochrome AND mask read the same way becomes a 32-bit buffer where a
 //!   set mask bit is white (`FF FF FF ..`) and a clear bit is black; a set
 //!   bit means "let the screen show through", i.e. transparent.
+//!
+//! Pipeline: [`decode_icon`] turns a bitmap (plus mask) into an [`IconImage`]
+//! (straight-alpha RGBA); [`IconImage::fit_within`] shrinks it to the
+//! requested edge with a box filter when the source is larger (it never
+//! upscales, and the Windows side never asks the OS to upscale either);
+//! [`IconImage::encode_png`] produces the bytes the UI receives.
+//! [`convert_icon`] is the unscaled shortcut through the same stages.
 
 /// Bytes per pixel in every buffer handled here.
 pub const BYTES_PER_PIXEL: usize = 4;
@@ -137,21 +144,77 @@ pub fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, IconC
     Ok(out)
 }
 
-/// The whole pipeline: a 32-bit BGRA colour buffer (plus, optionally, its
-/// AND mask in the same layout) to RGBA PNG bytes.
+/// A decoded icon: straight-alpha RGBA, rows top to bottom, no padding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IconImage {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+impl IconImage {
+    /// Wrap a buffer, validating the dimensions against [`buffer_len`].
+    pub fn new(width: u32, height: u32, rgba: Vec<u8>) -> Result<Self, IconConvertError> {
+        let expected =
+            buffer_len(width, height).ok_or(IconConvertError::BadDimensions { width, height })?;
+        if rgba.len() != expected {
+            return Err(IconConvertError::BufferSize {
+                expected,
+                actual: rgba.len(),
+            });
+        }
+        Ok(Self {
+            width,
+            height,
+            rgba,
+        })
+    }
+
+    /// The longer side.
+    pub fn edge(&self) -> u32 {
+        self.width.max(self.height)
+    }
+
+    /// Shrink so that the longer side is `max_edge`, preserving the aspect
+    /// ratio, with [`downscale_rgba`]. An image that already fits is returned
+    /// unchanged: this never upscales.
+    pub fn fit_within(self, max_edge: u32) -> Self {
+        let Some((width, height)) = fit_dimensions(self.width, self.height, max_edge) else {
+            return self;
+        };
+        match downscale_rgba(self.width, self.height, &self.rgba, width, height) {
+            Ok(rgba) => Self {
+                width,
+                height,
+                rgba,
+            },
+            // `fit_dimensions` only yields targets `downscale_rgba` accepts
+            // for a buffer `new` validated; keep the source rather than fail.
+            Err(_) => self,
+        }
+    }
+
+    /// Encode as an 8-bit RGBA PNG.
+    pub fn encode_png(&self) -> Result<Vec<u8>, IconConvertError> {
+        encode_png(self.width, self.height, &self.rgba)
+    }
+}
+
+/// Decode a 32-bit BGRA colour buffer (plus, optionally, its AND mask in the
+/// same layout) into a straight-alpha [`IconImage`].
 ///
 /// - When the colour buffer has an alpha channel (any non-zero alpha), the
 ///   mask is ignored, as Windows itself does for 32-bit icons, and the alpha
 ///   is un-premultiplied when `alpha` says so.
 /// - When it has none, alpha comes from the mask; without a mask the icon is
 ///   treated as opaque (old 24-bit icons).
-pub fn convert_icon(
+pub fn decode_icon(
     width: u32,
     height: u32,
     color_bgra: &[u8],
     mask_bgra: Option<&[u8]>,
     alpha: AlphaMode,
-) -> Result<Vec<u8>, IconConvertError> {
+) -> Result<IconImage, IconConvertError> {
     let expected =
         buffer_len(width, height).ok_or(IconConvertError::BadDimensions { width, height })?;
     if color_bgra.len() != expected {
@@ -170,7 +233,132 @@ pub fn convert_icon(
     } else {
         set_opaque(&mut rgba);
     }
-    encode_png(width, height, &rgba)
+    IconImage::new(width, height, rgba)
+}
+
+/// The whole pipeline without scaling: [`decode_icon`] then
+/// [`IconImage::encode_png`].
+pub fn convert_icon(
+    width: u32,
+    height: u32,
+    color_bgra: &[u8],
+    mask_bgra: Option<&[u8]>,
+    alpha: AlphaMode,
+) -> Result<Vec<u8>, IconConvertError> {
+    decode_icon(width, height, color_bgra, mask_bgra, alpha)?.encode_png()
+}
+
+/// Dimensions that fit `width`×`height` inside a `max_edge` square while
+/// preserving the aspect ratio (the shorter side rounded to nearest, at
+/// least 1). `None` when the image already fits, or when `max_edge` is 0:
+/// this is a shrink-only rule.
+pub fn fit_dimensions(width: u32, height: u32, max_edge: u32) -> Option<(u32, u32)> {
+    if max_edge == 0 || width == 0 || height == 0 || width.max(height) <= max_edge {
+        return None;
+    }
+    let shrink = |side: u32, longer: u32| -> u32 {
+        let scaled =
+            (u64::from(side) * u64::from(max_edge) + u64::from(longer) / 2) / u64::from(longer);
+        (scaled as u32).max(1)
+    };
+    Some(if width >= height {
+        (max_edge, shrink(height, width))
+    } else {
+        (shrink(width, height), max_edge)
+    })
+}
+
+/// For every destination index, the source indices it covers with their
+/// overlap, in units of `1/dst` source pixels; the overlaps of one
+/// destination index sum to `src`. Exact integer arithmetic, so weights of a
+/// non-integer ratio (e.g. 3 → 2: 2 + 1, 1 + 2) carry no rounding error.
+fn coverage(src: u32, dst: u32) -> Vec<Vec<(usize, u64)>> {
+    let (src, dst) = (u64::from(src), u64::from(dst));
+    (0..dst)
+        .map(|i| {
+            let start = i * src;
+            let end = start + src;
+            let first = start / dst;
+            let last = end.div_ceil(dst).min(src);
+            (first..last)
+                .filter_map(|j| {
+                    let overlap = end.min((j + 1) * dst).saturating_sub(start.max(j * dst));
+                    (overlap > 0).then_some((j as usize, overlap))
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// Area-averaging (box filter) downscale of a straight-alpha RGBA buffer to
+/// `dst_width`×`dst_height`, each at most the source side. Colour is
+/// averaged **premultiplied** (so fully transparent neighbours contribute no
+/// colour and edges get no light or dark fringe) and converted back to
+/// straight alpha, rounding to nearest. Fully transparent output pixels are
+/// all zero. Never upscales: a larger target is `BadDimensions`.
+pub fn downscale_rgba(
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+    dst_width: u32,
+    dst_height: u32,
+) -> Result<Vec<u8>, IconConvertError> {
+    let expected =
+        buffer_len(width, height).ok_or(IconConvertError::BadDimensions { width, height })?;
+    if rgba.len() != expected {
+        return Err(IconConvertError::BufferSize {
+            expected,
+            actual: rgba.len(),
+        });
+    }
+    let out_len = buffer_len(dst_width, dst_height).ok_or(IconConvertError::BadDimensions {
+        width: dst_width,
+        height: dst_height,
+    })?;
+    if dst_width > width || dst_height > height {
+        return Err(IconConvertError::BadDimensions {
+            width: dst_width,
+            height: dst_height,
+        });
+    }
+    let columns = coverage(width, dst_width);
+    let rows = coverage(height, dst_height);
+    // Every destination pixel's weights sum to this (see `coverage`).
+    let total = u64::from(width) * u64::from(height);
+    let round_div = |n: u64, d: u64| ((n + d / 2) / d).min(255) as u8;
+    let stride = width as usize * BYTES_PER_PIXEL;
+
+    let mut out = Vec::with_capacity(out_len);
+    for ys in &rows {
+        for xs in &columns {
+            let (mut r, mut g, mut b, mut a) = (0u64, 0u64, 0u64, 0u64);
+            for &(sy, wy) in ys {
+                let row = &rgba[sy * stride..(sy + 1) * stride];
+                for &(sx, wx) in xs {
+                    let px = &row[sx * BYTES_PER_PIXEL..(sx + 1) * BYTES_PER_PIXEL];
+                    let w = wy * wx;
+                    let alpha = u64::from(px[3]);
+                    let wa = w * alpha;
+                    r += wa * u64::from(px[0]);
+                    g += wa * u64::from(px[1]);
+                    b += wa * u64::from(px[2]);
+                    a += wa;
+                }
+            }
+            let out_alpha = round_div(a, total);
+            if out_alpha == 0 || a == 0 {
+                out.extend_from_slice(&[0, 0, 0, 0]);
+            } else {
+                out.extend_from_slice(&[
+                    round_div(r, a),
+                    round_div(g, a),
+                    round_div(b, a),
+                    out_alpha,
+                ]);
+            }
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -333,9 +521,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn convert_icon_handles_a_realistic_32px_buffer() {
-        // A 32x32 icon with a transparent frame and an opaque centre.
+    /// A 32x32 BGRA icon with a transparent frame and an opaque red centre.
+    fn framed_red_32() -> Vec<u8> {
         let (w, h) = (32u32, 32u32);
         let mut color = Vec::with_capacity(buffer_len(w, h).unwrap());
         for y in 0..h {
@@ -344,6 +531,13 @@ mod tests {
                 color.extend_from_slice(&[0, 0, 255, if inside { 255 } else { 0 }]);
             }
         }
+        color
+    }
+
+    #[test]
+    fn convert_icon_handles_a_realistic_32px_buffer() {
+        let (w, h) = (32u32, 32u32);
+        let color = framed_red_32();
         let png = convert_icon(w, h, &color, None, AlphaMode::Straight).expect("png");
         let (dw, dh, rgba) = decode(&png);
         assert_eq!((dw, dh), (w, h));
@@ -351,5 +545,184 @@ mod tests {
         assert_eq!(&rgba[..4], &[255, 0, 0, 0]);
         let centre = ((16 * w + 16) as usize) * BYTES_PER_PIXEL;
         assert_eq!(&rgba[centre..centre + 4], &[255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn icon_image_validates_its_buffer() {
+        assert_eq!(
+            IconImage::new(2, 1, vec![0; 4]),
+            Err(IconConvertError::BufferSize {
+                expected: 8,
+                actual: 4
+            })
+        );
+        assert_eq!(
+            IconImage::new(0, 1, vec![]),
+            Err(IconConvertError::BadDimensions {
+                width: 0,
+                height: 1
+            })
+        );
+        let image = IconImage::new(2, 1, vec![0; 8]).expect("image");
+        assert_eq!(image.edge(), 2);
+        assert_eq!(IconImage::new(3, 7, vec![0; 84]).unwrap().edge(), 7);
+    }
+
+    #[test]
+    fn fit_dimensions_shrinks_only_and_keeps_the_aspect_ratio() {
+        assert_eq!(fit_dimensions(256, 256, 48), Some((48, 48)));
+        assert_eq!(fit_dimensions(256, 128, 48), Some((48, 24)));
+        assert_eq!(fit_dimensions(128, 256, 48), Some((24, 48)));
+        assert_eq!(fit_dimensions(64, 48, 32), Some((32, 24)));
+        // Rounded to nearest, never below 1.
+        assert_eq!(fit_dimensions(100, 30, 10), Some((10, 3)));
+        assert_eq!(fit_dimensions(100, 1, 10), Some((10, 1)));
+        assert_eq!(fit_dimensions(1, 100, 10), Some((1, 10)));
+        // Already fits: untouched (no upscaling).
+        assert_eq!(fit_dimensions(48, 48, 48), None);
+        assert_eq!(fit_dimensions(32, 32, 48), None);
+        assert_eq!(fit_dimensions(16, 32, 32), None);
+        // Degenerate inputs.
+        assert_eq!(fit_dimensions(0, 32, 16), None);
+        assert_eq!(fit_dimensions(32, 32, 0), None);
+    }
+
+    #[test]
+    fn coverage_weights_are_exact_for_non_integer_ratios() {
+        // 3 source pixels into 2: each destination pixel spans 1.5 source
+        // pixels, in units of 1/2: [2, 1] and [1, 2].
+        assert_eq!(
+            coverage(3, 2),
+            vec![vec![(0, 2), (1, 1)], vec![(1, 1), (2, 2)]]
+        );
+        // Integer ratio: whole pixels, weight = dst each.
+        assert_eq!(
+            coverage(4, 2),
+            vec![vec![(0, 2), (1, 2)], vec![(2, 2), (3, 2)]]
+        );
+        // Identity.
+        assert_eq!(coverage(2, 2), vec![vec![(0, 2)], vec![(1, 2)]]);
+        // Every destination index's overlaps sum to `src`.
+        for (src, dst) in [(256, 48), (97, 13), (5, 4), (1024, 1)] {
+            for weights in coverage(src, dst) {
+                assert_eq!(weights.iter().map(|w| w.1).sum::<u64>(), u64::from(src));
+            }
+        }
+    }
+
+    #[test]
+    fn downscale_averages_whole_pixels() {
+        // 2x2 opaque: red, green / blue, white -> one pixel, the mean.
+        let rgba = [
+            [255, 0, 0, 255],
+            [0, 255, 0, 255],
+            [0, 0, 255, 255],
+            [255, 255, 255, 255],
+        ]
+        .concat();
+        let out = downscale_rgba(2, 2, &rgba, 1, 1).expect("downscale");
+        assert_eq!(out, vec![128, 128, 128, 255]);
+    }
+
+    #[test]
+    fn downscale_handles_fractional_coverage() {
+        // 3x1 opaque greys 0, 90, 180 -> 2x1: (0*2 + 90*1)/3 and (90*1 + 180*2)/3.
+        let rgba = [[0, 0, 0, 255], [90, 90, 90, 255], [180, 180, 180, 255]].concat();
+        let out = downscale_rgba(3, 1, &rgba, 2, 1).expect("downscale");
+        assert_eq!(out, vec![30, 30, 30, 255, 150, 150, 150, 255]);
+    }
+
+    #[test]
+    fn downscale_averages_premultiplied_so_transparent_neighbours_add_no_colour() {
+        // An opaque red pixel next to a fully transparent *green* pixel: the
+        // result is pure red at half alpha, not a brownish fringe.
+        let rgba = [[255, 0, 0, 255], [0, 255, 0, 0]].concat();
+        let out = downscale_rgba(2, 1, &rgba, 1, 1).expect("downscale");
+        assert_eq!(out, vec![255, 0, 0, 128]);
+        // Half-transparent white next to opaque black: premultiplied mean is
+        // (255*128 + 0) / (128 + 255) for the colour, (128 + 255) / 2 for alpha.
+        let rgba = [[255, 255, 255, 128], [0, 0, 0, 255]].concat();
+        let out = downscale_rgba(2, 1, &rgba, 1, 1).expect("downscale");
+        assert_eq!(out, vec![85, 85, 85, 192]);
+        // All transparent stays all zero (no colour leaks through).
+        let rgba = [[9, 9, 9, 0], [200, 1, 2, 0]].concat();
+        let out = downscale_rgba(2, 1, &rgba, 1, 1).expect("downscale");
+        assert_eq!(out, vec![0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn downscale_rejects_upscaling_and_bad_buffers() {
+        assert_eq!(
+            downscale_rgba(2, 2, &[0; 16], 3, 2),
+            Err(IconConvertError::BadDimensions {
+                width: 3,
+                height: 2
+            })
+        );
+        assert_eq!(
+            downscale_rgba(2, 2, &[0; 16], 1, 0),
+            Err(IconConvertError::BadDimensions {
+                width: 1,
+                height: 0
+            })
+        );
+        assert_eq!(
+            downscale_rgba(2, 2, &[0; 8], 1, 1),
+            Err(IconConvertError::BufferSize {
+                expected: 16,
+                actual: 8
+            })
+        );
+        // Same size is a copy.
+        let rgba = [1, 2, 3, 4, 5, 6, 7, 8];
+        assert_eq!(downscale_rgba(2, 1, &rgba, 2, 1).unwrap(), rgba.to_vec());
+    }
+
+    #[test]
+    fn fit_within_never_upscales_and_keeps_the_aspect_ratio() {
+        let small = IconImage::new(32, 32, vec![7; 32 * 32 * 4]).unwrap();
+        assert_eq!(small.clone().fit_within(48), small);
+        assert_eq!(small.clone().fit_within(32), small);
+        let wide = IconImage::new(64, 32, vec![7; 64 * 32 * 4]).unwrap();
+        let fitted = wide.fit_within(16);
+        assert_eq!((fitted.width, fitted.height), (16, 8));
+        assert_eq!(fitted.rgba.len(), 16 * 8 * 4);
+        assert!(fitted.rgba.iter().all(|&b| b == 7));
+    }
+
+    #[test]
+    fn decode_fit_encode_pipeline_shrinks_the_realistic_icon() {
+        let image = decode_icon(32, 32, &framed_red_32(), None, AlphaMode::Straight).unwrap();
+        assert_eq!((image.width, image.height), (32, 32));
+        let fitted = image.fit_within(16);
+        let png = fitted.encode_png().expect("png");
+        let (w, h, rgba) = decode(&png);
+        assert_eq!((w, h), (16, 16));
+        // The 4-pixel transparent frame became a 2-pixel one: corner is
+        // transparent (and zeroed), the pixel at (2, 2) is fully opaque red,
+        // and nothing in between is fringed with another colour.
+        assert_eq!(&rgba[..4], &[0, 0, 0, 0]);
+        let at = |x: usize, y: usize| &rgba[(y * 16 + x) * 4..(y * 16 + x) * 4 + 4];
+        assert_eq!(at(2, 2), &[255, 0, 0, 255]);
+        assert_eq!(at(8, 8), &[255, 0, 0, 255]);
+        assert_eq!(at(1, 8), &[0, 0, 0, 0]);
+        for px in rgba.chunks_exact(4) {
+            assert!(px[3] == 0 || px[..3] == [255, 0, 0], "pixel {px:?}");
+        }
+    }
+
+    #[test]
+    fn downscale_of_a_large_icon_is_bounded_and_exact_on_flat_colour() {
+        // 256 -> 48 (the shell's SIIGBF_BIGGERSIZEOK case): a flat colour
+        // survives untouched, and alpha of a half-transparent flat image too.
+        let image = IconImage::new(256, 256, [10, 20, 30, 200].repeat(256 * 256)).unwrap();
+        let fitted = image.fit_within(48);
+        assert_eq!((fitted.width, fitted.height), (48, 48));
+        assert!(
+            fitted
+                .rgba
+                .chunks_exact(4)
+                .all(|px| px == [10, 20, 30, 200])
+        );
     }
 }

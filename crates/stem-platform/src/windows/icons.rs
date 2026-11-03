@@ -2,25 +2,40 @@
 //!
 //! Icon key scheme (produced in `rules::identity` for `identity`/`enumerate`,
 //! consumed by [`IconCache::get_or_load`]):
-//! - `hwnd:<id>:<pid>`: the window's own icon (`WM_GETICON` via
-//!   `SendMessageTimeoutW`, then `GCLP_HICON`, then exe icon). The process
-//!   id is part of the key because HWND values are recycled; the older
-//!   two-part `hwnd:<id>` form is still accepted (the pid is ignored when
-//!   loading).
+//! - `hwnd:<id>:<pid>`: the window's own icon. The candidates `WM_GETICON`
+//!   `ICON_BIG` / `ICON_SMALL` (via `SendMessageTimeoutW`) and `GCLP_HICON` /
+//!   `GCLP_HICONSM` are gathered and the largest (by `GetIconInfo`
+//!   dimensions) wins; when it is smaller than the requested size and the
+//!   window's exe is known, the exe chain is tried first and its result is
+//!   used if it is larger than the window icon. The process id is part of
+//!   the key because HWND values are recycled; the older two-part
+//!   `hwnd:<id>` form is still accepted (the pid is ignored when loading).
 //! - `exe:<path>`: the executable's main icon (`IShellItemImageFactory`,
 //!   then `PrivateExtractIconsW`, then `SHGetFileInfoW`)
 //! - `file:<path>`: any file's shell icon (shortcuts, documents); same chain
 //! - `aumid:<id>`: a packaged app's logo (`shell:AppsFolder\<aumid>` through
 //!   `IShellItemImageFactory`)
 //!
-//! Output is always 32-bit RGBA PNG bytes. `HICON` -> pixels goes through
-//! `GetIconInfo` + `GetDIBits` with alpha preserved; all GDI objects are freed
-//! (RAII guards in `util`). The pixel maths live in `rules::icons`, which is
-//! unit-tested on every host. `exe:`, `file:` and `aumid:` results are
-//! cached per (key, size) in memory; `hwnd:` results are **not** cached
-//! (window icons are cheap to read, the window may change its icon, and a
-//! stale entry could outlive the window), the UI caches them per key for
-//! the session. Nothing is cached on disk.
+//! Output is always 32-bit RGBA PNG bytes whose longer edge is **at most**
+//! the requested size: the shell is asked with `SIIGBF_BIGGERSIZEOK`, so it
+//! hands back the next larger image an icon has (often 256 px) instead of
+//! resampling itself, and class or window icons come at whatever size the
+//! app registered; everything larger than requested is shrunk here with the
+//! area-averaging filter in `rules::icons` (`IconImage::fit_within`), which
+//! averages premultiplied colour so alpha edges stay clean. Nothing is ever
+//! upscaled by this module (an icon whose largest image is smaller than the
+//! request is returned at its own size; the UI decides how to draw it).
+//! `HICON` -> pixels goes through `GetIconInfo` + `GetDIBits` with alpha
+//! preserved; all GDI objects are freed (RAII guards in `util`). The pixel
+//! maths live in `rules::icons`, which is unit-tested on every host. One
+//! `debug` line per real load (never per cache hit) names the key, the
+//! requested size, the chain that won and the source and output dimensions.
+//!
+//! `exe:`, `file:` and `aumid:` results are cached per (key, size) in
+//! memory; `hwnd:` results are **not** cached (window icons are cheap to
+//! read, the window may change its icon, and a stale entry could outlive the
+//! window), the UI caches them per key for the session. Nothing is cached
+//! on disk.
 //!
 //! Ownership rules (see `docs/development/windows-rules.md`):
 //! - icons from `WM_GETICON` / `GCLP_HICON` are **shared** with the window and
@@ -28,8 +43,9 @@
 //! - icons from `PrivateExtractIconsW` / `SHGetFileInfoW` and bitmaps from
 //!   `GetIconInfo` / `GetImage` are **owned** and wrapped in guards.
 //!
-//! Bounds: `WM_GETICON` uses a 200 ms `SMTO_ABORTIFHUNG` timeout; dimensions
-//! are capped by `rules::icons::MAX_EDGE`.
+//! Bounds: each `WM_GETICON` uses a 200 ms `SMTO_ABORTIFHUNG` timeout and
+//! the second one is skipped when the first timed out; dimensions are capped
+//! by `rules::icons::MAX_EDGE`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -53,7 +69,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use super::util::{self, OwnedBitmap, OwnedIcon, ScreenDc};
-use crate::rules::icons::{self as pixels, AlphaMode, IconConvertError};
+use crate::rules::icons::{self as pixels, AlphaMode, IconConvertError, IconImage};
 use crate::rules::identity::{apps_folder_parsing_name, parse_hwnd_icon_value};
 use crate::{PlatformError, PlatformResult};
 
@@ -100,8 +116,22 @@ impl IconCache {
     }
 }
 
+/// What a chain produced: the decoded image at its source size, and the
+/// chain's name for the log line.
+struct Loaded {
+    chain: &'static str,
+    image: IconImage,
+}
+
+impl Loaded {
+    fn new(chain: &'static str, image: IconImage) -> Self {
+        Self { chain, image }
+    }
+}
+
 /// Resolve a key to PNG bytes without caching. `Ok(None)` for keys of an
-/// unknown namespace, dead windows, missing files and icon-less files.
+/// unknown namespace, dead windows, missing files and icon-less files. The
+/// PNG's longer edge is at most `size` (clamped to 16..=256).
 pub fn load_icon_png(key: &IconKey, size: u32) -> PlatformResult<Option<Vec<u8>>> {
     let size = size.clamp(MIN_SIZE, MAX_SIZE);
     let Some((namespace, value)) = key.0.split_once(':') else {
@@ -111,18 +141,30 @@ pub fn load_icon_png(key: &IconKey, size: u32) -> PlatformResult<Option<Vec<u8>>
         return Ok(None);
     }
     let _com = util::ComApartment::sta();
-    match namespace {
-        UNCACHED_NAMESPACE => load_window_icon(value, size),
-        "exe" | "file" => load_file_icon(value, size),
-        "aumid" => shell_item_image(&apps_folder_parsing_name(value), size),
-        _ => Ok(None),
-    }
+    let loaded = match namespace {
+        UNCACHED_NAMESPACE => load_window_icon(value, size)?,
+        "exe" | "file" => load_file_icon(value, size)?,
+        "aumid" => shell_item_image(&apps_folder_parsing_name(value), size)?,
+        _ => None,
+    };
+    let Some(Loaded { chain, image }) = loaded else {
+        return Ok(None);
+    };
+    let (source_w, source_h) = (image.width, image.height);
+    let image = image.fit_within(size);
+    let png = image.encode_png().map_err(convert_error)?;
+    log::debug!(
+        "icon {}: {size} px via {chain}: source {source_w}x{source_h}, output {}x{}",
+        key.0,
+        image.width,
+        image.height
+    );
+    Ok(Some(png))
 }
 
-/// `hwnd:` chain: `WM_GETICON(ICON_BIG)` (then `ICON_SMALL`), `GCLP_HICON`
-/// (then `GCLP_HICONSM`), then the process image's icon. `value` is
-/// `<id>:<pid>` or the older bare `<id>`.
-fn load_window_icon(value: &str, size: u32) -> PlatformResult<Option<Vec<u8>>> {
+/// `hwnd:` chain (see the module docs). `value` is `<id>:<pid>` or the older
+/// bare `<id>`.
+fn load_window_icon(value: &str, size: u32) -> PlatformResult<Option<Loaded>> {
     let Some(id) = parse_hwnd_icon_value(value) else {
         return Ok(None);
     };
@@ -132,32 +174,98 @@ fn load_window_icon(value: &str, size: u32) -> PlatformResult<Option<Vec<u8>>> {
         log::debug!("hwnd:{id}: window is gone");
         return Ok(None);
     }
-    let shared = window_message_icon(hwnd, ICON_BIG)
-        .or_else(|| window_message_icon(hwnd, ICON_SMALL))
-        .or_else(|| class_icon(hwnd, GCLP_HICON))
-        .or_else(|| class_icon(hwnd, GCLP_HICONSM));
-    if let Some(icon) = shared {
-        match icon_to_png(icon) {
-            Ok(Some(png)) => return Ok(Some(png)),
+    let window =
+        largest_window_icon(hwnd).and_then(|candidate| match icon_to_image(candidate.icon) {
+            Ok(Some(image)) => Some(Loaded::new(candidate.source, image)),
+            Ok(None) => None,
+            Err(e) => {
+                log::debug!("hwnd:{id}: converting the window icon failed: {e}");
+                None
+            }
+        });
+    // A window icon at least as large as requested is the answer.
+    if let Some(found) = &window
+        && found.image.edge() >= size
+    {
+        return Ok(window);
+    }
+    // Otherwise the exe's icon (large, high quality) is preferred, when the
+    // process is known and it really is larger than what the window offers.
+    if let Some(path) = window_exe_path(hwnd, id) {
+        match load_file_icon(&path, size) {
+            Ok(Some(from_exe))
+                if window
+                    .as_ref()
+                    .is_none_or(|w| from_exe.image.edge() > w.image.edge()) =>
+            {
+                return Ok(Some(from_exe));
+            }
+            Ok(Some(from_exe)) => log::trace!(
+                "hwnd:{id}: exe icon ({}x{}) is no larger than the window icon; keeping the window icon",
+                from_exe.image.width,
+                from_exe.image.height
+            ),
             Ok(None) => {}
-            Err(e) => log::debug!("hwnd:{id}: converting the window icon failed: {e}"),
+            Err(e) => log::debug!("hwnd:{id}: exe icon failed: {e}"),
         }
     }
-    match super::enumerate::query_window(hwnd) {
-        Ok(Some(raw)) => match raw.exe_path {
-            Some(path) => load_file_icon(&path.to_string_lossy(), size),
-            None => Ok(None),
-        },
-        Ok(None) => Ok(None),
-        Err(e) => {
-            log::debug!("hwnd:{id}: no exe icon fallback (query_window: {e})");
-            Ok(None)
-        }
-    }
+    Ok(window)
 }
 
-/// `WM_GETICON` with a bounded timeout. The icon belongs to the window.
-fn window_message_icon(hwnd: HWND, which: u32) -> Option<HICON> {
+/// A shared window or class icon with its source and measured edge.
+#[derive(Debug, Clone, Copy)]
+struct WindowIconCandidate {
+    icon: HICON,
+    source: &'static str,
+    edge: u32,
+}
+
+/// Gather the window's icon candidates and pick the largest by
+/// `GetIconInfo` dimensions (ties keep the earlier one: `ICON_BIG` first).
+/// Shared handles; nothing here is destroyed. `None` when the window offers
+/// no icon at all.
+fn largest_window_icon(hwnd: HWND) -> Option<WindowIconCandidate> {
+    let mut candidates: Vec<(HICON, &'static str)> = Vec::with_capacity(4);
+    let mut push = |icon: Option<HICON>, source: &'static str| {
+        if let Some(icon) = icon
+            && !candidates.iter().any(|(seen, _)| seen.0 == icon.0)
+        {
+            candidates.push((icon, source));
+        }
+    };
+    let (big, answered) = window_message_icon(hwnd, ICON_BIG);
+    push(big, "WM_GETICON(ICON_BIG)");
+    if answered {
+        push(
+            window_message_icon(hwnd, ICON_SMALL).0,
+            "WM_GETICON(ICON_SMALL)",
+        );
+    } else {
+        log::trace!(
+            "window {:?}: WM_GETICON(ICON_BIG) got no answer; skipping ICON_SMALL",
+            hwnd.0
+        );
+    }
+    push(class_icon(hwnd, GCLP_HICON), "GCLP_HICON");
+    push(class_icon(hwnd, GCLP_HICONSM), "GCLP_HICONSM");
+
+    let mut best: Option<WindowIconCandidate> = None;
+    for (icon, source) in candidates {
+        let Some((w, h)) = icon_dimensions(icon) else {
+            continue;
+        };
+        let edge = w.max(h);
+        if best.is_none_or(|b| edge > b.edge) {
+            best = Some(WindowIconCandidate { icon, source, edge });
+        }
+    }
+    best
+}
+
+/// `WM_GETICON` with a bounded timeout. Returns the icon (which belongs to
+/// the window) and whether the window answered at all; a `false` means the
+/// target is hung (or gone) and further messages are pointless.
+fn window_message_icon(hwnd: HWND, which: u32) -> (Option<HICON>, bool) {
     let mut result: usize = 0;
     // SAFETY: WM_GETICON carries no pointers; `result` is a valid out-pointer;
     // a hung or elevated target makes the call return 0 within the timeout.
@@ -172,10 +280,13 @@ fn window_message_icon(hwnd: HWND, which: u32) -> Option<HICON> {
             Some(&mut result),
         )
     };
-    if sent.0 == 0 || result == 0 {
-        return None;
+    if sent.0 == 0 {
+        return (None, false);
     }
-    Some(HICON(result as *mut core::ffi::c_void))
+    if result == 0 {
+        return (None, true);
+    }
+    (Some(HICON(result as *mut core::ffi::c_void)), true)
 }
 
 /// The window class icon. Shared; not destroyed.
@@ -186,25 +297,41 @@ fn class_icon(hwnd: HWND, index: GET_CLASS_LONG_INDEX) -> Option<HICON> {
     (value != 0).then_some(HICON(value as *mut core::ffi::c_void))
 }
 
+/// The window's process image path (as a string), for the exe fallback of
+/// the `hwnd:` chain. `None` when the window no longer qualifies or the
+/// process cannot be read.
+fn window_exe_path(hwnd: HWND, id: u64) -> Option<String> {
+    match super::enumerate::query_window(hwnd) {
+        Ok(Some(raw)) => raw.exe_path.map(|p| p.to_string_lossy().into_owned()),
+        Ok(None) => None,
+        Err(e) => {
+            log::debug!("hwnd:{id}: no exe icon fallback (query_window: {e})");
+            None
+        }
+    }
+}
+
 /// `exe:` / `file:` chain: shell image factory (large, high quality), then
 /// `PrivateExtractIconsW` at the requested size, then `SHGetFileInfoW`.
-fn load_file_icon(path: &str, size: u32) -> PlatformResult<Option<Vec<u8>>> {
+fn load_file_icon(path: &str, size: u32) -> PlatformResult<Option<Loaded>> {
     match shell_item_image(path, size) {
-        Ok(Some(png)) => return Ok(Some(png)),
+        Ok(Some(loaded)) => return Ok(Some(loaded)),
         Ok(None) => {}
         Err(e) => log::debug!("{path}: shell image factory failed: {e}"),
     }
     match extract_icon(path, size) {
-        Ok(Some(png)) => return Ok(Some(png)),
+        Ok(Some(image)) => return Ok(Some(Loaded::new("PrivateExtractIconsW", image))),
         Ok(None) => {}
         Err(e) => log::debug!("{path}: PrivateExtractIconsW failed: {e}"),
     }
-    shell_file_info_icon(path, size)
+    Ok(shell_file_info_icon(path, size)?.map(|image| Loaded::new("SHGetFileInfoW", image)))
 }
 
 /// `IShellItemImageFactory::GetImage` on a parsing name (a path or
-/// `shell:AppsFolder\<aumid>`). The bitmap is 32-bit premultiplied ARGB.
-fn shell_item_image(parsing_name: &str, size: u32) -> PlatformResult<Option<Vec<u8>>> {
+/// `shell:AppsFolder\<aumid>`), asking for `size` but accepting a bigger
+/// image (`SIIGBF_BIGGERSIZEOK`) so the shell does not resample; the
+/// caller shrinks it. The bitmap is 32-bit premultiplied ARGB.
+fn shell_item_image(parsing_name: &str, size: u32) -> PlatformResult<Option<Loaded>> {
     let name = util::to_wide(parsing_name);
     // SAFETY: `name` is NUL-terminated and outlives the call; no bind context.
     let factory: IShellItemImageFactory =
@@ -221,11 +348,12 @@ fn shell_item_image(parsing_name: &str, size: u32) -> PlatformResult<Option<Vec<
     let Some(bitmap) = OwnedBitmap::new(hbm) else {
         return Ok(None);
     };
-    bitmap_to_png(&bitmap, AlphaMode::Premultiplied).map(Some)
+    let image = bitmap_to_image(&bitmap, AlphaMode::Premultiplied)?;
+    Ok(Some(Loaded::new("IShellItemImageFactory", image)))
 }
 
 /// `PrivateExtractIconsW` at exactly `size`. Owned icon.
-fn extract_icon(path: &str, size: u32) -> PlatformResult<Option<Vec<u8>>> {
+fn extract_icon(path: &str, size: u32) -> PlatformResult<Option<IconImage>> {
     let wide = util::to_wide(path);
     if wide.len() > MAX_PATH {
         return Ok(None);
@@ -244,12 +372,12 @@ fn extract_icon(path: &str, size: u32) -> PlatformResult<Option<Vec<u8>>> {
     let Some(icon) = OwnedIcon::new(icons[0]) else {
         return Ok(None);
     };
-    icon_to_png(icon.handle())
+    icon_to_image(icon.handle())
 }
 
 /// `SHGetFileInfoW(SHGFI_ICON)`: the shell's icon for any file, at the
 /// system large (32) or small (16) size. Owned icon.
-fn shell_file_info_icon(path: &str, size: u32) -> PlatformResult<Option<Vec<u8>>> {
+fn shell_file_info_icon(path: &str, size: u32) -> PlatformResult<Option<IconImage>> {
     let wide = util::to_wide(path);
     let mut info = SHFILEINFOW::default();
     let size_flag = if size > 24 {
@@ -274,19 +402,43 @@ fn shell_file_info_icon(path: &str, size: u32) -> PlatformResult<Option<Vec<u8>>
     let Some(icon) = OwnedIcon::new(info.hIcon) else {
         return Ok(None);
     };
-    icon_to_png(icon.handle())
+    icon_to_image(icon.handle())
 }
 
-/// `HICON` -> PNG. Works for shared and owned icons alike; the caller keeps
-/// ownership of `icon`. The bitmaps `GetIconInfo` creates are ours and are
-/// deleted here.
-fn icon_to_png(icon: HICON) -> PlatformResult<Option<Vec<u8>>> {
+/// The bitmaps of an icon, as `GetIconInfo` hands them out: copies we own.
+/// A monochrome icon has no colour bitmap and a mask twice the icon height.
+struct IconBitmaps {
+    color: Option<OwnedBitmap>,
+    mask: OwnedBitmap,
+}
+
+fn icon_bitmaps(icon: HICON) -> PlatformResult<Option<IconBitmaps>> {
     let mut info = ICONINFO::default();
     // SAFETY: `info` is a valid out-pointer; GetIconInfo hands us copies of
-    // the icon's bitmaps, which the guards below delete.
+    // the icon's bitmaps, which the guards delete.
     unsafe { GetIconInfo(icon, &mut info) }?;
     let color = OwnedBitmap::new(info.hbmColor);
-    let Some(mask) = OwnedBitmap::new(info.hbmMask) else {
+    Ok(OwnedBitmap::new(info.hbmMask).map(|mask| IconBitmaps { color, mask }))
+}
+
+/// Width and height of an icon from its `GetIconInfo` bitmaps, or `None`
+/// when they cannot be read. The bitmaps are deleted before returning.
+fn icon_dimensions(icon: HICON) -> Option<(u32, u32)> {
+    let bitmaps = icon_bitmaps(icon).ok()??;
+    match &bitmaps.color {
+        Some(color) => bitmap_dimensions(color.handle()).ok(),
+        None => {
+            let (w, h) = bitmap_dimensions(bitmaps.mask.handle()).ok()?;
+            Some((w, h / 2))
+        }
+    }
+}
+
+/// `HICON` -> straight-alpha image. Works for shared and owned icons alike;
+/// the caller keeps ownership of `icon`. The bitmaps `GetIconInfo` creates
+/// are ours and are deleted here.
+fn icon_to_image(icon: HICON) -> PlatformResult<Option<IconImage>> {
+    let Some(IconBitmaps { color, mask }) = icon_bitmaps(icon)? else {
         return Ok(None);
     };
     let dc = ScreenDc::new()?;
@@ -300,7 +452,7 @@ fn icon_to_png(icon: HICON) -> PlatformResult<Option<Vec<u8>>> {
             } else {
                 None
             };
-            pixels::convert_icon(w, h, &color_px, mask_px.as_deref(), AlphaMode::Straight)
+            pixels::decode_icon(w, h, &color_px, mask_px.as_deref(), AlphaMode::Straight)
                 .map(Some)
                 .map_err(convert_error)
         }
@@ -313,19 +465,19 @@ fn icon_to_png(icon: HICON) -> PlatformResult<Option<Vec<u8>>> {
             else {
                 return Ok(None);
             };
-            pixels::convert_icon(mask_w, h, xor_image, Some(and_mask), AlphaMode::Straight)
+            pixels::decode_icon(mask_w, h, xor_image, Some(and_mask), AlphaMode::Straight)
                 .map(Some)
                 .map_err(convert_error)
         }
     }
 }
 
-/// An owned 32-bit bitmap (image factory output) -> PNG.
-fn bitmap_to_png(bitmap: &OwnedBitmap, alpha: AlphaMode) -> PlatformResult<Vec<u8>> {
+/// An owned 32-bit bitmap (image factory output) -> straight-alpha image.
+fn bitmap_to_image(bitmap: &OwnedBitmap, alpha: AlphaMode) -> PlatformResult<IconImage> {
     let dc = ScreenDc::new()?;
     let (w, h) = bitmap_dimensions(bitmap.handle())?;
     let bgra = read_bgra(&dc, bitmap.handle(), w, h)?;
-    pixels::convert_icon(w, h, &bgra, None, alpha).map_err(convert_error)
+    pixels::decode_icon(w, h, &bgra, None, alpha).map_err(convert_error)
 }
 
 /// Width and height of a bitmap via `GetObjectW`, validated against the
