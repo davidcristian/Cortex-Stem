@@ -770,6 +770,22 @@ test.describe('dock in mock mode', () => {
     await page.waitForTimeout(150);
     expect(await callsOfType(page, 'showItemMenu')).toBe(1);
     expect(await callsOfType(page, 'showDockMenu')).toBe(1);
+
+    // The transparent stage outside the panel takes clicks during a drag and
+    // when click-through is off: never the browser's own menu there.
+    // dispatchEvent returns false when a listener called preventDefault.
+    const browserMenuAllowed = await page.evaluate(() =>
+      document.querySelector('.dock-stage')!.dispatchEvent(
+        new MouseEvent('contextmenu', {
+          bubbles: true,
+          cancelable: true,
+          clientX: 10,
+          clientY: 10,
+        }),
+      ),
+    );
+    expect(browserMenuAllowed).toBe(false);
+    expect(await callsOfType(page, 'showDockMenu')).toBe(1);
   });
 
   test('clicking the active app minimises it; the mock reports window sizing', async ({ page }) => {
@@ -804,6 +820,22 @@ test.describe('settings window', () => {
     await expect(page.locator('.page[data-ready="true"]')).toBeVisible();
     await expect(page.locator('.status')).toHaveText('Saved');
   }
+
+  test('no browser context menu anywhere on the page', async ({ page }) => {
+    await openSettings(page);
+    // dispatchEvent returns false when a listener called preventDefault.
+    const allowed = await page.evaluate(() =>
+      document.querySelector('h1')!.dispatchEvent(
+        new MouseEvent('contextmenu', {
+          bubbles: true,
+          cancelable: true,
+          clientX: 30,
+          clientY: 30,
+        }),
+      ),
+    );
+    expect(allowed).toBe(false);
+  });
 
   test('dark', async ({ page }) => {
     await page.emulateMedia({ colorScheme: 'dark' });

@@ -98,6 +98,9 @@
   });
 </script>
 
+<!-- A native-looking window has no browser context menu (Back, Reload, Inspect…). -->
+<svelte:window oncontextmenu={(e) => e.preventDefault()} />
+
 <div class="page" style:--accent={accent} data-ready={settings !== null ? 'true' : undefined}>
   <header class="top">
     <h1>Settings</h1>

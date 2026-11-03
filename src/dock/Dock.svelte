@@ -733,6 +733,15 @@
     }
   }
 
+  // WebView2's own context menu (Back, Forward, Reload, Inspect…) must never
+  // appear. The transparent stage outside the panel takes clicks while an
+  // icon is being dragged and whenever click-through is off, and a
+  // right-click there reached the browser's menu. Item and panel
+  // menus are native and already handled; their events bubble up here after.
+  function onwindowcontextmenu(e: MouseEvent): void {
+    e.preventDefault();
+  }
+
   function openSettings(): void {
     void backend.openSettings().catch(report('Opening Settings'));
   }
@@ -931,6 +940,7 @@
   onpointerup={onwindowpointerup}
   onpointercancel={onwindowpointercancel}
   onresize={onwindowresize}
+  oncontextmenu={onwindowcontextmenu}
 />
 
 <div
