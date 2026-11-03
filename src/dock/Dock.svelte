@@ -2,8 +2,16 @@
   import { onMount } from 'svelte';
 
   import DockItem from '$lib/components/DockItem.svelte';
-  import { hitRegionFor, magnifiedRise, sameHitRegion, type HitRegion } from '$lib/dock/geometry';
-  import { iconRequestSize } from '$lib/dock/icon-size';
+  import {
+    hitRegionFor,
+    magnifiedRise,
+    sameHitRegion,
+    sameSnap,
+    snapOffsets,
+    type HitRegion,
+    type SnapMargins,
+  } from '$lib/dock/geometry';
+  import { iconSources } from '$lib/dock/icon-size';
   import { itemTransition } from '$lib/dock/item-transition';
   import { computeScales, maxGrowth, type MagnifyParams } from '$lib/dock/magnify';
   import {
@@ -81,8 +89,12 @@
       settings?.magnification.enabled && !reducedMotion ? settings.magnification.maxScale : 1,
     rangeIcons: settings?.magnification.rangeIcons ?? 3,
   });
-  // Icons render at their true magnified size, so the source must cover it.
-  const requestSize = $derived(iconRequestSize(iconSize, magnify.maxScale, dpr));
+  // Two bitmaps per app icon: exactly the rest size in device pixels,
+  // drawn 1:1, and the ladder size that covers the true magnified box. One
+  // request when they coincide (magnification off, reduced motion, the top
+  // of the ladder).
+  const iconSizes = $derived(iconSources(iconSize, magnify.maxScale, dpr));
+  const dualSources = $derived(iconSizes.magnified !== iconSizes.rest);
   const tooltipsEnabled = $derived(settings?.appearance.tooltips ?? true);
   const bounceEnabled = $derived((settings?.appearance.bounceOnLaunch ?? true) && !reducedMotion);
   const itemMotion = $derived(!reducedMotion);
@@ -105,10 +117,19 @@
   });
 
   // --- Icons ------------------------------------------------------------------
+  // The rest bitmaps first: they are what shows at startup; the magnified
+  // ones can arrive behind them.
   $effect(() => {
     for (const item of items) {
       if (item.iconKey !== null) {
-        store.ensureIcon(item.iconKey, requestSize);
+        store.ensureIcon(item.iconKey, iconSizes.rest);
+      }
+    }
+    if (dualSources) {
+      for (const item of items) {
+        if (item.iconKey !== null) {
+          store.ensureIcon(item.iconKey, iconSizes.magnified);
+        }
       }
     }
   });
@@ -141,6 +162,8 @@
   let centres = new Float64Array(0);
   let scales = new Float64Array(0);
   let applied = new Float64Array(0);
+  /** Which slots show their magnified bitmap (`data-magnified`, DockItem.svelte). */
+  let magnified: boolean[] = [];
   let pointerX = 0;
   let hovering = false;
   let frame = 0;
@@ -162,6 +185,7 @@
     // Slots keep whatever scale they last had; start from that, not from 1,
     // so a slot the pointer has left is still eased back.
     applied = Float64Array.from(slots, (el) => Number(el.style.getPropertyValue('--scale') || '1'));
+    magnified = slots.map((el) => el.dataset.magnified !== undefined);
     if (hovering) {
       scheduleFrame();
     }
@@ -200,10 +224,38 @@
       if (s !== applied[i]) {
         applied[i] = s;
         slots[i]!.style.setProperty('--scale', String(s));
+        // Same style flush as the size, so the box never shows the rest
+        // bitmap larger than 1:1 (while tracking the pointer nothing eases).
+        setMagnified(i, s > 1);
       }
     }
   }
 
+  /** Switch slot `i` between its rest bitmap (1:1) and its magnified one. */
+  function setMagnified(i: number, on: boolean): void {
+    if (magnified[i] === on) {
+      return;
+    }
+    magnified[i] = on;
+    if (on) {
+      slots[i]!.dataset.magnified = '';
+    } else {
+      delete slots[i]!.dataset.magnified;
+    }
+  }
+
+  /** Every box is back at its rest size: the rest bitmaps can show again. */
+  function showRestIcons(): void {
+    for (let i = 0; i < slots.length; i += 1) {
+      setMagnified(i, false);
+    }
+  }
+
+  /**
+   * Back to scale 1. While `settling` the boxes ease back over 120 ms, so
+   * the magnified bitmaps stay until the settle timer fires; otherwise the
+   * boxes are at rest in the same flush and the rest bitmaps show now.
+   */
   function resetMagnification(): void {
     if (frame !== 0) {
       cancelAnimationFrame(frame);
@@ -214,6 +266,9 @@
         applied[i] = 1;
         slots[i]!.style.setProperty('--scale', '1');
       }
+    }
+    if (!settling) {
+      showRestIcons();
     }
   }
 
@@ -247,6 +302,7 @@
       settleTimer = setTimeout(() => {
         settleTimer = null;
         settling = false;
+        showRestIcons();
         measurePanel();
       }, 160);
     }
@@ -676,8 +732,15 @@
   // Both are reported from the panel's *rest* geometry: never while the
   // pointer magnifies icons, while they ease back, or while an item is
   // animating in or out. Each report goes out only when its values changed.
-  /** The panel's bounding box at rest, viewport-relative CSS px (fractional). */
+  /** The panel's bounding box at rest, viewport-relative CSS px, after snapping. */
   let measured: Rect | null = null;
+  /**
+   * The inline margins that hold the panel on whole device pixels.
+   * The stage centres the panel, so with an odd `innerWidth − panelWidth`
+   * every bitmap inside would sit on a half pixel and be smeared by the
+   * compositor; the margins cancel that (see `snapOffsets`).
+   */
+  let snapMargins: SnapMargins = { marginLeft: 0, marginBottom: BOTTOM_MARGIN };
   let reported = { width: 0, height: 0 };
   let reportedHit: HitRegion | null = null;
   let measureFrame = 0;
@@ -705,7 +768,24 @@
     if (!panel || hovering || settling || drag?.started || itemsInFlight(panel)) {
       return;
     }
-    const rect = panel.getBoundingClientRect();
+    let rect = panel.getBoundingClientRect();
+    // Snap to whole device pixels. Only here, at rest: a magnified
+    // or dragged panel is not measured at all, and the window's height only
+    // ever changes by whole device pixels, so a snap survives Rust's resize.
+    // The live ratio, not `dpr`: this runs again whenever the geometry does.
+    const snap = snapOffsets(
+      rect.left,
+      rect.top,
+      window.devicePixelRatio || 1,
+      snapMargins.marginLeft,
+      snapMargins.marginBottom,
+    );
+    if (!sameSnap(snapMargins, snap)) {
+      snapMargins = snap;
+      panel.style.marginLeft = `${snap.marginLeft}px`;
+      panel.style.marginBottom = `${snap.marginBottom}px`;
+      rect = panel.getBoundingClientRect();
+    }
     measured = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
     reportSize();
   }
@@ -716,7 +796,7 @@
     }
     const width = Math.ceil(measured.width + 2 * SIDE_SLACK + maxGrowth(slotPx, magnify));
     const height = Math.ceil(
-      measured.height + BOTTOM_MARGIN + iconSize * (magnify.maxScale - 1) + HEADROOM,
+      measured.height + snapMargins.marginBottom + iconSize * (magnify.maxScale - 1) + HEADROOM,
     );
     if (width !== reported.width || height !== reported.height) {
       reported = { width, height };
@@ -869,7 +949,10 @@
         {:else}
           <DockItem
             {item}
-            iconUrl={item.iconKey !== null ? store.icon(item.iconKey, requestSize) : null}
+            iconUrl={item.iconKey !== null ? store.icon(item.iconKey, iconSizes.rest) : null}
+            magnifiedIconUrl={item.iconKey !== null && dualSources
+              ? store.icon(item.iconKey, iconSizes.magnified)
+              : null}
             {showDots}
             tooltip={tooltipKey === item.key}
             bounce={bounceEnabled && store.bounceKey === item.key ? store.bounceSerial : 0}
@@ -968,7 +1051,9 @@
   }
 
   /* Content-sized and centred by the stage: items animating in and out
-     widen and narrow it without the window ever resizing (docs/ipc/sizing-protocol.md). */
+     widen and narrow it without the window ever resizing (docs/ipc/sizing-protocol.md).
+     `measurePanel` sets inline `margin-left` / `margin-bottom` on top of
+     these to hold the panel on whole device pixels. */
   .dock-panel {
     position: relative;
     display: flex;

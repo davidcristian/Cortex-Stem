@@ -110,27 +110,192 @@ function scaleOf(page: Page, index: number): Promise<number> {
     .evaluate((el) => Number(el.style.getPropertyValue('--scale') || '1'));
 }
 
-/** The natural width of every app icon bitmap on the page (what `get_icon` was asked for). */
-function iconSourceWidths(page: Page): Promise<number[]> {
-  return page.$$eval('.icon img', (imgs) =>
-    imgs.map((img) => (img as HTMLImageElement).naturalWidth),
+/** One app slot's two bitmaps: their natural widths, which is displayed, and the switch. */
+interface IconPair {
+  /** Natural width of `img.rest`, the bitmap drawn 1:1 at rest (`null` when absent). */
+  rest: number | null;
+  /** Natural width of `img.magnified`, the ladder bitmap (`null` when the rest one serves both). */
+  magnified: number | null;
+  /** Natural widths of the images actually displayed: exactly one at any time. */
+  shown: number[];
+  /** `data-magnified` on the slot, set by the dock's magnification controller. */
+  magnifiedAttr: boolean;
+}
+
+function iconPairs(page: Page): Promise<IconPair[]> {
+  return page.$$eval(APP_SLOT, (slots) =>
+    slots.map((slot) => {
+      const rest = slot.querySelector<HTMLImageElement>('img.rest');
+      const magnified = slot.querySelector<HTMLImageElement>('img.magnified');
+      return {
+        rest: rest?.naturalWidth ?? null,
+        magnified: magnified?.naturalWidth ?? null,
+        shown: [rest, magnified]
+          .filter(
+            (img): img is HTMLImageElement =>
+              img !== null && getComputedStyle(img).display !== 'none',
+          )
+          .map((img) => img.naturalWidth),
+        magnifiedAttr: slot.hasAttribute('data-magnified'),
+      };
+    }),
   );
+}
+
+/**
+ * Every app slot has exactly `expected` bitmaps. The magnified ones are
+ * requested behind the rest ones (`openDock` only waits for the latter), so
+ * this polls until they have arrived.
+ */
+async function expectIconPairs(page: Page, expected: IconPair): Promise<void> {
+  const count = await page.locator(APP_SLOT).count();
+  expect(count).toBeGreaterThan(0);
+  await expect.poll(() => iconPairs(page)).toEqual(Array.from({ length: count }, () => expected));
+}
+
+/**
+ * The panel's and one icon's top-left corner in device pixels, and the
+ * inline snap margins. `icon` is the first app icon's rest bitmap
+ * unless another selector is given.
+ */
+function snapState(
+  page: Page,
+  iconSelector = `${APP_SLOT} img.rest`,
+): Promise<{
+  dpr: number;
+  panel: { left: number; top: number };
+  icon: { left: number; top: number };
+  marginLeft: string;
+  marginBottom: string;
+}> {
+  return page.evaluate((selector) => {
+    const panel = document.querySelector<HTMLElement>('.dock-panel')!;
+    const icon = document.querySelector<HTMLElement>(selector)!;
+    const p = panel.getBoundingClientRect();
+    const i = icon.getBoundingClientRect();
+    const dpr = window.devicePixelRatio;
+    return {
+      dpr,
+      panel: { left: p.left * dpr, top: p.top * dpr },
+      icon: { left: i.left * dpr, top: i.top * dpr },
+      marginLeft: panel.style.marginLeft,
+      marginBottom: panel.style.marginBottom,
+    };
+  }, iconSelector);
+}
+
+/**
+ * Chromium lays out in 1/64 CSS px, so at a fractional device pixel ratio
+ * a snapped edge can miss the whole device pixel by that much (times the
+ * ratio); at 1× and 2× the snap is exact (src/lib/dock/geometry.ts).
+ */
+function expectWholeDevicePx(value: number, dpr: number): void {
+  expect(Math.abs(value - Math.round(value))).toBeLessThanOrEqual(dpr / 64);
 }
 
 test.describe('dock at 1× device pixel ratio', () => {
   test.use({ deviceScaleFactor: 1 });
 
-  test('dark theme at rest requests icons at the ladder size the magnification needs', async ({
+  test('rest icons are exact-size bitmaps on whole pixels; magnified ones come from the ladder', async ({
     page,
   }) => {
     await page.emulateMedia({ colorScheme: 'dark' });
     await openDock(page);
-    // Icons render at their true magnified size, so the source must cover
-    // iconSize × maxScale × DPR = 48 × 1.6 × 1 = 76.8 px: the next ladder rung is 96.
-    const widths = await iconSourceWidths(page);
-    expect(widths.length).toBeGreaterThan(0);
-    expect(new Set(widths)).toEqual(new Set([96]));
+    // Two bitmaps per app icon: 48 × 1 = 48 px for rest (drawn 1:1) and, for
+    // the true magnified size 48 × 1.6 × 1 = 76.8 px, the ladder's 96.
+    await expectIconPairs(page, { rest: 48, magnified: 96, shown: [48], magnifiedAttr: false });
+    // The 559 px panel (9 slots × 56 + 3 separators × 13 + 16 padding) centred in
+    // 1280 px would start at x = 360.5; a 1 px margin on a flex-centred box
+    // moves it by half a pixel, onto 361. Nothing is fractional vertically.
+    const atRest = await snapState(page);
+    expect(atRest.marginLeft).toBe('1px');
+    expect(atRest.panel.left).toBe(361);
+    expect(atRest.panel.top).toBe(Math.round(atRest.panel.top));
+    expect(atRest.icon.left).toBe(Math.round(atRest.icon.left));
+    expect(atRest.icon.top).toBe(Math.round(atRest.icon.top));
     await page.screenshot({ path: `${OUT}/dock-dark-1x.png` });
+
+    // Hovering: every slot whose box grew shows the ladder bitmap; the rest
+    // bitmap is never drawn in a box larger than itself.
+    await page.locator(APP_SLOT).nth(3).hover();
+    await expect.poll(() => scaleOf(page, 3)).toBeGreaterThan(1.5);
+    const hovered = await iconPairs(page);
+    expect(hovered[3]).toMatchObject({ shown: [96], magnifiedAttr: true });
+    expect(hovered[2]).toMatchObject({ shown: [96], magnifiedAttr: true });
+    expect(hovered[0]).toMatchObject({ shown: [48], magnifiedAttr: false });
+    for (let i = 0; i < hovered.length; i += 1) {
+      expect(hovered[i]!.shown).toEqual([(await scaleOf(page, i)) > 1 ? 96 : 48]);
+    }
+
+    // Leaving: the scale is reset at once but the boxes ease back over
+    // 120 ms, so the ladder bitmap stays until they are at rest again.
+    await page.mouse.move(10, 10);
+    const settling = await page.evaluate(async (selector) => {
+      const slot = document.querySelectorAll<HTMLElement>(selector)[3]!;
+      for (let i = 0; i < 10 && slot.style.getPropertyValue('--scale') !== '1'; i += 1) {
+        await new Promise(requestAnimationFrame);
+      }
+      return {
+        scale: slot.style.getPropertyValue('--scale'),
+        magnifiedAttr: slot.hasAttribute('data-magnified'),
+        shown: getComputedStyle(slot.querySelector('img.magnified')!).display,
+        panelSettling: document.querySelector('.dock-panel')!.classList.contains('settling'),
+      };
+    }, APP_SLOT);
+    expect(settling).toEqual({
+      scale: '1',
+      magnifiedAttr: true,
+      shown: 'block',
+      panelSettling: true,
+    });
+    await expect
+      .poll(async () => (await iconPairs(page))[3])
+      .toEqual({ rest: 48, magnified: 96, shown: [48], magnifiedAttr: false });
+    expect((await iconPairs(page)).every((p) => !p.magnifiedAttr)).toBe(true);
+    // Measured again after the settle: the snap is idempotent.
+    expect(await snapState(page)).toEqual(atRest);
+  });
+});
+
+test.describe('dock at 1.5× device pixel ratio', () => {
+  // An odd viewport height puts the panel's top edge (241 − 8 − 64 = 169 CSS
+  // px = 253.5 device px) on a half pixel, so the vertical snap is exercised
+  // as well as the horizontal one (360.5 CSS px = 540.75 device px).
+  test.use({ deviceScaleFactor: 1.5, viewport: { width: 1280, height: 241 } });
+
+  test('snaps the panel both ways and draws 72 px rest bitmaps', async ({ page }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openDock(page);
+    // 48 × 1.5 = 72 px at rest; 48 × 1.6 × 1.5 = 115.2 → the ladder's 128 magnified.
+    await expectIconPairs(page, { rest: 72, magnified: 128, shown: [72], magnifiedAttr: false });
+    // The first slot (Start) sits right after the panel's 8 px padding: its
+    // icon box is on whole device pixels exactly when the panel is.
+    const atRest = await snapState(page, '.slot .icon');
+    expect(atRest.dpr).toBe(1.5);
+    // margin-left = 2 × (541 − 540.75) / 1.5; margin-bottom = 8 − (254 − 253.5) / 1.5
+    // (inline style lengths come back with six significant digits).
+    expect(parseFloat(atRest.marginLeft)).toBeCloseTo(1 / 3, 4);
+    expect(parseFloat(atRest.marginBottom)).toBeCloseTo(8 - 1 / 3, 4);
+    expectWholeDevicePx(atRest.panel.left, 1.5);
+    expectWholeDevicePx(atRest.panel.top, 1.5);
+    expectWholeDevicePx(atRest.icon.left, 1.5);
+    expectWholeDevicePx(atRest.icon.top, 1.5);
+    // Known and accepted at 150 %: a separator
+    // is 13 CSS px = 19.5 device px wide, so every icon after one sits on a
+    // half device pixel. Slots themselves are 56 CSS px = 84 device px.
+    const firstApp = await snapState(page);
+    expect(Math.abs(firstApp.icon.left - Math.round(firstApp.icon.left))).toBeCloseTo(0.5, 1);
+    expectWholeDevicePx(firstApp.icon.top, 1.5);
+    await page.screenshot({ path: `${OUT}/dock-dark-1.5x.png` });
+
+    await page.locator(APP_SLOT).nth(3).hover();
+    await expect.poll(() => scaleOf(page, 3)).toBeGreaterThan(1.5);
+    expect((await iconPairs(page))[3]).toMatchObject({ shown: [128], magnifiedAttr: true });
+    await page.mouse.move(10, 10);
+    await expect
+      .poll(async () => (await iconPairs(page))[3])
+      .toMatchObject({ shown: [72], magnifiedAttr: false });
+    expect(await snapState(page, '.slot .icon')).toEqual(atRest);
   });
 });
 
@@ -139,8 +304,15 @@ test.describe('dock in mock mode', () => {
     await page.emulateMedia({ colorScheme: 'dark' });
     await openDock(page);
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-    // At 2× the source covers 48 × 1.6 × 2 = 153.6 px: ladder rung 192.
-    expect(new Set(await iconSourceWidths(page))).toEqual(new Set([192]));
+    // At 2×: 96 px rest bitmaps (48 × 2, drawn 1:1) and 192 px magnified
+    // ones (48 × 1.6 × 2 = 153.6 → the ladder's 192).
+    await expectIconPairs(page, { rest: 96, magnified: 192, shown: [96], magnifiedAttr: false });
+    // 360.5 CSS px is 721 device px at 2×: already whole, nothing to snap.
+    const atRest = await snapState(page);
+    expect(atRest.marginLeft).toBe('');
+    expect(atRest.panel.left).toBe(721);
+    expect(atRest.panel.top).toBe(Math.round(atRest.panel.top));
+    expect(atRest.icon.left).toBe(Math.round(atRest.icon.left));
     await page.screenshot({ path: `${OUT}/dock-dark.png` });
   });
 
@@ -280,12 +452,17 @@ test.describe('dock in mock mode', () => {
     await expect.poll(() => scaleOf(page, 3)).toBeGreaterThan(1.5);
     expect(await scaleOf(page, 2)).toBeGreaterThan(1);
     expect(await scaleOf(page, 2)).toBeLessThan(await scaleOf(page, 3));
+    // The magnified box shows the 192 px ladder bitmap, not the 96 px rest one.
+    expect((await iconPairs(page))[3]).toMatchObject({ shown: [192], magnifiedAttr: true });
     await page.screenshot({ path: `${OUT}/dock-hover.png` });
 
     // Leaving resets everything.
     await page.mouse.move(10, 10);
     await expect.poll(() => scaleOf(page, 3)).toBe(1);
     await expect(page.locator('.tooltip')).toHaveCount(0);
+    await expect
+      .poll(async () => (await iconPairs(page))[3])
+      .toMatchObject({ shown: [96], magnifiedAttr: false });
   });
 
   test('twenty apps', async ({ page }) => {
@@ -301,8 +478,8 @@ test.describe('dock in mock mode', () => {
     await page.locator(APP_SLOT).nth(3).hover();
     await expect(page.locator('.tooltip')).toHaveText('notepad');
     expect(await scaleOf(page, 3)).toBe(1);
-    // No magnification means the source only has to cover 48 × 2 = 96 px.
-    expect(new Set(await iconSourceWidths(page))).toEqual(new Set([96]));
+    // No magnification: the 48 × 2 = 96 px rest bitmap is the only one.
+    await expectIconPairs(page, { rest: 96, magnified: null, shown: [96], magnifiedAttr: false });
     await page.screenshot({ path: `${OUT}/dock-reduced-motion.png` });
 
     // Items come and go at once: no leaving slot ever lingers.

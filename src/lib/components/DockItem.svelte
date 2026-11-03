@@ -6,8 +6,19 @@
 
   interface Props {
     item: DockItem;
-    /** Resolved app icon: a data URL, `null` when there is none, `undefined` while loading. */
+    /**
+     * Resolved app icon at exactly its rest size in device pixels: a data
+     * URL, `null` when there is none, `undefined` while loading.
+     */
     iconUrl: string | null | undefined;
+    /**
+     * The ladder-size bitmap shown while the box is magnified:
+     * `null` when the rest bitmap serves both (the sizes coincide, or
+     * magnification is off), `undefined` while loading. Both images stay in
+     * the DOM; the dock's magnification controller switches them by setting
+     * `data-magnified` on the slot, so a switch is a style change, not a load.
+     */
+    magnifiedIconUrl: string | null | undefined;
     /** `behavior.runningIndicators`. */
     showDots: boolean;
     /** Show the title pill above the icon now. */
@@ -36,6 +47,7 @@
   let {
     item,
     iconUrl,
+    magnifiedIconUrl,
     showDots,
     tooltip,
     bounce,
@@ -64,6 +76,8 @@
     }
     return iconUrl === undefined ? 'loading' : 'loaded';
   });
+  /** A second, larger bitmap exists for magnification; `data-magnified` swaps to it. */
+  const dual = $derived(iconState === 'loaded' && typeof magnifiedIconUrl === 'string');
   const windowCount = $derived(item.windows.length);
   const dotCount = $derived(showDots && item.kind === 'app' ? Math.min(3, windowCount) : 0);
   const allMinimised = $derived(windowCount > 0 && item.windows.every((w) => w.isMinimized));
@@ -170,11 +184,22 @@
   {/if}
   <div class="bouncer" bind:this={bouncer}>
     <div class="wiggler" class:attention={item.needsAttention && animate}>
-      <div class="icon">
+      <div class="icon" class:dual>
         {#if shellName !== null}
           <ShellIcon name={shellName} />
         {:else if iconState === 'loaded'}
-          <img src={iconUrl} alt="" draggable="false" decoding="async" />
+          <!-- `decoding="sync"`: the hidden one of the pair is decoded in the
+               paint that first shows it, so switching never leaves a blank frame. -->
+          <img class="rest" src={iconUrl} alt="" draggable="false" decoding="sync" />
+          {#if dual}
+            <img
+              class="magnified"
+              src={magnifiedIconUrl}
+              alt=""
+              draggable="false"
+              decoding="sync"
+            />
+          {/if}
         {:else}
           <div class="placeholder" class:unknown={iconState === 'none'}></div>
         {/if}
@@ -257,6 +282,22 @@
     width: 100%;
     height: 100%;
     object-fit: contain;
+  }
+
+  /* Two bitmaps: the exact-size one at rest, drawn 1:1; the
+     ladder-size one while the box is magnified. The dock sets
+     `data-magnified` on the slot imperatively (with `--scale`, in the same
+     style flush), which is why the attribute is `:global` here. */
+  .icon img.magnified {
+    display: none;
+  }
+
+  .slot:global([data-magnified]) .icon.dual img.rest {
+    display: none;
+  }
+
+  .slot:global([data-magnified]) .icon.dual img.magnified {
+    display: block;
   }
 
   .placeholder {
