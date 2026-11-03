@@ -112,7 +112,7 @@ area, stacks and folders, widgets (clock, battery, volume), and theming.
 | Risk | Mitigation |
 |------|------------|
 | Most checks run on Linux, where the Windows code cannot run ([ADR-0004](adr/0004-linux-first-verification.md)) | Behaviour lives in `stem-core` and `stem-service`, which are tested on Linux with the mock platform; the Windows code is linted for the Windows target from Linux; CI builds the installer on Windows; the M1 exit criterion is a run on Windows by a person |
-| `SetForegroundWindow` restrictions make "activate" unreliable | Activation tries the known fallbacks and logs which one worked; a test matrix on Windows checks them |
+| `SetForegroundWindow` restrictions make "activate" unreliable | Activation tries plain `SetForegroundWindow`, then `AttachThreadInput`, then `SetForegroundWindow` while a synthetic ALT key press is held, and logs which step worked (`crates/stem-platform/src/windows/actions.rs`) |
 | WebView2 takes the focus despite `WS_EX_NOACTIVATE` | A test on Windows checks it; the fallback is to subclass the dock window and handle `WM_MOUSEACTIVATE`, with the code built for the hit-test passthrough |
 | The transparent headroom blocks clicks on the windows beneath it | The headroom is only as large as the magnified icons, the tooltips and the bounce need (`HEADROOM` in `src/dock/Dock.svelte`); hit-test passthrough sends clicks on it to the windows beneath |
 | Icon extraction is slow or fails for UWP or elevated apps | Icons are extracted on demand, off the UI thread, and cached; each icon source has a documented fallback |

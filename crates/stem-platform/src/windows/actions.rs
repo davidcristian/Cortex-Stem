@@ -11,15 +11,24 @@
 //!   taskbar candidate (see `enumerate::is_taskbar_candidate`).
 //! - Returns `WindowNotFound` for dead handles, never panics.
 //!
-//! Activation strategy (first success wins; each step is logged):
+//! Activation strategy (first success wins; the winning step is logged at
+//! debug, the fallbacks taken at debug too so a log can tell them apart):
 //! 1. `ShowWindowAsync(SW_RESTORE)` when the window is minimised (posted,
-//!    never waits on the target), then plain `SetForegroundWindow`.
-//! 2. The ALT trick: a synthetic ALT key press/release around
-//!    `SetForegroundWindow` makes the system consider our process the last
-//!    one to receive input, which satisfies the foreground-lock rules even
-//!    though the dock is a `WS_EX_NOACTIVATE` window.
-//! 3. `AttachThreadInput` to the current foreground thread, then
-//!    `SetForegroundWindow` + `BringWindowToTop`, then detach.
+//!    never waits on the target), then plain `SetForegroundWindow`. The dock
+//!    received the last input event (the click), which is one of the
+//!    conditions under which the system grants the call even from a
+//!    `WS_EX_NOACTIVATE` window, so this often succeeds.
+//! 2. `AttachThreadInput` to the current foreground thread, then
+//!    `SetForegroundWindow` + `BringWindowToTop`, then detach: sharing the
+//!    foreground thread's input queue satisfies the foreground-lock rules
+//!    without synthesising any input.
+//! 3. The ALT trick, last because it touches the keyboard state: a synthetic
+//!    ALT *down* makes the system consider our process the last one to
+//!    receive input, `SetForegroundWindow` is called while the key is held,
+//!    and ALT is released afterwards. The previously active window sees only
+//!    the press and the newly activated one only the release, so neither
+//!    sees a bare press/release pair, which would put its menu bar into
+//!    keyboard-menu mode.
 //! 4. If the window is the foreground window afterwards anyway, report
 //!    success; otherwise fail with `PlatformError::Other`.
 //!
@@ -115,16 +124,18 @@ fn activate(id: WindowId, hwnd: HWND) -> PlatformResult<()> {
         log::debug!("activate {id:?}: SetForegroundWindow");
         return Ok(());
     }
-    if activate_with_alt_trick(hwnd) {
-        log::info!("activate {id:?}: fell back to the ALT key trick");
+    log::debug!("activate {id:?}: SetForegroundWindow refused; trying AttachThreadInput");
+    if activate_with_attached_input(hwnd) {
+        log::debug!("activate {id:?}: AttachThreadInput");
         return Ok(());
     }
-    if activate_with_attached_input(hwnd) {
-        log::info!("activate {id:?}: fell back to AttachThreadInput");
+    log::debug!("activate {id:?}: AttachThreadInput refused; trying the ALT key trick");
+    if activate_with_alt_trick(hwnd) {
+        log::debug!("activate {id:?}: ALT key trick");
         return Ok(());
     }
     if is_foreground(hwnd) {
-        log::info!("activate {id:?}: SetForegroundWindow refused but the window is foreground");
+        log::debug!("activate {id:?}: every call refused but the window is foreground");
         return Ok(());
     }
     log::warn!("activate {id:?}: every activation strategy was refused");
@@ -134,14 +145,16 @@ fn activate(id: WindowId, hwnd: HWND) -> PlatformResult<()> {
     )))
 }
 
-/// Press and release ALT around the call (extended key, no scan code).
+/// Hold ALT down (extended key, no scan code) across the call and release
+/// it afterwards, so no window sees a bare press/release pair.
 fn activate_with_alt_trick(hwnd: HWND) -> bool {
     let alt = VK_MENU.0 as u8;
     // SAFETY: keybd_event synthesises input for our own thread's queue; the
     // flags are documented values.
     unsafe { keybd_event(alt, 0, KEYEVENTF_EXTENDEDKEY, 0) };
     let ok = set_foreground(hwnd);
-    // SAFETY: as above; this releases the key pressed just before.
+    // SAFETY: as above; this releases the key pressed just before, after the
+    // foreground change so the new window never sees the press.
     unsafe { keybd_event(alt, 0, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0) };
     ok
 }
