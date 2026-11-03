@@ -8,7 +8,7 @@
 //!
 //! Threading model:
 //! - the platform delivers events on its own thread into an unbounded channel
-//!   of [`WorkerMsg`]s;
+//!   of `WorkerMsg`s;
 //! - one **worker thread** (`stem-service`) drains *everything* that is
 //!   queued, applies it to the engine, and then notifies listeners once.
 //!   `State` notifications are rate-limited to one per
