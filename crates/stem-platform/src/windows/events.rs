@@ -10,13 +10,18 @@
 //! - Hook callbacks only translate the event and push a [`stem_core::PlatformEvent`]
 //!   into `sink`; all filtering goes through `enumerate::query_window`.
 //! - The thread emits an initial `WindowsSnapshot`, `MonitorsChanged`,
-//!   `ThemeChanged`, `RecycleBinChanged`, `ForegroundChanged` after setup.
+//!   `ThemeChanged`, `ForegroundChanged` after setup; the initial
+//!   `RecycleBinChanged` comes from the poll thread (below).
 //! - `WM_DISPLAYCHANGE`/`WM_DPICHANGED` -> `MonitorsChanged` + `WindowsSnapshot`.
 //! - `WM_SETTINGCHANGE` ("ImmersiveColorSet") and `WM_DWMCOLORIZATIONCOLORCHANGED`
 //!   -> `ThemeChanged` (via `theme::current_theme`).
-//! - A timer polls `recycle_bin::query` every few seconds and emits
-//!   `RecycleBinChanged` on change.
-//! - [`EventHookThread::stop`] posts `WM_QUIT`, unhooks, and joins (bounded).
+//! - A second thread (`dock-recycle-bin`, [`RecycleBinPoller`]) polls
+//!   `recycle_bin::query` every [`RECYCLE_BIN_POLL`] and emits
+//!   `RecycleBinChanged` on change. `SHQueryRecycleBinW(NULL)` walks every
+//!   drive and can block for seconds (network or sleeping drives), so the
+//!   events thread never calls it: a slow query must not delay window events.
+//! - [`EventHookThread::stop`] stops the poller, posts `WM_QUIT`, unhooks,
+//!   and joins (bounded).
 //!
 //! # Design
 //!
@@ -55,16 +60,16 @@
 //! reported as removed; one that starts qualifying on any update is reported
 //! as added, so a missed `SHOW` is healed by the next event about it.
 //!
-//! **Thread safety.** [`EventHookThread`] stores only the thread id and the
-//! `JoinHandle`; raw handles (`HWND`, `HWINEVENTHOOK`, timer ids) are `!Send`
-//! and never leave the thread.
+//! **Thread safety.** [`EventHookThread`] stores only the thread id, the
+//! `JoinHandle`s and channel ends; raw handles (`HWND`, `HWINEVENTHOOK`,
+//! timer ids) are `!Send` and never leave the events thread.
 
 use std::collections::HashSet;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, bounded};
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TryRecvError, bounded};
 use stem_core::{PlatformEvent, RecycleBinState, ThemeInfo, WindowId};
 use windows::Win32::Foundation::{
     ERROR_CLASS_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM,
@@ -124,20 +129,23 @@ const CLASS_NAME: &str = "DockPlatformEvents";
 const WINDOW_TITLE: &str = "Stem platform events";
 const SHELL_HOOK_MESSAGE_NAME: &str = "SHELLHOOK";
 
-const RECYCLE_BIN_POLL: Duration = Duration::from_secs(5);
+/// How often the Recycle Bin is queried (on its own thread).
+pub const RECYCLE_BIN_POLL: Duration = Duration::from_secs(5);
 const START_TIMEOUT: Duration = Duration::from_secs(5);
 const STOP_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// `RegisterWindowMessageW("SHELLHOOK")`: a per-process constant.
 static SHELL_HOOK_MESSAGE: OnceLock<u32> = OnceLock::new();
 
-/// Handle to the running event thread. Dropping it without `stop` asks the
-/// thread to quit but does not wait for it; prefer `stop`.
+/// Handle to the running event thread and its recycle-bin poller. Dropping
+/// it without `stop` asks both threads to quit but does not wait for them;
+/// prefer `stop`.
 #[derive(Debug)]
 pub struct EventHookThread {
     thread_id: u32,
     join: Option<JoinHandle<()>>,
     done: Receiver<()>,
+    recycle_bin: Option<RecycleBinPoller>,
 }
 
 impl EventHookThread {
@@ -145,18 +153,27 @@ impl EventHookThread {
         monitors::ensure_dpi_awareness();
         let (ready_tx, ready_rx) = bounded::<PlatformResult<u32>>(1);
         let (done_tx, done_rx) = bounded::<()>(1);
+        let events_sink = Arc::clone(&sink);
         let join = std::thread::Builder::new()
             .name("stem-platform-events".into())
-            .spawn(move || thread_main(sink, &ready_tx, &done_tx))
+            .spawn(move || thread_main(events_sink, &ready_tx, &done_tx))
             .map_err(|e| PlatformError::Other(format!("spawn events thread: {e}")))?;
         match ready_rx.recv_timeout(START_TIMEOUT) {
             Ok(Ok(thread_id)) => {
                 log::info!("events thread started (id {thread_id})");
-                Ok(Self {
+                let mut this = Self {
                     thread_id,
                     join: Some(join),
                     done: done_rx,
-                })
+                    recycle_bin: None,
+                };
+                match RecycleBinPoller::start(sink) {
+                    Ok(poller) => this.recycle_bin = Some(poller),
+                    // The dock works without the bin state; it just never
+                    // flips the icon.
+                    Err(e) => log::warn!("recycle-bin poll thread unavailable: {e}"),
+                }
+                Ok(this)
             }
             Ok(Err(e)) => {
                 if join.join().is_err() {
@@ -172,6 +189,9 @@ impl EventHookThread {
     }
 
     pub fn stop(mut self) {
+        if let Some(poller) = self.recycle_bin.take() {
+            poller.stop();
+        }
         self.post_quit();
         match self.done.recv_timeout(STOP_TIMEOUT) {
             Ok(()) | Err(RecvTimeoutError::Disconnected) => {
@@ -200,10 +220,99 @@ impl EventHookThread {
 
 impl Drop for EventHookThread {
     fn drop(&mut self) {
+        // The poller, if still present, is dropped with us, which drops its
+        // stop sender and ends its loop.
         if self.join.is_some() {
             self.post_quit();
         }
     }
+}
+
+/// The `dock-recycle-bin` thread: queries the Recycle Bin every
+/// [`RECYCLE_BIN_POLL`], starting right away (the initial emission), and
+/// calls the sink with `RecycleBinChanged` only when the state differs from
+/// the last one it emitted. Stopped by dropping the stop sender; `stop`
+/// also waits (bounded) for the thread, which may be inside a slow
+/// `SHQueryRecycleBinW` — in that case it is detached and finishes on its
+/// own without emitting (it checks for the stop before every emission).
+#[derive(Debug)]
+struct RecycleBinPoller {
+    /// Dropping it wakes the thread and tells it to stop.
+    stop: Option<Sender<()>>,
+    join: Option<JoinHandle<()>>,
+    done: Receiver<()>,
+}
+
+impl RecycleBinPoller {
+    fn start(sink: EventSink) -> PlatformResult<Self> {
+        let (stop_tx, stop_rx) = bounded::<()>(0);
+        let (done_tx, done_rx) = bounded::<()>(1);
+        let join = std::thread::Builder::new()
+            .name("dock-recycle-bin".into())
+            .spawn(move || {
+                recycle_bin_poll_loop(&sink, &stop_rx);
+                let _ = done_tx.send(());
+            })
+            .map_err(|e| PlatformError::Other(format!("spawn recycle-bin thread: {e}")))?;
+        Ok(Self {
+            stop: Some(stop_tx),
+            join: Some(join),
+            done: done_rx,
+        })
+    }
+
+    fn stop(mut self) {
+        self.stop.take();
+        match self.done.recv_timeout(STOP_TIMEOUT) {
+            Ok(()) | Err(RecvTimeoutError::Disconnected) => {
+                if let Some(join) = self.join.take()
+                    && join.join().is_err()
+                {
+                    log::error!("recycle-bin poll thread panicked");
+                }
+                log::debug!("recycle-bin poll thread stopped");
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                log::warn!(
+                    "recycle-bin poll thread did not stop within {STOP_TIMEOUT:?} (slow \
+                     SHQueryRecycleBinW?); detaching it"
+                );
+            }
+        }
+    }
+}
+
+/// Poll until the stop sender is dropped. Errors are logged once per streak.
+fn recycle_bin_poll_loop(sink: &EventSink, stop: &Receiver<()>) {
+    let mut last: Option<RecycleBinState> = None;
+    let mut error_logged = false;
+    loop {
+        match recycle_bin::query() {
+            Ok(state) => {
+                error_logged = false;
+                if last != Some(state) {
+                    // The query may have taken a while: do not emit into a
+                    // platform that was stopped meanwhile.
+                    if stop.try_recv() == Err(TryRecvError::Disconnected) {
+                        break;
+                    }
+                    last = Some(state);
+                    sink(PlatformEvent::RecycleBinChanged(state));
+                }
+            }
+            Err(e) => {
+                if !error_logged {
+                    log::debug!("recycle bin unavailable: {e}");
+                    error_logged = true;
+                }
+            }
+        }
+        // The sleep; a dropped sender ends it early.
+        if stop.recv_timeout(RECYCLE_BIN_POLL) != Err(RecvTimeoutError::Timeout) {
+            break;
+        }
+    }
+    log::debug!("recycle-bin poll loop exiting");
 }
 
 fn thread_main(sink: EventSink, ready: &Sender<PlatformResult<u32>>, done: &Sender<()>) {
@@ -388,8 +497,8 @@ impl Drop for ThreadTimer {
     }
 }
 
-/// Everything the loop owns. Field order is drop order: timers, then hooks,
-/// then the window, then the COM apartment last.
+/// Everything the loop owns. Field order is drop order: the timer, then
+/// hooks, then the window, then the COM apartment last.
 struct ThreadState {
     sink: EventSink,
     thread_id: u32,
@@ -399,9 +508,6 @@ struct ThreadState {
     known: HashSet<WindowId>,
     titles: TitleDebouncer,
     title_timer: Option<ThreadTimer>,
-    recycle_timer: Option<ThreadTimer>,
-    last_recycle_bin: Option<RecycleBinState>,
-    recycle_bin_error_logged: bool,
     last_theme: Option<ThemeInfo>,
     _hooks: Vec<WinEventHook>,
     _window: EventWindow,
@@ -418,7 +524,6 @@ impl ThreadState {
         }
         // SAFETY: GetCurrentThreadId has no preconditions.
         let thread_id = unsafe { GetCurrentThreadId() };
-        let recycle_timer = ThreadTimer::start(RECYCLE_BIN_POLL);
         Ok(Self {
             sink,
             thread_id,
@@ -426,9 +531,6 @@ impl ThreadState {
             known: HashSet::new(),
             titles: TitleDebouncer::default(),
             title_timer: None,
-            recycle_timer,
-            last_recycle_bin: None,
-            recycle_bin_error_logged: false,
             last_theme: None,
             _hooks: hooks,
             _window: window,
@@ -444,12 +546,11 @@ impl ThreadState {
         u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
 
-    /// Same order as the mock platform: monitors, theme, recycle bin,
-    /// windows, foreground.
+    /// Same order as the mock platform (monitors, theme, windows,
+    /// foreground), minus the recycle bin, which the poll thread emits.
     fn emit_initial(&mut self) {
         self.emit_monitors();
         self.refresh_theme(true);
-        self.poll_recycle_bin(true);
         self.emit_snapshot();
         self.emit(PlatformEvent::ForegroundChanged(
             actions::foreground_window(),
@@ -539,12 +640,6 @@ impl ThreadState {
             .is_some_and(|t| t.id() == timer_id)
         {
             self.flush_titles();
-        } else if self
-            .recycle_timer
-            .as_ref()
-            .is_some_and(|t| t.id() == timer_id)
-        {
-            self.poll_recycle_bin(false);
         }
     }
 
@@ -633,26 +728,6 @@ impl ThreadState {
                 }
             }
             Err(e) => log::debug!("theme unavailable: {e}"),
-        }
-    }
-
-    /// Emit `RecycleBinChanged` when the state differs from the last one
-    /// emitted (or always, when `force`). Errors are skipped and logged once.
-    fn poll_recycle_bin(&mut self, force: bool) {
-        match recycle_bin::query() {
-            Ok(state) => {
-                self.recycle_bin_error_logged = false;
-                if force || self.last_recycle_bin != Some(state) {
-                    self.last_recycle_bin = Some(state);
-                    self.emit(PlatformEvent::RecycleBinChanged(state));
-                }
-            }
-            Err(e) => {
-                if !self.recycle_bin_error_logged {
-                    log::debug!("recycle bin unavailable: {e}");
-                    self.recycle_bin_error_logged = true;
-                }
-            }
         }
     }
 }
