@@ -9,6 +9,7 @@ This file lists the errors that each layer of Stem returns.
   `From`.
 - `stem-service`: `ServiceError` wraps `PlatformError`, `SettingsError` and
   `StoreError`, and adds the command-level errors (`UnknownItem`,
-  `NotLaunchable`, `NotPinned`).
+  `NotLaunchable`, `NotPinned`) and `Thread` (a service thread that could
+  not start).
 - `stem-app`: commands return `Result<T, String>`. The UI logs the error
   and, where it matters, shows a transient notice.

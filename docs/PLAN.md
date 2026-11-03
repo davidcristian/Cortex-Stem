@@ -60,6 +60,8 @@ without failures.
 **Status.**
 
 - Each dock item has `role="button"` and an `aria-label`.
+- Bursts of window events are coalesced: title changes per
+  window, and the service sends at most one state update per 16 ms.
 - Elevated windows appear with their name and icon.
 
 **Exit criterion.** Everything above works on a setup with two monitors at

@@ -7,21 +7,39 @@
 //! host with [`stem_platform::mock::MockPlatform`].
 //!
 //! Threading model:
-//! - the platform delivers events on its own thread into an unbounded channel;
-//! - one **worker thread** drains the channel, applies inputs to the engine,
-//!   resolves identities (platform calls, possibly slow), and notifies
-//!   listeners;
+//! - the platform delivers events on its own thread into an unbounded channel
+//!   of [`WorkerMsg`]s;
+//! - one **worker thread** (`stem-service`) drains *everything* that is
+//!   queued, applies it to the engine, and then notifies listeners once.
+//!   `State` notifications are rate-limited to one per
+//!   [`STATE_EMIT_INTERVAL`]; the last snapshot is always delivered;
+//! - one **identity thread** (`dock-identity`) asks the platform who an app
+//!   is (icon extraction and shortcut resolution can take milliseconds), so
+//!   the worker never waits on the OS. A failed resolution is retried once
+//!   after [`IDENTITY_RETRY_DELAY`], then a fallback identity is used so the
+//!   engine stops asking;
 //! - commands are called from any thread; they take the engine lock briefly
-//!   and perform platform calls without holding it.
+//!   and perform platform calls without holding it;
+//! - listeners run on whichever thread produced the event (the worker for
+//!   state, settings, theme and monitors; the caller for `Bounce`). A
+//!   panicking listener is logged and isolated; it does not stop the worker.
+//!
+//! [`DockService::shutdown`] stops the platform, sends `Shutdown` to both
+//! threads and joins them. The worker flushes the inputs that were queued
+//! before the shutdown message and emits a final `State` if anything changed.
 
 #![forbid(unsafe_code)]
 
 pub mod store;
 
-use std::sync::Arc;
+use std::collections::VecDeque;
+use std::panic::AssertUnwindSafe;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Weak};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
-use crossbeam_channel::{Receiver, Sender};
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use parking_lot::Mutex;
 use stem_core::{
     AppId, AppIdentity, DockEngine, DockState, EngineInput, IconKey, ItemAction, LaunchTarget,
@@ -32,6 +50,14 @@ use stem_platform::{Platform, PlatformError};
 use thiserror::Error;
 
 pub use store::{FileSettingsStore, MemorySettingsStore, SettingsStore, StoreError};
+
+/// Minimum spacing between two `State` notifications (≈ 60 per second).
+/// Inputs that arrive inside the window are drained and folded into the
+/// next snapshot, which is always emitted once the window has passed.
+pub const STATE_EMIT_INTERVAL: Duration = Duration::from_millis(16);
+
+/// Delay before the single retry of a failed identity resolution.
+pub const IDENTITY_RETRY_DELAY: Duration = Duration::from_secs(2);
 
 /// Something the UI should hear about.
 #[derive(Debug, Clone, PartialEq)]
@@ -44,6 +70,18 @@ pub enum ServiceEvent {
     Bounce {
         item_key: String,
     },
+}
+
+impl ServiceEvent {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::State(_) => "state",
+            Self::Settings(_) => "settings",
+            Self::Theme(_) => "theme",
+            Self::Monitors(_) => "monitors",
+            Self::Bounce { .. } => "bounce",
+        }
+    }
 }
 
 pub type Listener = Box<dyn Fn(&ServiceEvent) + Send + Sync + 'static>;
@@ -62,16 +100,36 @@ pub enum ServiceError {
     NotLaunchable(AppId),
     #[error("app {0:?} is not pinned")]
     NotPinned(AppId),
+    #[error("could not start the {0} thread: {1}")]
+    Thread(&'static str, #[source] std::io::Error),
 }
 
 pub type ServiceResult<T> = Result<T, ServiceError>;
+
+/// What the worker thread receives.
+enum WorkerMsg {
+    Input(EngineInput),
+    Shutdown,
+}
+
+/// What the identity thread receives.
+enum ResolveMsg {
+    Resolve(AppId),
+    Shutdown,
+}
 
 struct Inner {
     platform: Arc<dyn Platform>,
     store: Box<dyn SettingsStore>,
     engine: Mutex<DockEngine>,
-    listeners: Mutex<Vec<Listener>>,
-    tx: Sender<EngineInput>,
+    /// Shared so `notify` can call listeners without holding the lock
+    /// (a listener may call back into the service).
+    listeners: Mutex<Vec<Arc<Listener>>>,
+    worker_tx: Sender<WorkerMsg>,
+    resolve_tx: Sender<ResolveMsg>,
+    /// Set by `shutdown`; the identity thread stops before its next
+    /// platform call instead of working through its queue.
+    stopping: AtomicBool,
 }
 
 impl std::fmt::Debug for Inner {
@@ -89,10 +147,12 @@ impl std::fmt::Debug for Inner {
 pub struct DockService {
     inner: Arc<Inner>,
     worker: Mutex<Option<JoinHandle<()>>>,
+    resolver: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl DockService {
-    /// Load settings, start the platform, and begin processing events.
+    /// Load settings, start the threads and the platform, and begin
+    /// processing events.
     pub fn start(
         platform: Arc<dyn Platform>,
         store: Box<dyn SettingsStore>,
@@ -103,44 +163,61 @@ impl DockService {
         };
         log::info!("settings loaded from {}", store.location());
 
-        let (tx, rx) = crossbeam_channel::unbounded::<EngineInput>();
+        let (worker_tx, worker_rx) = crossbeam_channel::unbounded::<WorkerMsg>();
+        let (resolve_tx, resolve_rx) = crossbeam_channel::unbounded::<ResolveMsg>();
         let inner = Arc::new(Inner {
             platform: Arc::clone(&platform),
             store,
             engine: Mutex::new(DockEngine::new(settings)),
             listeners: Mutex::new(Vec::new()),
-            tx: tx.clone(),
+            worker_tx,
+            resolve_tx,
+            stopping: AtomicBool::new(false),
         });
 
         let worker = {
             let weak = Arc::downgrade(&inner);
-            std::thread::Builder::new()
-                .name("stem-service".into())
-                .spawn(move || worker_loop(&rx, &weak))
-                .map_err(|e| {
-                    ServiceError::Store(StoreError::Io {
-                        path: "<thread>".into(),
-                        source: e,
-                    })
-                })?
+            spawn_thread("stem-service", move || worker_loop(&worker_rx, &weak))?
         };
-
-        let sink_tx = tx;
-        platform.start(Arc::new(move |ev: PlatformEvent| {
-            // The worker may already be gone during shutdown; dropping the
-            // event is the right thing then.
-            let _ = sink_tx.send(EngineInput::Platform(ev));
-        }))?;
-
-        Ok(Self {
+        let service = Self {
             inner,
             worker: Mutex::new(Some(worker)),
-        })
+            resolver: Mutex::new(None),
+        };
+        let resolver = {
+            let weak = Arc::downgrade(&service.inner);
+            spawn_thread("dock-identity", move || resolver_loop(&resolve_rx, &weak))
+        };
+        match resolver {
+            Ok(handle) => *service.resolver.lock() = Some(handle),
+            Err(e) => {
+                service.shutdown();
+                return Err(e);
+            }
+        }
+
+        let sink_tx = service.inner.worker_tx.clone();
+        let started = platform.start(Arc::new(move |ev: PlatformEvent| {
+            // The worker may already be gone during shutdown; dropping the
+            // event is the right thing then.
+            let _ = sink_tx.send(WorkerMsg::Input(EngineInput::Platform(ev)));
+        }));
+        if let Err(e) = started {
+            service.shutdown();
+            return Err(e.into());
+        }
+        Ok(service)
     }
 
-    /// Register a listener. Listeners run on the worker thread; keep them cheap.
+    /// Register a listener. Listeners run on the worker thread (or on the
+    /// thread that called a command, for `Bounce`); keep them cheap and never
+    /// block in them. A panic inside a listener is logged and contained.
+    ///
+    /// Because [`DockService::shutdown`] joins the worker, the thread that
+    /// shuts down must not hold a lock a listener may need: a listener could
+    /// still be running for the last event.
     pub fn subscribe(&self, listener: Listener) {
-        self.inner.listeners.lock().push(listener);
+        self.inner.listeners.lock().push(Arc::new(listener));
     }
 
     pub fn platform(&self) -> &Arc<dyn Platform> {
@@ -244,10 +321,13 @@ impl DockService {
             launch,
         }) {
             // Make the identity known before the new item renders.
-            let _ = self.inner.tx.send(EngineInput::IdentityResolved {
-                app_id: app_id.clone(),
-                identity,
-            });
+            let _ = self
+                .inner
+                .worker_tx
+                .send(WorkerMsg::Input(EngineInput::IdentityResolved {
+                    app_id: app_id.clone(),
+                    identity,
+                }));
             self.inner.persist_and_apply(settings)?;
         }
         Ok(app_id)
@@ -271,27 +351,19 @@ impl DockService {
         Ok(self.inner.platform.icon_png(key, size)?)
     }
 
-    /// Stop the platform and the worker thread. Called on drop as well.
+    /// Stop the platform and both threads, and wait for them. Inputs queued
+    /// before this call are still applied and a final `State` is emitted if
+    /// they changed anything. Idempotent; called on drop as well.
+    ///
+    /// Blocks until listeners that are currently running have returned, so
+    /// do not call it while holding anything a listener waits for.
     pub fn shutdown(&self) {
+        self.inner.stopping.store(true, Ordering::SeqCst);
         self.inner.platform.stop();
-        // Closing our sender is not enough while the platform sink holds a
-        // clone; `stop` dropped the sink, so the channel drains and ends once
-        // `inner.tx` goes away with the last `Arc<Inner>`. Join with a bound.
-        if let Some(handle) = self.worker.lock().take() {
-            let _ = self
-                .inner
-                .tx
-                .send(EngineInput::SettingsChanged(self.settings())); // wake, no-op change
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-            while !handle.is_finished() && std::time::Instant::now() < deadline {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            if handle.is_finished() {
-                let _ = handle.join();
-            } else {
-                log::warn!("stem-service worker did not stop in time; detaching");
-            }
-        }
+        let _ = self.inner.resolve_tx.send(ResolveMsg::Shutdown);
+        let _ = self.inner.worker_tx.send(WorkerMsg::Shutdown);
+        join_thread("dock-identity", &self.resolver);
+        join_thread("stem-service", &self.worker);
     }
 }
 
@@ -301,16 +373,46 @@ impl Drop for DockService {
     }
 }
 
+fn spawn_thread(
+    name: &'static str,
+    body: impl FnOnce() + Send + 'static,
+) -> ServiceResult<JoinHandle<()>> {
+    std::thread::Builder::new()
+        .name(name.into())
+        .spawn(body)
+        .map_err(|e| ServiceError::Thread(name, e))
+}
+
+fn join_thread(name: &str, slot: &Mutex<Option<JoinHandle<()>>>) {
+    let handle = slot.lock().take();
+    if let Some(handle) = handle
+        && handle.join().is_err()
+    {
+        log::error!("{name} thread panicked");
+    }
+}
+
 impl Inner {
+    /// Call every listener with `event`. A panicking listener is logged and
+    /// skipped; the others still run.
     fn notify(&self, event: &ServiceEvent) {
-        for l in self.listeners.lock().iter() {
-            l(event);
+        let listeners: Vec<Arc<Listener>> = self.listeners.lock().clone();
+        for listener in listeners {
+            if let Err(payload) = std::panic::catch_unwind(AssertUnwindSafe(|| listener(event))) {
+                log::error!(
+                    "a service listener panicked on the {} event: {}",
+                    event.name(),
+                    panic_message(payload.as_ref())
+                );
+            }
         }
     }
 
     fn persist_and_apply(&self, settings: Settings) -> ServiceResult<()> {
         self.store.save(&settings.to_json_pretty())?;
-        let _ = self.tx.send(EngineInput::SettingsChanged(settings));
+        let _ = self
+            .worker_tx
+            .send(WorkerMsg::Input(EngineInput::SettingsChanged(settings)));
         Ok(())
     }
 
@@ -325,87 +427,98 @@ impl Inner {
             .or_else(|| engine.identity(app_id).and_then(|i| i.launch.clone()))
     }
 
-    /// Apply one input and fan out the consequences.
-    fn process(&self, input: EngineInput) {
-        let is_settings = matches!(input, EngineInput::SettingsChanged(_));
-        let theme = match &input {
-            EngineInput::Platform(PlatformEvent::ThemeChanged(t)) => Some(t.clone()),
-            _ => None,
-        };
-        let monitors = match &input {
-            EngineInput::Platform(PlatformEvent::MonitorsChanged(m)) => Some(m.clone()),
-            _ => None,
-        };
+    /// Apply a batch of inputs, hand new identity requests to the identity
+    /// thread, and notify listeners of theme / monitor / settings changes
+    /// (the last value of each per batch). Returns whether the snapshot
+    /// changed; the caller decides when to emit it.
+    fn process_batch(&self, inputs: Vec<EngineInput>) -> bool {
+        let mut changed = false;
+        let mut settings_changed = false;
+        let mut theme = None;
+        let mut monitors = None;
+        let mut unresolved = Vec::new();
 
-        let (outcome, snapshot, settings) = {
-            let mut engine = self.engine.lock();
-            let outcome = engine.apply(input);
-            (outcome, engine.snapshot(), engine.settings().clone())
-        };
-
-        for app_id in outcome.unresolved_apps {
-            let identity = self.resolve_identity(&app_id);
-            let _ = self
-                .tx
-                .send(EngineInput::IdentityResolved { app_id, identity });
+        for input in inputs {
+            match &input {
+                EngineInput::Platform(PlatformEvent::ThemeChanged(t)) => theme = Some(t.clone()),
+                EngineInput::Platform(PlatformEvent::MonitorsChanged(m)) => {
+                    monitors = Some(m.clone());
+                }
+                EngineInput::SettingsChanged(_) => settings_changed = true,
+                _ => {}
+            }
+            // Lock per input so commands never wait for a whole batch.
+            let outcome = self.engine.lock().apply(input);
+            changed |= outcome.changed;
+            unresolved.extend(outcome.unresolved_apps);
         }
 
+        for app_id in unresolved {
+            let _ = self.resolve_tx.send(ResolveMsg::Resolve(app_id));
+        }
         if let Some(t) = theme {
             self.notify(&ServiceEvent::Theme(t));
         }
         if let Some(m) = monitors {
             self.notify(&ServiceEvent::Monitors(m));
         }
-        if is_settings {
+        if settings_changed {
+            let settings = self.engine.lock().settings().clone();
             self.notify(&ServiceEvent::Settings(settings));
         }
-        if outcome.changed {
-            self.notify(&ServiceEvent::State(snapshot));
-        }
+        changed
     }
 
-    /// Ask the platform who this app is; never fails (falls back to what the
-    /// engine already knows) so the engine stops asking.
-    fn resolve_identity(&self, app_id: &AppId) -> AppIdentity {
+    /// Ask the platform who `app_id` is and feed the answer to the engine.
+    ///
+    /// Returns `Some(due)` instead when every attempted platform call failed
+    /// and `may_retry` is set: the caller schedules a retry for `due`. On the
+    /// retry (or when nothing can be asked) a fallback identity built from
+    /// what the engine already knows is sent, so the engine stops asking.
+    fn resolve_identity(&self, app_id: &AppId, may_retry: bool) -> Option<Instant> {
         let (pinned, window) = {
             let engine = self.engine.lock();
-            let pinned = engine
-                .settings()
-                .pinned
-                .iter()
-                .find(|p| &p.id == app_id)
-                .cloned();
-            let window = engine
-                .snapshot()
-                .items
-                .into_iter()
-                .find(|i| i.app_id.as_ref() == Some(app_id))
-                .and_then(|i| i.windows.first().map(|w| w.id));
-            (pinned, window)
+            (
+                engine
+                    .settings()
+                    .pinned
+                    .iter()
+                    .find(|p| &p.id == app_id)
+                    .cloned(),
+                engine.windows_of(app_id).first().copied(),
+            )
         };
 
-        let from_window = window.and_then(|id| match self.platform.identify_window(id) {
-            Ok(i) => Some(i),
-            Err(e) => {
-                log::debug!("identify_window({id:?}) failed: {e}");
-                None
+        let mut tried = false;
+        let mut resolved: Option<AppIdentity> = None;
+        if let Some(id) = window {
+            tried = true;
+            match self.platform.identify_window(id) {
+                Ok(identity) => resolved = Some(identity),
+                Err(e) => log::debug!("identify_window({id:?}) for {app_id:?} failed: {e}"),
             }
-        });
-        let from_target = || {
-            pinned
-                .as_ref()
-                .and_then(|p| match self.platform.identify_target(&p.launch) {
-                    Ok(i) => Some(i),
-                    Err(e) => {
-                        log::debug!("identify_target({:?}) failed: {e}", p.launch);
-                        None
-                    }
-                })
-        };
+        }
+        if resolved.is_none()
+            && let Some(p) = &pinned
+        {
+            tried = true;
+            match self.platform.identify_target(&p.launch) {
+                Ok(identity) => resolved = Some(identity),
+                Err(e) => {
+                    log::debug!("identify_target({:?}) for {app_id:?} failed: {e}", p.launch);
+                }
+            }
+        }
+        if resolved.is_none() && tried && may_retry {
+            log::debug!("identity of {app_id:?} unresolved; retrying in {IDENTITY_RETRY_DELAY:?}");
+            return Some(Instant::now() + IDENTITY_RETRY_DELAY);
+        }
 
-        let mut identity = from_window
-            .or_else(from_target)
-            .unwrap_or_else(|| AppIdentity {
+        let mut identity = resolved.unwrap_or_else(|| {
+            if tried {
+                log::warn!("identity of {app_id:?} could not be resolved; using a fallback name");
+            }
+            AppIdentity {
                 id: app_id.clone(),
                 display_name: pinned
                     .as_ref()
@@ -413,15 +526,30 @@ impl Inner {
                     .unwrap_or_else(|| fallback_display_name(app_id)),
                 icon_key: None,
                 launch: pinned.as_ref().map(|p| p.launch.clone()),
-            });
+            }
+        });
         // The engine groups by the id *it* derived; keep that as the key even
         // if the platform preferred a different canonical form.
         identity.id = app_id.clone();
         if identity.launch.is_none() {
             identity.launch = pinned.map(|p| p.launch);
         }
-        identity
+        let _ = self
+            .worker_tx
+            .send(WorkerMsg::Input(EngineInput::IdentityResolved {
+                app_id: app_id.clone(),
+                identity,
+            }));
+        None
     }
+}
+
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
+    payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("<non-string panic payload>")
 }
 
 fn fallback_display_name(app_id: &AppId) -> String {
@@ -435,23 +563,118 @@ fn fallback_display_name(app_id: &AppId) -> String {
     }
 }
 
-fn worker_loop(rx: &Receiver<EngineInput>, inner: &std::sync::Weak<Inner>) {
-    for input in rx {
+/// The worker: drain everything queued, apply it, emit at most one `State`
+/// per [`STATE_EMIT_INTERVAL`] (always the latest), stop on `Shutdown`.
+fn worker_loop(rx: &Receiver<WorkerMsg>, inner: &Weak<Inner>) {
+    let mut last_emit: Option<Instant> = None;
+    // A changed snapshot is waiting for the rate limit to let it out.
+    let mut state_pending = false;
+
+    loop {
+        let first = if state_pending {
+            let deadline = last_emit.map_or_else(Instant::now, |t| t + STATE_EMIT_INTERVAL);
+            match rx.recv_deadline(deadline) {
+                Ok(msg) => Some(msg),
+                Err(RecvTimeoutError::Timeout) => None,
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+        } else {
+            match rx.recv() {
+                Ok(msg) => Some(msg),
+                Err(_) => break,
+            }
+        };
+
+        // Batch: the message we waited for plus everything already queued.
+        let mut inputs = Vec::new();
+        let mut shutdown = false;
+        let queued = first
+            .into_iter()
+            .chain(std::iter::from_fn(|| rx.try_recv().ok()));
+        for msg in queued {
+            match msg {
+                WorkerMsg::Input(input) => inputs.push(input),
+                WorkerMsg::Shutdown => {
+                    shutdown = true;
+                    break;
+                }
+            }
+        }
+
         let Some(inner) = inner.upgrade() else { break };
-        inner.process(input);
+        state_pending |= inner.process_batch(inputs);
+        if state_pending {
+            let now = Instant::now();
+            let may_emit = shutdown || last_emit.is_none_or(|t| now >= t + STATE_EMIT_INTERVAL);
+            if may_emit {
+                let snapshot = inner.engine.lock().snapshot();
+                inner.notify(&ServiceEvent::State(snapshot));
+                last_emit = Some(now);
+                state_pending = false;
+            }
+        }
+        if shutdown {
+            break;
+        }
     }
     log::debug!("stem-service worker stopped");
+}
+
+/// The identity thread: resolve requests as they come, keep failed ones in
+/// a queue of timed retries, stop on `Shutdown` or when the service stops.
+fn resolver_loop(rx: &Receiver<ResolveMsg>, inner: &Weak<Inner>) {
+    let mut retries: VecDeque<(Instant, AppId)> = VecDeque::new();
+
+    'run: loop {
+        let msg = match retries.front() {
+            Some((due, _)) => match rx.recv_deadline(*due) {
+                Ok(msg) => Some(msg),
+                Err(RecvTimeoutError::Timeout) => None,
+                Err(RecvTimeoutError::Disconnected) => break,
+            },
+            None => match rx.recv() {
+                Ok(msg) => Some(msg),
+                Err(_) => break,
+            },
+        };
+        let Some(inner) = inner.upgrade() else { break };
+        if inner.stopping.load(Ordering::SeqCst) {
+            break;
+        }
+        match msg {
+            Some(ResolveMsg::Shutdown) => break,
+            Some(ResolveMsg::Resolve(app_id)) => {
+                if let Some(due) = inner.resolve_identity(&app_id, true) {
+                    retries.push_back((due, app_id));
+                }
+            }
+            None => {
+                let now = Instant::now();
+                while retries.front().is_some_and(|(due, _)| *due <= now) {
+                    if inner.stopping.load(Ordering::SeqCst) {
+                        break 'run;
+                    }
+                    if let Some((_, app_id)) = retries.pop_front() {
+                        inner.resolve_identity(&app_id, false);
+                    }
+                }
+            }
+        }
+    }
+    log::debug!("dock-identity resolver stopped");
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
-    use std::time::Duration;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
 
     use crossbeam_channel::Receiver;
     use pretty_assertions::assert_eq;
-    use stem_core::{DockItemKind, WindowId};
+    use stem_core::{DockItem, DockItemKind, RawWindow, Rect, RecycleBinState, WindowId};
     use stem_platform::mock::{MockCall, MockPlatform};
+    use stem_platform::{DockWindowOptions, EventSink, NativeWindowHandle, PlatformResult};
 
     use super::*;
 
@@ -459,17 +682,23 @@ mod tests {
         let platform = Arc::new(MockPlatform::with_demo_scenario());
         let store = Box::new(MemorySettingsStore::default());
         let service = DockService::start(platform.clone(), store).unwrap();
+        let rx = record(&service);
+        (service, platform, rx)
+    }
+
+    /// Subscribe a listener that forwards every event to a channel.
+    fn record(service: &DockService) -> Receiver<ServiceEvent> {
         let (tx, rx) = crossbeam_channel::unbounded();
         service.subscribe(Box::new(move |ev| {
             let _ = tx.send(ev.clone());
         }));
-        (service, platform, rx)
+        rx
     }
 
     /// Wait until a state event satisfying `pred` arrives.
     fn wait_state(rx: &Receiver<ServiceEvent>, pred: impl Fn(&DockState) -> bool) -> DockState {
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while std::time::Instant::now() < deadline {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
             if let Ok(ServiceEvent::State(s)) = rx.recv_timeout(Duration::from_millis(200))
                 && pred(&s)
             {
@@ -479,7 +708,7 @@ mod tests {
         panic!("timed out waiting for state");
     }
 
-    fn app_items(state: &DockState) -> Vec<&stem_core::DockItem> {
+    fn app_items(state: &DockState) -> Vec<&DockItem> {
         state
             .items
             .iter()
@@ -487,16 +716,175 @@ mod tests {
             .collect()
     }
 
+    /// The demo scenario with every identity resolved.
+    fn resolved(state: &DockState) -> bool {
+        app_items(state).len() == 5 && app_items(state).iter().all(|i| i.icon_key.is_some())
+    }
+
+    fn item_titled<'a>(state: &'a DockState, title: &str) -> Option<&'a DockItem> {
+        app_items(state).into_iter().find(|i| i.title == title)
+    }
+
+    fn has_window_titled(state: &DockState, title: &str) -> bool {
+        state
+            .items
+            .iter()
+            .any(|i| i.windows.iter().any(|w| w.title == title))
+    }
+
+    /// Wraps the mock so tests can inject raw events straight into the
+    /// service, make `identify_window` fail or stall, and count its calls.
+    struct Relay {
+        mock: MockPlatform,
+        sink: Mutex<Option<EventSink>>,
+        flaky_window: Option<WindowId>,
+        /// `identify_window(flaky_window)` fails this many more times.
+        failures_left: AtomicUsize,
+        identify_delay: Duration,
+        identify_calls: Mutex<Vec<(WindowId, Instant)>>,
+    }
+
+    impl Relay {
+        fn demo() -> Self {
+            Self {
+                mock: MockPlatform::with_demo_scenario(),
+                sink: Mutex::new(None),
+                flaky_window: None,
+                failures_left: AtomicUsize::new(0),
+                identify_delay: Duration::ZERO,
+                identify_calls: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn flaky(mut self, id: WindowId, failures: usize) -> Self {
+            self.flaky_window = Some(id);
+            self.failures_left = AtomicUsize::new(failures);
+            self
+        }
+
+        fn slow(mut self, delay: Duration) -> Self {
+            self.identify_delay = delay;
+            self
+        }
+
+        /// Deliver an event to the service without touching the mock's state.
+        fn emit(&self, event: PlatformEvent) {
+            let sink = self.sink.lock().clone();
+            if let Some(sink) = sink {
+                sink(event);
+            }
+        }
+
+        fn identify_calls_for(&self, id: WindowId) -> Vec<Instant> {
+            self.identify_calls
+                .lock()
+                .iter()
+                .filter(|(w, _)| *w == id)
+                .map(|(_, at)| *at)
+                .collect()
+        }
+
+        fn window(&self, id: WindowId) -> RawWindow {
+            self.mock
+                .windows()
+                .unwrap()
+                .into_iter()
+                .find(|w| w.id == id)
+                .unwrap()
+        }
+    }
+
+    impl Platform for Relay {
+        fn name(&self) -> &'static str {
+            "relay"
+        }
+
+        fn start(&self, sink: EventSink) -> PlatformResult<()> {
+            *self.sink.lock() = Some(Arc::clone(&sink));
+            self.mock.start(sink)
+        }
+
+        fn stop(&self) {
+            self.sink.lock().take();
+            self.mock.stop();
+        }
+
+        fn windows(&self) -> PlatformResult<Vec<RawWindow>> {
+            self.mock.windows()
+        }
+
+        fn foreground_window(&self) -> PlatformResult<Option<WindowId>> {
+            self.mock.foreground_window()
+        }
+
+        fn window_action(&self, id: WindowId, action: WindowAction) -> PlatformResult<()> {
+            self.mock.window_action(id, action)
+        }
+
+        fn identify_window(&self, id: WindowId) -> PlatformResult<AppIdentity> {
+            self.identify_calls.lock().push((id, Instant::now()));
+            if self.flaky_window == Some(id)
+                && self
+                    .failures_left
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                    .is_ok()
+            {
+                return Err(PlatformError::Timeout);
+            }
+            if !self.identify_delay.is_zero() {
+                std::thread::sleep(self.identify_delay);
+            }
+            self.mock.identify_window(id)
+        }
+
+        fn identify_target(&self, target: &LaunchTarget) -> PlatformResult<AppIdentity> {
+            self.mock.identify_target(target)
+        }
+
+        fn launch(&self, target: &LaunchTarget) -> PlatformResult<()> {
+            self.mock.launch(target)
+        }
+
+        fn icon_png(&self, key: &IconKey, size: u32) -> PlatformResult<Option<Vec<u8>>> {
+            self.mock.icon_png(key, size)
+        }
+
+        fn monitors(&self) -> PlatformResult<Vec<MonitorInfo>> {
+            self.mock.monitors()
+        }
+
+        fn theme(&self) -> PlatformResult<ThemeInfo> {
+            self.mock.theme()
+        }
+
+        fn recycle_bin(&self) -> PlatformResult<RecycleBinState> {
+            self.mock.recycle_bin()
+        }
+
+        fn shell_action(&self, action: ShellAction) -> PlatformResult<()> {
+            self.mock.shell_action(action)
+        }
+
+        fn prepare_dock_window(
+            &self,
+            handle: NativeWindowHandle,
+            options: DockWindowOptions,
+        ) -> PlatformResult<()> {
+            self.mock.prepare_dock_window(handle, options)
+        }
+    }
+
+    fn start_relay(relay: Arc<Relay>) -> (DockService, Receiver<ServiceEvent>) {
+        let service = DockService::start(relay, Box::new(MemorySettingsStore::default())).unwrap();
+        let rx = record(&service);
+        (service, rx)
+    }
+
     #[test]
     fn startup_resolves_identities_and_groups_windows() {
         let (service, _platform, rx) = start();
-        let state = wait_state(&rx, |s| {
-            app_items(s).len() == 5 && app_items(s).iter().all(|i| i.icon_key.is_some())
-        });
-        let firefox = app_items(&state)
-            .into_iter()
-            .find(|i| i.title == "firefox")
-            .unwrap();
+        let state = wait_state(&rx, resolved);
+        let firefox = item_titled(&state, "firefox").unwrap();
         assert_eq!(firefox.windows.len(), 2);
         assert!(firefox.is_active);
         assert_eq!(state.items.first().unwrap().kind, DockItemKind::Launcher);
@@ -511,21 +899,9 @@ mod tests {
     #[test]
     fn primary_click_minimises_active_and_activates_inactive() {
         let (service, platform, rx) = start();
-        let state = wait_state(&rx, |s| {
-            app_items(s).len() == 5 && app_items(s).iter().all(|i| i.icon_key.is_some())
-        });
-        let firefox_key = app_items(&state)
-            .into_iter()
-            .find(|i| i.title == "firefox")
-            .unwrap()
-            .key
-            .clone();
-        let code_key = app_items(&state)
-            .into_iter()
-            .find(|i| i.title == "Code")
-            .unwrap()
-            .key
-            .clone();
+        let state = wait_state(&rx, resolved);
+        let firefox_key = item_titled(&state, "firefox").unwrap().key.clone();
+        let code_key = item_titled(&state, "Code").unwrap().key.clone();
 
         // Firefox has two windows and the first is active -> cycle to the second.
         service.primary_click(&firefox_key).unwrap();
@@ -570,14 +946,8 @@ mod tests {
     #[test]
     fn pin_unpin_persist_and_launch_bounces() {
         let (service, platform, rx) = start();
-        let state = wait_state(&rx, |s| {
-            app_items(s).len() == 5 && app_items(s).iter().all(|i| i.icon_key.is_some())
-        });
-        let spotify = app_items(&state)
-            .into_iter()
-            .find(|i| i.title == "Spotify")
-            .unwrap()
-            .clone();
+        let state = wait_state(&rx, resolved);
+        let spotify = item_titled(&state, "Spotify").unwrap().clone();
         let app_id = spotify.app_id.clone().unwrap();
 
         service.pin_app(&app_id).unwrap();
@@ -606,9 +976,9 @@ mod tests {
             platform.calls().as_slice(),
             [MockCall::Launch(LaunchTarget::Exe { .. })]
         ));
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(2);
         let mut bounced = false;
-        while std::time::Instant::now() < deadline {
+        while Instant::now() < deadline {
             if let Ok(ServiceEvent::Bounce { item_key }) =
                 rx.recv_timeout(Duration::from_millis(100))
             {
@@ -651,5 +1021,252 @@ mod tests {
             DockService::start(platform, Box::new(store)),
             Err(ServiceError::Settings(_))
         ));
+    }
+
+    // ----- coalescing and robustness -----------------------------------------
+
+    #[test]
+    fn event_storm_is_coalesced_into_few_state_notifications() {
+        let relay = Arc::new(Relay::demo());
+        let (service, rx) = start_relay(relay.clone());
+        // Stamp every State on the worker thread itself, so spacing is
+        // measured where the rate limit applies, not where the test dequeues.
+        let stamps: Arc<Mutex<Vec<Instant>>> = Arc::default();
+        let stamper = Arc::clone(&stamps);
+        service.subscribe(Box::new(move |ev| {
+            if matches!(ev, ServiceEvent::State(_)) {
+                stamper.lock().push(Instant::now());
+            }
+        }));
+        wait_state(&rx, resolved);
+        while rx.try_recv().is_ok() {}
+
+        let code = relay.window(WindowId(4));
+        let started = Instant::now();
+        for i in 0..1000 {
+            let mut w = code.clone();
+            w.title = format!("title {i}");
+            relay.emit(PlatformEvent::WindowUpdated(w));
+        }
+        let mut states = 0u128;
+        let deadline = started + Duration::from_secs(10);
+        loop {
+            match rx.recv_deadline(deadline) {
+                Ok(ServiceEvent::State(s)) => {
+                    states += 1;
+                    if has_window_titled(&s, "title 999") {
+                        break;
+                    }
+                }
+                Ok(_) => {}
+                Err(_) => panic!("final title not seen after {states} state notifications"),
+            }
+        }
+        let elapsed = started.elapsed();
+        assert!(states >= 1);
+        assert!(
+            states <= 100,
+            "1000 events produced {states} state notifications"
+        );
+        // Hard bound from the rate limit: one per interval, plus slack for
+        // the first emit and the one already due when the storm began.
+        let max = elapsed.as_millis() / STATE_EMIT_INTERVAL.as_millis() + 2;
+        assert!(
+            states <= max,
+            "{states} state notifications in {elapsed:?} (max {max})"
+        );
+        // Copy out under a short-lived guard: the worker may still be inside
+        // `notify` for the last event (the recorder woke us before the
+        // stamper ran), and `shutdown` below joins it.
+        let stamps: Vec<Instant> = stamps.lock().clone();
+        for pair in stamps.windows(2) {
+            let gap = pair[1].duration_since(pair[0]);
+            assert!(
+                gap >= STATE_EMIT_INTERVAL - Duration::from_millis(1),
+                "two state notifications only {gap:?} apart"
+            );
+        }
+        service.shutdown();
+    }
+
+    #[test]
+    fn shutdown_flushes_queued_inputs_and_joins_both_threads() {
+        let relay = Arc::new(Relay::demo());
+        let (service, rx) = start_relay(relay.clone());
+        wait_state(&rx, resolved);
+
+        let code = relay.window(WindowId(4));
+        for i in 0..200 {
+            let mut w = code.clone();
+            w.title = format!("title {i}");
+            relay.emit(PlatformEvent::WindowUpdated(w));
+        }
+        let started = Instant::now();
+        service.shutdown();
+        let took = started.elapsed();
+        assert!(service.worker.lock().is_none());
+        assert!(service.resolver.lock().is_none());
+        assert!(took < Duration::from_secs(2), "shutdown took {took:?}");
+
+        // Everything queued before the shutdown made it into the last state.
+        let last = rx
+            .try_iter()
+            .filter_map(|ev| match ev {
+                ServiceEvent::State(s) => Some(s),
+                _ => None,
+            })
+            .last()
+            .expect("a final state");
+        assert!(has_window_titled(&last, "title 199"));
+
+        // Idempotent, and the platform was stopped: nothing gets through.
+        service.shutdown();
+        relay.emit(PlatformEvent::WindowUpdated(code));
+        assert!(rx.recv_timeout(Duration::from_millis(100)).is_err());
+    }
+
+    #[test]
+    fn a_panicking_listener_does_not_kill_the_worker() {
+        let relay = Arc::new(Relay::demo());
+        let service =
+            DockService::start(relay.clone(), Box::new(MemorySettingsStore::default())).unwrap();
+        let panics = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&panics);
+        service.subscribe(Box::new(move |ev| {
+            if matches!(ev, ServiceEvent::State(_)) {
+                counter.fetch_add(1, Ordering::SeqCst);
+                panic!("listener failure under test");
+            }
+        }));
+        // Subscribed after the faulty one: must still be called.
+        let rx = record(&service);
+        wait_state(&rx, resolved);
+
+        let mut w = relay.window(WindowId(4));
+        w.title = "still alive".into();
+        relay.emit(PlatformEvent::WindowUpdated(w));
+        wait_state(&rx, |s| has_window_titled(s, "still alive"));
+        assert!(panics.load(Ordering::SeqCst) >= 2);
+
+        // Commands and the final flush work as usual.
+        service.primary_click("fixed:launcher").unwrap();
+        service.shutdown();
+        assert!(service.worker.lock().is_none());
+    }
+
+    #[test]
+    fn identity_resolution_retries_once_after_a_failure() {
+        let relay = Arc::new(Relay::demo().flaky(WindowId(2), 1));
+        let started = Instant::now();
+        let (service, rx) = start_relay(relay.clone());
+
+        // Everyone else resolves at once; Firefox keeps its window title.
+        let state = wait_state(&rx, |s| {
+            app_items(s).iter().filter(|i| i.icon_key.is_some()).count() == 4
+        });
+        let firefox = item_titled(&state, "Stem — Mozilla Firefox").expect("unresolved firefox");
+        assert!(firefox.icon_key.is_none());
+
+        let state = wait_state(&rx, resolved);
+        let waited = started.elapsed();
+        assert!(
+            waited >= IDENTITY_RETRY_DELAY - Duration::from_millis(100),
+            "retry came too early: {waited:?}"
+        );
+        let firefox = item_titled(&state, "firefox").unwrap();
+        assert!(firefox.icon_key.is_some());
+        let calls = relay.identify_calls_for(WindowId(2));
+        assert_eq!(calls.len(), 2, "exactly one retry");
+        assert!(
+            calls[1].duration_since(calls[0]) >= IDENTITY_RETRY_DELAY - Duration::from_millis(100)
+        );
+        service.shutdown();
+    }
+
+    #[test]
+    fn identity_resolution_falls_back_after_the_retry_fails() {
+        let relay = Arc::new(Relay::demo().flaky(WindowId(2), 2));
+        let (service, rx) = start_relay(relay.clone());
+
+        // The fallback name comes from the app id, without an icon.
+        let state = wait_state(&rx, |s| {
+            item_titled(s, "firefox").is_some_and(|i| i.icon_key.is_none())
+        });
+        assert_eq!(item_titled(&state, "firefox").unwrap().windows.len(), 2);
+        assert_eq!(relay.identify_calls_for(WindowId(2)).len(), 2);
+
+        // The engine stopped asking: no third attempt.
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(relay.identify_calls_for(WindowId(2)).len(), 2);
+        service.shutdown();
+    }
+
+    #[test]
+    fn slow_identity_resolution_does_not_delay_event_processing() {
+        let relay = Arc::new(Relay::demo().slow(Duration::from_millis(300)));
+        let (service, rx) = start_relay(relay.clone());
+        // The windows show up before any identity is known.
+        wait_state(&rx, |s| app_items(s).len() == 5);
+
+        let mut w = relay.window(WindowId(4));
+        w.title = "prompt".into();
+        let sent = Instant::now();
+        relay.emit(PlatformEvent::WindowUpdated(w));
+        wait_state(&rx, |s| has_window_titled(s, "prompt"));
+        let latency = sent.elapsed();
+        assert!(
+            latency < Duration::from_millis(200),
+            "event took {latency:?} while identities were being resolved"
+        );
+
+        // Resolution still completes (5 apps x 300 ms, on its own thread).
+        wait_state(&rx, resolved);
+        service.shutdown();
+    }
+
+    #[test]
+    fn theme_and_monitor_changes_notify_without_a_state_emit() {
+        let relay = Arc::new(Relay::demo());
+        let (service, rx) = start_relay(relay.clone());
+        wait_state(&rx, resolved);
+        while rx.try_recv().is_ok() {}
+
+        let theme = ThemeInfo {
+            accent: "#FF8800".into(),
+            dark: false,
+            high_contrast: false,
+            transparency: true,
+        };
+        let monitors = vec![MonitorInfo {
+            id: stem_core::MonitorId("second".into()),
+            name: "Second".into(),
+            bounds: Rect::new(2560, 0, 1920, 1080),
+            work_area: Rect::new(2560, 0, 1920, 1032),
+            scale_factor: 1.0,
+            is_primary: false,
+        }];
+        relay.emit(PlatformEvent::ThemeChanged(theme.clone()));
+        relay.emit(PlatformEvent::MonitorsChanged(monitors.clone()));
+
+        let mut seen = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while seen.len() < 2 {
+            match rx.recv_deadline(deadline) {
+                Ok(ev) => seen.push(ev),
+                Err(_) => panic!("expected theme and monitors events, got {seen:?}"),
+            }
+        }
+        assert_eq!(
+            seen,
+            vec![
+                ServiceEvent::Theme(theme.clone()),
+                ServiceEvent::Monitors(monitors.clone())
+            ]
+        );
+        assert_eq!(service.theme(), theme);
+        assert_eq!(service.monitors(), monitors);
+        // No State followed: the snapshot did not change.
+        assert!(rx.recv_timeout(Duration::from_millis(100)).is_err());
+        service.shutdown();
     }
 }

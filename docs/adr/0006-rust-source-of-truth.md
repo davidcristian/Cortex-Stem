@@ -27,5 +27,7 @@ does) must be unit-tested and must not depend on the frontend's timing.
 
 - Behaviour tests live in Rust and run on Linux.
 - Snapshots are a few KB, so sending them whole is simpler than sending
-  diffs. If needed, the service coalesces the notifications it sends.
+  diffs. The service sends at most one `State` notification per 16 ms
+  (`STATE_EMIT_INTERVAL`) and applies the inputs that arrive in between to
+  the next snapshot.
 - Contract changes follow the IPC change control in `AGENTS.md`.
