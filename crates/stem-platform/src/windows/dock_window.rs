@@ -47,9 +47,10 @@
 //!   `SetWindowPos` tao itself issues after a style change), then the
 //!   z-order is checked as below;
 //! - [`MSG_ASSERT_TOPMOST`] (posted by the events thread on every
-//!   foreground change through [`assert_topmost_all`]): if a visible window
-//!   that is not itself topmost sits above the dock in the z-order, the dock
-//!   has dropped out of the topmost band while keeping its `WS_EX_TOPMOST`
+//!   foreground change through [`assert_topmost_all`]): if an ordinary app
+//!   window (visible, not topmost itself, a taskbar candidate) sits above
+//!   the dock in the z-order, the dock has dropped out of the topmost band
+//!   while keeping its `WS_EX_TOPMOST`
 //!   bit (observed on Windows 11 after a lock/unlock cycle with a maximised
 //!   browser in front) and `SetWindowPos(HWND_TOPMOST)` puts it back; the
 //!   common case is one short bounded `GetWindow(GW_HWNDPREV)` walk and no
@@ -488,10 +489,16 @@ fn ensure_topmost(hwnd: HWND, state: &SubclassState, why: &str) {
     }
 }
 
-/// The nearest visible window above `hwnd` in the z-order that is not
-/// topmost itself, if there is one within [`MAX_ZORDER_WALK`] entries. A
-/// window in the topmost band only has topmost windows above it, so a hit
-/// means the band was lost.
+/// The nearest window above `hwnd` in the z-order that is an ordinary app
+/// window (visible, not topmost itself, and a taskbar candidate), if there
+/// is one within [`MAX_ZORDER_WALK`] entries. A window in the topmost band
+/// only has topmost windows above it, so a hit means the band was lost.
+///
+/// The taskbar-candidate test keeps the shell's z-band windows out: a
+/// starting Store app's `Windows.UI.Core.CoreWindow`, the Start menu or
+/// the lock screen sit above every desktop-band window without carrying
+/// `WS_EX_TOPMOST`, and a re-assert against them would be both useless and
+/// a needless reorder among the real topmost windows.
 fn ordinary_window_above(hwnd: HWND) -> Option<HWND> {
     let mut current = hwnd;
     for _ in 0..MAX_ZORDER_WALK {
@@ -505,7 +512,10 @@ fn ordinary_window_above(hwnd: HWND) -> Option<HWND> {
         }
         // SAFETY: IsWindowVisible accepts any handle value.
         let visible = unsafe { IsWindowVisible(prev) }.as_bool();
-        if visible && !get_ex_style(prev).is_ok_and(|s| s.contains(WS_EX_TOPMOST)) {
+        if visible
+            && !get_ex_style(prev).is_ok_and(|s| s.contains(WS_EX_TOPMOST))
+            && super::enumerate::is_taskbar_candidate(prev)
+        {
             return Some(prev);
         }
         current = prev;
