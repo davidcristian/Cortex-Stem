@@ -15,7 +15,7 @@ tested on the Linux hosts where most development happens.
 the `Platform` trait. It is integration-tested on Linux with `MockPlatform`
 and an in-memory settings store (`MemorySettingsStore`). `src-tauri` only:
 
-- creates and positions the dock window;
+- creates and positions the dock window and the settings window;
 - maps commands to `DockService` methods;
 - forwards `ServiceEvent`s as Tauri events;
 - wires the plugins (logging).
