@@ -174,6 +174,79 @@ pub fn parse_hwnd_icon_value(value: &str) -> Option<u64> {
     id.trim().parse().ok()
 }
 
+/// Where each part of a shortcut's identity comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShortcutSource {
+    /// The `System.AppUserModel.ID` property of the `.lnk`.
+    AppUserModelId,
+    /// The resolved target executable (path, arguments, working directory).
+    Target,
+    /// The `.lnk` file itself.
+    Link,
+}
+
+/// How to identify a `.lnk`, per part.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShortcutPlan {
+    /// `AppUserModelId` → `aumid:<id>`; `Target` → `exe:<target>`; `Link` →
+    /// `exe:<lnk path>`.
+    pub id: ShortcutSource,
+    /// `AppUserModelId` → the AppsFolder display name; `Target` → the
+    /// target's version resource, then the link name; `Link` → the link name.
+    pub name: ShortcutSource,
+    /// `AppUserModelId` → `aumid:`; `Target` → `exe:`; `Link` → `file:`.
+    pub icon: ShortcutSource,
+    /// `Target` → `Exe`; `AppUserModelId` → `StoreApp`; `Link` → `Shortcut`.
+    pub launch: ShortcutSource,
+}
+
+/// Decide how a shortcut is identified from three facts: whether it has a
+/// target path, its `System.AppUserModel.ID` property (if set) and whether
+/// the shell's AppsFolder knows that AUMID.
+///
+/// The **id** follows the AUMID whenever one is set, even with a target:
+/// apps that stamp an AUMID on their shortcut (VS Code, Chrome profiles,
+/// most Electron apps) stamp the same one on their windows, and the engine
+/// groups those windows by AUMID (`stem_core::app_id_for`). The **launch**
+/// prefers the resolved exe (more reliable than activating a non-packaged
+/// AUMID). **Name** and **icon** come from the AppsFolder when the shell
+/// knows the AUMID, else from the target, else from the link.
+pub fn plan_shortcut(
+    has_target: bool,
+    aumid: Option<&str>,
+    apps_folder_known: bool,
+) -> ShortcutPlan {
+    let has_aumid = aumid.is_some_and(|a| !a.trim().is_empty());
+    let shell_knows = has_aumid && apps_folder_known;
+    let id = if has_aumid {
+        ShortcutSource::AppUserModelId
+    } else if has_target {
+        ShortcutSource::Target
+    } else {
+        ShortcutSource::Link
+    };
+    let looks = if shell_knows {
+        ShortcutSource::AppUserModelId
+    } else if has_target {
+        ShortcutSource::Target
+    } else {
+        ShortcutSource::Link
+    };
+    let launch = if has_target {
+        ShortcutSource::Target
+    } else if has_aumid {
+        ShortcutSource::AppUserModelId
+    } else {
+        ShortcutSource::Link
+    };
+    ShortcutPlan {
+        id,
+        name: looks,
+        icon: looks,
+        launch,
+    }
+}
+
 /// Split a Windows command line into arguments following the
 /// `CommandLineToArgvW` rules: whitespace separates, double quotes group,
 /// `2n` backslashes before a quote become `n` backslashes, `2n+1` become `n`
@@ -386,6 +459,87 @@ mod tests {
         assert_eq!(parse_hwnd_icon_value(""), None);
         assert_eq!(parse_hwnd_icon_value(":4242"), None);
         assert_eq!(parse_hwnd_icon_value("x:1"), None);
+    }
+
+    #[test]
+    fn shortcut_plan_groups_by_aumid_and_launches_the_target() {
+        use ShortcutSource::*;
+
+        // VS Code / Chrome profile: target + AUMID the shell knows.
+        assert_eq!(
+            plan_shortcut(true, Some("Chrome.Profile1"), true),
+            ShortcutPlan {
+                id: AppUserModelId,
+                name: AppUserModelId,
+                icon: AppUserModelId,
+                launch: Target,
+            }
+        );
+        // Target + AUMID the shell does not know: grouped by AUMID, but the
+        // exe supplies name, icon and launch.
+        assert_eq!(
+            plan_shortcut(true, Some("Vendor.App"), false),
+            ShortcutPlan {
+                id: AppUserModelId,
+                name: Target,
+                icon: Target,
+                launch: Target,
+            }
+        );
+        // Plain shortcut to an exe.
+        assert_eq!(
+            plan_shortcut(true, None, false),
+            ShortcutPlan {
+                id: Target,
+                name: Target,
+                icon: Target,
+                launch: Target,
+            }
+        );
+        // `apps_folder_known` is meaningless without an AUMID.
+        assert_eq!(
+            plan_shortcut(true, None, true),
+            plan_shortcut(true, None, false)
+        );
+        assert_eq!(
+            plan_shortcut(true, Some("  "), true),
+            plan_shortcut(true, None, false)
+        );
+        // Store-app shortcut: no target, AUMID known to the shell.
+        assert_eq!(
+            plan_shortcut(
+                false,
+                Some("Microsoft.WindowsCalculator_8wekyb3d8bbwe!App"),
+                true
+            ),
+            ShortcutPlan {
+                id: AppUserModelId,
+                name: AppUserModelId,
+                icon: AppUserModelId,
+                launch: AppUserModelId,
+            }
+        );
+        // No target, AUMID unknown to the shell: still launched by AUMID,
+        // named and drawn from the link.
+        assert_eq!(
+            plan_shortcut(false, Some("Gone.App"), false),
+            ShortcutPlan {
+                id: AppUserModelId,
+                name: Link,
+                icon: Link,
+                launch: AppUserModelId,
+            }
+        );
+        // Nothing to go on: the link itself.
+        assert_eq!(
+            plan_shortcut(false, None, false),
+            ShortcutPlan {
+                id: Link,
+                name: Link,
+                icon: Link,
+                launch: Link,
+            }
+        );
     }
 
     #[test]

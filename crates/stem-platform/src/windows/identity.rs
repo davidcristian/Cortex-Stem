@@ -24,12 +24,16 @@
 //!   non-packaged AUMIDs). An AUMID the shell does not know falls back to the
 //!   exe for name/icon/launch while keeping the AUMID-based id.
 //! - Shortcuts keep the resolved exe + arguments as the launch target, not the
-//!   `.lnk`, so the pinned id equals the running app's `exe:` id. A shortcut
-//!   with no target but an AUMID property (Store app shortcuts) is a
-//!   `StoreApp`. `.url` files are not shell links; they stay `Shortcut`
-//!   targets with a `file:` icon.
-//! - Pure helpers (parsing, fallbacks, command-line splitting) live in
-//!   `rules::identity` and are unit-tested on every host.
+//!   `.lnk`, so the pinned id equals the running app's `exe:` id. A `.lnk`
+//!   whose `System.AppUserModel.ID` property is set (VS Code, Chrome
+//!   profiles, most Electron apps, Store apps) is identified by that AUMID
+//!   even when it also has a target, because the engine groups such apps'
+//!   windows by AUMID; the exe still supplies the launch target, and name
+//!   and icon come from the AppsFolder when the shell knows the AUMID, else
+//!   from the exe (`rules::identity::plan_shortcut`). `.url` files are not
+//!   shell links; they stay `Shortcut` targets with a `file:` icon.
+//! - Pure helpers (parsing, fallbacks, the shortcut decision, command-line
+//!   splitting) live in `rules::identity` and are unit-tested on every host.
 
 use std::path::{Path, PathBuf};
 
@@ -53,10 +57,10 @@ use windows::core::{Interface, PCWSTR, w};
 use super::util::{self, CoTaskWideString};
 use crate::PlatformResult;
 use crate::rules::identity::{
-    VERSION_NAME_FIELDS, apps_folder_parsing_name, aumid_fallback_name, aumid_icon_key,
-    display_name_fallback, exe_icon_key, file_icon_key, file_stem, first_non_empty, has_extension,
-    hwnd_icon_key, needs_env_expansion, parse_apps_folder, split_command_line,
-    translation_candidates, translations, version_string_path,
+    ShortcutSource, VERSION_NAME_FIELDS, apps_folder_parsing_name, aumid_fallback_name,
+    aumid_icon_key, display_name_fallback, exe_icon_key, file_icon_key, file_stem, first_non_empty,
+    has_extension, hwnd_icon_key, needs_env_expansion, parse_apps_folder, plan_shortcut,
+    split_command_line, translation_candidates, translations, version_string_path,
 };
 
 /// Buffer size for `IShellLinkW` string getters (long paths included).
@@ -185,50 +189,82 @@ fn identity_for_aumid(aumid: &str) -> AppIdentity {
     }
 }
 
-/// Resolve a `.lnk` and identify what it points at.
+/// Resolve a `.lnk` and identify what it points at. The decision (which of
+/// the AUMID property, the target and the link itself supplies the id, the
+/// name, the icon and the launch target) is `rules::identity::plan_shortcut`.
 fn identify_shortcut(path: &Path) -> PlatformResult<AppIdentity> {
     let path_s = path.to_string_lossy();
     let link = read_shortcut(&path_s)?;
     let link_name = file_stem(&path_s);
 
-    if let Some(target) = link
+    let target = link
         .target
         .as_deref()
         .map(str::trim)
         .filter(|t| !t.is_empty())
-    {
-        let target = expand_env(target);
-        let working_dir = link
-            .working_dir
-            .as_deref()
-            .map(str::trim)
-            .filter(|d| !d.is_empty())
-            .map(|d| PathBuf::from(expand_env(d)));
-        return Ok(identity_for_exe(
-            &target,
-            split_command_line(&link.arguments),
-            working_dir,
-            Some(&link_name),
-        ));
-    }
-    if let Some(aumid) = link
+        .map(expand_env);
+    let target = target.as_deref();
+    let aumid = link
         .app_user_model_id
         .as_deref()
         .map(str::trim)
-        .filter(|a| !a.is_empty())
-    {
-        return Ok(identity_for_aumid(aumid));
-    }
+        .filter(|a| !a.is_empty());
+    let apps_folder_name = aumid.and_then(apps_folder_display_name);
+    let plan = plan_shortcut(target.is_some(), aumid, apps_folder_name.is_some());
     log::debug!(
-        "{path_s}: shortcut has neither a target path nor an AUMID; pinning the .lnk itself"
+        "{path_s}: target {target:?}, AUMID {aumid:?} (in AppsFolder: {}) -> {plan:?}",
+        apps_folder_name.is_some()
     );
-    Ok(AppIdentity {
-        id: AppId::for_exe(path),
-        display_name: link_name,
-        icon_key: Some(file_icon_key(&path_s)),
-        launch: Some(LaunchTarget::Shortcut {
+    if plan.id == ShortcutSource::Link {
+        log::debug!(
+            "{path_s}: shortcut has neither a target path nor an AUMID; pinning the .lnk itself"
+        );
+    }
+
+    // Each arm needs the fact its source stands for; the plan only names a
+    // source whose fact is present, and the `_` arms keep that an invariant
+    // rather than a panic.
+    let id = match (plan.id, aumid, target) {
+        (ShortcutSource::AppUserModelId, Some(a), _) => AppId::for_app_user_model_id(a),
+        (ShortcutSource::Target, _, Some(t)) => AppId::for_exe(Path::new(t)),
+        _ => AppId::for_exe(path),
+    };
+    let display_name = match (plan.name, apps_folder_name, target) {
+        (ShortcutSource::AppUserModelId, Some(name), _) => name,
+        (ShortcutSource::Target, _, Some(t)) => {
+            first_non_empty([exe_display_name(t).as_deref(), Some(&link_name)])
+                .unwrap_or_else(|| file_stem(t))
+        }
+        _ => link_name,
+    };
+    let icon_key = match (plan.icon, aumid, target) {
+        (ShortcutSource::AppUserModelId, Some(a), _) => aumid_icon_key(a),
+        (ShortcutSource::Target, _, Some(t)) => exe_icon_key(t),
+        _ => file_icon_key(&path_s),
+    };
+    let launch = match (plan.launch, aumid, target) {
+        (ShortcutSource::Target, _, Some(t)) => LaunchTarget::Exe {
+            path: PathBuf::from(t),
+            args: split_command_line(&link.arguments),
+            working_dir: link
+                .working_dir
+                .as_deref()
+                .map(str::trim)
+                .filter(|d| !d.is_empty())
+                .map(|d| PathBuf::from(expand_env(d))),
+        },
+        (ShortcutSource::AppUserModelId, Some(a), _) => LaunchTarget::StoreApp {
+            app_user_model_id: a.to_owned(),
+        },
+        _ => LaunchTarget::Shortcut {
             path: path.to_path_buf(),
-        }),
+        },
+    };
+    Ok(AppIdentity {
+        id,
+        display_name,
+        icon_key: Some(icon_key),
+        launch: Some(launch),
     })
 }
 
