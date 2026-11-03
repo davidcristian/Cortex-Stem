@@ -5,7 +5,9 @@ import { defineConfig } from '@playwright/test';
 // The dev hosts have a Chromium matching this Playwright version at a fixed
 // path; CI installs its own browser and leaves the path absent.
 const PREINSTALLED_CHROMIUM = '/opt/pw-browsers/chromium';
-const PORT = 1420;
+// Same override as vite.config.ts (STEM_DEV_PORT), so a run in a second
+// worktree never reuses another checkout's dev server on 1420.
+const PORT = Number(process.env.STEM_DEV_PORT ?? 1420);
 
 export default defineConfig({
   testDir: 'e2e',

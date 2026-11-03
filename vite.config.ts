@@ -5,7 +5,11 @@ import { defineConfig } from 'vite';
 
 // Multi-page app: one HTML entry per Tauri window (docs/ipc/windows.md).
 // The dev server port is Tauri's `devUrl` (src-tauri/tauri.conf.json) and
-// the build output is its `frontendDist`.
+// the build output is its `frontendDist`. STEM_DEV_PORT moves the dev server
+// for browser-only runs (Playwright in a second worktree while a dev build
+// holds 1420); Tauri's devUrl is fixed, so never set it for `tauri dev`.
+export const DEV_PORT = Number(process.env.STEM_DEV_PORT ?? 1420);
+
 export default defineConfig({
   plugins: [svelte()],
   resolve: {
@@ -15,7 +19,7 @@ export default defineConfig({
   },
   clearScreen: false,
   server: {
-    port: 1420,
+    port: DEV_PORT,
     strictPort: true,
   },
   // Tauri exposes build facts as TAURI_ENV_* variables.
