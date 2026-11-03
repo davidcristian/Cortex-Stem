@@ -6,14 +6,27 @@ The platform returns PNG bytes for an `IconKey` at a requested size. The UI
 requests them with `get_icon` and caches them. Keys are namespaced:
 `hwnd:<id>:<pid>`, `exe:`, `file:`, `aumid:` and `shell:`. The frontend
 draws `shell:*` icons from built-in vector art. The Windows implementation
-extracts `HICON`s (from the window, then its class, then the exe, then the
-shell item image factory for large and UWP icons) and converts them to an
-RGBA PNG with alpha preserved.
+finds a source image for each key and converts it to an RGBA PNG with alpha
+preserved.
 
-**Sources.** The shell item image factory is asked with
-`SIIGBF_BIGGERSIZEOK`, so it returns the next larger image that an icon has
-(typically 256 px) instead of resampling. Class and window icons come at
-whatever size the app registered.
+**PE images.** An `exe:` or `file:` key that names a PE image (`.exe`,
+`.dll`, `.scr`) is read from the file's own resources (the `PE resources`
+chain). The file is mapped as a data file, and its first `RT_GROUP_ICON` is
+parsed in `rules::icons` (pure, tested). The best entry (largest edge up to
+256 px, then bit depth, then resource size) is created at its native size
+with `CreateIconFromResourceEx`. So the source is the icon's own largest
+image, and no OS resampling happens.
+
+**Other sources.** Every other source (`aumid:` logos, shortcuts and
+documents, PE files whose resources cannot be read) comes from
+`IShellItemImageFactory`, which is always asked for 256 px. The shell
+resamples to exactly the size requested, whatever `SIIGBF_BIGGERSIZEOK`
+suggests, and its filter leaves a light halo. Requesting the maximum leaves
+the downscale to Stem's own filter. An icon whose largest image is smaller
+than 256 px is upscaled by the shell and used as returned. `E_PENDING` from
+the shell is retried once. `PrivateExtractIconsW` and `SHGetFileInfoW` are
+the last fallbacks. Class and window icons come at whatever size the app
+registered.
 
 **Size.** The PNG's longer edge is **at most** the requested size. Anything
 larger is shrunk by the area-averaging filter in `rules::icons`, which
@@ -23,7 +36,8 @@ comes back at its own size.
 
 **Window icons.** For `hwnd:` keys the largest of `WM_GETICON` (big and
 small) and the class icons is used. When it is smaller than requested and
-the exe is known, the exe's icon is used instead if it is larger.
+the exe is known, the exe's icon (through the same `PE resources` chain) is
+used instead if it is larger.
 
 **Logging and the memory cache.** Each real load logs one debug line with
 the key, the requested size, the chain that produced the bitmap, and the
