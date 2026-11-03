@@ -21,6 +21,7 @@ arguments are named and how a failed command rejects.
 | `set_dock_content_size` | `{ width: number, height: number }` (CSS px)| `void`             | Rust resizes the calling window and centres it again (see [Sizing protocol](sizing-protocol.md)) |
 | `shell_action`          | `{ action: ShellAction }`                   | `void`             | runs a shell action directly (menus, the Recycle Bin's "Empty") |
 | `open_settings`         | none                                        | `void`             | opens the settings window, or focuses it if it is already open |
+| `reset_settings`        | none                                        | `Settings`         | restores and persists the defaults; emits `dock://settings` |
 | `quit`                  | none                                        | none               | exits the application |
 
 Three commands are planned and not implemented in Rust: `show_item_menu { itemKey, x, y }`,

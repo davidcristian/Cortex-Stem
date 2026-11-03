@@ -4,5 +4,5 @@ This file lists every version of the [IPC contract](index.md), newest first. A s
 to the file that covers that section now.
 
 - **v1.1 (shell actions and settings):** `shell_action` and `open_settings` move from planned to
-  required (the mock stubs them).
+  required, and `reset_settings` is added (the mock stubs them).
 - **v1:** the initial contract.
