@@ -138,6 +138,17 @@ pub trait Platform: Send + Sync + 'static {
     }
 }
 
+/// Whether `platform` is the scripted [`mock::MockPlatform`] (by its
+/// [`Platform::name`]), whichever way it was chosen: `STEM_PLATFORM=mock`, or
+/// a host that has no real implementation. The app layer uses this to keep
+/// demo runs away from the real settings file.
+pub fn is_mock(platform: &dyn Platform) -> bool {
+    platform.name() == MOCK_PLATFORM_NAME
+}
+
+/// What [`mock::MockPlatform::name`] returns.
+const MOCK_PLATFORM_NAME: &str = "mock";
+
 /// Build the platform for this host. Honors `STEM_PLATFORM=mock` on any host.
 pub fn create_platform() -> Arc<dyn Platform> {
     if std::env::var("STEM_PLATFORM").is_ok_and(|v| v.eq_ignore_ascii_case("mock")) {
@@ -150,5 +161,69 @@ pub fn create_platform() -> Arc<dyn Platform> {
     #[cfg(not(windows))]
     {
         Arc::new(mock::MockPlatform::with_demo_scenario())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_mock_recognises_the_mock_platform_by_name() {
+        let mock: Arc<dyn Platform> = Arc::new(mock::MockPlatform::new());
+        assert!(is_mock(mock.as_ref()));
+        assert_eq!(mock.name(), MOCK_PLATFORM_NAME);
+
+        struct Real;
+        impl Platform for Real {
+            fn name(&self) -> &'static str {
+                "windows"
+            }
+            fn start(&self, _sink: EventSink) -> PlatformResult<()> {
+                Ok(())
+            }
+            fn stop(&self) {}
+            fn windows(&self) -> PlatformResult<Vec<RawWindow>> {
+                Ok(vec![])
+            }
+            fn foreground_window(&self) -> PlatformResult<Option<WindowId>> {
+                Ok(None)
+            }
+            fn window_action(&self, _id: WindowId, _action: WindowAction) -> PlatformResult<()> {
+                Ok(())
+            }
+            fn identify_window(&self, id: WindowId) -> PlatformResult<AppIdentity> {
+                Err(PlatformError::WindowNotFound(id))
+            }
+            fn identify_target(&self, _target: &LaunchTarget) -> PlatformResult<AppIdentity> {
+                Err(PlatformError::Unsupported("test"))
+            }
+            fn launch(&self, _target: &LaunchTarget) -> PlatformResult<()> {
+                Ok(())
+            }
+            fn icon_png(&self, _key: &IconKey, _size: u32) -> PlatformResult<Option<Vec<u8>>> {
+                Ok(None)
+            }
+            fn monitors(&self) -> PlatformResult<Vec<MonitorInfo>> {
+                Ok(vec![])
+            }
+            fn theme(&self) -> PlatformResult<ThemeInfo> {
+                Ok(ThemeInfo::default())
+            }
+            fn recycle_bin(&self) -> PlatformResult<RecycleBinState> {
+                Ok(RecycleBinState::default())
+            }
+            fn shell_action(&self, _action: ShellAction) -> PlatformResult<()> {
+                Ok(())
+            }
+            fn prepare_dock_window(
+                &self,
+                _handle: NativeWindowHandle,
+                _options: DockWindowOptions,
+            ) -> PlatformResult<()> {
+                Ok(())
+            }
+        }
+        assert!(!is_mock(&Real));
     }
 }

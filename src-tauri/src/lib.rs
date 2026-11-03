@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use stem_core::Settings;
-use stem_platform::{Platform, create_platform};
+use stem_platform::{Platform, create_platform, is_mock};
 use stem_service::{
     DockService, FileSettingsStore, MemorySettingsStore, ServiceError, ServiceEvent, ServiceResult,
     SettingsStore,
@@ -66,11 +66,13 @@ pub fn run() {
         }))
         .invoke_handler(commands::handler())
         .setup(|app| {
-            let store = settings_store(app.handle());
+            // The platform decides where settings live (a mock never touches
+            // the real file), so it is created first; it logs nothing until
+            // `start`, which happens after logging is up.
+            let platform = create_platform();
+            let store = settings_store(app.handle(), platform.as_ref());
             init_logging(app.handle(), store.as_ref());
             panic_test();
-
-            let platform = create_platform();
             log::info!("platform: {}", platform.name());
 
             let service = Arc::new(start_service(platform, store)?);
@@ -113,9 +115,9 @@ pub fn run() {
 
 /// Settings live in `<app config dir>/settings.json`. `None` means an
 /// in-memory store: the mock platform (so demo runs never touch a real
-/// profile) or a host without a config dir.
-fn settings_store(app: &AppHandle) -> Option<FileSettingsStore> {
-    if std::env::var("STEM_PLATFORM").is_ok_and(|v| v.eq_ignore_ascii_case("mock")) {
+/// profile, however the mock was chosen) or a host without a config dir.
+fn settings_store(app: &AppHandle, platform: &dyn Platform) -> Option<FileSettingsStore> {
+    if is_mock(platform) {
         return None;
     }
     match app.path().app_config_dir() {
