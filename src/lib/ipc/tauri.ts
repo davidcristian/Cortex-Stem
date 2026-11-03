@@ -94,6 +94,14 @@ export class TauriBackend implements Backend {
     return invoke<void>('quit');
   }
 
+  showItemMenu(itemKey: string, x: number, y: number): Promise<void> {
+    return invoke<void>('show_item_menu', { itemKey, x, y });
+  }
+
+  showDockMenu(x: number, y: number): Promise<void> {
+    return invoke<void>('show_dock_menu', { x, y });
+  }
+
   on<E extends BackendEvent>(event: E, handler: EventHandler<E>): Unsubscribe {
     // `listen` resolves asynchronously; the returned function must work
     // whether or not the registration has completed yet.

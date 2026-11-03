@@ -361,6 +361,43 @@ describe('revisions and events', () => {
     await b.openSettings();
     expect(b.calls).toEqual([{ type: 'openSettings' }]);
   });
+});
+
+describe('context menus (docs/ipc/context-menus.md, v1.2; native in Rust, recorded here)', () => {
+  it('records show_item_menu and show_dock_menu with the item key and the point', async () => {
+    const b = fast();
+    await b.showItemMenu(app(FIREFOX), 120, 40);
+    await b.showItemMenu('fixed:recycle-bin', 1000.5, 41);
+    await b.showDockMenu(300, 12);
+    expect(b.calls).toEqual([
+      { type: 'showItemMenu', itemKey: app(FIREFOX), x: 120, y: 40 },
+      { type: 'showItemMenu', itemKey: 'fixed:recycle-bin', x: 1000.5, y: 41 },
+      { type: 'showDockMenu', x: 300, y: 12 },
+    ]);
+  });
+
+  it('shows nothing for a separator and rejects an unknown item like Rust', async () => {
+    const b = fast();
+    await b.showItemMenu('sep:1', 5, 5);
+    await expect(b.showItemMenu('app:exe:c:/nope.exe', 5, 5)).rejects.toBe(
+      'unknown dock item: app:exe:c:/nope.exe',
+    );
+    expect(b.calls).toEqual([]);
+  });
+
+  it('reports the request with console.info when logging is on', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    try {
+      const b = new MockBackend({ latencyMs: [0, 0], identityDelayMs: 0, log: true });
+      backends.push(b);
+      await b.showItemMenu('fixed:launcher', 10, 20);
+      await b.showDockMenu(1, 2);
+      expect(info).toHaveBeenCalledWith('[mock] show_item_menu(fixed:launcher, 10, 20)');
+      expect(info).toHaveBeenCalledWith('[mock] show_dock_menu(1, 2)');
+    } finally {
+      info.mockRestore();
+    }
+  });
 
   it('failNextCommand rejects exactly one command with the given message', async () => {
     const b = fast();

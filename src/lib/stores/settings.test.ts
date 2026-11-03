@@ -143,6 +143,8 @@ class FakeBackend implements Backend {
   async shellAction(): Promise<void> {}
   async openSettings(): Promise<void> {}
   async quit(): Promise<void> {}
+  async showItemMenu(): Promise<void> {}
+  async showDockMenu(): Promise<void> {}
 }
 
 const tick = async (): Promise<void> => {

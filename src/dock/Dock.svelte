@@ -536,14 +536,22 @@
     }
   }
 
+  // Right-click: the menus are native, built and shown by Rust; the
+  // UI only reports which item and where (CSS px of this window's viewport).
+  // The item's own `contextmenu` handler calls `oncontext` and the event
+  // bubbles on to the panel, where only the panel itself (padding between
+  // the slots) opens the dock menu. Separators get nothing.
   function oncontext(item: DockItemModel, x: number, y: number): void {
-    void backend.showItemMenu?.(item.key, x, y).catch(report('Menu'));
+    if (drag?.started) {
+      return;
+    }
+    void backend.showItemMenu(item.key, x, y).catch(report('Menu'));
   }
 
   function onpanelcontextmenu(e: MouseEvent): void {
     e.preventDefault();
-    if (e.target === panelEl) {
-      void backend.showDockMenu?.(e.clientX, e.clientY).catch(report('Menu'));
+    if (e.target === panelEl && !drag?.started) {
+      void backend.showDockMenu(e.clientX, e.clientY).catch(report('Menu'));
     }
   }
 

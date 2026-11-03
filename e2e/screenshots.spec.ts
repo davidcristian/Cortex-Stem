@@ -8,7 +8,7 @@ const APP_SLOT = '.slot[data-kind="app"]';
 /** What the pages expose in mock mode (`src/lib/ipc/demo.ts`; structural, for `page.evaluate`). */
 interface DemoWindow {
   __dockMock?: {
-    calls: Array<{ type: string }>;
+    calls: Array<{ type: string } & Record<string, unknown>>;
     failNextCommand: (message: string) => void;
     getSettings: () => Promise<{ iconSize: number; theme: string; pinned: Array<{ id: string }> }>;
   };
@@ -250,6 +250,38 @@ test.describe('dock in mock mode', () => {
     // Auto-dismiss after 4 s; it never captures the pointer.
     await expect(toast).toHaveCSS('pointer-events', 'none');
     await expect(toast).toHaveCount(0, { timeout: 6_000 });
+  });
+
+  test('a right-click asks the backend for a native menu', async ({ page }) => {
+    await openDock(page);
+    // An item: the request names it and carries the pointer position in CSS px.
+    const firefox = page.locator(APP_SLOT).nth(1);
+    const slot = (await firefox.boundingBox())!;
+    await firefox.click({ button: 'right' });
+    await expect.poll(() => callsOfType(page, 'showItemMenu')).toBe(1);
+    const request = await page.evaluate(() =>
+      ((window as unknown as DemoWindow).__dockMock?.calls ?? []).find(
+        (c) => c.type === 'showItemMenu',
+      ),
+    );
+    expect(request).toMatchObject({
+      itemKey: 'app:exe:c:/program files/mozilla firefox/firefox.exe',
+    });
+    expect(request?.x).toBeGreaterThan(slot.x);
+    expect(request?.x).toBeLessThan(slot.x + slot.width);
+    expect(request?.y).toBeGreaterThan(slot.y);
+    expect(request?.y).toBeLessThan(slot.y + slot.height);
+
+    // The panel's own padding (no item under the pointer): the dock menu.
+    const panel = (await page.locator('.dock-panel').boundingBox())!;
+    await page.mouse.click(panel.x + 3, panel.y + panel.height / 2, { button: 'right' });
+    await expect.poll(() => callsOfType(page, 'showDockMenu')).toBe(1);
+
+    // A separator: no menu at all.
+    await page.locator('[role="separator"]').first().click({ button: 'right' });
+    await page.waitForTimeout(150);
+    expect(await callsOfType(page, 'showItemMenu')).toBe(1);
+    expect(await callsOfType(page, 'showDockMenu')).toBe(1);
   });
 
   test('clicking the active app minimises it; the mock reports window sizing', async ({ page }) => {

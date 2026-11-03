@@ -1,5 +1,5 @@
 /**
- * `MockBackend`: the whole IPC contract (docs/ipc/ v1.1) without Rust, for
+ * `MockBackend`: the whole IPC contract (docs/ipc/ v1.2) without Rust, for
  * browser runs and Playwright screenshots.
  *
  * It mirrors, deliberately in this one file so the two sides can be compared,
@@ -988,10 +988,19 @@ export class MockBackend implements Backend {
     };
   }
 
-  // --- Backend: planned for M2 (docs/ipc/commands.md); the mock only records them.
+  // --- Backend: native context menus. A browser has none; the mock
+  // records the request (Rust would build and show the menu itself).
 
+  /** `show_item_menu`: an unknown key rejects like Rust; separators have no menu. */
   showItemMenu(itemKey: string, x: number, y: number): Promise<void> {
     return this.command(() => {
+      const item = this.engine.snapshot().items.find((i) => i.key === itemKey);
+      if (!item) {
+        throw `unknown dock item: ${itemKey}`;
+      }
+      if (item.kind === 'separator') {
+        return;
+      }
       this.record({ type: 'showItemMenu', itemKey, x, y });
       this.log(`show_item_menu(${itemKey}, ${x}, ${y})`);
     });
@@ -1003,6 +1012,8 @@ export class MockBackend implements Backend {
       this.log(`show_dock_menu(${x}, ${y})`);
     });
   }
+
+  // --- Backend: planned for M2 (docs/ipc/commands.md); the mock only records it.
 
   setDockHover(hovering: boolean): Promise<void> {
     return this.command(() => {

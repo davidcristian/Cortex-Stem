@@ -92,6 +92,8 @@ class FakeBackend implements Backend {
     return this.settings;
   }
   async quit(): Promise<void> {}
+  async showItemMenu(): Promise<void> {}
+  async showDockMenu(): Promise<void> {}
 }
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
