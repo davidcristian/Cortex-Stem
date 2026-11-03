@@ -206,9 +206,14 @@ fn position_window(window: &WebviewWindow, monitor: Option<&MonitorInfo>) -> tau
     window.set_position(PhysicalPosition::new(x, y))
 }
 
-/// Before the platform reported monitors, fall back to Tauri's own view.
+/// Before the platform reported monitors, fall back to Tauri's own view: the
+/// window's monitor, else the primary one (only queried when needed, so its
+/// failure cannot mask a successful first answer).
 fn fallback_work_area(window: &WebviewWindow) -> tauri::Result<Rect> {
-    let monitor = window.current_monitor()?.or(window.primary_monitor()?);
+    let monitor = match window.current_monitor()? {
+        Some(current) => Some(current),
+        None => window.primary_monitor()?,
+    };
     Ok(match monitor {
         Some(m) => {
             let pos = m.work_area().position;
