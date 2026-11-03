@@ -10,8 +10,66 @@ import type { PinnedApp } from "./PinnedApp";
 import type { SystemIntegration } from "./SystemIntegration";
 import type { ThemeMode } from "./ThemeMode";
 
-export type Settings = { version: number, position: DockPosition, 
+/**
+ * The whole settings document, as stored in `settings.json`.
+ */
+export type Settings = { 
+/**
+ * Format version of the document. Stem writes the version it
+ * supports. A document with a lower version is upgraded when it loads,
+ * and a document with a higher version is unreadable.
+ */
+version: number, 
+/**
+ * Screen edge the dock is on. A change closes the dock windows and
+ * opens new ones.
+ */
+position: DockPosition, 
 /**
  * Base icon size in CSS pixels, before magnification (24..=128).
  */
-iconSize: number, magnification: Magnification, autoHide: AutoHide, monitors: MonitorMode, theme: ThemeMode, appearance: Appearance, items: FixedItems, behavior: Behavior, pinned: Array<PinnedApp>, system: SystemIntegration, };
+iconSize: number, 
+/**
+ * Magnification of icons near the cursor.
+ */
+magnification: Magnification, 
+/**
+ * When and how the dock hides itself.
+ */
+autoHide: AutoHide, 
+/**
+ * Which monitors get a dock. A change applies at once: Stem opens or
+ * closes the docks of the other monitors, and the primary monitor's
+ * dock stays.
+ */
+monitors: MonitorMode, 
+/**
+ * Light or dark colours for the dock and the settings window.
+ */
+theme: ThemeMode, 
+/**
+ * How the dock looks: opacity, corner radius, backdrop, tooltips and the
+ * launch bounce.
+ */
+appearance: Appearance, 
+/**
+ * Which fixed items (the items that are not apps) the dock shows.
+ */
+items: FixedItems, 
+/**
+ * What clicks, the mouse wheel and the global shortcuts do, and which
+ * windows the dock lists.
+ */
+behavior: Behavior, 
+/**
+ * Pinned apps, in dock order: left to right, or top to bottom on a
+ * dock at the left or right edge. Entries whose id is empty or only
+ * whitespace are dropped, and of several entries with the same id only
+ * the first stays.
+ */
+pinned: Array<PinnedApp>, 
+/**
+ * Windows integration: start at sign-in, the stock taskbar, reserved
+ * screen space and the log file.
+ */
+system: SystemIntegration, };

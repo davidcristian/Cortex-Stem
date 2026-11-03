@@ -5,9 +5,14 @@
 //!
 //! The document and each object in it use `#[serde(default)]`, so that a
 //! file written by an older Stem or edited by hand still loads: a missing
-//! key takes its default. The entries of `pinned` are the exception: each
-//! needs its `id` and a `launch` object with the keys its `kind` requires.
-//! Unknown fields are ignored.
+//! key takes its default. The entries of `pinned` and `hiddenApps` are the
+//! exception: each needs its `id`, and a pin also needs a `launch` object
+//! with the keys its `kind` requires. Unknown fields are ignored.
+//!
+//! The doc comments of the settings types are user-facing text. ts-rs copies
+//! them into the TypeScript bindings in `src/lib/ipc/generated/`, and
+//! `tests/settings_reference.rs` builds the settings reference,
+//! `docs/SETTINGS.md`, from them.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -26,22 +31,45 @@ pub enum SettingsError {
     TooNew { found: u32, supported: u32 },
 }
 
+/// The whole settings document, as stored in `settings.json`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
+    /// Format version of the document. Stem writes the version it
+    /// supports. A document with a lower version is upgraded when it loads,
+    /// and a document with a higher version is unreadable.
     pub version: u32,
+    /// Screen edge the dock is on. A change closes the dock windows and
+    /// opens new ones.
     pub position: DockPosition,
     /// Base icon size in CSS pixels, before magnification (24..=128).
     pub icon_size: u32,
+    /// Magnification of icons near the cursor.
     pub magnification: Magnification,
+    /// When and how the dock hides itself.
     pub auto_hide: AutoHide,
+    /// Which monitors get a dock. A change applies at once: Stem opens or
+    /// closes the docks of the other monitors, and the primary monitor's
+    /// dock stays.
     pub monitors: MonitorMode,
+    /// Light or dark colours for the dock and the settings window.
     pub theme: ThemeMode,
+    /// How the dock looks: opacity, corner radius, backdrop, tooltips and the
+    /// launch bounce.
     pub appearance: Appearance,
+    /// Which fixed items (the items that are not apps) the dock shows.
     pub items: FixedItems,
+    /// What clicks, the mouse wheel and the global shortcuts do, and which
+    /// windows the dock lists.
     pub behavior: Behavior,
+    /// Pinned apps, in dock order: left to right, or top to bottom on a
+    /// dock at the left or right edge. Entries whose id is empty or only
+    /// whitespace are dropped, and of several entries with the same id only
+    /// the first stays.
     pub pinned: Vec<PinnedApp>,
+    /// Windows integration: start at sign-in, the stock taskbar, reserved
+    /// screen space and the log file.
     pub system: SystemIntegration,
 }
 
@@ -80,7 +108,8 @@ impl Settings {
     }
 
     pub fn to_json_pretty(&self) -> String {
-        // Serialising our own plain data cannot fail.
+        // Serialising our own plain data cannot fail: `validate` guarantees
+        // every float is finite, which is the only thing JSON cannot encode.
         serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".to_owned())
     }
 
@@ -90,18 +119,103 @@ impl Settings {
         self.version = SETTINGS_VERSION;
     }
 
-    /// Clamp every numeric field into its supported range and drop invalid
-    /// entries. Idempotent: validating a validated document changes nothing.
+    /// Clamp every numeric field into its supported range, replace
+    /// non-finite floats with their defaults, and drop invalid pins (blank or
+    /// duplicate ids; the first occurrence stays). Idempotent: validating a
+    /// validated document changes nothing.
     pub fn validate(&mut self) {
         self.icon_size = self.icon_size.clamp(24, 128);
-        self.magnification.max_scale = self.magnification.max_scale.clamp(1.0, 2.5);
+        self.magnification.max_scale = finite_or(
+            self.magnification.max_scale,
+            Magnification::default().max_scale,
+        )
+        .clamp(1.0, 2.5);
         self.magnification.range_icons = self.magnification.range_icons.clamp(1, 6);
         self.auto_hide.delay_ms = self.auto_hide.delay_ms.min(5_000);
-        self.appearance.opacity = self.appearance.opacity.clamp(0.0, 1.0);
+        self.appearance.opacity =
+            finite_or(self.appearance.opacity, Appearance::default().opacity).clamp(0.0, 1.0);
         self.appearance.corner_radius = self.appearance.corner_radius.min(64);
         let mut seen = std::collections::HashSet::new();
         self.pinned
-            .retain(|p| !p.id.as_str().is_empty() && seen.insert(p.id.clone()));
+            .retain(|p| !p.id.as_str().trim().is_empty() && seen.insert(p.id.clone()));
+    }
+
+    /// Whether replacing `self` by `other` needs the dock windows to be
+    /// created again: the screen edge or the set of monitors that get a dock
+    /// changed. Everything else restyles them in place.
+    pub fn diff_requires_window_rebuild(&self, other: &Settings) -> bool {
+        self.position != other.position || self.monitors != other.monitors
+    }
+
+    /// A realistic, fully valid document: a few pinned apps that use every
+    /// [`LaunchTarget`] kind, and a handful of non-default options. The
+    /// tests of this module check that it validates unchanged and survives
+    /// a round trip through JSON.
+    pub fn example() -> Self {
+        use std::path::PathBuf;
+
+        let firefox = PathBuf::from(r"C:\Program Files\Mozilla Firefox\firefox.exe");
+        let code = PathBuf::from(r"C:\Users\me\AppData\Local\Programs\Microsoft VS Code\Code.exe");
+        let steam_exe = PathBuf::from(r"C:\Program Files (x86)\Steam\steam.exe");
+        let calculator = "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App";
+        let settings_app =
+            "windows.immersivecontrolpanel_cw5n1h2txyewy!microsoft.windows.immersivecontrolpanel";
+
+        let mut example = Self {
+            icon_size: 56,
+            ..Self::default()
+        };
+        example.magnification.max_scale = 1.8;
+        example.items.task_view = true;
+        example.appearance.corner_radius = 24;
+        example.pinned = vec![
+            PinnedApp {
+                id: AppId::for_exe(&firefox),
+                label: None,
+                launch: LaunchTarget::Exe {
+                    path: firefox,
+                    args: vec![],
+                    working_dir: None,
+                },
+            },
+            PinnedApp {
+                id: AppId::for_exe(&code),
+                label: Some("VS Code".into()),
+                launch: LaunchTarget::Exe {
+                    path: code,
+                    args: vec!["--new-window".into()],
+                    working_dir: Some(PathBuf::from(r"C:\Users\me\Projects")),
+                },
+            },
+            // A shortcut is pinned under the id of the executable it resolves
+            // to, so the running windows merge into the same item.
+            PinnedApp {
+                id: AppId::for_exe(&steam_exe),
+                label: None,
+                launch: LaunchTarget::Shortcut {
+                    path: PathBuf::from(
+                        r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Steam\Steam.lnk",
+                    ),
+                },
+            },
+            PinnedApp {
+                id: AppId::for_app_user_model_id(calculator),
+                label: None,
+                launch: LaunchTarget::StoreApp {
+                    app_user_model_id: calculator.into(),
+                },
+            },
+            // The Settings app is launched by URI, but its windows have the
+            // immersive control panel's AppUserModelID.
+            PinnedApp {
+                id: AppId::for_app_user_model_id(settings_app),
+                label: Some("Settings".into()),
+                launch: LaunchTarget::Uri {
+                    uri: "ms-settings:".into(),
+                },
+            },
+        ];
+        example
     }
 
     pub fn is_pinned(&self, id: &AppId) -> bool {
@@ -139,20 +253,31 @@ impl Settings {
     }
 }
 
+fn finite_or(value: f32, fallback: f32) -> f32 {
+    if value.is_finite() { value } else { fallback }
+}
+
+/// Screen edge the dock is on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "camelCase")]
 pub enum DockPosition {
+    /// Bottom edge, as a row centred on it (the default).
     Bottom,
+    /// Left edge, as a column.
     Left,
+    /// Right edge, as a column.
     Right,
+    /// Top edge.
     Top,
 }
 
+/// Icon magnification near the cursor.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "camelCase", default)]
 pub struct Magnification {
+    /// Magnify icons as the cursor comes near them.
     pub enabled: bool,
     /// Scale of the icon directly under the cursor (1.0..=2.5).
     pub max_scale: f32,
@@ -171,10 +296,12 @@ impl Default for Magnification {
     }
 }
 
+/// When the dock hides itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "camelCase")]
 pub enum AutoHideMode {
+    /// The dock stays on screen.
     Off,
     /// The dock hides whenever the cursor leaves it, and comes back when
     /// the cursor touches the dock's screen edge.
@@ -184,10 +311,13 @@ pub enum AutoHideMode {
     WhenOverlapped,
 }
 
+/// Auto-hide: when the dock hides itself, and how long it waits.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "camelCase", default)]
 pub struct AutoHide {
+    /// Whether and when the dock hides. Whatever the mode, a fullscreen
+    /// app hides the dock of its monitor.
     pub mode: AutoHideMode,
     /// How long the dock waits before it hides, in milliseconds
     /// (0..=5000). The wait starts when the cursor leaves the dock, or when
@@ -204,23 +334,31 @@ impl Default for AutoHide {
     }
 }
 
+/// Which monitors get a dock window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "camelCase")]
 pub enum MonitorMode {
+    /// One dock, on the primary monitor.
     Primary,
+    /// One dock per monitor.
     All,
 }
 
+/// Light or dark colours for the dock and the settings window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "camelCase")]
 pub enum ThemeMode {
+    /// Follow the Windows app mode, light or dark (`ThemeInfo.dark`).
     System,
+    /// Always light.
     Light,
+    /// Always dark.
     Dark,
 }
 
+/// What is drawn behind the panel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "camelCase")]
@@ -235,6 +373,7 @@ pub enum Backdrop {
     Mica,
 }
 
+/// How the dock looks.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "camelCase", default)]
@@ -243,6 +382,7 @@ pub struct Appearance {
     pub opacity: f32,
     /// Panel corner radius in CSS pixels (0..=64).
     pub corner_radius: u32,
+    /// Backdrop material behind the panel.
     pub backdrop: Backdrop,
     /// Show an item's name in a tooltip while the cursor is over the item
     /// or the item has the keyboard focus.
@@ -264,14 +404,25 @@ impl Default for Appearance {
     }
 }
 
+/// Which fixed items (the items that are not apps) the dock shows. The
+/// items at the left come before the apps and the items at the right come
+/// after them; on a dock at the left or right edge, left means the top and
+/// right means the bottom.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "camelCase", default)]
 pub struct FixedItems {
+    /// The Start item at the left, which opens the Start menu.
     pub launcher: bool,
+    /// The Task View item at the left.
     pub task_view: bool,
+    /// The Show Desktop item at the left.
     pub show_desktop: bool,
+    /// The Recycle Bin item, last at the right.
     pub recycle_bin: bool,
+    /// Draw thin separators between the item groups: the items at the
+    /// left, the pinned apps, the other running apps and the items at the
+    /// right.
     pub separators: bool,
 }
 
@@ -287,6 +438,8 @@ impl Default for FixedItems {
     }
 }
 
+/// What clicks, the mouse wheel and the global shortcuts do, and which
+/// windows the dock lists.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "camelCase", default)]
@@ -331,9 +484,11 @@ pub struct PinnedApp {
     /// use the app's own name.
     #[serde(default)]
     pub label: Option<String>,
+    /// How to start the app when it has no window.
     pub launch: LaunchTarget,
 }
 
+/// Windows integration settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "camelCase", default)]
@@ -384,6 +539,131 @@ mod tests {
         }
     }
 
+    /// Tiny deterministic generator (xorshift64*) so the property-style tests
+    /// need no extra dependency and reproduce exactly.
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+
+        fn below(&mut self, n: u64) -> u64 {
+            self.next() % n
+        }
+
+        fn bool(&mut self) -> bool {
+            self.below(2) == 1
+        }
+
+        /// A `u32` that is often an edge value.
+        fn u32(&mut self) -> u32 {
+            match self.below(6) {
+                0 => 0,
+                1 => u32::MAX,
+                2 => 1,
+                _ => self.next() as u32 % 10_000,
+            }
+        }
+
+        /// An `f32` that is often an edge value, including non-finite ones.
+        fn f32(&mut self) -> f32 {
+            match self.below(8) {
+                0 => f32::NAN,
+                1 => f32::INFINITY,
+                2 => f32::NEG_INFINITY,
+                3 => -1.0,
+                4 => 0.0,
+                5 => 1e9,
+                _ => (self.below(10_000) as f32) / 1_000.0,
+            }
+        }
+
+        fn pick<T: Copy>(&mut self, options: &[T]) -> T {
+            options[self.below(options.len() as u64) as usize]
+        }
+    }
+
+    fn arbitrary(rng: &mut Rng) -> Settings {
+        Settings {
+            version: rng.below(2) as u32,
+            position: rng.pick(&[
+                DockPosition::Bottom,
+                DockPosition::Left,
+                DockPosition::Right,
+                DockPosition::Top,
+            ]),
+            icon_size: rng.u32(),
+            magnification: Magnification {
+                enabled: rng.bool(),
+                max_scale: rng.f32(),
+                range_icons: rng.u32(),
+            },
+            auto_hide: AutoHide {
+                mode: rng.pick(&[
+                    AutoHideMode::Off,
+                    AutoHideMode::Always,
+                    AutoHideMode::WhenOverlapped,
+                ]),
+                delay_ms: rng.u32(),
+            },
+            monitors: rng.pick(&[MonitorMode::Primary, MonitorMode::All]),
+            theme: rng.pick(&[ThemeMode::System, ThemeMode::Light, ThemeMode::Dark]),
+            appearance: Appearance {
+                opacity: rng.f32(),
+                corner_radius: rng.u32(),
+                backdrop: rng.pick(&[Backdrop::Css, Backdrop::Acrylic, Backdrop::Mica]),
+                tooltips: rng.bool(),
+                bounce_on_launch: rng.bool(),
+            },
+            items: FixedItems {
+                launcher: rng.bool(),
+                task_view: rng.bool(),
+                show_desktop: rng.bool(),
+                recycle_bin: rng.bool(),
+                separators: rng.bool(),
+            },
+            behavior: Behavior {
+                click_active_minimizes: rng.bool(),
+                show_only_current_desktop: rng.bool(),
+                show_only_current_monitor: rng.bool(),
+                running_indicators: rng.bool(),
+            },
+            pinned: (0..rng.below(8))
+                .map(|_| {
+                    let id = rng.pick(&["", " ", "a", "b", "c", "exe:c:/x.exe", "aumid:X!App"]);
+                    let mut p = pin(id);
+                    p.label = rng.bool().then(|| "Label".to_owned());
+                    p
+                })
+                .collect(),
+            system: SystemIntegration {
+                autostart: rng.bool(),
+                hide_windows_taskbar: rng.bool(),
+                reserve_screen_space: rng.bool(),
+                file_logging: rng.bool(),
+            },
+        }
+    }
+
+    fn assert_within_ranges(s: &Settings) {
+        assert!((24..=128).contains(&s.icon_size));
+        assert!((1.0..=2.5).contains(&s.magnification.max_scale));
+        assert!((1..=6).contains(&s.magnification.range_icons));
+        assert!(s.auto_hide.delay_ms <= 5_000);
+        assert!((0.0..=1.0).contains(&s.appearance.opacity));
+        assert!(s.appearance.corner_radius <= 64);
+        let ids: Vec<&str> = s.pinned.iter().map(|p| p.id.as_str()).collect();
+        assert!(ids.iter().all(|id| !id.trim().is_empty()));
+        let mut dedup = ids.clone();
+        dedup.sort_unstable();
+        dedup.dedup();
+        assert_eq!(dedup.len(), ids.len(), "duplicate pin ids in {ids:?}");
+    }
+
     #[test]
     fn empty_document_yields_defaults() {
         let s = Settings::from_json("{}").unwrap();
@@ -416,6 +696,143 @@ mod tests {
             s.pinned.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
             vec!["a", "b"]
         );
+    }
+
+    #[test]
+    fn validate_drops_blank_pin_ids_and_keeps_the_first_duplicate() {
+        let first = PinnedApp {
+            label: Some("first".into()),
+            ..pin("a")
+        };
+        let second = PinnedApp {
+            label: Some("second".into()),
+            ..pin("a")
+        };
+        let mut s = Settings {
+            pinned: vec![pin(" \t"), first, pin("b"), second],
+            ..Default::default()
+        };
+        s.validate();
+        assert_eq!(
+            s.pinned.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+            vec!["a", "b"]
+        );
+        assert_eq!(s.pinned[0].label.as_deref(), Some("first"));
+    }
+
+    #[test]
+    fn validate_replaces_non_finite_floats_with_defaults() {
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut s = Settings::default();
+            s.magnification.max_scale = bad;
+            s.appearance.opacity = bad;
+            s.validate();
+            assert_eq!(
+                s.magnification.max_scale,
+                Magnification::default().max_scale
+            );
+            assert_eq!(s.appearance.opacity, Appearance::default().opacity);
+            // And the document stays serialisable (JSON has no NaN/inf).
+            assert_ne!(s.to_json_pretty(), "{}");
+            assert_eq!(Settings::from_json(&s.to_json_pretty()).unwrap(), s);
+        }
+    }
+
+    #[test]
+    fn validate_is_idempotent_for_default_and_example() {
+        for mut s in [Settings::default(), Settings::example()] {
+            let original = s.clone();
+            s.validate();
+            assert_eq!(s, original, "already-valid documents must not change");
+            s.validate();
+            assert_eq!(s, original);
+        }
+    }
+
+    #[test]
+    fn validate_is_idempotent_on_pseudo_random_documents() {
+        let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+        for i in 0..2_000 {
+            let raw = arbitrary(&mut rng);
+            let mut once = raw.clone();
+            once.validate();
+            assert_within_ranges(&once);
+            let mut twice = once.clone();
+            twice.validate();
+            assert_eq!(once, twice, "iteration {i}: validate is not idempotent");
+
+            // A validated document round-trips through JSON unchanged
+            // (modulo the version stamp `from_json` applies).
+            let back = Settings::from_json(&once.to_json_pretty())
+                .unwrap_or_else(|e| panic!("iteration {i}: {e}"));
+            let mut expected = once.clone();
+            expected.migrate();
+            assert_eq!(
+                back, expected,
+                "iteration {i}: round trip changed the document"
+            );
+        }
+    }
+
+    #[test]
+    fn diff_requires_window_rebuild_only_for_position_and_monitors() {
+        let base = Settings::default();
+        assert!(!base.diff_requires_window_rebuild(&base));
+
+        let mut restyled = base.clone();
+        restyled.icon_size = 96;
+        restyled.appearance.opacity = 0.3;
+        restyled.auto_hide.mode = AutoHideMode::Always;
+        restyled.theme = ThemeMode::Dark;
+        restyled.items.launcher = false;
+        restyled.pinned.push(pin("a"));
+        assert!(!base.diff_requires_window_rebuild(&restyled));
+
+        let mut moved = base.clone();
+        moved.position = DockPosition::Left;
+        assert!(base.diff_requires_window_rebuild(&moved));
+        assert!(moved.diff_requires_window_rebuild(&base));
+
+        let mut everywhere = base.clone();
+        everywhere.monitors = MonitorMode::All;
+        assert!(base.diff_requires_window_rebuild(&everywhere));
+    }
+
+    #[test]
+    fn example_is_valid_pins_every_launch_kind_and_round_trips() {
+        let example = Settings::example();
+        assert_eq!(example.version, SETTINGS_VERSION);
+        assert!((4..=5).contains(&example.pinned.len()));
+        let kinds: Vec<&str> = example
+            .pinned
+            .iter()
+            .map(|p| match p.launch {
+                LaunchTarget::Exe { .. } => "exe",
+                LaunchTarget::Shortcut { .. } => "shortcut",
+                LaunchTarget::StoreApp { .. } => "storeApp",
+                LaunchTarget::Uri { .. } => "uri",
+            })
+            .collect();
+        for kind in ["exe", "shortcut", "storeApp", "uri"] {
+            assert!(
+                kinds.contains(&kind),
+                "example has no {kind} pin: {kinds:?}"
+            );
+        }
+        // Ids use the canonical forms the engine derives for running windows.
+        assert!(
+            example.pinned.iter().all(|p| {
+                p.id.as_str().starts_with("exe:") || p.id.as_str().starts_with("aumid:")
+            })
+        );
+        assert!(example.is_pinned(&AppId::for_app_user_model_id(
+            "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App"
+        )));
+
+        let json = example.to_json_pretty();
+        assert!(json.contains(r#""kind": "shortcut""#));
+        assert_eq!(Settings::from_json(&json).unwrap(), example);
+        assert_ne!(example, Settings::default());
     }
 
     #[test]

@@ -19,4 +19,8 @@ id: AppId,
  * A name that replaces the app's own name on the dock, or `null` to
  * use the app's own name.
  */
-label: string | null, launch: LaunchTarget, };
+label: string | null, 
+/**
+ * How to start the app when it has no window.
+ */
+launch: LaunchTarget, };
