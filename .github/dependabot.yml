@@ -1,0 +1,42 @@
+# Dependabot: weekly checks for the three ecosystems.
+# Minor and patch updates are grouped per ecosystem into one PR so the Linux
+# ladder runs once per batch; major updates still arrive as individual PRs.
+# Commit prefixes are Conventional Commits types from AGENTS.md §9 (`build` for
+# dependencies, `ci` for actions).
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: build
+    groups:
+      cargo-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: build
+    groups:
+      npm-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+    groups:
+      actions-minor-patch:
+        update-types:
+          - minor
+          - patch

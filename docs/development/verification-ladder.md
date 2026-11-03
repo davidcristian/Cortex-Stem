@@ -21,4 +21,5 @@ The rules for running it, and which rungs a task needs, are in
 
 ## Scripts and CI
 
-`scripts/check-all.sh` runs rungs 1 to 7 on Linux.
+`scripts/check-all.sh` runs rungs 1 to 7 on Linux, and CI's `linux` job runs the same commands as
+separate steps.

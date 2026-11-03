@@ -1,0 +1,186 @@
+# Continuous integration.
+#
+# `linux`   runs the Linux-side verification ladder, rungs 1-7 of AGENTS.md §5,
+#           one step per rung so a failure is attributable to a single rung.
+#           The commands mirror scripts/check-all.sh; keep the two in sync.
+# `windows` is rung 8: the real Tauri build and NSIS bundle on windows-latest.
+#
+# Releases (release.yml, updater signing) are M5 and intentionally
+# not part of this workflow.
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  linux:
+    name: linux (rungs 1-7)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      # The `@stable` ref selects the channel; rustup itself honours
+      # rust-toolchain.toml (same channel, components and target) whenever
+      # cargo runs. Passing the same target and components explicitly keeps the
+      # install deterministic even where rustup auto-install is disabled.
+      - name: Rust toolchain (stable + x86_64-pc-windows-msvc for rung 4)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # pnpm/action-setup reads package.json#packageManager when `version` is
+      # empty, and fails when both are given and differ; so the fixed major is
+      # only a fallback for a package.json without that field.
+      - name: Resolve pnpm version
+        id: pnpm
+        shell: bash
+        run: |
+          if grep -Eq '"packageManager"[[:space:]]*:[[:space:]]*"pnpm@' package.json; then
+            echo "version=" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=10" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: pnpm/action-setup@v5
+        with:
+          version: ${{ steps.pnpm.outputs.version }}
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: pnpm install
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright Chromium (rung 7)
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: "1/7 rustfmt"
+        run: cargo fmt --all --check
+
+      - name: "2/7 clippy (host target: core, platform mock, service)"
+        run: cargo clippy -p stem-core -p stem-platform -p stem-service --all-targets -- -D warnings
+
+      - name: "3/7 tests (host target)"
+        run: cargo test -p stem-core -p stem-platform -p stem-service
+
+      # The `ts` feature's tests export the bindings into src/lib/ipc/generated/
+      # (TS_RS_EXPORT_DIR in .cargo/config.toml). The files are tracked, so any
+      # modified, added or deleted file after the export means stale bindings.
+      - name: "3b/7 TypeScript bindings are up to date"
+        run: |
+          cargo test -p stem-core --features ts --quiet
+          if [[ -n "$(git status --porcelain -- src/lib/ipc/generated)" ]]; then
+            echo "::error::src/lib/ipc/generated/ changed after export; run 'cargo test -p stem-core --features ts' and commit the result."
+            git --no-pager status --short -- src/lib/ipc/generated
+            git --no-pager diff -- src/lib/ipc/generated
+            exit 1
+          fi
+
+      - name: "4/7 clippy (Windows target: whole workspace incl. Tauri app)"
+        run: cargo clippy --workspace --all-targets --target x86_64-pc-windows-msvc -- -D warnings
+
+      - name: "5/7 pnpm check"
+        run: pnpm check
+
+      - name: "5/7 pnpm lint"
+        run: pnpm lint
+
+      - name: "5/7 pnpm test"
+        run: pnpm test
+
+      - name: "6/7 pnpm build"
+        run: pnpm build
+
+      - name: "7/7 Playwright screenshots (mock mode)"
+        id: e2e
+        run: pnpm e2e:screenshots
+
+      # Uploaded whenever rung 7 ran (also when it failed, for diagnosis);
+      # skipped when an earlier rung already stopped the job.
+      - name: Upload screenshots
+        if: ${{ !cancelled() && steps.e2e.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: stem-screenshots
+          path: e2e/output/**
+          if-no-files-found: warn
+
+  windows:
+    name: windows (rung 8, tauri build)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      # Host target only; rust-toolchain.toml's extra target is the host here.
+      - name: Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Resolve pnpm version
+        id: pnpm
+        shell: bash
+        run: |
+          if grep -Eq '"packageManager"[[:space:]]*:[[:space:]]*"pnpm@' package.json; then
+            echo "version=" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=10" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: pnpm/action-setup@v5
+        with:
+          version: ${{ steps.pnpm.outputs.version }}
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: pnpm install
+        run: pnpm install --frozen-lockfile
+
+      # `tauri build` runs `pnpm build` first (tauri.conf.json
+      # beforeBuildCommand), then `cargo build --release` for src-tauri and the
+      # NSIS bundler. The Tauri crate is a workspace member, so everything
+      # lands in the repository-root target/, not src-tauri/target/.
+      # Updater signing (TAURI_SIGNING_PRIVATE_KEY / _PASSWORD) belongs to
+      # M5; nothing is signed yet.
+      - name: tauri build
+        run: pnpm tauri build
+
+      - name: Upload NSIS installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: stem-installer
+          path: target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+
+      - name: Upload stem.exe
+        uses: actions/upload-artifact@v7
+        with:
+          name: stem-exe
+          path: target/release/stem.exe
+          if-no-files-found: error
