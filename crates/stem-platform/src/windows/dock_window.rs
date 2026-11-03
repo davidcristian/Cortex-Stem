@@ -44,7 +44,19 @@
 //!   so clicking the web content does not activate the dock either;
 //! - [`MSG_SET_PASS_THROUGH`]: the flag is updated and the extended style
 //!   re-applied (`SetWindowLongPtrW` followed by the `SWP_FRAMECHANGED`
-//!   `SetWindowPos` tao itself issues after a style change);
+//!   `SetWindowPos` tao itself issues after a style change), then the
+//!   z-order is checked as below;
+//! - [`MSG_ASSERT_TOPMOST`] (posted by the events thread on every
+//!   foreground change through [`assert_topmost_all`]): if a visible window
+//!   that is not itself topmost sits above the dock in the z-order, the dock
+//!   has dropped out of the topmost band while keeping its `WS_EX_TOPMOST`
+//!   bit (observed on Windows 11 after a lock/unlock cycle with a maximised
+//!   browser in front) and `SetWindowPos(HWND_TOPMOST)` puts it back; the
+//!   common case is one short bounded `GetWindow(GW_HWNDPREV)` walk and no
+//!   write, so re-asserting never reorders the dock among other topmost
+//!   windows (menus, the taskbar's flyouts) when it does not have to;
+//! - `WM_WINDOWPOSCHANGED` without `SWP_NOZORDER`: logged at trace with the
+//!   insert-after handle, so an outside z-order change can be dated;
 //! - `WM_NCDESTROY`: the subclass is removed and its state freed;
 //! - everything else goes to `DefSubclassProc`.
 //!
@@ -66,6 +78,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
+use parking_lot::Mutex;
 use stem_core::WindowId;
 use windows::Win32::Foundation::{
     GetLastError, HWND, LPARAM, LRESULT, SetLastError, WIN32_ERROR, WPARAM,
@@ -75,12 +88,13 @@ use windows::Win32::Graphics::Dwm::{
 };
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumChildWindows, GWL_EXSTYLE, GetClassNameW, GetForegroundWindow, GetWindowLongPtrW, IsWindow,
-    KillTimer, MA_NOACTIVATE, PostMessageW, STYLESTRUCT, SWP_FRAMECHANGED, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetForegroundWindow, SetTimer, SetWindowLongPtrW,
-    SetWindowPos, WINDOW_EX_STYLE, WM_APP, WM_CREATE, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_NULL,
-    WM_PARENTNOTIFY, WM_STYLECHANGING, WM_TIMER, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TRANSPARENT,
+    EnumChildWindows, GW_HWNDPREV, GWL_EXSTYLE, GetClassNameW, GetForegroundWindow, GetWindow,
+    GetWindowLongPtrW, HWND_TOPMOST, IsWindow, IsWindowVisible, KillTimer, MA_NOACTIVATE,
+    PostMessageW, STYLESTRUCT, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SWP_NOZORDER, SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, WINDOW_EX_STYLE,
+    WINDOWPOS, WM_APP, WM_CREATE, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_NULL, WM_PARENTNOTIFY,
+    WM_STYLECHANGING, WM_TIMER, WM_WINDOWPOSCHANGED, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
 };
 use windows::core::BOOL;
 
@@ -91,6 +105,35 @@ use crate::{DockWindowOptions, NativeWindowHandle, PlatformError, PlatformResult
 /// (`wParam` = 1) or clickable (`wParam` = 0). Handled by the subclass on
 /// the window's thread; see [`post_pass_through`].
 pub const MSG_SET_PASS_THROUGH: u32 = WM_APP + 0x302;
+
+/// Window message posted to a prepared dock window to check that it is
+/// still in the topmost band and put it back if not; see
+/// [`assert_topmost_all`].
+pub const MSG_ASSERT_TOPMOST: u32 = WM_APP + 0x304;
+
+/// How many windows above the dock the z-order check looks at. The topmost
+/// band holds a handful of shell windows; an ordinary window shows up
+/// within the first few entries when the dock has dropped out of it.
+const MAX_ZORDER_WALK: usize = 64;
+
+/// Every dock window [`prepare`] subclassed and `WM_NCDESTROY` has not yet
+/// removed: the targets of [`assert_topmost_all`]. Raw handle values only.
+static DOCK_WINDOWS: Mutex<Vec<isize>> = Mutex::new(Vec::new());
+
+/// Ask every prepared dock window to verify its place in the z-order.
+/// Posted, never sent, so it is safe from any thread, including
+/// the events thread on every foreground change.
+pub fn assert_topmost_all() {
+    for &raw in DOCK_WINDOWS.lock().iter() {
+        let hwnd = HWND(raw as *mut core::ffi::c_void);
+        // SAFETY: posts plain integers to a window of this process; a dead
+        // handle only makes the call fail.
+        let posted = unsafe { PostMessageW(Some(hwnd), MSG_ASSERT_TOPMOST, WPARAM(0), LPARAM(0)) };
+        if let Err(e) = posted {
+            log::trace!("PostMessage(MSG_ASSERT_TOPMOST) to {raw:#x} failed: {e}");
+        }
+    }
+}
 
 /// `SetWindowSubclass` id; distinct from wry's and tauri-runtime-wry's
 /// subclasses of the same window.
@@ -181,6 +224,7 @@ pub fn prepare(handle: NativeWindowHandle, options: DockWindowOptions) -> Platfo
         current.0,
         next.0
     );
+    DOCK_WINDOWS.lock().push(handle.0);
 
     if options.no_system_decorations {
         set_corner_preference(hwnd)?;
@@ -285,6 +329,7 @@ unsafe extern "system" fn subclass_proc(
 ) -> LRESULT {
     let state_ptr = refdata as *mut SubclassState;
     if msg == WM_NCDESTROY {
+        DOCK_WINDOWS.lock().retain(|&raw| raw != hwnd.0 as isize);
         // SAFETY: balances the SetWindowSubclass in `prepare`, on the
         // window's thread; comctl32 keeps the chain valid for this call.
         let removed = unsafe { RemoveWindowSubclass(hwnd, Some(subclass_proc), SUBCLASS_ID) };
@@ -382,10 +427,90 @@ fn on_message(
         MSG_SET_PASS_THROUGH => {
             state.pass_through.store(wparam.0 != 0, Ordering::Relaxed);
             apply_pass_through(hwnd, state);
+            ensure_topmost(hwnd, state, "pass-through change");
             Some(LRESULT(0))
+        }
+        MSG_ASSERT_TOPMOST => {
+            ensure_topmost(hwnd, state, "foreground change");
+            Some(LRESULT(0))
+        }
+        WM_WINDOWPOSCHANGED => {
+            let pos = lparam.0 as *const WINDOWPOS;
+            if !pos.is_null() {
+                // SAFETY: for WM_WINDOWPOSCHANGED the system passes a
+                // WINDOWPOS that is valid for the duration of the message.
+                let pos = unsafe { &*pos };
+                if !pos.flags.contains(SWP_NOZORDER) {
+                    log::trace!(
+                        "dock window {:#x}: z-order changed from outside; insert after {:#x}, flags {:#010x}",
+                        state.handle,
+                        pos.hwndInsertAfter.0 as isize,
+                        pos.flags.0
+                    );
+                }
+            }
+            None
         }
         _ => None,
     }
+}
+
+/// Put the dock back into the topmost band when an ordinary window
+/// has got above it. Reads only in the common case (see the module docs).
+fn ensure_topmost(hwnd: HWND, state: &SubclassState, why: &str) {
+    let Some(above) = ordinary_window_above(hwnd) else {
+        return;
+    };
+    // SAFETY: the flags change the z-order only; no move, size or
+    // activation; failure is reported in the Result.
+    let result = unsafe {
+        SetWindowPos(
+            hwnd,
+            Some(HWND_TOPMOST),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        )
+    };
+    match result {
+        Ok(()) => log::debug!(
+            "dock window {:#x}: re-asserted HWND_TOPMOST on {why}; it was below {:#x} ({})",
+            state.handle,
+            above.0 as isize,
+            class_name(above)
+        ),
+        Err(e) => log::warn!(
+            "dock window {:#x}: SetWindowPos(HWND_TOPMOST) on {why} failed: {e}",
+            state.handle
+        ),
+    }
+}
+
+/// The nearest visible window above `hwnd` in the z-order that is not
+/// topmost itself, if there is one within [`MAX_ZORDER_WALK`] entries. A
+/// window in the topmost band only has topmost windows above it, so a hit
+/// means the band was lost.
+fn ordinary_window_above(hwnd: HWND) -> Option<HWND> {
+    let mut current = hwnd;
+    for _ in 0..MAX_ZORDER_WALK {
+        // SAFETY: GetWindow only reads window-manager state; a handle that
+        // is gone makes the call fail.
+        let Ok(prev) = (unsafe { GetWindow(current, GW_HWNDPREV) }) else {
+            return None;
+        };
+        if prev.is_invalid() {
+            return None;
+        }
+        // SAFETY: IsWindowVisible accepts any handle value.
+        let visible = unsafe { IsWindowVisible(prev) }.as_bool();
+        if visible && !get_ex_style(prev).is_ok_and(|s| s.contains(WS_EX_TOPMOST)) {
+            return Some(prev);
+        }
+        current = prev;
+    }
+    None
 }
 
 /// Re-apply the extended style after the pass-through flag changed: read,

@@ -1,7 +1,7 @@
 # The dock window
 
-This file describes the dock's native window: its flags and focus, and click-through outside
-the panel. The other parts of the dock window are described in:
+This file describes the dock's native window: its flags and focus, click-through outside the
+panel, and how it stays topmost. The other parts of the dock window are described in:
 
 - [dock-placement.md](dock-placement.md): position and size, and one window per monitor.
 
@@ -43,3 +43,16 @@ subclass keeps Stem's extended styles across tao's own style rewrites.
 default) switches this off and on at runtime. When it goes off, the Tauri
 layer passes `None` to the platform. When it comes back on, the layer sends
 the UI's latest region again.
+
+## Topmost
+
+On Windows 11 the dock can drop out of the topmost band while it keeps
+`WS_EX_TOPMOST` (seen after a lock and unlock with a maximised browser in
+front), which leaves it behind a maximised window. So the events thread
+posts `MSG_ASSERT_TOPMOST` to every prepared dock window on each foreground
+change, and the subclass also checks after each pass-through change. The
+check is a bounded `GetWindow(GW_HWNDPREV)` walk.
+`SetWindowPos(HWND_TOPMOST)` runs only when a visible window that is not
+topmost is above the dock (logged at debug). So the common case is one
+read, and the dock is never moved above menus or flyouts when it does not
+need to be.

@@ -17,7 +17,7 @@ the records in `docs/adr/` give the reasons for the main decisions.
   gets its name.
 - [icons.md](icons.md): how icons are loaded, sized and cached.
 - [dock-window.md](dock-window.md): the dock's native window, its flags and focus,
-  and click-through outside the panel.
+  click-through outside the panel and how it stays topmost.
 - [dock-placement.md](dock-placement.md): where the dock window is placed.
 - [settings.md](settings.md): how settings are stored.
 - [error-handling.md](error-handling.md): the error type of each layer.

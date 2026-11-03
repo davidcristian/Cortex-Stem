@@ -690,6 +690,9 @@ impl ThreadState {
     }
 
     fn emit_foreground(&mut self, hwnd: HWND) {
+        // A foreground change is when a dock that has silently
+        // dropped out of the topmost band gets covered; the check is posted.
+        super::dock_window::assert_topmost_all();
         if !hwnd.is_invalid() && util::is_own_process_window(hwnd) {
             // The dock (or the settings window) got the foreground: not an
             // app the user switched to, so the previous foreground stays.
