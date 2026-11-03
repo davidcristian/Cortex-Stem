@@ -17,7 +17,15 @@
 //!   is (icon extraction and shortcut resolution can take milliseconds), so
 //!   the worker never waits on the OS. A failed resolution is retried once
 //!   after [`IDENTITY_RETRY_DELAY`], then a fallback identity is used so the
-//!   engine stops asking;
+//!   engine stops asking. When there is nothing to ask (the app has no
+//!   window and no pin any more) the engine is told `IdentityUnavailable`
+//!   instead, so a later appearance requests the identity again;
+//! - the **settings** have one authoritative copy (`Inner::settings`). Every
+//!   mutation goes through `Inner::mutate_settings`, which validates,
+//!   persists and hands the engine the new document under one lock, so two
+//!   quick commands never lose each other's change and two saves never
+//!   race on the settings file. The engine's own copy follows
+//!   asynchronously through the worker;
 //! - commands are called from any thread; they take the engine lock briefly
 //!   and perform platform calls without holding it;
 //! - listeners run on whichever thread produced the event (the worker for
@@ -520,21 +528,19 @@ impl Inner {
     ///
     /// Returns `Some(due)` instead when every attempted platform call failed
     /// and `may_retry` is set: the caller schedules a retry for `due`. On the
-    /// retry (or when nothing can be asked) a fallback identity built from
-    /// what the engine already knows is sent, so the engine stops asking.
+    /// retry a fallback identity built from what the engine already knows is
+    /// sent, so the engine stops asking. When there is nothing to ask (the
+    /// app has neither a window nor a pin any more) the engine is told
+    /// `IdentityUnavailable` instead and will ask again if the app returns.
     fn resolve_identity(&self, app_id: &AppId, may_retry: bool) -> Option<Instant> {
-        let (pinned, window) = {
-            let engine = self.engine.lock();
-            (
-                engine
-                    .settings()
-                    .pinned
-                    .iter()
-                    .find(|p| &p.id == app_id)
-                    .cloned(),
-                engine.windows_of(app_id).first().copied(),
-            )
-        };
+        let pinned = self
+            .settings
+            .lock()
+            .pinned
+            .iter()
+            .find(|p| &p.id == app_id)
+            .cloned();
+        let window = self.engine.lock().windows_of(app_id).first().copied();
 
         let mut tried = false;
         let mut resolved: Option<AppIdentity> = None;
@@ -556,15 +562,24 @@ impl Inner {
                 }
             }
         }
-        if resolved.is_none() && tried && may_retry {
+        if !tried {
+            log::debug!(
+                "identity of {app_id:?} not needed: the app has no window and is not pinned"
+            );
+            let _ = self
+                .worker_tx
+                .send(WorkerMsg::Input(EngineInput::IdentityUnavailable {
+                    app_id: app_id.clone(),
+                }));
+            return None;
+        }
+        if resolved.is_none() && may_retry {
             log::debug!("identity of {app_id:?} unresolved; retrying in {IDENTITY_RETRY_DELAY:?}");
             return Some(Instant::now() + IDENTITY_RETRY_DELAY);
         }
 
         let mut identity = resolved.unwrap_or_else(|| {
-            if tried {
-                log::warn!("identity of {app_id:?} could not be resolved; using a fallback name");
-            }
+            log::warn!("identity of {app_id:?} could not be resolved; using a fallback name");
             AppIdentity {
                 id: app_id.clone(),
                 display_name: pinned
@@ -1356,6 +1371,42 @@ mod tests {
         // The engine stopped asking: no third attempt.
         std::thread::sleep(Duration::from_millis(300));
         assert_eq!(relay.identify_calls_for(WindowId(2)).len(), 2);
+        service.shutdown();
+    }
+
+    #[test]
+    fn an_app_that_vanished_before_resolution_is_asked_again_when_it_returns() {
+        let relay = Arc::new(Relay::demo().slow(Duration::from_millis(100)));
+        let (service, rx) = start_relay(relay.clone());
+
+        // While the resolver is busy with the demo apps, an app appears and
+        // disappears again; its request is queued behind the others. The
+        // events go through the mock so that it can identify the window
+        // later (`Relay::emit` would leave the mock unaware of it).
+        let mut fleeting = relay.window(WindowId(4));
+        fleeting.id = WindowId(7);
+        fleeting.process_id = 7007;
+        fleeting.title = "Fleeting".into();
+        fleeting.exe_path = Some(PathBuf::from(r"C:\Apps\fleeting.exe"));
+        relay
+            .mock
+            .push(PlatformEvent::WindowAdded(fleeting.clone()));
+        relay.mock.push(PlatformEvent::WindowRemoved(WindowId(7)));
+        wait_state(&rx, resolved);
+        // By now the resolver has reached the stale request: nothing to ask,
+        // nothing stored.
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(relay.identify_calls_for(WindowId(7)).is_empty());
+        assert!(!has_window_titled(&service.state(), "Fleeting"));
+
+        // The app returns: its identity is requested and resolved for real
+        // instead of being stuck with a fallback made while it was gone.
+        relay.mock.push(PlatformEvent::WindowAdded(fleeting));
+        let state = wait_state(&rx, |s| {
+            item_titled(s, "fleeting").is_some_and(|i| i.icon_key.is_some())
+        });
+        assert!(has_window_titled(&state, "Fleeting"));
+        assert_eq!(relay.identify_calls_for(WindowId(7)).len(), 1);
         service.shutdown();
     }
 
