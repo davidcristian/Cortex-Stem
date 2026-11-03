@@ -3,6 +3,15 @@
 
   import DockItem from '$lib/components/DockItem.svelte';
   import { computeScales, maxGrowth, type MagnifyParams } from '$lib/dock/magnify';
+  import {
+    DRAG_START,
+    exceedsMoveThreshold,
+    gapShift,
+    insertionIndex,
+    isInsideWithSlack,
+    moveItem,
+    type DropBounds,
+  } from '$lib/dock/reorder';
   import { accentColor, effectiveOpacity, resolveTheme } from '$lib/dock/theme';
   import type { Backend } from '$lib/ipc/backend';
   import type { DockItem as DockItemModel } from '$lib/ipc/generated/DockItem';
@@ -111,6 +120,16 @@
     if (hovering) {
       scheduleFrame();
     }
+    // Drag bookkeeping: the snapshot after a drop lands here (clear the
+    // transforms, the DOM is now in that order); a list that changed under
+    // a live drag invalidates its measurements.
+    const pinnedKeys = pinnedSlots().map((el) => el.dataset.key ?? '');
+    if (pendingOrder !== null && sameOrder(pinnedKeys, pendingOrder)) {
+      clearDragStyles();
+    }
+    if (drag?.started && !sameOrder(pinnedKeys, drag.keys)) {
+      cancelDrag(false);
+    }
   });
 
   function scheduleFrame(): void {
@@ -154,7 +173,7 @@
   }
 
   function onpanelpointermove(e: PointerEvent): void {
-    if (magnify.maxScale <= 1) {
+    if (magnify.maxScale <= 1 || drag?.started) {
       return;
     }
     pointerX = e.clientX;
@@ -198,7 +217,7 @@
       clearTimeout(tooltipTimer);
       tooltipTimer = null;
     }
-    if (item === null || !tooltipsEnabled) {
+    if (item === null || !tooltipsEnabled || drag?.started) {
       return;
     }
     if (tooltipKey !== null) {
@@ -220,6 +239,272 @@
     tooltipKey = null;
   }
 
+  // --- Drag to reorder pinned apps -------------------------------------------
+  // Imperative like the magnification controller: the lifted slot follows the
+  // pointer with an inline transform, the other pinned slots shift by one slot
+  // to open the gap, nothing reflows. The drop sends the new order to Rust;
+  // the snapshot that follows re-renders the items in that order and the
+  // items effect above clears the transforms in the same flush, so the
+  // picture never jumps.
+  interface DragSession {
+    item: DockItemModel;
+    el: HTMLElement;
+    pointerId: number;
+    startX: number;
+    startY: number;
+    lastX: number;
+    lastY: number;
+    started: boolean;
+    holdTimer: ReturnType<typeof setTimeout> | null;
+    frame: number;
+    /** Pinned app slots in dock order, with their keys and rest centres, measured at start. */
+    pinned: HTMLElement[];
+    keys: string[];
+    centres: Float64Array;
+    bounds: DropBounds;
+    from: number;
+    to: number;
+  }
+
+  let drag: DragSession | null = null;
+  /** The item rendered as lifted (`DockItem.lifted`). */
+  let liftedKey = $state<string | null>(null);
+  /** Pinned keys expected from the snapshot after a drop; transforms stay until it arrives. */
+  let pendingOrder: string[] | null = null;
+  let pendingTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function pinnedSlots(): HTMLElement[] {
+    return slots.filter((el) => el.dataset.kind === 'app' && el.dataset.pinned === 'true');
+  }
+
+  function sameOrder(a: readonly string[], b: readonly string[]): boolean {
+    return a.length === b.length && a.every((key, i) => key === b[i]);
+  }
+
+  function onpress(item: DockItemModel, e: PointerEvent): void {
+    if (e.button !== 0 || item.kind !== 'app' || !item.pinned) {
+      return;
+    }
+    // A stale session (a lost pointerup) must not block the next press.
+    cancelDrag(false);
+    const el = slots.find((s) => s.dataset.key === item.key);
+    if (!el) {
+      return;
+    }
+    drag = {
+      item,
+      el,
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      lastX: e.clientX,
+      lastY: e.clientY,
+      started: false,
+      holdTimer: setTimeout(startDrag, DRAG_START.holdMs),
+      frame: 0,
+      pinned: [],
+      keys: [],
+      centres: new Float64Array(0),
+      bounds: { left: 0, right: 0, top: 0, bottom: 0 },
+      from: -1,
+      to: -1,
+    };
+  }
+
+  function startDrag(): void {
+    const d = drag;
+    if (d === null || d.started) {
+      return;
+    }
+    if (d.holdTimer !== null) {
+      clearTimeout(d.holdTimer);
+      d.holdTimer = null;
+    }
+    d.started = true;
+    // No magnification, tooltip or settle transition while dragging; the rest
+    // positions measured below must be the unmagnified ones.
+    clearTooltip();
+    hovering = false;
+    settling = false;
+    if (settleTimer !== null) {
+      clearTimeout(settleTimer);
+      settleTimer = null;
+    }
+    resetMagnification();
+    clearDragStyles();
+    try {
+      d.el.setPointerCapture(d.pointerId);
+    } catch {
+      // The pointer is already gone; the window listeners still see the release.
+    }
+    d.pinned = pinnedSlots();
+    d.keys = d.pinned.map((el) => el.dataset.key ?? '');
+    d.from = d.pinned.indexOf(d.el);
+    d.to = d.from;
+    d.centres = new Float64Array(d.pinned.length);
+    const bounds: DropBounds = {
+      left: Infinity,
+      right: -Infinity,
+      top: Infinity,
+      bottom: -Infinity,
+    };
+    d.pinned.forEach((el, i) => {
+      const rect = el.getBoundingClientRect();
+      d.centres[i] = rect.left + rect.width / 2;
+      bounds.left = Math.min(bounds.left, rect.left);
+      bounds.right = Math.max(bounds.right, rect.right);
+      bounds.top = Math.min(bounds.top, rect.top);
+      bounds.bottom = Math.max(bounds.bottom, rect.bottom);
+    });
+    d.bounds = bounds;
+    liftedKey = d.item.key;
+    const transition = reducedMotion ? '' : 'transform 160ms ease';
+    for (const el of d.pinned) {
+      if (el !== d.el) {
+        el.style.transition = transition;
+      }
+    }
+    applyDrag();
+  }
+
+  function scheduleDragFrame(): void {
+    if (drag !== null && drag.frame === 0) {
+      drag.frame = requestAnimationFrame(applyDrag);
+    }
+  }
+
+  function applyDrag(): void {
+    const d = drag;
+    if (d === null || !d.started) {
+      return;
+    }
+    d.frame = 0;
+    const dx = d.lastX - d.startX;
+    const dy = d.lastY - d.startY;
+    d.el.style.transform = `translate(${dx}px, ${dy}px)`;
+    const to = insertionIndex((d.centres[d.from] ?? 0) + dx, d.centres, d.from);
+    if (to === d.to) {
+      return;
+    }
+    d.to = to;
+    d.pinned.forEach((el, i) => {
+      if (el === d.el) {
+        return;
+      }
+      const shift = gapShift(i, d.from, to, slotPx);
+      el.style.transform = shift === 0 ? '' : `translateX(${shift}px)`;
+    });
+  }
+
+  function onwindowpointermove(e: PointerEvent): void {
+    const d = drag;
+    if (d === null || e.pointerId !== d.pointerId) {
+      return;
+    }
+    d.lastX = e.clientX;
+    d.lastY = e.clientY;
+    if (!d.started) {
+      if (exceedsMoveThreshold(e.clientX - d.startX, e.clientY - d.startY, DRAG_START.movePx)) {
+        startDrag();
+      }
+      return;
+    }
+    scheduleDragFrame();
+  }
+
+  function onwindowpointerup(e: PointerEvent): void {
+    const d = drag;
+    if (d === null || e.pointerId !== d.pointerId) {
+      return;
+    }
+    if (!d.started) {
+      // Released before the drag began: an ordinary click, handled by the item.
+      cancelDrag(false);
+      return;
+    }
+    d.lastX = e.clientX;
+    d.lastY = e.clientY;
+    if (d.frame !== 0) {
+      cancelAnimationFrame(d.frame);
+      d.frame = 0;
+    }
+    applyDrag();
+    if (d.to !== d.from && isInsideWithSlack(d.lastX, d.lastY, d.bounds, slotPx, iconSize)) {
+      drop(d);
+    } else {
+      cancelDrag(true);
+    }
+  }
+
+  function onwindowpointercancel(e: PointerEvent): void {
+    if (drag !== null && e.pointerId === drag.pointerId) {
+      cancelDrag(true);
+    }
+  }
+
+  function drop(d: DragSession): void {
+    const order = moveItem(d.keys, d.from, d.to);
+    // Land in the gap now (no transition: the snapshot may arrive within a
+    // frame, and the transforms are relative to the old DOM order).
+    d.el.style.transform = `translateX(${(d.centres[d.to] ?? 0) - (d.centres[d.from] ?? 0)}px)`;
+    liftedKey = null;
+    drag = null;
+    pendingOrder = order;
+    pendingTimer = setTimeout(clearDragStyles, 600);
+    const ids = order.map((key) => key.slice('app:'.length));
+    void backend.reorderPinned(ids).catch((err: unknown) => {
+      clearDragStyles();
+      report('Reordering')(err);
+    });
+  }
+
+  /** Put everything back; `animate` eases the lifted item home instead of snapping. */
+  function cancelDrag(animate: boolean): void {
+    const d = drag;
+    if (d === null) {
+      return;
+    }
+    drag = null;
+    if (d.holdTimer !== null) {
+      clearTimeout(d.holdTimer);
+    }
+    if (d.frame !== 0) {
+      cancelAnimationFrame(d.frame);
+    }
+    if (!d.started) {
+      return;
+    }
+    try {
+      d.el.releasePointerCapture(d.pointerId);
+    } catch {
+      // Already released by the browser on pointerup.
+    }
+    if (!animate || reducedMotion) {
+      clearDragStyles();
+      return;
+    }
+    liftedKey = null;
+    d.el.style.transition = 'transform 180ms ease';
+    for (const el of d.pinned) {
+      el.style.transform = '';
+    }
+    pendingOrder = null;
+    pendingTimer = setTimeout(clearDragStyles, 220);
+  }
+
+  function clearDragStyles(): void {
+    if (pendingTimer !== null) {
+      clearTimeout(pendingTimer);
+      pendingTimer = null;
+    }
+    pendingOrder = null;
+    liftedKey = null;
+    for (const el of slots) {
+      el.style.transform = '';
+      el.style.transition = '';
+    }
+  }
+
   // --- Intents and failure notices ---------------------------------------------
   const toasts = new Toasts();
 
@@ -238,6 +523,10 @@
     };
 
   function onprimary(item: DockItemModel): void {
+    if (drag?.started) {
+      // The release that ends a drag is not a click.
+      return;
+    }
     void backend.primaryClick(item.key).catch(report(item.title));
   }
 
@@ -264,6 +553,11 @@
 
   /** Keyboard shortcuts while the dock window has focus. */
   function onwindowkeydown(e: KeyboardEvent): void {
+    if (e.key === 'Escape' && drag !== null) {
+      e.preventDefault();
+      cancelDrag(true);
+      return;
+    }
     if (e.key === ',' && e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
       e.preventDefault();
       openSettings();
@@ -355,13 +649,20 @@
       if (settleTimer !== null) {
         clearTimeout(settleTimer);
       }
+      cancelDrag(false);
+      clearDragStyles();
       toasts.clear();
       store.stop();
     };
   });
 </script>
 
-<svelte:window onkeydown={onwindowkeydown} />
+<svelte:window
+  onkeydown={onwindowkeydown}
+  onpointermove={onwindowpointermove}
+  onpointerup={onwindowpointerup}
+  onpointercancel={onwindowpointercancel}
+/>
 
 <div
   class="dock-stage"
@@ -407,10 +708,12 @@
             tooltip={tooltipKey === item.key}
             bounce={bounceEnabled && store.bounceKey === item.key ? store.bounceSerial : 0}
             animate={!reducedMotion}
+            lifted={liftedKey === item.key}
             {onprimary}
             {onmiddle}
             {oncontext}
             {onhover}
+            {onpress}
           />
         {/if}
       {/each}

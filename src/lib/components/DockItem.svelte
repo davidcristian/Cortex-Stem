@@ -15,10 +15,14 @@
     bounce: number;
     /** False under `prefers-reduced-motion` (no bounce, no wiggle). */
     animate: boolean;
+    /** Being dragged to a new place: raised, shadowed, no dots. */
+    lifted: boolean;
     onprimary: (item: DockItem) => void;
     onmiddle: (item: DockItem) => void;
     oncontext: (item: DockItem, x: number, y: number) => void;
     onhover: (item: DockItem | null) => void;
+    /** A pointer went down on the item (the dock may start a drag from it). */
+    onpress: (item: DockItem, e: PointerEvent) => void;
   }
 
   let {
@@ -28,10 +32,12 @@
     tooltip,
     bounce,
     animate,
+    lifted,
     onprimary,
     onmiddle,
     oncontext,
     onhover,
+    onpress,
   }: Props = $props();
 
   const shellName = $derived(
@@ -131,6 +137,8 @@
   data-icon={iconState}
   data-active={item.isActive || undefined}
   data-pinned={item.pinned || undefined}
+  data-drag={lifted ? 'lifted' : undefined}
+  onpointerdown={(e) => onpress(item, e)}
   {onpointerup}
   {onmousedown}
   {oncontextmenu}
@@ -190,6 +198,28 @@
   .icon {
     width: var(--icon);
     height: var(--icon);
+  }
+
+  /* The lift while dragging lives on the bouncer, a different element
+     from the magnification scale, so the two never fight. The dock positions
+     the slot itself with an inline transform. */
+  .bouncer {
+    transition:
+      transform 120ms ease,
+      filter 120ms ease;
+  }
+
+  .slot[data-drag='lifted'] {
+    z-index: 2;
+  }
+
+  .slot[data-drag='lifted'] .bouncer {
+    transform: scale(1.12);
+    filter: drop-shadow(0 8px 12px rgba(0, 0, 0, 0.45));
+  }
+
+  .slot[data-drag='lifted'] .dots {
+    opacity: 0;
   }
 
   .icon {
@@ -302,6 +332,10 @@
   @media (prefers-reduced-motion: reduce) {
     .wiggler.attention {
       animation: none;
+    }
+
+    .bouncer {
+      transition: none;
     }
   }
 </style>

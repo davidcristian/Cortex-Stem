@@ -134,6 +134,95 @@ test.describe('dock in mock mode', () => {
     await expect.poll(() => callsOfType(page, 'openSettings')).toBe(1);
   });
 
+  test.describe('drag to reorder pinned apps', () => {
+    const PINNED = '.slot[data-pinned="true"]';
+    const pinnedKeys = (page: Page): Promise<string[]> =>
+      page.$$eval(PINNED, (els) => els.map((el) => (el as HTMLElement).dataset.key ?? ''));
+    const transformOf = (page: Page, index: number): Promise<string> =>
+      page
+        .locator(PINNED)
+        .nth(index)
+        .evaluate((el) => (el as HTMLElement).style.transform);
+
+    /** Press on pinned slot `from` and drag to just past the centre of pinned slot `over`. */
+    async function dragPinned(page: Page, from: number, over: number): Promise<void> {
+      const a = (await page.locator(PINNED).nth(from).boundingBox())!;
+      const b = (await page.locator(PINNED).nth(over).boundingBox())!;
+      const past = over > from ? 6 : -6;
+      await page.mouse.move(a.x + a.width / 2, a.y + a.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(b.x + b.width / 2 + past, a.y + a.height / 2 - 12, { steps: 12 });
+    }
+
+    test('lifts the icon, opens a gap, and drops it in the new order', async ({ page }) => {
+      await page.emulateMedia({ colorScheme: 'dark' });
+      await openDock(page);
+      const before = await pinnedKeys(page);
+      expect(before).toHaveLength(5);
+
+      await dragPinned(page, 0, 2);
+      const lifted = page.locator(PINNED).nth(0);
+      await expect(lifted).toHaveAttribute('data-drag', 'lifted');
+      // The two icons between the origin and the gap shifted one slot (48 + 8 px) left.
+      await expect.poll(() => transformOf(page, 1)).toBe('translateX(-56px)');
+      await expect.poll(() => transformOf(page, 2)).toBe('translateX(-56px)');
+      expect(await transformOf(page, 3)).toBe('');
+      expect(await scaleOf(page, 1)).toBe(1); // no magnification while dragging
+      await expect(page.locator('.tooltip')).toHaveCount(0);
+      await page.screenshot({ path: `${OUT}/dock-drag.png` });
+
+      await page.mouse.up();
+      await expect
+        .poll(() => pinnedKeys(page))
+        .toEqual([before[1], before[2], before[0], before[3], before[4]]);
+      // The snapshot rendered the new order and every inline transform is gone.
+      await expect.poll(() => transformOf(page, 2)).toBe('');
+      await expect(page.locator('[data-drag]')).toHaveCount(0);
+      // The release that ended the drag was not a click: nothing launched.
+      expect(await callsOfType(page, 'launch')).toBe(0);
+    });
+
+    test('Escape puts everything back', async ({ page }) => {
+      await openDock(page);
+      const before = await pinnedKeys(page);
+      await dragPinned(page, 3, 1);
+      await expect.poll(() => transformOf(page, 1)).toBe('translateX(56px)');
+      await page.keyboard.press('Escape');
+      await expect(page.locator('[data-drag]')).toHaveCount(0);
+      await expect.poll(() => transformOf(page, 1)).toBe('');
+      await page.mouse.up();
+      expect(await pinnedKeys(page)).toEqual(before);
+    });
+
+    test('releasing far from the dock cancels', async ({ page }) => {
+      await openDock(page);
+      const before = await pinnedKeys(page);
+      await dragPinned(page, 0, 2);
+      await page.mouse.move(640, 20, { steps: 6 });
+      await page.mouse.up();
+      await expect(page.locator('[data-drag]')).toHaveCount(0);
+      await expect.poll(() => transformOf(page, 1)).toBe('');
+      expect(await pinnedKeys(page)).toEqual(before);
+    });
+
+    test('running, unpinned apps and fixed items cannot be dragged', async ({ page }) => {
+      await openDock(page);
+      const before = await pinnedKeys(page);
+      for (const index of [0, 6]) {
+        // Start (fixed) and Code (running, not pinned).
+        const box = (await page.locator('[role="button"]').nth(index).boundingBox())!;
+        await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+        await page.mouse.down();
+        await page.mouse.move(box.x + box.width / 2 + 120, box.y + box.height / 2, { steps: 8 });
+        await page.waitForTimeout(200);
+        await expect(page.locator('[data-drag]')).toHaveCount(0);
+        await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 4 });
+        await page.mouse.up();
+      }
+      expect(await pinnedKeys(page)).toEqual(before);
+    });
+  });
+
   test('a failed command shows a toast that goes away by itself', async ({ page }) => {
     await page.emulateMedia({ colorScheme: 'dark' });
     await openDock(page);
