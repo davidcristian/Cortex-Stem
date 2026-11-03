@@ -1,0 +1,12 @@
+# Line endings are LF everywhere, whatever core.autocrlf says on the host:
+# .editorconfig, rustfmt (newline_style = "Unix") and the ts-rs export all
+# write LF, and the ladder's rung 3b compares the exported bindings with
+# `git status`, which must not see a CRLF/LF round trip as a change.
+* text=auto eol=lf
+
+# Binaries.
+*.png binary
+*.ico binary
+*.icns binary
+*.woff binary
+*.woff2 binary
