@@ -4,8 +4,17 @@
 //!
 //! Errors cross IPC as plain strings (`Result<T, String>`); every failure is
 //! also logged here at `warn` with the command name and its arguments.
-//! Commands must return quickly: anything slow belongs on the service worker
-//! thread or the platform's own threads.
+//!
+//! Threading: Tauri runs a synchronous command on the main thread and an
+//! `async fn` command on its async runtime's thread pool. Every command that
+//! reaches the platform (Win32 calls with bounded but real latency: icon
+//! extraction, `SetForegroundWindow`, `ShellExecuteExW`, shortcut
+//! resolution) or the disk (settings persistence) is therefore `async`, so
+//! the main thread, which also pumps the dock window's messages, never
+//! blocks on them. The bodies contain no `.await`: they simply run off the
+//! main thread. The `get_*` getters (a mutex read) and the window-geometry
+//! commands (which must touch the window on the main thread) stay
+//! synchronous.
 
 use std::fmt::{Debug, Display};
 
@@ -70,7 +79,10 @@ fn get_settings(service: State<'_, AppService>) -> Settings {
 /// The service migrates, validates (clamps) and persists; the validated
 /// copy comes back.
 #[tauri::command]
-fn update_settings(service: State<'_, AppService>, settings: Settings) -> CmdResult<Settings> {
+async fn update_settings(
+    service: State<'_, AppService>,
+    settings: Settings,
+) -> CmdResult<Settings> {
     checked(
         "update_settings",
         &settings,
@@ -89,7 +101,7 @@ fn get_monitors(service: State<'_, AppService>) -> Vec<MonitorInfo> {
 }
 
 #[tauri::command]
-fn primary_click(service: State<'_, AppService>, item_key: String) -> CmdResult<()> {
+async fn primary_click(service: State<'_, AppService>, item_key: String) -> CmdResult<()> {
     checked(
         "primary_click",
         &item_key,
@@ -98,7 +110,7 @@ fn primary_click(service: State<'_, AppService>, item_key: String) -> CmdResult<
 }
 
 #[tauri::command]
-fn window_action(
+async fn window_action(
     service: State<'_, AppService>,
     window_id: WindowId,
     action: WindowAction,
@@ -111,33 +123,33 @@ fn window_action(
 }
 
 #[tauri::command]
-fn launch_app(service: State<'_, AppService>, app_id: AppId) -> CmdResult<()> {
+async fn launch_app(service: State<'_, AppService>, app_id: AppId) -> CmdResult<()> {
     checked("launch_app", &app_id, service.0.launch_app(&app_id))
 }
 
 #[tauri::command]
-fn pin_app(service: State<'_, AppService>, app_id: AppId) -> CmdResult<()> {
+async fn pin_app(service: State<'_, AppService>, app_id: AppId) -> CmdResult<()> {
     checked("pin_app", &app_id, service.0.pin_app(&app_id))
 }
 
 #[tauri::command]
-fn pin_target(service: State<'_, AppService>, target: LaunchTarget) -> CmdResult<AppId> {
+async fn pin_target(service: State<'_, AppService>, target: LaunchTarget) -> CmdResult<AppId> {
     checked("pin_target", &target, service.0.pin_target(target.clone()))
 }
 
 #[tauri::command]
-fn unpin_app(service: State<'_, AppService>, app_id: AppId) -> CmdResult<()> {
+async fn unpin_app(service: State<'_, AppService>, app_id: AppId) -> CmdResult<()> {
     checked("unpin_app", &app_id, service.0.unpin_app(&app_id))
 }
 
 #[tauri::command]
-fn reorder_pinned(service: State<'_, AppService>, order: Vec<AppId>) -> CmdResult<()> {
+async fn reorder_pinned(service: State<'_, AppService>, order: Vec<AppId>) -> CmdResult<()> {
     checked("reorder_pinned", &order, service.0.reorder_pinned(&order))
 }
 
 /// PNG icon as a `data:` URL, or `None` for unknown keys and `shell:*` keys.
 #[tauri::command]
-fn get_icon(
+async fn get_icon(
     service: State<'_, AppService>,
     icon_key: IconKey,
     size: u32,
@@ -159,7 +171,8 @@ fn get_icon(
 /// The dock UI reports the size of its visible content (CSS pixels) so the
 /// window can be resized and re-centred. See `docs/ipc/sizing-protocol.md`. Only a
 /// dock window may call it, with finite numbers; the range is clamped in
-/// `windows::apply_content_size`.
+/// `windows::apply_content_size`. Synchronous on purpose: it touches the
+/// window and must run on the main thread.
 #[tauri::command]
 fn set_dock_content_size(
     app: AppHandle,
@@ -191,7 +204,7 @@ fn set_dock_content_size(
 
 /// Run a shell action directly (menus, Recycle Bin "Empty").
 #[tauri::command]
-fn shell_action(service: State<'_, AppService>, action: ShellAction) -> CmdResult<()> {
+async fn shell_action(service: State<'_, AppService>, action: ShellAction) -> CmdResult<()> {
     checked("shell_action", &action, service.0.shell_action(action))
 }
 
@@ -207,7 +220,7 @@ fn open_settings(app: AppHandle) -> CmdResult<()> {
 
 /// Restore and persist the defaults; the service emits `dock://settings`.
 #[tauri::command]
-fn reset_settings(service: State<'_, AppService>) -> CmdResult<Settings> {
+async fn reset_settings(service: State<'_, AppService>) -> CmdResult<Settings> {
     checked(
         "reset_settings",
         &(),
