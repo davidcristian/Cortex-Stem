@@ -4,6 +4,7 @@
   import DockItem from '$lib/components/DockItem.svelte';
   import {
     hitRegionFor,
+    integerRect,
     magnifiedRise,
     sameHitRegion,
     sameSnap,
@@ -429,14 +430,7 @@
     d.started = true;
     // No magnification, tooltip or settle transition while dragging; the rest
     // positions measured below must be the unmagnified ones.
-    clearTooltip();
-    hovering = false;
-    settling = false;
-    if (settleTimer !== null) {
-      clearTimeout(settleTimer);
-      settleTimer = null;
-    }
-    resetMagnification();
+    leaveHoverState();
     clearDragStyles();
     try {
       d.el.setPointerCapture(d.pointerId);
@@ -492,14 +486,39 @@
   }
 
   /**
-   * The window grew (or shrank back) during a drag. The viewport's origin
-   * moved, so every stored y coordinate shifts by the change to keep
-   * pointing at the same screen spot, and the whole-window envelope is
-   * reported at its new size.
+   * Forget that the pointer is over the panel: no tooltip, no magnification,
+   * no settle transition, and the boxes at rest in this same flush.
+   */
+  function leaveHoverState(): void {
+    clearTooltip();
+    hovering = false;
+    settling = false;
+    if (settleTimer !== null) {
+      clearTimeout(settleTimer);
+      settleTimer = null;
+    }
+    resetMagnification();
+  }
+
+  /**
+   * The viewport changed size. During a drag the window grew to the
+   * work area's height, or shrank back: its origin moved, so every stored y
+   * coordinate shifts by the change to keep pointing at the same screen
+   * spot, and the hit region is reported again for the new viewport (the
+   * panel shifted, the envelope the whole window).
+   *
+   * With no drag in progress the old measurement describes the wrong
+   * coordinate space (the window shrank back after a drop, or moved to
+   * another monitor), so the rest geometry is measured again. `hovering`
+   * is dropped first: when the window turns click-through under a pointer
+   * that is still over the panel no `pointerleave` ever arrives, and a
+   * stale `hovering` would stop every later measurement for good.
    */
   function onwindowresize(): void {
     const d = drag;
     if (d === null || !d.started) {
+      leaveHoverState();
+      scheduleMeasure();
       return;
     }
     const delta = window.innerHeight - d.viewportHeight;
@@ -599,6 +618,8 @@
     d.el.style.transform = `translateX(${(d.centres[d.to] ?? 0) - (d.centres[d.from] ?? 0)}px)`;
     liftedKey = null;
     drag = null;
+    // The window shrinks back now; the pointer may never "leave".
+    hovering = false;
     pendingOrder = order;
     pendingTimer = setTimeout(clearDragStyles, 600);
     const ids = order.map((key) => key.slice('app:'.length));
@@ -624,6 +645,7 @@
     if (!d.started) {
       return;
     }
+    hovering = false;
     try {
       d.el.releasePointerCapture(d.pointerId);
     } catch {
@@ -734,6 +756,8 @@
   // animating in or out. Each report goes out only when its values changed.
   /** The panel's bounding box at rest, viewport-relative CSS px, after snapping. */
   let measured: Rect | null = null;
+  /** `window.innerHeight` when `measured` was taken: the viewport its y refers to. */
+  let measuredViewportHeight = 0;
   /**
    * The inline margins that hold the panel on whole device pixels.
    * The stage centres the panel, so with an odd `innerWidth − panelWidth`
@@ -787,6 +811,7 @@
       rect = panel.getBoundingClientRect();
     }
     measured = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+    measuredViewportHeight = window.innerHeight;
     reportSize();
   }
 
@@ -808,26 +833,30 @@
   /**
    * The panel rounded outwards, and the envelope its magnified icons can
    * reach. A drag in progress makes the whole window clickable instead: the
-   * lifted icon can be anywhere in it.
+   * lifted icon can be anywhere in it. The window grows for the drag with
+   * its bottom edge fixed, so the panel's y in the current viewport is the
+   * measured one plus the growth; reporting the rest y would put
+   * the panel far above its real place and the tracker would turn the
+   * window click-through while the icon is lifted.
    */
   function currentHitRegion(): HitRegion | null {
     if (measured === null || measured.width === 0) {
       return null;
     }
-    const region = hitRegionFor(
+    if (drag?.started) {
+      const delta = window.innerHeight - measuredViewportHeight;
+      return {
+        panel: integerRect({ ...measured, y: measured.y + delta }),
+        envelope: { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight },
+      };
+    }
+    return hitRegionFor(
       measured,
       maxGrowth(slotPx, magnify),
       // A magnified icon's top is iconSize × (maxScale − 1) above its slot's
       // top edge, and the slot sits PANEL_PADDING below the panel's top edge.
       magnifiedRise(iconSize, magnify.maxScale, HIT_SLACK - PANEL_PADDING),
     );
-    if (drag?.started) {
-      return {
-        panel: region.panel,
-        envelope: { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight },
-      };
-    }
-    return region;
   }
 
   function reportHitRegion(): void {

@@ -39,13 +39,12 @@ interface HitRegionCall {
   envelope: Rect;
 }
 
-/** Every `set_dock_hit_region` the mock recorded so far, oldest first. */
+/** Every `set_dock_hit_region` the mock recorded so far, oldest first (the two rects only). */
 function hitRegions(page: Page): Promise<HitRegionCall[]> {
-  return page.evaluate(
-    () =>
-      ((window as unknown as DemoWindow).__dockMock?.calls ?? []).filter(
-        (c) => c.type === 'setDockHitRegion',
-      ) as unknown as HitRegionCall[],
+  return page.evaluate(() =>
+    ((window as unknown as DemoWindow).__dockMock?.calls ?? [])
+      .filter((c) => c.type === 'setDockHitRegion')
+      .map((c) => ({ panel: c.panel, envelope: c.envelope }) as unknown as HitRegionCall),
   );
 }
 
@@ -526,14 +525,23 @@ test.describe('dock in mock mode', () => {
         .nth(index)
         .evaluate((el) => (el as HTMLElement).style.transform);
 
-    /** Press on pinned slot `from` and drag to just past the centre of pinned slot `over`. */
-    async function dragPinned(page: Page, from: number, over: number): Promise<void> {
+    /**
+     * Press on pinned slot `from` and drag to just past the centre of pinned
+     * slot `over`; returns where the pointer is then (viewport CSS px).
+     */
+    async function dragPinned(
+      page: Page,
+      from: number,
+      over: number,
+    ): Promise<{ x: number; y: number }> {
       const a = (await page.locator(PINNED).nth(from).boundingBox())!;
       const b = (await page.locator(PINNED).nth(over).boundingBox())!;
       const past = over > from ? 6 : -6;
       await page.mouse.move(a.x + a.width / 2, a.y + a.height / 2);
       await page.mouse.down();
-      await page.mouse.move(b.x + b.width / 2 + past, a.y + a.height / 2 - 12, { steps: 12 });
+      const to = { x: b.x + b.width / 2 + past, y: a.y + a.height / 2 - 12 };
+      await page.mouse.move(to.x, to.y, { steps: 12 });
+      return to;
     }
 
     test('lifts the icon, opens a gap, and drops it in the new order', async ({ page }) => {
@@ -604,6 +612,86 @@ test.describe('dock in mock mode', () => {
       await expect(page.locator('[data-drag]')).toHaveCount(0);
       await expect.poll(() => transformOf(page, 1)).toBe('');
       expect(await pinnedKeys(page)).toEqual(before);
+    });
+
+    test('the hit region and the hover state survive the window growing for the drag', async ({
+      page,
+    }) => {
+      await openDock(page);
+      const viewport = page.viewportSize()!;
+      const before = await pinnedKeys(page);
+      const atRest = (await hitRegions(page))[0]!;
+      const restSize = (await contentSizes(page))[0]!;
+      // Rust grows the window to the work area's height with its bottom
+      // edge fixed; the viewport's origin moves up by the growth.
+      const GROWTH = 720;
+      const shifted = (r: Rect): Rect => ({ ...r, y: r.y + GROWTH });
+
+      const pointer = await dragPinned(page, 0, 2);
+      await expect(page.locator(PINNED).nth(0)).toHaveAttribute('data-drag', 'lifted');
+      // Reported at drag start, before the window grew: the panel where it
+      // is in this viewport, the envelope the whole window.
+      await expect
+        .poll(async () => (await hitRegions(page)).at(-1))
+        .toEqual({
+          panel: atRest.panel,
+          envelope: { x: 0, y: 0, width: viewport.width, height: viewport.height },
+        });
+      await expect.poll(async () => (await contentSizes(page)).at(-1)?.height).toBe(4096);
+
+      // The window grows: the panel and the pointer are GROWTH px further
+      // down in the new viewport, and the region says so (the panel at its
+      // rest y would be far above its real place, and the tracker would
+      // turn the window click-through while the icon is lifted).
+      await page.setViewportSize({ width: viewport.width, height: viewport.height + GROWTH });
+      await expect
+        .poll(async () => (await hitRegions(page)).at(-1))
+        .toEqual({
+          panel: shifted(atRest.panel),
+          envelope: { x: 0, y: 0, width: viewport.width, height: viewport.height + GROWTH },
+        });
+      const grown = (await page.locator('.dock-panel').boundingBox())!;
+      expect(Math.floor(grown.y)).toBe(atRest.panel.y + GROWTH);
+      await page.mouse.move(pointer.x, pointer.y + GROWTH);
+      await expect(page.locator(PINNED).nth(0)).toHaveAttribute('data-drag', 'lifted');
+
+      // Drop. The snapshot with the new order arrives before Rust has
+      // shrunk the window back, so the measurement that follows it
+      // describes the tall viewport: the panel where it is in that one.
+      await page.mouse.up();
+      await expect
+        .poll(() => pinnedKeys(page))
+        .toEqual([before[1], before[2], before[0], before[3], before[4]]);
+      await expect.poll(async () => (await contentSizes(page)).at(-1)).toEqual(restSize);
+      await expect
+        .poll(async () => (await hitRegions(page)).at(-1))
+        .toEqual({
+          panel: shifted(atRest.panel),
+          envelope: shifted(atRest.envelope),
+        });
+      // The pointer is still over the panel and moves a little: hovering.
+      await page.mouse.move(pointer.x + 2, pointer.y + GROWTH);
+      await expect.poll(() => scaleOf(page, 2)).toBeGreaterThan(1);
+
+      // The window shrinks back. No pointerleave ever comes (a window that
+      // turned click-through gets no mouse messages), so the resize itself
+      // drops the hover state and measures again: the rest region is back.
+      await page.setViewportSize(viewport);
+      await expect.poll(async () => (await hitRegions(page)).at(-1)).toEqual(atRest);
+      expect(await scaleOf(page, 2)).toBe(1);
+      await expect(page.locator('.tooltip')).toHaveCount(0);
+      const reports = (await hitRegions(page)).length;
+
+      // An item change after that, with the pointer never having left the
+      // panel, is still reported once its animation has ended.
+      await page.evaluate((raw) => {
+        (window as unknown as DemoWindow).__dockMock?.pushWindow(raw as RawWindow);
+      }, PAINT_WINDOW);
+      await expect(page.locator(PAINT_SLOT)).toHaveCount(1);
+      await expect.poll(() => hitRegions(page)).toHaveLength(reports + 1);
+      const widened = (await hitRegions(page)).at(-1)!;
+      expect(widened.panel.width).toBe(atRest.panel.width + ICON + SLOT_GAP);
+      expect(widened.panel.y).toBe(atRest.panel.y);
     });
 
     test('running, unpinned apps and fixed items cannot be dragged', async ({ page }) => {
