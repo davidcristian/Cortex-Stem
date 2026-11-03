@@ -1,9 +1,12 @@
 //! Icon extraction and caching.
 //!
-//! Icon key scheme (produced here and in `identity`/`enumerate`, consumed by
-//! [`IconCache::get_or_load`]):
-//! - `hwnd:<id>`: the window's own icon (`WM_GETICON` via
-//!   `SendMessageTimeoutW`, then `GCLP_HICON`, then exe icon)
+//! Icon key scheme (produced in `rules::identity` for `identity`/`enumerate`,
+//! consumed by [`IconCache::get_or_load`]):
+//! - `hwnd:<id>:<pid>`: the window's own icon (`WM_GETICON` via
+//!   `SendMessageTimeoutW`, then `GCLP_HICON`, then exe icon). The process
+//!   id is part of the key because HWND values are recycled; the older
+//!   two-part `hwnd:<id>` form is still accepted (the pid is ignored when
+//!   loading).
 //! - `exe:<path>`: the executable's main icon (`IShellItemImageFactory`,
 //!   then `PrivateExtractIconsW`, then `SHGetFileInfoW`)
 //! - `file:<path>`: any file's shell icon (shortcuts, documents); same chain
@@ -13,8 +16,11 @@
 //! Output is always 32-bit RGBA PNG bytes. `HICON` -> pixels goes through
 //! `GetIconInfo` + `GetDIBits` with alpha preserved; all GDI objects are freed
 //! (RAII guards in `util`). The pixel maths live in `rules::icons`, which is
-//! unit-tested on every host. Results are cached per (key, size) in memory;
-//! nothing is cached on disk.
+//! unit-tested on every host. `exe:`, `file:` and `aumid:` results are
+//! cached per (key, size) in memory; `hwnd:` results are **not** cached
+//! (window icons are cheap to read, the window may change its icon, and a
+//! stale entry could outlive the window), the UI caches them per key for
+//! the session. Nothing is cached on disk.
 //!
 //! Ownership rules (see `docs/development/windows-rules.md`):
 //! - icons from `WM_GETICON` / `GCLP_HICON` are **shared** with the window and
@@ -48,7 +54,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use super::util::{self, OwnedBitmap, OwnedIcon, ScreenDc};
 use crate::rules::icons::{self as pixels, AlphaMode, IconConvertError};
-use crate::rules::identity::apps_folder_parsing_name;
+use crate::rules::identity::{apps_folder_parsing_name, parse_hwnd_icon_value};
 use crate::{PlatformError, PlatformResult};
 
 /// Cross-process `WM_GETICON` budget (`docs/development/windows-rules.md`: ≤ 200 ms).
@@ -61,6 +67,9 @@ const MAX_PATH: usize = 260;
 
 type CacheKey = (IconKey, u32);
 
+/// Namespace of keys that are never cached here (see the module docs).
+const UNCACHED_NAMESPACE: &str = "hwnd";
+
 #[derive(Debug, Default)]
 pub struct IconCache {
     entries: Mutex<HashMap<CacheKey, Arc<Vec<u8>>>>,
@@ -68,6 +77,9 @@ pub struct IconCache {
 
 impl IconCache {
     pub fn get_or_load(&self, key: &IconKey, size: u32) -> PlatformResult<Option<Vec<u8>>> {
+        if !Self::is_cacheable(key) {
+            return load_icon_png(key, size);
+        }
         if let Some(png) = self.entries.lock().get(&(key.clone(), size)) {
             return Ok(Some(png.as_ref().clone()));
         }
@@ -80,8 +92,11 @@ impl IconCache {
         Ok(Some(png))
     }
 
-    pub fn invalidate(&self, key: &IconKey) {
-        self.entries.lock().retain(|(k, _), _| k != key);
+    /// `hwnd:` keys are tied to a live window and are not cached.
+    fn is_cacheable(key: &IconKey) -> bool {
+        key.0
+            .split_once(':')
+            .is_none_or(|(namespace, _)| namespace != UNCACHED_NAMESPACE)
     }
 }
 
@@ -97,7 +112,7 @@ pub fn load_icon_png(key: &IconKey, size: u32) -> PlatformResult<Option<Vec<u8>>
     }
     let _com = util::ComApartment::sta();
     match namespace {
-        "hwnd" => load_window_icon(value, size),
+        UNCACHED_NAMESPACE => load_window_icon(value, size),
         "exe" | "file" => load_file_icon(value, size),
         "aumid" => shell_item_image(&apps_folder_parsing_name(value), size),
         _ => Ok(None),
@@ -105,9 +120,10 @@ pub fn load_icon_png(key: &IconKey, size: u32) -> PlatformResult<Option<Vec<u8>>
 }
 
 /// `hwnd:` chain: `WM_GETICON(ICON_BIG)` (then `ICON_SMALL`), `GCLP_HICON`
-/// (then `GCLP_HICONSM`), then the process image's icon.
+/// (then `GCLP_HICONSM`), then the process image's icon. `value` is
+/// `<id>:<pid>` or the older bare `<id>`.
 fn load_window_icon(value: &str, size: u32) -> PlatformResult<Option<Vec<u8>>> {
-    let Ok(id) = value.parse::<u64>() else {
+    let Some(id) = parse_hwnd_icon_value(value) else {
         return Ok(None);
     };
     let hwnd = util::hwnd(WindowId(id));

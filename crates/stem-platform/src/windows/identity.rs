@@ -99,7 +99,7 @@ pub fn identify_window(raw: &RawWindow) -> PlatformResult<AppIdentity> {
     let icon_key = exe
         .as_deref()
         .map(exe_icon_key)
-        .or_else(|| Some(hwnd_icon_key(raw.id.0)));
+        .or_else(|| Some(hwnd_icon_key(raw.id.0, raw.process_id)));
     let launch = exe.map(|path| LaunchTarget::Exe {
         path: PathBuf::from(path),
         args: Vec::new(),

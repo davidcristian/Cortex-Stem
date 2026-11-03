@@ -29,12 +29,12 @@
 //! - The AUMID read needs a COM apartment on the calling thread
 //!   (`util::ComApartment::sta`); the `PROPVARIANT` is read only when its
 //!   type is `VT_LPWSTR` and is always cleared.
-//! - `icon_key` is `hwnd:<id>` (resolved by `icons`); `monitor` comes from
-//!   `monitors::monitor_for_window`.
+//! - `icon_key` is `hwnd:<id>:<pid>` (`rules::identity::hwnd_icon_key`,
+//!   resolved by `icons`); `monitor` comes from `monitors::monitor_for_window`.
 
 use std::path::PathBuf;
 
-use stem_core::{IconKey, RawWindow};
+use stem_core::RawWindow;
 use windows::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, HWND, LPARAM};
 use windows::Win32::Graphics::Dwm::{
     DWM_CLOAKED_APP, DWM_CLOAKED_INHERITED, DWM_CLOAKED_SHELL, DWMWA_CLOAKED, DwmGetWindowAttribute,
@@ -57,6 +57,7 @@ use windows::core::{BOOL, PWSTR};
 
 use super::{monitors, util};
 use crate::rules::eligibility::{self, Owner, WindowFacts};
+use crate::rules::identity::hwnd_icon_key;
 use crate::{PlatformError, PlatformResult};
 
 // The pure rule table mirrors dwmapi.h; prove it against the SDK.
@@ -161,7 +162,7 @@ impl QueryContext {
             is_minimized: probe.is_minimized,
             is_cloaked,
             monitor: monitors::monitor_for_window(hwnd),
-            icon_key: Some(IconKey(format!("hwnd:{}", id.0))),
+            icon_key: Some(hwnd_icon_key(id.0, probe.facts.process_id)),
         })
     }
 }

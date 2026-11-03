@@ -160,8 +160,18 @@ pub fn aumid_icon_key(aumid: &str) -> IconKey {
     IconKey(format!("aumid:{}", aumid.trim()))
 }
 
-pub fn hwnd_icon_key(id: u64) -> IconKey {
-    IconKey(format!("hwnd:{id}"))
+/// Key of a window's own icon: `hwnd:<id>:<pid>`. The process id is part of
+/// the key because HWND values are recycled by the OS; a key that outlives
+/// its window must not resolve to a different window's icon.
+pub fn hwnd_icon_key(id: u64, process_id: u32) -> IconKey {
+    IconKey(format!("hwnd:{id}:{process_id}"))
+}
+
+/// The window id inside the value of an `hwnd:` key, accepting both the
+/// current `<id>:<pid>` form and the older bare `<id>` (the pid is ignored).
+pub fn parse_hwnd_icon_value(value: &str) -> Option<u64> {
+    let id = value.split_once(':').map_or(value, |(id, _)| id);
+    id.trim().parse().ok()
 }
 
 /// Split a Windows command line into arguments following the
@@ -365,7 +375,17 @@ mod tests {
         assert_eq!(exe_icon_key(r"C:\a.exe").0, r"exe:C:\a.exe");
         assert_eq!(file_icon_key(r"C:\a.lnk").0, r"file:C:\a.lnk");
         assert_eq!(aumid_icon_key(" X!App ").0, "aumid:X!App");
-        assert_eq!(hwnd_icon_key(66).0, "hwnd:66");
+        assert_eq!(hwnd_icon_key(66, 4242).0, "hwnd:66:4242");
+    }
+
+    #[test]
+    fn hwnd_icon_values_parse_with_and_without_a_pid() {
+        assert_eq!(parse_hwnd_icon_value("66:4242"), Some(66));
+        assert_eq!(parse_hwnd_icon_value("66"), Some(66));
+        assert_eq!(parse_hwnd_icon_value("66:"), Some(66));
+        assert_eq!(parse_hwnd_icon_value(""), None);
+        assert_eq!(parse_hwnd_icon_value(":4242"), None);
+        assert_eq!(parse_hwnd_icon_value("x:1"), None);
     }
 
     #[test]
