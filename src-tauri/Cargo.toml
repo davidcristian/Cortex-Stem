@@ -31,5 +31,11 @@ tauri = { workspace = true, features = ["tray-icon", "image-png"] }
 tauri-plugin-log = { workspace = true }
 tauri-plugin-single-instance = { workspace = true }
 
+# Only for the context-menu popup helper in `menus.rs`: post
+# `WM_NULL` after `TrackPopupMenu` and hand the foreground back. Everything
+# else that is Win32 lives in `stem-platform`.
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+
 [lints]
 workspace = true

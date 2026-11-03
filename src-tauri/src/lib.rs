@@ -12,6 +12,7 @@
 //! `quit` command).
 
 mod commands;
+mod menus;
 mod tray;
 mod windows;
 
@@ -76,6 +77,7 @@ pub fn run() {
             forward_events(app.handle().clone(), &service);
             app.manage(AppService(Arc::clone(&service)));
             app.manage(windows::DockGeometry::default());
+            menus::init(app.handle())?;
 
             windows::create_dock_windows(app.handle(), &service)?;
             if let Err(e) = tray::create(app.handle()) {

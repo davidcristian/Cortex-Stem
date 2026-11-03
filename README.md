@@ -37,7 +37,7 @@ flowchart TB
         DOCK["dock.html<br>one per dock window"]
         SET["settings.html"]
     end
-    APP["Tauri app · src-tauri<br>windows · tray"]
+    APP["Tauri app · src-tauri<br>windows · tray · menus"]
     SVC["stem-service<br>engine thread · identity · settings file"]
     CORE["stem-core<br>DockEngine · model · rules"]
     PLAT["stem-platform<br>Platform trait · Win32 · mock"]
@@ -60,9 +60,9 @@ does, and how items are ordered and grouped. It never calls the OS. `stem-platfo
 code that calls Win32 and the only place with `unsafe` code, and its mock implements the same
 `Platform` trait on any host. `stem-service` runs the engine on its own thread, passes it the
 platform's events, resolves app names and icons, and saves the settings file. The Tauri app in
-`src-tauri` creates the windows and the tray, and passes commands and events between the service
-and the Svelte page. The page draws the `DockState` snapshot it receives and reports what the user
-did. [docs/architecture/](docs/architecture/index.md) describes every part, and
+`src-tauri` creates the windows, the tray and the menus, and passes commands and events between the
+service and the Svelte page. The page draws the `DockState` snapshot it receives and reports what
+the user did. [docs/architecture/](docs/architecture/index.md) describes every part, and
 [docs/ipc/](docs/ipc/index.md) lists every command and event.
 
 ## Install

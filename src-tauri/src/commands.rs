@@ -52,6 +52,8 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         open_settings,
         reset_settings,
         quit,
+        crate::menus::show_item_menu,
+        crate::menus::show_dock_menu,
     ]
 }
 
