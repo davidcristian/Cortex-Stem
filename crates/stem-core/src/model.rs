@@ -258,6 +258,9 @@ pub struct DockState {
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub revision: u64,
     pub items: Vec<DockItem>,
+    /// The OS foreground window, when it is one the engine tracks. It may be a
+    /// window no item shows (e.g. on another virtual desktop); use
+    /// `DockItem.isActive` / `WindowInfo.isActive` for highlighting.
     pub foreground: Option<WindowId>,
 }
 

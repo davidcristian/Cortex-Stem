@@ -11,6 +11,19 @@
 //! 4. a separator, then the Recycle Bin.
 //!
 //! Separators are only emitted between non-empty groups.
+//!
+//! Invariants worth knowing when extending the engine:
+//! - a window is grouped under the id [`app_id_for`] derives from its *current*
+//!   facts, so a window whose AppUserModelID shows up late simply moves to the
+//!   other item (first-seen order is kept per window, not per app);
+//! - [`EngineOutcome::changed`] is defined by comparing snapshots, not by what
+//!   kind of input arrived, so inputs that only touch facts outside the
+//!   snapshot (monitors, theme, launch targets, identities of apps that are
+//!   not shown) never bump the revision;
+//! - `foreground` is the OS truth and is only ever an id the engine tracks. It
+//!   may point at a window no item shows (cloaked, invisible); nothing is
+//!   marked active then, and the item lights up as soon as the window is shown
+//!   again without needing another `ForegroundChanged`.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -40,7 +53,11 @@ pub fn app_id_for(raw: &RawWindow) -> AppId {
 /// What the engine wants the app layer to do after applying an input.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct EngineOutcome {
-    /// The snapshot changed; emit a new `dock://state`.
+    /// The renderable snapshot (items or foreground) differs from the one
+    /// before this input; emit a new `dock://state`. Inputs that only change
+    /// [`DockEngine::monitors`], [`DockEngine::theme`], settings that do not
+    /// alter items, or identities of apps that are not shown leave this
+    /// `false` and do not advance the revision.
     pub changed: bool,
     /// Apps the engine saw for the first time and has no [`AppIdentity`] for.
     /// Resolve them via the platform and feed back `EngineInput::IdentityResolved`.
@@ -116,6 +133,8 @@ impl DockEngine {
         self.recycle_bin
     }
 
+    /// The OS foreground window, if the engine tracks it. It may be a window
+    /// that no item shows (cloaked or invisible).
     pub fn foreground(&self) -> Option<WindowId> {
         self.foreground
     }
@@ -126,6 +145,17 @@ impl DockEngine {
 
     pub fn identity(&self, id: &AppId) -> Option<&AppIdentity> {
         self.identities.get(id)
+    }
+
+    /// Shown windows of `app_id` in first-seen order, i.e. the order the
+    /// app's item lists them. Hidden (cloaked, invisible) windows are not
+    /// included.
+    pub fn windows_of(&self, app_id: &AppId) -> Vec<WindowId> {
+        self.shown_windows()
+            .into_iter()
+            .filter(|t| app_id_for(&t.raw) == *app_id)
+            .map(|t| t.raw.id)
+            .collect()
     }
 
     /// Apps (pinned or running) with no identity yet, regardless of whether
@@ -140,23 +170,22 @@ impl DockEngine {
     }
 
     /// Apply one input. Cheap; call for every event.
+    ///
+    /// `changed` in the outcome is decided by comparing the snapshot before
+    /// and after, see [`EngineOutcome::changed`].
     pub fn apply(&mut self, input: EngineInput) -> EngineOutcome {
-        let changed = match input {
+        let before = self.snapshot();
+        match input {
             EngineInput::Platform(ev) => self.apply_platform(ev),
-            EngineInput::SettingsChanged(settings) => {
-                let changed = settings != self.settings;
-                self.settings = settings;
-                changed
-            }
+            EngineInput::SettingsChanged(settings) => self.settings = settings,
             EngineInput::IdentityResolved { app_id, identity } => {
                 self.identity_requested.remove(&app_id);
-                let changed = self.identities.get(&app_id) != Some(&identity);
                 self.identities.insert(app_id, identity);
-                changed
             }
-        };
+        }
         self.rebuild_running_order();
         let unresolved_apps = self.take_new_unresolved();
+        let changed = self.snapshot() != before;
         if changed {
             self.revision += 1;
         }
@@ -166,7 +195,7 @@ impl DockEngine {
         }
     }
 
-    fn apply_platform(&mut self, ev: PlatformEvent) -> bool {
+    fn apply_platform(&mut self, ev: PlatformEvent) {
         match ev {
             PlatformEvent::WindowsSnapshot(list) => {
                 let mut next = BTreeMap::new();
@@ -185,61 +214,39 @@ impl DockEngine {
                         },
                     );
                 }
-                let changed = next != self.windows;
                 self.windows = next;
-                changed
+                // A resync can reveal that the foreground window is gone.
+                self.foreground = self.foreground.filter(|id| self.windows.contains_key(id));
             }
             PlatformEvent::WindowAdded(raw) | PlatformEvent::WindowUpdated(raw) => self.upsert(raw),
             PlatformEvent::WindowRemoved(id) => {
-                let removed = self.windows.remove(&id).is_some();
+                self.windows.remove(&id);
                 if self.foreground == Some(id) {
                     self.foreground = None;
                 }
-                removed
             }
             PlatformEvent::ForegroundChanged(id) => {
-                let id = id.filter(|id| self.windows.contains_key(id));
-                let mut changed = self.foreground != id;
-                self.foreground = id;
-                if let Some(t) = id.and_then(|id| self.windows.get_mut(&id)) {
+                self.foreground = id.filter(|id| self.windows.contains_key(id));
+                if let Some(t) = self.foreground.and_then(|id| self.windows.get_mut(&id)) {
                     // Activating a window clears its attention request.
-                    changed |= std::mem::replace(&mut t.attention, false);
+                    t.attention = false;
                 }
-                changed
             }
-            PlatformEvent::WindowAttention { id, flashing } => match self.windows.get_mut(&id) {
-                Some(t) => std::mem::replace(&mut t.attention, flashing) != flashing,
-                None => false,
-            },
-            PlatformEvent::MonitorsChanged(monitors) => {
-                let changed = monitors != self.monitors;
-                self.monitors = monitors;
-                changed
+            PlatformEvent::WindowAttention { id, flashing } => {
+                if let Some(t) = self.windows.get_mut(&id) {
+                    t.attention = flashing;
+                }
             }
-            PlatformEvent::ThemeChanged(theme) => {
-                let changed = theme != self.theme;
-                self.theme = theme;
-                changed
-            }
-            PlatformEvent::RecycleBinChanged(state) => {
-                let changed = state != self.recycle_bin;
-                self.recycle_bin = state;
-                changed
-            }
+            PlatformEvent::MonitorsChanged(monitors) => self.monitors = monitors,
+            PlatformEvent::ThemeChanged(theme) => self.theme = theme,
+            PlatformEvent::RecycleBinChanged(state) => self.recycle_bin = state,
         }
     }
 
-    fn upsert(&mut self, raw: RawWindow) -> bool {
+    fn upsert(&mut self, raw: RawWindow) {
         let id = raw.id;
         match self.windows.get_mut(&id) {
-            Some(t) => {
-                if t.raw == raw {
-                    false
-                } else {
-                    t.raw = raw;
-                    true
-                }
-            }
+            Some(t) => t.raw = raw,
             None => {
                 let seq = self.alloc_seq();
                 self.windows.insert(
@@ -250,7 +257,6 @@ impl DockEngine {
                         attention: false,
                     },
                 );
-                true
             }
         }
     }
@@ -457,11 +463,11 @@ impl DockEngine {
     /// Decide what a primary click on `item_key` should do.
     ///
     /// - fixed items map to their shell action;
-    /// - an app with no windows is launched (if it can be);
+    /// - an app with no shown windows is launched (if it can be);
     /// - an app whose window is active is minimised (if configured), otherwise
     ///   activated;
     /// - an app with several windows cycles: the window after the active one,
-    ///   or the first one.
+    ///   or the first one. Only shown windows take part.
     pub fn primary_action(&self, item_key: &str) -> ItemAction {
         match item_key {
             "fixed:launcher" => return ItemAction::Shell(ShellAction::OpenStartMenu),
@@ -473,12 +479,7 @@ impl DockEngine {
         let Some(app_id) = item_key.strip_prefix("app:").map(|s| AppId(s.to_owned())) else {
             return ItemAction::None;
         };
-        let windows: Vec<WindowId> = self
-            .shown_windows()
-            .into_iter()
-            .filter(|t| app_id_for(&t.raw) == app_id)
-            .map(|t| t.raw.id)
-            .collect();
+        let windows = self.windows_of(&app_id);
         if windows.is_empty() {
             let launchable = self.settings.is_pinned(&app_id)
                 || self
@@ -525,12 +526,12 @@ fn fixed_item(kind: DockItemKind, key: String, title: &str, icon_key: Option<Ico
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     use pretty_assertions::assert_eq;
 
     use super::*;
-    use crate::model::LaunchTarget;
+    use crate::model::{LaunchTarget, MonitorId, Rect};
     use crate::settings::PinnedApp;
 
     fn win(id: u64, exe: &str, title: &str) -> RawWindow {
@@ -549,15 +550,33 @@ mod tests {
         }
     }
 
+    fn cloaked(mut raw: RawWindow) -> RawWindow {
+        raw.is_cloaked = true;
+        raw
+    }
+
     fn pin(exe: &str) -> PinnedApp {
         PinnedApp {
-            id: AppId::for_exe(std::path::Path::new(exe)),
+            id: AppId::for_exe(Path::new(exe)),
             label: None,
             launch: LaunchTarget::Exe {
                 path: PathBuf::from(exe),
                 args: vec![],
                 working_dir: None,
             },
+        }
+    }
+
+    fn exe_id(exe: &str) -> AppId {
+        AppId::for_exe(Path::new(exe))
+    }
+
+    fn identity(id: &AppId, name: &str, icon: &str) -> AppIdentity {
+        AppIdentity {
+            id: id.clone(),
+            display_name: name.into(),
+            icon_key: Some(IconKey(icon.into())),
+            launch: None,
         }
     }
 
@@ -570,6 +589,30 @@ mod tests {
         s.items.launcher = false;
         s.items.recycle_bin = false;
         s
+    }
+
+    fn added(raw: RawWindow) -> EngineInput {
+        PlatformEvent::WindowAdded(raw).into()
+    }
+
+    fn updated(raw: RawWindow) -> EngineInput {
+        PlatformEvent::WindowUpdated(raw).into()
+    }
+
+    fn removed(id: u64) -> EngineInput {
+        PlatformEvent::WindowRemoved(WindowId(id)).into()
+    }
+
+    fn foreground(id: Option<u64>) -> EngineInput {
+        PlatformEvent::ForegroundChanged(id.map(WindowId)).into()
+    }
+
+    fn attention(id: u64, flashing: bool) -> EngineInput {
+        PlatformEvent::WindowAttention {
+            id: WindowId(id),
+            flashing,
+        }
+        .into()
     }
 
     #[test]
@@ -585,14 +628,11 @@ mod tests {
     #[test]
     fn windows_are_grouped_by_app_and_ordered_by_first_seen() {
         let mut engine = DockEngine::new(minimal_settings());
-        let out = engine.apply(PlatformEvent::WindowAdded(win(1, r"C:\b.exe", "B1")).into());
+        let out = engine.apply(added(win(1, r"C:\b.exe", "B1")));
         assert!(out.changed);
-        assert_eq!(
-            out.unresolved_apps,
-            vec![AppId::for_exe(std::path::Path::new(r"C:\b.exe"))]
-        );
-        engine.apply(PlatformEvent::WindowAdded(win(2, r"C:\a.exe", "A1")).into());
-        engine.apply(PlatformEvent::WindowAdded(win(3, r"C:\b.exe", "B2")).into());
+        assert_eq!(out.unresolved_apps, vec![exe_id(r"C:\b.exe")]);
+        engine.apply(added(win(2, r"C:\a.exe", "A1")));
+        engine.apply(added(win(3, r"C:\b.exe", "B2")));
 
         let state = engine.snapshot();
         assert_eq!(keys(&state), vec!["app:exe:c:/b.exe", "app:exe:c:/a.exe"]);
@@ -605,8 +645,8 @@ mod tests {
         let mut settings = minimal_settings();
         settings.pinned = vec![pin(r"C:\a.exe"), pin(r"C:\z.exe")];
         let mut engine = DockEngine::new(settings);
-        engine.apply(PlatformEvent::WindowAdded(win(1, r"C:\b.exe", "B")).into());
-        engine.apply(PlatformEvent::WindowAdded(win(2, r"C:\a.exe", "A")).into());
+        engine.apply(added(win(1, r"C:\b.exe", "B")));
+        engine.apply(added(win(2, r"C:\a.exe", "A")));
 
         let state = engine.snapshot();
         assert_eq!(
@@ -627,16 +667,10 @@ mod tests {
     #[test]
     fn foreground_marks_active_and_clears_attention() {
         let mut engine = DockEngine::new(minimal_settings());
-        engine.apply(PlatformEvent::WindowAdded(win(1, r"C:\a.exe", "A")).into());
-        engine.apply(
-            PlatformEvent::WindowAttention {
-                id: WindowId(1),
-                flashing: true,
-            }
-            .into(),
-        );
+        engine.apply(added(win(1, r"C:\a.exe", "A")));
+        engine.apply(attention(1, true));
         assert!(engine.snapshot().items[0].needs_attention);
-        let out = engine.apply(PlatformEvent::ForegroundChanged(Some(WindowId(1))).into());
+        let out = engine.apply(foreground(Some(1)));
         assert!(out.changed);
         let item = &engine.snapshot().items[0];
         assert!(item.is_active);
@@ -646,17 +680,15 @@ mod tests {
     #[test]
     fn cloaked_windows_are_hidden_by_default() {
         let mut engine = DockEngine::new(minimal_settings());
-        let mut w = win(1, r"C:\a.exe", "A");
-        w.is_cloaked = true;
-        engine.apply(PlatformEvent::WindowAdded(w).into());
+        engine.apply(added(cloaked(win(1, r"C:\a.exe", "A"))));
         assert!(engine.snapshot().items.is_empty());
     }
 
     #[test]
     fn snapshot_resync_preserves_order_and_drops_vanished() {
         let mut engine = DockEngine::new(minimal_settings());
-        engine.apply(PlatformEvent::WindowAdded(win(1, r"C:\a.exe", "A")).into());
-        engine.apply(PlatformEvent::WindowAdded(win(2, r"C:\b.exe", "B")).into());
+        engine.apply(added(win(1, r"C:\a.exe", "A")));
+        engine.apply(added(win(2, r"C:\b.exe", "B")));
         engine.apply(
             PlatformEvent::WindowsSnapshot(vec![
                 win(2, r"C:\b.exe", "B"),
@@ -675,7 +707,7 @@ mod tests {
         let mut settings = minimal_settings();
         settings.pinned = vec![pin(r"C:\p.exe")];
         let mut engine = DockEngine::new(settings);
-        let p = AppId::for_exe(std::path::Path::new(r"C:\p.exe"));
+        let p = exe_id(r"C:\p.exe");
 
         // Pinned, not running -> launch.
         assert_eq!(
@@ -684,29 +716,29 @@ mod tests {
         );
 
         // One window, not active -> activate.
-        engine.apply(PlatformEvent::WindowAdded(win(1, r"C:\a.exe", "A")).into());
+        engine.apply(added(win(1, r"C:\a.exe", "A")));
         assert_eq!(
             engine.primary_action("app:exe:c:/a.exe"),
             ItemAction::ActivateWindow(WindowId(1))
         );
 
         // One window, active -> minimise.
-        engine.apply(PlatformEvent::ForegroundChanged(Some(WindowId(1))).into());
+        engine.apply(foreground(Some(1)));
         assert_eq!(
             engine.primary_action("app:exe:c:/a.exe"),
             ItemAction::MinimizeWindow(WindowId(1))
         );
 
         // Two windows, first active -> cycle to the second.
-        engine.apply(PlatformEvent::WindowAdded(win(2, r"C:\a.exe", "A2")).into());
+        engine.apply(added(win(2, r"C:\a.exe", "A2")));
         assert_eq!(
             engine.primary_action("app:exe:c:/a.exe"),
             ItemAction::ActivateWindow(WindowId(2))
         );
 
         // Unknown running app with no launch info -> nothing after it closes.
-        engine.apply(PlatformEvent::WindowRemoved(WindowId(1)).into());
-        engine.apply(PlatformEvent::WindowRemoved(WindowId(2)).into());
+        engine.apply(removed(1));
+        engine.apply(removed(2));
         assert_eq!(engine.primary_action("app:exe:c:/a.exe"), ItemAction::None);
 
         // Fixed items.
@@ -720,22 +752,16 @@ mod tests {
     #[test]
     fn identity_is_requested_once_until_resolved() {
         let mut engine = DockEngine::new(minimal_settings());
-        let a = AppId::for_exe(std::path::Path::new(r"C:\a.exe"));
-        let out = engine.apply(PlatformEvent::WindowAdded(win(1, r"C:\a.exe", "A")).into());
+        let a = exe_id(r"C:\a.exe");
+        let out = engine.apply(added(win(1, r"C:\a.exe", "A")));
         assert_eq!(out.unresolved_apps, vec![a.clone()]);
-        let out = engine.apply(PlatformEvent::WindowAdded(win(2, r"C:\a.exe", "A2")).into());
+        let out = engine.apply(added(win(2, r"C:\a.exe", "A2")));
         assert!(out.unresolved_apps.is_empty());
         assert_eq!(engine.unresolved_apps(), vec![a.clone()]);
 
-        let identity = AppIdentity {
-            id: a.clone(),
-            display_name: "App A".into(),
-            icon_key: Some(IconKey("k".into())),
-            launch: None,
-        };
         let out = engine.apply(EngineInput::IdentityResolved {
             app_id: a.clone(),
-            identity,
+            identity: identity(&a, "App A", "k"),
         });
         assert!(out.changed);
         assert!(engine.unresolved_apps().is_empty());
@@ -748,11 +774,496 @@ mod tests {
     fn revision_only_advances_on_change() {
         let mut engine = DockEngine::new(minimal_settings());
         let r0 = engine.snapshot().revision;
-        engine.apply(PlatformEvent::WindowAdded(win(1, r"C:\a.exe", "A")).into());
+        engine.apply(added(win(1, r"C:\a.exe", "A")));
         let r1 = engine.snapshot().revision;
         assert!(r1 > r0);
-        let out = engine.apply(PlatformEvent::WindowUpdated(win(1, r"C:\a.exe", "A")).into());
+        let out = engine.apply(updated(win(1, r"C:\a.exe", "A")));
         assert!(!out.changed);
         assert_eq!(engine.snapshot().revision, r1);
+    }
+
+    // ----- edge cases --------------------------------------------------------
+
+    #[test]
+    fn window_regroups_when_app_user_model_id_appears_later() {
+        let mut engine = DockEngine::new(minimal_settings());
+        let exe = exe_id(r"C:\app.exe");
+        let aumid = AppId::for_app_user_model_id("Vendor.App_abc!App");
+
+        engine.apply(added(win(1, r"C:\app.exe", "First")));
+        engine.apply(added(win(2, r"C:\app.exe", "Second")));
+        engine.apply(attention(1, true));
+        assert_eq!(keys(&engine.snapshot()), vec!["app:exe:c:/app.exe"]);
+
+        // The platform learns the AUMID of window 1 only now.
+        let mut moved = win(1, r"C:\app.exe", "First");
+        moved.app_user_model_id = Some("Vendor.App_abc!App".into());
+        let out = engine.apply(updated(moved));
+        assert!(out.changed);
+        assert_eq!(out.unresolved_apps, vec![aumid.clone()]);
+
+        let state = engine.snapshot();
+        // The exe item keeps its first-seen slot; the AUMID item is a newcomer.
+        assert_eq!(
+            keys(&state),
+            vec!["app:exe:c:/app.exe", "app:aumid:Vendor.App_abc!App"]
+        );
+        assert_eq!(state.items[0].windows.len(), 1);
+        assert_eq!(state.items[1].windows.len(), 1);
+        // Attention travels with the window.
+        assert!(!state.items[0].needs_attention);
+        assert!(state.items[1].needs_attention);
+        assert_eq!(engine.windows_of(&aumid), vec![WindowId(1)]);
+        assert_eq!(engine.windows_of(&exe), vec![WindowId(2)]);
+        // Both apps are still unresolved (sorted by id); only the new one was
+        // requested by this input, the exe id was requested when first seen.
+        assert_eq!(engine.unresolved_apps(), vec![aumid, exe]);
+    }
+
+    #[test]
+    fn pinned_launch_target_change_keeps_key_identity_and_revision() {
+        let mut settings = minimal_settings();
+        settings.pinned = vec![pin(r"C:\a.exe")];
+        let a = exe_id(r"C:\a.exe");
+        let mut engine = DockEngine::new(settings.clone());
+        engine.apply(EngineInput::IdentityResolved {
+            app_id: a.clone(),
+            identity: identity(&a, "App A", "icon-a"),
+        });
+        let before = engine.snapshot();
+
+        settings.pinned[0].launch = LaunchTarget::Shortcut {
+            path: PathBuf::from(r"C:\Users\me\Desktop\A.lnk"),
+        };
+        let out = engine.apply(EngineInput::SettingsChanged(settings));
+        // Nothing the UI renders changed, so no new revision and no new
+        // identity request; the click still launches by id.
+        assert!(!out.changed);
+        assert!(out.unresolved_apps.is_empty());
+        assert_eq!(engine.snapshot(), before);
+        assert_eq!(engine.snapshot().items[0].title, "App A");
+        assert_eq!(
+            engine.primary_action("app:exe:c:/a.exe"),
+            ItemAction::Launch(a.clone())
+        );
+        assert!(matches!(
+            engine.settings().pinned[0].launch,
+            LaunchTarget::Shortcut { .. }
+        ));
+        assert_eq!(
+            engine.identity(&a).map(|i| i.display_name.as_str()),
+            Some("App A")
+        );
+    }
+
+    #[test]
+    fn resync_after_many_adds_is_a_no_op() {
+        let mut engine = DockEngine::new(minimal_settings());
+        let windows: Vec<RawWindow> = (1..=40)
+            .map(|i| win(i, &format!(r"C:\app{}.exe", i % 7), &format!("W{i}")))
+            .collect();
+        for w in &windows {
+            engine.apply(added(w.clone()));
+        }
+        engine.apply(foreground(Some(5)));
+        engine.apply(attention(9, true));
+        let before = engine.snapshot();
+        assert_eq!(before.items.len(), 7);
+
+        // The platform re-enumerates in a different order.
+        let mut list = windows.clone();
+        list.reverse();
+        let out = engine.apply(PlatformEvent::WindowsSnapshot(list).into());
+        assert!(!out.changed);
+        assert!(out.unresolved_apps.is_empty());
+        assert_eq!(engine.snapshot(), before);
+        assert_eq!(engine.foreground(), Some(WindowId(5)));
+
+        // Window order inside an item also survives (first seen, not list order).
+        let item = &engine.snapshot().items[0];
+        let ids: Vec<u64> = item.windows.iter().map(|w| w.id.0).collect();
+        assert_eq!(ids, vec![1, 8, 15, 22, 29, 36]);
+    }
+
+    #[test]
+    fn resync_drops_a_vanished_foreground_window() {
+        let mut engine = DockEngine::new(minimal_settings());
+        engine.apply(added(win(1, r"C:\a.exe", "A")));
+        engine.apply(added(win(2, r"C:\b.exe", "B")));
+        engine.apply(foreground(Some(1)));
+        assert!(engine.snapshot().items[0].is_active);
+
+        let out =
+            engine.apply(PlatformEvent::WindowsSnapshot(vec![win(2, r"C:\b.exe", "B")]).into());
+        assert!(out.changed);
+        assert_eq!(engine.foreground(), None);
+        let state = engine.snapshot();
+        assert_eq!(state.foreground, None);
+        assert!(state.items.iter().all(|i| !i.is_active));
+    }
+
+    #[test]
+    fn foreground_on_a_cloaked_window_marks_nothing_active_until_it_is_shown() {
+        let mut engine = DockEngine::new(minimal_settings());
+        engine.apply(added(cloaked(win(1, r"C:\a.exe", "A"))));
+        engine.apply(added(win(2, r"C:\b.exe", "B")));
+        engine.apply(foreground(Some(2)));
+
+        // The user switches to the virtual desktop with window 1: the OS
+        // reports it as foreground while it is still cloaked for us.
+        let out = engine.apply(foreground(Some(1)));
+        assert!(out.changed);
+        let state = engine.snapshot();
+        assert_eq!(state.foreground, Some(WindowId(1)));
+        assert_eq!(keys(&state), vec!["app:exe:c:/b.exe"]);
+        assert!(state.items.iter().all(|i| !i.is_active));
+        assert_eq!(engine.primary_action("app:exe:c:/a.exe"), ItemAction::None);
+
+        // Uncloaking alone makes the item active; no new ForegroundChanged needed.
+        let out = engine.apply(updated(win(1, r"C:\a.exe", "A")));
+        assert!(out.changed);
+        let state = engine.snapshot();
+        assert_eq!(keys(&state), vec!["app:exe:c:/b.exe", "app:exe:c:/a.exe"]);
+        assert!(state.items[1].is_active);
+        assert!(!state.items[0].is_active);
+    }
+
+    #[test]
+    fn show_only_current_desktop_false_shows_cloaked_windows_and_toggles_live() {
+        let mut settings = minimal_settings();
+        settings.behavior.show_only_current_desktop = false;
+        let mut engine = DockEngine::new(settings.clone());
+        engine.apply(added(cloaked(win(1, r"C:\a.exe", "A"))));
+        engine.apply(foreground(Some(1)));
+        let state = engine.snapshot();
+        assert_eq!(keys(&state), vec!["app:exe:c:/a.exe"]);
+        assert!(state.items[0].is_active);
+        assert_eq!(engine.windows_of(&exe_id(r"C:\a.exe")), vec![WindowId(1)]);
+        assert_eq!(
+            engine.primary_action("app:exe:c:/a.exe"),
+            ItemAction::MinimizeWindow(WindowId(1))
+        );
+
+        settings.behavior.show_only_current_desktop = true;
+        let out = engine.apply(EngineInput::SettingsChanged(settings.clone()));
+        assert!(out.changed);
+        assert!(engine.snapshot().items.is_empty());
+        assert!(engine.windows_of(&exe_id(r"C:\a.exe")).is_empty());
+
+        settings.behavior.show_only_current_desktop = false;
+        let out = engine.apply(EngineInput::SettingsChanged(settings));
+        assert!(out.changed);
+        assert_eq!(keys(&engine.snapshot()), vec!["app:exe:c:/a.exe"]);
+    }
+
+    #[test]
+    fn attention_is_dropped_when_the_window_closes() {
+        let mut settings = minimal_settings();
+        settings.pinned = vec![pin(r"C:\p.exe")];
+        let mut engine = DockEngine::new(settings);
+        engine.apply(added(win(1, r"C:\p.exe", "P")));
+        engine.apply(added(win(2, r"C:\u.exe", "U")));
+        engine.apply(attention(1, true));
+        engine.apply(attention(2, true));
+        let state = engine.snapshot();
+        assert!(
+            state
+                .items
+                .iter()
+                .all(|i| i.kind != DockItemKind::App || i.needs_attention)
+        );
+
+        let out = engine.apply(removed(1));
+        assert!(out.changed);
+        let out = engine.apply(removed(2));
+        assert!(out.changed);
+        let state = engine.snapshot();
+        // Pinned item stays, calm; the unpinned one is gone.
+        assert_eq!(keys(&state), vec!["app:exe:c:/p.exe"]);
+        assert!(!state.items[0].needs_attention);
+
+        // A new window of the same app does not inherit the old flash.
+        engine.apply(added(win(3, r"C:\p.exe", "P again")));
+        assert!(!engine.snapshot().items[0].needs_attention);
+
+        // The same holds when a resync drops the flashing window.
+        engine.apply(attention(3, true));
+        assert!(engine.snapshot().items[0].needs_attention);
+        engine.apply(PlatformEvent::WindowsSnapshot(vec![]).into());
+        assert!(!engine.snapshot().items[0].needs_attention);
+    }
+
+    #[test]
+    fn attention_and_removal_of_unknown_windows_are_ignored() {
+        let mut engine = DockEngine::new(minimal_settings());
+        engine.apply(added(win(1, r"C:\a.exe", "A")));
+        let before = engine.snapshot();
+        assert!(!engine.apply(attention(99, true)).changed);
+        assert!(!engine.apply(removed(99)).changed);
+        assert!(!engine.apply(attention(1, false)).changed);
+        assert_eq!(engine.snapshot(), before);
+    }
+
+    #[test]
+    fn item_key_is_stable_across_pin_and_unpin() {
+        let mut settings = minimal_settings();
+        let mut engine = DockEngine::new(settings.clone());
+        engine.apply(added(win(1, r"C:\a.exe", "A")));
+        engine.apply(added(win(2, r"C:\b.exe", "B")));
+        let running_key = engine.snapshot().items[1].key.clone();
+        assert_eq!(running_key, "app:exe:c:/b.exe");
+
+        settings.pinned = vec![pin(r"C:\b.exe")];
+        let out = engine.apply(EngineInput::SettingsChanged(settings.clone()));
+        assert!(out.changed);
+        let state = engine.snapshot();
+        assert_eq!(
+            keys(&state),
+            vec!["app:exe:c:/b.exe", "sep:1", "app:exe:c:/a.exe"]
+        );
+        assert_eq!(state.items[0].key, running_key);
+        assert!(state.items[0].pinned);
+        assert_eq!(state.items[0].windows.len(), 1);
+
+        settings.pinned.clear();
+        engine.apply(EngineInput::SettingsChanged(settings));
+        let state = engine.snapshot();
+        // Back in the running group, in its original first-seen slot.
+        assert_eq!(keys(&state), vec!["app:exe:c:/a.exe", "app:exe:c:/b.exe"]);
+        assert_eq!(state.items[1].key, running_key);
+        assert!(!state.items[1].pinned);
+
+        // Unpinning an app with no windows removes its item.
+        engine.apply(removed(2));
+        assert_eq!(keys(&engine.snapshot()), vec!["app:exe:c:/a.exe"]);
+    }
+
+    #[test]
+    fn monitors_and_theme_changes_do_not_bump_the_snapshot() {
+        let mut engine = DockEngine::new(Settings::default());
+        engine.apply(added(win(1, r"C:\a.exe", "A")));
+        let before = engine.snapshot();
+
+        let monitors = vec![MonitorInfo {
+            id: MonitorId("m1".into()),
+            name: "Main".into(),
+            bounds: Rect::new(0, 0, 1920, 1080),
+            work_area: Rect::new(0, 0, 1920, 1032),
+            scale_factor: 1.25,
+            is_primary: true,
+        }];
+        let out = engine.apply(PlatformEvent::MonitorsChanged(monitors.clone()).into());
+        assert!(!out.changed);
+        assert_eq!(engine.monitors(), monitors.as_slice());
+
+        let theme = ThemeInfo {
+            accent: "#FF0000".into(),
+            dark: false,
+            high_contrast: true,
+            transparency: false,
+        };
+        let out = engine.apply(PlatformEvent::ThemeChanged(theme.clone()).into());
+        assert!(!out.changed);
+        assert_eq!(engine.theme(), &theme);
+
+        assert_eq!(engine.snapshot(), before);
+    }
+
+    #[test]
+    fn recycle_bin_changes_bump_only_when_the_icon_flips() {
+        let mut engine = DockEngine::new(Settings::default());
+        let bin = |count: u64| -> EngineInput {
+            PlatformEvent::RecycleBinChanged(RecycleBinState {
+                item_count: count,
+                size_bytes: count * 100,
+            })
+            .into()
+        };
+        let icon = |engine: &DockEngine| {
+            engine
+                .snapshot()
+                .items
+                .last()
+                .and_then(|i| i.icon_key.clone())
+        };
+        assert_eq!(icon(&engine), Some(IconKey::shell("recycle-bin-empty")));
+
+        assert!(engine.apply(bin(3)).changed);
+        assert_eq!(icon(&engine), Some(IconKey::shell("recycle-bin-full")));
+        let r = engine.snapshot().revision;
+        assert!(!engine.apply(bin(4)).changed);
+        assert_eq!(engine.snapshot().revision, r);
+        assert_eq!(engine.recycle_bin().item_count, 4);
+        assert!(engine.apply(bin(0)).changed);
+        assert_eq!(icon(&engine), Some(IconKey::shell("recycle-bin-empty")));
+
+        // Without the item, the bin state is invisible and never bumps.
+        let mut engine = DockEngine::new(minimal_settings());
+        assert!(!engine.apply(bin(3)).changed);
+        assert!(!engine.apply(bin(0)).changed);
+        assert_eq!(engine.snapshot().revision, 0);
+    }
+
+    #[test]
+    fn settings_changes_bump_only_when_items_change() {
+        let mut settings = minimal_settings();
+        let mut engine = DockEngine::new(settings.clone());
+        engine.apply(added(win(1, r"C:\a.exe", "A")));
+        let r = engine.snapshot().revision;
+
+        settings.icon_size = 96;
+        settings.magnification.max_scale = 2.0;
+        settings.appearance.opacity = 0.5;
+        let out = engine.apply(EngineInput::SettingsChanged(settings.clone()));
+        assert!(!out.changed);
+        assert_eq!(engine.snapshot().revision, r);
+        assert_eq!(engine.settings().icon_size, 96);
+
+        settings.items.launcher = true;
+        let out = engine.apply(EngineInput::SettingsChanged(settings.clone()));
+        assert!(out.changed);
+        assert_eq!(
+            keys(&engine.snapshot()),
+            vec!["fixed:launcher", "sep:1", "app:exe:c:/a.exe"]
+        );
+
+        settings.items.separators = false;
+        let out = engine.apply(EngineInput::SettingsChanged(settings.clone()));
+        assert!(out.changed);
+        assert_eq!(
+            keys(&engine.snapshot()),
+            vec!["fixed:launcher", "app:exe:c:/a.exe"]
+        );
+
+        // Re-applying identical settings is a no-op.
+        assert!(!engine.apply(EngineInput::SettingsChanged(settings)).changed);
+    }
+
+    #[test]
+    fn identity_for_an_absent_app_is_kept_without_bumping() {
+        let mut engine = DockEngine::new(minimal_settings());
+        let a = exe_id(r"C:\a.exe");
+        engine.apply(added(win(1, r"C:\a.exe", "A")));
+        engine.apply(removed(1));
+        let r = engine.snapshot().revision;
+
+        // The resolution arrives after the window closed (service latency).
+        let out = engine.apply(EngineInput::IdentityResolved {
+            app_id: a.clone(),
+            identity: identity(&a, "App A", "k"),
+        });
+        assert!(!out.changed);
+        assert_eq!(engine.snapshot().revision, r);
+
+        // When it comes back it is named right away and not requested again.
+        let out = engine.apply(added(win(2, r"C:\a.exe", "A")));
+        assert!(out.changed);
+        assert!(out.unresolved_apps.is_empty());
+        assert_eq!(engine.snapshot().items[0].title, "App A");
+
+        // Resolving to the same identity again is a no-op.
+        let out = engine.apply(EngineInput::IdentityResolved {
+            app_id: a.clone(),
+            identity: identity(&a, "App A", "k"),
+        });
+        assert!(!out.changed);
+    }
+
+    #[test]
+    fn window_updates_without_visible_effect_do_not_bump() {
+        let mut engine = DockEngine::new(minimal_settings());
+        engine.apply(added(win(1, r"C:\a.exe", "A")));
+        let r = engine.snapshot().revision;
+
+        let mut same = win(1, r"C:\a.exe", "A");
+        same.process_id = 4242;
+        same.class_name = "Other".into();
+        assert!(!engine.apply(updated(same)).changed);
+        assert_eq!(engine.snapshot().revision, r);
+        assert_eq!(engine.window(WindowId(1)).map(|w| w.process_id), Some(4242));
+
+        let mut renamed = win(1, r"C:\a.exe", "A - edited");
+        renamed.is_minimized = true;
+        assert!(engine.apply(updated(renamed)).changed);
+        let item = &engine.snapshot().items[0];
+        assert_eq!(item.windows[0].title, "A - edited");
+        assert!(item.windows[0].is_minimized);
+    }
+
+    #[test]
+    fn foreground_to_an_untracked_window_clears_the_active_marker() {
+        let mut engine = DockEngine::new(minimal_settings());
+        engine.apply(added(win(1, r"C:\a.exe", "A")));
+        engine.apply(foreground(Some(1)));
+        assert!(engine.snapshot().items[0].is_active);
+
+        // A tool window or the desktop took focus: not something we track.
+        let out = engine.apply(foreground(Some(999)));
+        assert!(out.changed);
+        assert_eq!(engine.foreground(), None);
+        assert!(!engine.snapshot().items[0].is_active);
+        assert!(!engine.apply(foreground(None)).changed);
+    }
+
+    #[test]
+    fn duplicate_window_added_is_treated_as_an_update() {
+        let mut engine = DockEngine::new(minimal_settings());
+        engine.apply(added(win(1, r"C:\a.exe", "A")));
+        engine.apply(added(win(2, r"C:\b.exe", "B")));
+        engine.apply(attention(1, true));
+
+        let out = engine.apply(added(win(1, r"C:\a.exe", "A renamed")));
+        assert!(out.changed);
+        let state = engine.snapshot();
+        // Still one window, still first, attention untouched.
+        assert_eq!(keys(&state), vec!["app:exe:c:/a.exe", "app:exe:c:/b.exe"]);
+        assert_eq!(state.items[0].windows.len(), 1);
+        assert_eq!(state.items[0].windows[0].title, "A renamed");
+        assert!(state.items[0].needs_attention);
+    }
+
+    #[test]
+    fn windows_of_lists_shown_windows_in_first_seen_order() {
+        let mut engine = DockEngine::new(minimal_settings());
+        let a = exe_id(r"C:\a.exe");
+        engine.apply(added(win(3, r"C:\a.exe", "third id, first seen")));
+        engine.apply(added(win(1, r"C:\b.exe", "other app")));
+        let mut minimized = win(2, r"C:\a.exe", "minimised");
+        minimized.is_minimized = true;
+        engine.apply(added(minimized));
+        engine.apply(added(cloaked(win(4, r"C:\a.exe", "cloaked"))));
+        let mut invisible = win(5, r"C:\a.exe", "invisible");
+        invisible.is_visible = false;
+        engine.apply(added(invisible));
+
+        assert_eq!(engine.windows_of(&a), vec![WindowId(3), WindowId(2)]);
+        assert_eq!(engine.windows_of(&exe_id(r"C:\b.exe")), vec![WindowId(1)]);
+        assert!(engine.windows_of(&exe_id(r"C:\none.exe")).is_empty());
+        let item = &engine.snapshot().items[0];
+        let listed: Vec<WindowId> = item.windows.iter().map(|w| w.id).collect();
+        assert_eq!(listed, engine.windows_of(&a));
+    }
+
+    #[test]
+    fn primary_action_cycles_through_shown_windows_only() {
+        let mut engine = DockEngine::new(minimal_settings());
+        engine.apply(added(win(1, r"C:\a.exe", "A1")));
+        engine.apply(added(cloaked(win(2, r"C:\a.exe", "A2 on another desktop"))));
+        engine.apply(added(win(3, r"C:\a.exe", "A3")));
+        engine.apply(foreground(Some(1)));
+        assert_eq!(
+            engine.primary_action("app:exe:c:/a.exe"),
+            ItemAction::ActivateWindow(WindowId(3))
+        );
+        engine.apply(foreground(Some(3)));
+        assert_eq!(
+            engine.primary_action("app:exe:c:/a.exe"),
+            ItemAction::ActivateWindow(WindowId(1))
+        );
+
+        // Only the hidden window left: it behaves like a closed app.
+        engine.apply(removed(1));
+        engine.apply(removed(3));
+        assert_eq!(engine.primary_action("app:exe:c:/a.exe"), ItemAction::None);
     }
 }
