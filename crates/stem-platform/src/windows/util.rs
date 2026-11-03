@@ -97,3 +97,40 @@ mod tests {
         assert_eq!(window_id(hwnd(id)), id);
     }
 }
+
+/// Owned process handle from `OpenProcess`; closed on drop.
+#[derive(Debug)]
+pub struct ProcessHandle(windows::Win32::Foundation::HANDLE);
+
+impl ProcessHandle {
+    /// `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)`: enough for the image
+    /// path and basic facts, and granted for most elevated processes too.
+    /// Protected processes answer `PlatformError::AccessDenied`.
+    pub fn open_limited(process_id: u32) -> crate::PlatformResult<Self> {
+        use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+        // SAFETY: OpenProcess has no pointer arguments; a failure is reported
+        // through the Result and the handle is owned by the guard on success.
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id) }?;
+        Ok(Self(handle))
+    }
+
+    pub fn raw(&self) -> windows::Win32::Foundation::HANDLE {
+        self.0
+    }
+}
+
+impl Drop for ProcessHandle {
+    fn drop(&mut self) {
+        // SAFETY: the handle came from a successful OpenProcess and is closed
+        // exactly once, here.
+        if let Err(e) = unsafe { windows::Win32::Foundation::CloseHandle(self.0) } {
+            log::debug!("CloseHandle(process) failed: {e}");
+        }
+    }
+}
+
+/// `HRESULT` for a `WIN32_ERROR`, to compare a `windows::core::Error` code
+/// against a specific Win32 error (`e.code() == hresult_of(ERROR_X)`).
+pub fn hresult_of(error: windows::Win32::Foundation::WIN32_ERROR) -> windows::core::HRESULT {
+    windows::core::HRESULT::from_win32(error.0)
+}
