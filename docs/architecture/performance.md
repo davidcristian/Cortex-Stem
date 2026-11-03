@@ -4,7 +4,7 @@ This file lists Stem's performance targets.
 
 | Metric                                  | Target |
 |-----------------------------------------|--------|
-| Idle CPU (no window changes)            | ≈ 0 % (nothing polls except the Recycle Bin query every 5 s on `dock-recycle-bin`) |
+| Idle CPU (no window changes)            | ≈ 0 % (nothing polls except the Recycle Bin query every 5 s on `dock-recycle-bin` and the hit-test thread's 4 Hz `GetCursorPos` safety poll) |
 | Event → UI update                       | < 50 ms |
 | Startup to dock visible                 | < 1 s |
 | Memory (Rust side)                      | < 30 MB; WebView2 uses far more |
