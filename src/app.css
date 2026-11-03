@@ -1,0 +1,92 @@
+/* Global reset shared by every window. The Tauri windows are transparent and
+   undecorated, so nothing here may paint a background. */
+
+:root {
+  font-family:
+    'Segoe UI Variable Text',
+    'Segoe UI',
+    system-ui,
+    -apple-system,
+    sans-serif;
+  font-size: 13px;
+  line-height: 1.3;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+}
+
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  cursor: default;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Colour tokens. `data-theme` is set on <html> by the dock from the user's
+   theme setting and the OS theme (docs/ipc/events.md `dock://theme`). */
+:root,
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --accent: #0078d4;
+  --text: #ffffff;
+  --text-muted: rgba(255, 255, 255, 0.7);
+  --panel-tint: 28 28 30;
+  --panel-border: rgba(255, 255, 255, 0.12);
+  --panel-shadow:
+    0 12px 32px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  --separator: rgba(255, 255, 255, 0.22);
+  --placeholder: rgba(255, 255, 255, 0.14);
+  --dot: rgba(255, 255, 255, 0.78);
+  --tooltip-bg: rgba(40, 40, 42, 0.94);
+  --tooltip-border: rgba(255, 255, 255, 0.14);
+  --tile-neutral: rgba(255, 255, 255, 0.16);
+  --focus-ring: #4cc2ff;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+  --text: #1b1b1f;
+  --text-muted: rgba(27, 27, 31, 0.7);
+  --panel-tint: 244 244 246;
+  --panel-border: rgba(0, 0, 0, 0.1);
+  --panel-shadow:
+    0 12px 32px rgba(0, 0, 0, 0.22), 0 2px 6px rgba(0, 0, 0, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  --separator: rgba(0, 0, 0, 0.18);
+  --placeholder: rgba(0, 0, 0, 0.1);
+  --dot: rgba(0, 0, 0, 0.62);
+  --tooltip-bg: rgba(250, 250, 252, 0.96);
+  --tooltip-border: rgba(0, 0, 0, 0.1);
+  --tile-neutral: rgba(0, 0, 0, 0.14);
+  --focus-ring: #005fb8;
+}
+
+/* Browser-only demo wallpaper (mock backend) so translucency and blur are
+   visible when the dock is not sitting on a real desktop. */
+html[data-wallpaper='dark'] body {
+  background:
+    radial-gradient(1200px 500px at 20% 110%, #3b2a6b 0%, transparent 60%),
+    radial-gradient(900px 420px at 85% 120%, #0f4c75 0%, transparent 60%),
+    linear-gradient(180deg, #16181f 0%, #1f2330 100%);
+}
+
+html[data-wallpaper='light'] body {
+  background:
+    radial-gradient(1200px 500px at 20% 110%, #ffd6a5 0%, transparent 60%),
+    radial-gradient(900px 420px at 85% 120%, #a0c4ff 0%, transparent 60%),
+    linear-gradient(180deg, #e9eef7 0%, #cfd9ea 100%);
+}

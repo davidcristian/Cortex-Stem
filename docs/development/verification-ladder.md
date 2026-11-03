@@ -13,7 +13,7 @@ The rules for running it, and which rungs a task needs, are in
 | 3 | `cargo test -p stem-core -p stem-platform -p stem-service` | every Linux-runnable test (core, mock, service) |
 | 3b | `cargo test -p stem-core --features ts`, then `git status --porcelain -- src/lib/ipc/generated` prints nothing | the TypeScript bindings are regenerated and committed |
 | 4 | `cargo clippy --workspace --all-targets --target x86_64-pc-windows-msvc -- -D warnings` | the **real** Windows code, the Tauri crate included, type-checks and lints |
-| 5 | `pnpm install --frozen-lockfile && pnpm check && pnpm lint && pnpm test` | frontend types; lint (`scripts/prosecheck.mjs` and `scripts/linecap.mjs`); unit tests |
+| 5 | `pnpm install --frozen-lockfile && pnpm check && pnpm lint && pnpm test` | frontend types; lint (ESLint, Prettier, `scripts/prosecheck.mjs` and `scripts/linecap.mjs`); unit tests |
 | 6 | `pnpm build` | the production frontend bundle builds |
 | 7 | `pnpm e2e:screenshots` | the dock renders in mock mode (screenshots in `e2e/output/`) |
 | 8 | GitHub Actions `windows` job | `pnpm tauri build` links and bundles on Windows |

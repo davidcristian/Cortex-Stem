@@ -1,0 +1,20 @@
+# Not ours to format (Rust, docs, CI, Cargo config).
+crates/
+src-tauri/
+docs/
+scripts/
+.github/
+.cargo/
+*.md
+Cargo.toml
+Cargo.lock
+
+# Generated / build output.
+node_modules/
+dist/
+target/
+src/lib/ipc/generated/
+pnpm-lock.yaml
+e2e/output/
+playwright-report/
+test-results/

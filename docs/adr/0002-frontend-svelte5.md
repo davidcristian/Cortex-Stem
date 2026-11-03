@@ -14,7 +14,7 @@ plain TypeScript (no help with reactivity, more code for the settings UI).
 
 ## Decision
 
-Svelte 5 with runes, TypeScript in strict mode, Vite 7, two pages
+Svelte 5 with runes, TypeScript in strict mode, Vite 8, two pages
 (`dock.html`, `settings.html`). Vitest for unit tests, Playwright for
 screenshots, ESLint and Prettier. No component libraries.
 
@@ -22,7 +22,8 @@ screenshots, ESLint and Prettier. No component libraries.
 
 - The compiled output is small, and animation written in CSS fits the
   framework.
-- Components use runes syntax (`$state`, `$derived`, `$props`), and
-  Svelte 4 syntax is a lint error. `AGENTS.md` states this rule.
+- Components use runes syntax (`$state`, `$derived`, `$props`).
+  `svelte.config.js` compiles in runes mode, and Svelte 4 syntax
+  (`export let`, `$:`) is a lint error (`eslint.config.js`).
 - Types that cross IPC are generated from Rust with ts-rs into
   `src/lib/ipc/generated/`; there are no hand-written copies.

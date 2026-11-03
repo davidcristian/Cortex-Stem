@@ -4,8 +4,9 @@ These rules apply to the Svelte 5 and TypeScript frontend in `src/`
 ([AGENTS.md §7](../../AGENTS.md#7-frontend-rules-src)).
 
 - Svelte 5 **runes** (`$state`, `$derived`, `$effect`, `$props`); no legacy `export let` or `$:`
-  syntax.
-- TypeScript strict. No `any` without a comment that says why.
+  syntax (`svelte.config.js` sets `runes: true`).
+- TypeScript strict. ESLint's `no-explicit-any` fails on every `any`, so each one needs an
+  `eslint-disable` comment that says why.
 - All backend access goes through `src/lib/ipc/backend.ts` (the `Backend` interface).
   `MockBackend` implements every method; it is what runs in the browser and in Playwright.
 - Types that cross IPC are imported from `src/lib/ipc/generated/` (exported by `stem-core` through
