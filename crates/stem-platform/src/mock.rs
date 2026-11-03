@@ -12,7 +12,8 @@ use stem_core::{
 };
 
 use crate::{
-    DockWindowOptions, EventSink, NativeWindowHandle, Platform, PlatformError, PlatformResult,
+    DockWindowOptions, EventSink, HitRegion, NativeWindowHandle, Platform, PlatformError,
+    PlatformResult,
 };
 
 #[derive(Default)]
@@ -48,6 +49,7 @@ pub enum MockCall {
     Launch(LaunchTarget),
     Shell(ShellAction),
     PrepareDockWindow(NativeWindowHandle, DockWindowOptions),
+    SetDockHitRegion(NativeWindowHandle, Option<HitRegion>),
 }
 
 #[derive(Debug, Default)]
@@ -277,6 +279,16 @@ impl Platform for MockPlatform {
         options: DockWindowOptions,
     ) -> PlatformResult<()> {
         self.record(MockCall::PrepareDockWindow(handle, options));
+        Ok(())
+    }
+
+    /// Recorded only: a browser or a mock run has no OS hit-testing.
+    fn set_dock_hit_region(
+        &self,
+        handle: NativeWindowHandle,
+        region: Option<HitRegion>,
+    ) -> PlatformResult<()> {
+        self.record(MockCall::SetDockHitRegion(handle, region));
         Ok(())
     }
 }

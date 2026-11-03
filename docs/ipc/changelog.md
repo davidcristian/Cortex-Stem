@@ -3,6 +3,9 @@
 This file lists every version of the [IPC contract](index.md), newest first. A section name links
 to the file that covers that section now.
 
+- **v1.3 (hit region):** `set_dock_hit_region` added. The [Sizing protocol](sizing-protocol.md)
+  now gives the dock window the work area's full width, so item animations never resize it
+  (`set_dock_content_size` keeps its signature; `width` is informational).
 - **v1.2 (native context menus):** `show_item_menu` and `show_dock_menu` move from planned to
   required. The [Context menus](context-menus.md) section defines the coordinate space and the
   menu contents. `set_dock_hover` stays planned.

@@ -12,6 +12,7 @@ import type { DockState } from '$lib/ipc/generated/DockState';
 import type { IconKey } from '$lib/ipc/generated/IconKey';
 import type { LaunchTarget } from '$lib/ipc/generated/LaunchTarget';
 import type { MonitorInfo } from '$lib/ipc/generated/MonitorInfo';
+import type { Rect } from '$lib/ipc/generated/Rect';
 import type { Settings } from '$lib/ipc/generated/Settings';
 import type { ShellAction } from '$lib/ipc/generated/ShellAction';
 import type { ThemeInfo } from '$lib/ipc/generated/ThemeInfo';
@@ -19,6 +20,18 @@ import type { WindowAction } from '$lib/ipc/generated/WindowAction';
 import type { WindowId } from '$lib/ipc/generated/WindowId';
 
 import type { Backend, BackendEvent, BackendEvents, EventHandler, Unsubscribe } from './backend';
+
+/** Round a rect outwards to whole CSS pixels (left/top down, right/bottom up). */
+export function integerRect(rect: Rect): Rect {
+  const x = Math.floor(rect.x);
+  const y = Math.floor(rect.y);
+  return {
+    x,
+    y,
+    width: Math.max(0, Math.ceil(rect.x + rect.width) - x),
+    height: Math.max(0, Math.ceil(rect.y + rect.height) - y),
+  };
+}
 
 export class TauriBackend implements Backend {
   getDockState(): Promise<DockState> {
@@ -76,6 +89,14 @@ export class TauriBackend implements Backend {
 
   setDockContentSize(width: number, height: number): Promise<void> {
     return invoke<void>('set_dock_content_size', { width, height });
+  }
+
+  setDockHitRegion(panel: Rect, envelope: Rect): Promise<void> {
+    // `Rect` fields are `i32` on the Rust side.
+    return invoke<void>('set_dock_hit_region', {
+      panel: integerRect(panel),
+      envelope: integerRect(envelope),
+    });
   }
 
   shellAction(action: ShellAction): Promise<void> {

@@ -25,6 +25,7 @@ import type { LaunchTarget } from '$lib/ipc/generated/LaunchTarget';
 import type { MonitorInfo } from '$lib/ipc/generated/MonitorInfo';
 import type { PinnedApp } from '$lib/ipc/generated/PinnedApp';
 import type { RawWindow } from '$lib/ipc/generated/RawWindow';
+import type { Rect } from '$lib/ipc/generated/Rect';
 import type { RecycleBinState } from '$lib/ipc/generated/RecycleBinState';
 import type { Settings } from '$lib/ipc/generated/Settings';
 import type { ShellAction } from '$lib/ipc/generated/ShellAction';
@@ -66,6 +67,7 @@ export type MockCall =
   | { type: 'launch'; target: LaunchTarget }
   | { type: 'shell'; action: ShellAction }
   | { type: 'setDockContentSize'; width: number; height: number }
+  | { type: 'setDockHitRegion'; panel: Rect; envelope: Rect }
   | { type: 'showItemMenu'; itemKey: string; x: number; y: number }
   | { type: 'showDockMenu'; x: number; y: number }
   | { type: 'openSettings' }
@@ -946,6 +948,17 @@ export class MockBackend implements Backend {
     return this.command(() => {
       this.record({ type: 'setDockContentSize', width, height });
       this.log(`set_dock_content_size(${Math.round(width)} × ${Math.round(height)})`);
+    });
+  }
+
+  /** `set_dock_hit_region`: a browser has no OS hit-testing; recorded and logged. */
+  setDockHitRegion(panel: Rect, envelope: Rect): Promise<void> {
+    return this.command(() => {
+      this.record({ type: 'setDockHitRegion', panel: { ...panel }, envelope: { ...envelope } });
+      this.log(
+        `set_dock_hit_region(panel ${panel.width}×${panel.height} at ${panel.x},${panel.y}; ` +
+          `envelope ${envelope.width}×${envelope.height} at ${envelope.x},${envelope.y})`,
+      );
     });
   }
 

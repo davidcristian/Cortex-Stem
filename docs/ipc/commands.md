@@ -18,7 +18,8 @@ arguments are named and how a failed command rejects.
 | `unpin_app`             | `{ appId: AppId }`                          | `void`             | |
 | `reorder_pinned`        | `{ order: AppId[] }`                        | `void`             | the new order of the pinned apps; pinned ids that are not listed keep their relative order at the end |
 | `get_icon`              | `{ iconKey: IconKey, size: number }`        | `string \| null`   | a PNG as a `data:` URL; `null` for `shell:*` keys and unknown keys |
-| `set_dock_content_size` | `{ width: number, height: number }` (CSS px)| `void`             | Rust resizes the calling window and centres it again (see [Sizing protocol](sizing-protocol.md)) |
+| `set_dock_content_size` | `{ width: number, height: number }` (CSS px)| `void`             | the UI's content size; Rust sizes the calling window (see [Sizing protocol](sizing-protocol.md)) |
+| `set_dock_hit_region`   | `{ panel: Rect, envelope: Rect }` (CSS px, window-local) | `void` | where the calling dock window accepts clicks (see [Hit region](hit-region.md)) |
 | `shell_action`          | `{ action: ShellAction }`                   | `void`             | runs a shell action directly (menus, the Recycle Bin's "Empty") |
 | `open_settings`         | none                                        | `void`             | opens the settings window, or focuses it if it is already open |
 | `reset_settings`        | none                                        | `Settings`         | restores and persists the defaults; emits `dock://settings` |

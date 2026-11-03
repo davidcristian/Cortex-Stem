@@ -20,7 +20,7 @@ use std::fmt::{Debug, Display};
 
 use base64::Engine as _;
 use stem_core::{
-    AppId, DockState, IconKey, LaunchTarget, MonitorInfo, Settings, ShellAction, ThemeInfo,
+    AppId, DockState, IconKey, LaunchTarget, MonitorInfo, Rect, Settings, ShellAction, ThemeInfo,
     WindowAction, WindowId,
 };
 use tauri::{AppHandle, State};
@@ -57,6 +57,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         reorder_pinned,
         get_icon,
         set_dock_content_size,
+        set_dock_hit_region,
         shell_action,
         open_settings,
         reset_settings,
@@ -199,6 +200,36 @@ fn set_dock_content_size(
         "set_dock_content_size",
         &args,
         crate::windows::apply_content_size(&app, &window, width, height),
+    )
+}
+
+/// The dock UI reports where it accepts clicks (CSS px, window-local; see
+/// `docs/ipc/hit-region.md`). Only a dock window may call it; the rects
+/// must have non-negative sizes and `envelope` must contain `panel`.
+/// Synchronous: it reads the window's scale factor on the main thread and
+/// the platform call only hands the region to its tracking thread.
+#[tauri::command]
+fn set_dock_hit_region(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    panel: Rect,
+    envelope: Rect,
+) -> CmdResult<()> {
+    let args = (window.label().to_owned(), panel, envelope);
+    if !window.label().starts_with(crate::windows::DOCK_LABEL) {
+        return checked(
+            "set_dock_hit_region",
+            &args,
+            Err::<(), _>("only dock windows have a hit region"),
+        );
+    }
+    if let Err(e) = crate::windows::validate_hit_region(panel, envelope) {
+        return checked("set_dock_hit_region", &args, Err::<(), _>(e));
+    }
+    checked(
+        "set_dock_hit_region",
+        &args,
+        crate::windows::apply_hit_region(&app, &window, panel, envelope),
     )
 }
 

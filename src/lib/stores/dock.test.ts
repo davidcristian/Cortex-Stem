@@ -86,6 +86,7 @@ class FakeBackend implements Backend {
   }
 
   async setDockContentSize(): Promise<void> {}
+  async setDockHitRegion(): Promise<void> {}
   async shellAction(): Promise<void> {}
   async openSettings(): Promise<void> {}
   async resetSettings(): Promise<Settings> {

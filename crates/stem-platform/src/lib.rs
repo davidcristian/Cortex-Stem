@@ -75,6 +75,21 @@ impl Default for DockWindowOptions {
     }
 }
 
+/// Where a dock window accepts mouse input. Both rectangles are in
+/// **physical pixels, relative to the window's client area**.
+///
+/// The window becomes clickable when the cursor enters `panel` (the visible
+/// dock panel) and click-through again only once the cursor has left
+/// `envelope` (the panel plus everything magnification can lift above it),
+/// so an icon that grew past the panel's edge stays clickable. `envelope`
+/// contains `panel`; the implementation may treat a smaller envelope as
+/// equal to the panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HitRegion {
+    pub panel: Rect,
+    pub envelope: Rect,
+}
+
 /// The OS seam. Every method is synchronous and may be called from any
 /// thread; implementations must be internally thread-safe and must not block
 /// for long (bounded timeouts, see `docs/development/windows-rules.md`).
@@ -126,13 +141,15 @@ pub trait Platform: Send + Sync + 'static {
         options: DockWindowOptions,
     ) -> PlatformResult<()>;
 
-    /// Restrict mouse hit-testing of a dock window to `region` (window-local
-    /// physical pixels); clicks outside fall through to whatever is beneath.
-    /// `None` restores normal hit-testing. Optional (M3).
+    /// Restrict mouse hit-testing of a dock window to `region` (see
+    /// [`HitRegion`]); clicks outside fall through to whatever is beneath.
+    /// `None` restores normal hit-testing (the whole window is clickable).
+    /// Must return quickly: the tracking itself happens on a thread owned by
+    /// the platform. Optional; the default reports it unsupported.
     fn set_dock_hit_region(
         &self,
         _handle: NativeWindowHandle,
-        _region: Option<Rect>,
+        _region: Option<HitRegion>,
     ) -> PlatformResult<()> {
         Err(PlatformError::Unsupported("click-through"))
     }

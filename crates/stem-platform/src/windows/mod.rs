@@ -35,12 +35,13 @@ pub mod util;
 
 use parking_lot::Mutex;
 use stem_core::{
-    AppIdentity, IconKey, LaunchTarget, MonitorInfo, RawWindow, Rect, RecycleBinState, ShellAction,
+    AppIdentity, IconKey, LaunchTarget, MonitorInfo, RawWindow, RecycleBinState, ShellAction,
     ThemeInfo, WindowAction, WindowId,
 };
 
 use crate::{
-    DockWindowOptions, EventSink, NativeWindowHandle, Platform, PlatformError, PlatformResult,
+    DockWindowOptions, EventSink, HitRegion, NativeWindowHandle, Platform, PlatformError,
+    PlatformResult,
 };
 
 /// The real platform. Cheap to construct; `start` spins up the event thread.
@@ -136,7 +137,7 @@ impl Platform for WindowsPlatform {
     fn set_dock_hit_region(
         &self,
         handle: NativeWindowHandle,
-        region: Option<Rect>,
+        region: Option<HitRegion>,
     ) -> PlatformResult<()> {
         dock_window::set_hit_region(handle, region)
     }

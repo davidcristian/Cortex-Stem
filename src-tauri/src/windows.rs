@@ -19,7 +19,7 @@
 
 use parking_lot::Mutex;
 use stem_core::{MonitorInfo, Rect};
-use stem_platform::{DockWindowOptions, NativeWindowHandle};
+use stem_platform::{DockWindowOptions, HitRegion, NativeWindowHandle, PlatformError};
 use stem_service::DockService;
 use tauri::{
     AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow,
@@ -154,6 +154,89 @@ pub fn apply_content_size(
         None => Vec::new(),
     };
     layout(window, &monitors, width, height)
+}
+
+/// Argument check for `set_dock_hit_region` (`docs/ipc/hit-region.md`):
+/// non-negative sizes, and the envelope contains the panel. Pure.
+pub fn validate_hit_region(panel: Rect, envelope: Rect) -> Result<(), String> {
+    for (name, rect) in [("panel", panel), ("envelope", envelope)] {
+        if rect.width < 0 || rect.height < 0 {
+            return Err(format!("{name} has a negative size: {rect:?}"));
+        }
+    }
+    let contains = envelope.x <= panel.x
+        && envelope.y <= panel.y
+        && envelope.right() >= panel.right()
+        && envelope.bottom() >= panel.bottom();
+    if !contains {
+        return Err(format!(
+            "envelope {envelope:?} does not contain panel {panel:?}"
+        ));
+    }
+    Ok(())
+}
+
+/// Hand the UI's hit region (CSS px, window-local) to the platform in
+/// physical pixels. A platform without the feature (mock, non-Windows
+/// hosts) leaves the window fully clickable; that is logged once at debug
+/// and is not an error for the UI. Runs on the main thread.
+pub fn apply_hit_region(
+    app: &AppHandle,
+    window: &WebviewWindow,
+    panel: Rect,
+    envelope: Rect,
+) -> Result<(), String> {
+    let service = app
+        .try_state::<crate::AppService>()
+        .ok_or_else(|| "service not available".to_owned())?;
+    let Some(handle) = native_handle(window) else {
+        log::debug!("hit region ignored: no native window handle on this host");
+        return Ok(());
+    };
+    let scale = window.scale_factor().map_err(|e| e.to_string())?;
+    let region = HitRegion {
+        panel: scale_rect(panel, scale),
+        envelope: scale_rect(envelope, scale),
+    };
+    match service
+        .0
+        .platform()
+        .set_dock_hit_region(handle, Some(region))
+    {
+        Ok(()) => {
+            log::trace!("hit region of {:?}: {region:?}", window.label());
+            Ok(())
+        }
+        Err(PlatformError::Unsupported(task)) => {
+            static LOGGED: std::sync::Once = std::sync::Once::new();
+            LOGGED.call_once(|| {
+                log::debug!("hit regions are not supported by this platform (feature: {task})");
+            });
+            Ok(())
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// CSS px → physical px, rounded outwards (left/top down, right/bottom up)
+/// so a region never loses an edge pixel to rounding. Pure.
+pub fn scale_rect(rect: Rect, scale: f64) -> Rect {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    let left = (f64::from(rect.x) * scale).floor();
+    let top = (f64::from(rect.y) * scale).floor();
+    let right = (f64::from(rect.right()) * scale).ceil();
+    let bottom = (f64::from(rect.bottom()) * scale).ceil();
+    let clamp = |v: f64| v.clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
+    Rect::new(
+        clamp(left),
+        clamp(top),
+        clamp(right - left),
+        clamp(bottom - top),
+    )
 }
 
 /// The service reported a new monitor list (startup, hot-plug, resolution
@@ -341,6 +424,43 @@ mod tests {
         );
         // Fractional results round to the nearest pixel.
         assert_eq!(plan_dock_rect(wa, 1.25, 641.0, 97.0).width, 801);
+    }
+
+    #[test]
+    fn scale_rect_rounds_outwards() {
+        // 150 %: 10..=20 css → 15..=30 physical exactly.
+        assert_eq!(
+            scale_rect(Rect::new(10, 10, 10, 10), 1.5),
+            Rect::new(15, 15, 15, 15)
+        );
+        // 125 %: left 11*1.25=13.75 → 13; right 21*1.25=26.25 → 27.
+        assert_eq!(
+            scale_rect(Rect::new(11, 0, 10, 8), 1.25),
+            Rect::new(13, 0, 14, 10)
+        );
+        // A bad scale factor means "as is".
+        assert_eq!(
+            scale_rect(Rect::new(1, 2, 3, 4), f64::NAN),
+            Rect::new(1, 2, 3, 4)
+        );
+        assert_eq!(
+            scale_rect(Rect::new(1, 2, 3, 4), 0.0),
+            Rect::new(1, 2, 3, 4)
+        );
+    }
+
+    #[test]
+    fn validate_hit_region_requires_containment_and_sizes() {
+        let panel = Rect::new(100, 40, 400, 60);
+        assert_eq!(
+            validate_hit_region(panel, Rect::new(80, 0, 440, 100)),
+            Ok(())
+        );
+        assert_eq!(validate_hit_region(panel, panel), Ok(()));
+        assert!(validate_hit_region(panel, Rect::new(120, 0, 440, 100)).is_err());
+        assert!(validate_hit_region(panel, Rect::new(80, 0, 440, 90)).is_err());
+        assert!(validate_hit_region(Rect::new(0, 0, -1, 10), Rect::new(0, 0, 10, 10)).is_err());
+        assert!(validate_hit_region(Rect::new(0, 0, 1, 1), Rect::new(0, 0, 10, -10)).is_err());
     }
 
     #[test]

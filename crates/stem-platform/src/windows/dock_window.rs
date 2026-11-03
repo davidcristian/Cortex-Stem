@@ -20,7 +20,7 @@
 //!   or activation change) so the new styles apply even if the window was
 //!   already shown.
 
-use stem_core::{Rect, WindowId};
+use stem_core::WindowId;
 use windows::Win32::Foundation::{GetLastError, HWND, LPARAM, SetLastError, WIN32_ERROR, WPARAM};
 use windows::Win32::Graphics::Dwm::{
     DWM_WINDOW_CORNER_PREFERENCE, DWMNCRENDERINGPOLICY, DWMNCRP_DISABLED, DWMWA_NCRENDERING_POLICY,
@@ -32,7 +32,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SetWindowPos, WINDOW_EX_STYLE, WM_NULL, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
 };
 
-use crate::{DockWindowOptions, NativeWindowHandle, PlatformError, PlatformResult};
+use crate::{DockWindowOptions, HitRegion, NativeWindowHandle, PlatformError, PlatformResult};
 
 pub fn prepare(handle: NativeWindowHandle, options: DockWindowOptions) -> PlatformResult<()> {
     let hwnd = HWND(handle.0 as *mut core::ffi::c_void);
@@ -86,7 +86,10 @@ pub fn prepare(handle: NativeWindowHandle, options: DockWindowOptions) -> Platfo
     Ok(())
 }
 
-pub fn set_hit_region(_handle: NativeWindowHandle, _region: Option<Rect>) -> PlatformResult<()> {
+pub fn set_hit_region(
+    _handle: NativeWindowHandle,
+    _region: Option<HitRegion>,
+) -> PlatformResult<()> {
     Err(PlatformError::Unsupported("click-through"))
 }
 

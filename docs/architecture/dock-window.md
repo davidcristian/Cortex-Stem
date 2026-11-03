@@ -1,7 +1,7 @@
 # The dock window
 
-This file describes the dock's native window: its flags and focus. The other parts of the
-dock window are described in:
+This file describes the dock's native window: its flags and focus, and click-through outside
+the panel. The other parts of the dock window are described in:
 
 - [dock-placement.md](dock-placement.md): position and size, and one window per monitor.
 
@@ -17,5 +17,10 @@ positioned.
 
 Clicking the dock must not take the focus from the active app.
 
-The whole window takes the pointer, including the transparent headroom
-above the panel, so clicks there do not reach the windows below.
+## Click-through outside the panel
+
+The UI reports the panel and the envelope, the area that magnified icons
+can reach (`set_dock_hit_region`). The platform tracks the cursor on its own
+thread and toggles `WS_EX_LAYERED | WS_EX_TRANSPARENT` with hysteresis
+([`docs/ipc/hit-region.md`](../ipc/hit-region.md)). The platform's window
+subclass keeps Stem's extended styles across tao's own style rewrites.

@@ -1,5 +1,5 @@
 /**
- * The frontend's only door to the Rust side (docs/ipc/, contract v1.2).
+ * The frontend's only door to the Rust side (docs/ipc/, contract v1.3).
  *
  * One method per command and one `on` subscription per event. Components
  * never call `invoke`/`listen` themselves (AGENTS.md §4); they talk to a
@@ -12,6 +12,7 @@ import type { DockState } from '$lib/ipc/generated/DockState';
 import type { IconKey } from '$lib/ipc/generated/IconKey';
 import type { LaunchTarget } from '$lib/ipc/generated/LaunchTarget';
 import type { MonitorInfo } from '$lib/ipc/generated/MonitorInfo';
+import type { Rect } from '$lib/ipc/generated/Rect';
 import type { Settings } from '$lib/ipc/generated/Settings';
 import type { ShellAction } from '$lib/ipc/generated/ShellAction';
 import type { ThemeInfo } from '$lib/ipc/generated/ThemeInfo';
@@ -49,7 +50,7 @@ export type EventHandler<E extends BackendEvent> = (payload: BackendEvents[E]) =
 export type Unsubscribe = () => void;
 
 /**
- * Commands and events of docs/ipc/ v1.2. Method names are the command
+ * Commands and events of docs/ipc/ v1.3. Method names are the command
  * names in camelCase; argument order follows the command's argument list.
  *
  * Failed commands reject with a `string` (the Rust error message).
@@ -73,8 +74,15 @@ export interface Backend {
   reorderPinned(order: AppId[]): Promise<void>;
   /** PNG `data:` URL, or `null` for `shell:*` keys and unknown keys. */
   getIcon(iconKey: IconKey, size: number): Promise<string | null>;
-  /** CSS pixels; Rust resizes and re-centres the calling window. */
+  /** CSS pixels; Rust sizes the calling window (docs/ipc/sizing-protocol.md). */
   setDockContentSize(width: number, height: number): Promise<void>;
+  /**
+   * Where the calling dock window accepts clicks (docs/ipc/hit-region.md):
+   * integer CSS px relative to the viewport; `envelope` contains `panel`.
+   * Outside `panel` the window is click-through until the pointer enters it;
+   * it stays clickable until the pointer leaves `envelope`.
+   */
+  setDockHitRegion(panel: Rect, envelope: Rect): Promise<void>;
   /** Run a shell action directly (menus, Recycle Bin "Empty"). */
   shellAction(action: ShellAction): Promise<void>;
   /** Open the settings window, or focus it if it is already open. */

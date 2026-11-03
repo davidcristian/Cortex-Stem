@@ -15,7 +15,8 @@ the records in `docs/adr/` give the reasons for the main decisions.
   which work runs where.
 - [identity.md](identity.md): how windows and pins are grouped into apps.
 - [icons.md](icons.md): how icons are loaded and cached.
-- [dock-window.md](dock-window.md): the dock's native window, its flags and focus.
+- [dock-window.md](dock-window.md): the dock's native window, its flags and focus,
+  and click-through outside the panel.
 - [dock-placement.md](dock-placement.md): where the dock window is placed.
 - [settings.md](settings.md): how settings are stored.
 - [error-handling.md](error-handling.md): the error type of each layer.
