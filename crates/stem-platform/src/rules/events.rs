@@ -13,14 +13,22 @@
 //!
 //! | Source     | Event                                                     | Intent         | Emitted as |
 //! |------------|-----------------------------------------------------------|----------------|------------|
-//! | WinEvent   | `EVENT_OBJECT_CREATE`, `EVENT_OBJECT_SHOW`                | `Added`        | `WindowAdded` when `query_window` says eligible (`WindowUpdated` if already known) |
-//! | WinEvent   | `EVENT_OBJECT_DESTROY`, `EVENT_OBJECT_HIDE`               | `Removed`      | `WindowRemoved` when the window was known |
+//! | WinEvent   | `EVENT_OBJECT_CREATE`, `EVENT_OBJECT_SHOW`                | `Added`        | `WindowAdded` when `query_window_checked` says eligible (`WindowUpdated` if already known); re-checks when it is only not ready yet |
+//! | WinEvent   | `EVENT_OBJECT_DESTROY`, `EVENT_OBJECT_HIDE`               | `Removed`      | `WindowRemoved` when the window was known; a destroy also drops its pending re-checks |
 //! | WinEvent   | `EVENT_OBJECT_NAMECHANGE`                                 | `TitleChanged` | `WindowUpdated` after the [`TitleDebouncer`] window (≤ 50 ms) |
 //! | WinEvent   | `EVENT_SYSTEM_MINIMIZESTART`, `EVENT_SYSTEM_MINIMIZEEND`, `EVENT_OBJECT_CLOAKED`, `EVENT_OBJECT_UNCLOAKED` | `Updated` | `WindowUpdated` (or `WindowRemoved` when no longer eligible) |
 //! | WinEvent   | `EVENT_SYSTEM_FOREGROUND`                                 | `Foreground`   | `ForegroundChanged` |
+//! | Shell hook | `HSHELL_WINDOWCREATED`                                    | `Added`        | as for `EVENT_OBJECT_SHOW` |
 //! | Shell hook | `HSHELL_WINDOWACTIVATED`, `HSHELL_RUDEAPPACTIVATED`       | `Foreground`   | `ForegroundChanged` |
 //! | Shell hook | `HSHELL_FLASH`                                            | `Attention`    | `WindowAttention { flashing: true }` |
 //! | any        | anything else                                             | `Ignore`       | — |
+//!
+//! `Added` from either source is a *show-type* event: when it finds the
+//! window rejected only because it is not visible or cloaked yet, the window
+//! is queried again later (`rules::recheck`). `HSHELL_WINDOWCREATED`
+//! (documented for a new top-level, unowned window) reaches us on a path of
+//! its own, so it is one more chance to judge a window whose create/show
+//! WinEvents were evaluated too early.
 //!
 //! The constants mirror `winuser.h`; `windows/events.rs` asserts at compile
 //! time that they equal the SDK values from the `windows` crate.
@@ -43,6 +51,7 @@ pub const OBJID_WINDOW: i32 = 0;
 /// `idChild` value for the object itself (not one of its children).
 pub const CHILDID_SELF: i32 = 0;
 
+pub const HSHELL_WINDOWCREATED: u32 = 1;
 pub const HSHELL_WINDOWACTIVATED: u32 = 4;
 pub const HSHELL_REDRAW: u32 = 6;
 /// Set on `HSHELL_RUDEAPPACTIVATED` and `HSHELL_FLASH`.
@@ -63,7 +72,8 @@ pub const HOOK_RANGES: &[(u32, u32)] = &[
 /// What the event thread should do about an OS event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Intent {
-    /// Query the window; emit `WindowAdded` if it qualifies.
+    /// Query the window; emit `WindowAdded` if it qualifies. A show-type
+    /// event: a transient rejection schedules re-checks (`rules::recheck`).
     Added,
     /// Emit `WindowRemoved` if the window was known.
     Removed,
@@ -105,6 +115,23 @@ pub fn event_intent(event: u32) -> Intent {
     }
 }
 
+/// The name of a hooked event, for log lines.
+pub fn event_name(event: u32) -> &'static str {
+    match event {
+        EVENT_SYSTEM_FOREGROUND => "EVENT_SYSTEM_FOREGROUND",
+        EVENT_SYSTEM_MINIMIZESTART => "EVENT_SYSTEM_MINIMIZESTART",
+        EVENT_SYSTEM_MINIMIZEEND => "EVENT_SYSTEM_MINIMIZEEND",
+        EVENT_OBJECT_CREATE => "EVENT_OBJECT_CREATE",
+        EVENT_OBJECT_DESTROY => "EVENT_OBJECT_DESTROY",
+        EVENT_OBJECT_SHOW => "EVENT_OBJECT_SHOW",
+        EVENT_OBJECT_HIDE => "EVENT_OBJECT_HIDE",
+        EVENT_OBJECT_NAMECHANGE => "EVENT_OBJECT_NAMECHANGE",
+        EVENT_OBJECT_CLOAKED => "EVENT_OBJECT_CLOAKED",
+        EVENT_OBJECT_UNCLOAKED => "EVENT_OBJECT_UNCLOAKED",
+        _ => "an unhooked event",
+    }
+}
+
 /// Filter + translate a `WINEVENTPROC` callback. Returns [`Intent::Ignore`]
 /// for anything that is not about a top-level window as a whole. A window
 /// whose top-level status is [`TopLevel::Unknown`] is accepted only for
@@ -124,6 +151,7 @@ pub fn win_event_intent(event: u32, id_object: i32, id_child: i32, top_level: To
 /// Translate the `wParam` of a `RegisterShellHookWindow` message.
 pub fn shell_hook_intent(code: u32) -> Intent {
     match code {
+        HSHELL_WINDOWCREATED => Intent::Added,
         HSHELL_WINDOWACTIVATED | HSHELL_RUDEAPPACTIVATED => Intent::Foreground,
         HSHELL_FLASH => Intent::Attention,
         _ => Intent::Ignore,
@@ -224,6 +252,10 @@ mod tests {
                 hooked.push(event);
             }
         }
+        for &event in &hooked {
+            assert!(event_name(event).starts_with("EVENT_"), "{event:#06x}");
+        }
+        assert_eq!(event_name(0x800B), "an unhooked event");
         hooked.sort_unstable();
         hooked.dedup();
         assert_eq!(
@@ -317,8 +349,10 @@ mod tests {
         assert_eq!(shell_hook_intent(HSHELL_FLASH), Intent::Attention);
         // Plain HSHELL_REDRAW (title/icon repaint) is not a flash.
         assert_eq!(shell_hook_intent(HSHELL_REDRAW), Intent::Ignore);
-        // HSHELL_WINDOWCREATED / DESTROYED are covered by WinEvents.
-        assert_eq!(shell_hook_intent(1), Intent::Ignore);
+        // A new taskbar window is a show-type event.
+        assert_eq!(HSHELL_WINDOWCREATED, 1);
+        assert_eq!(shell_hook_intent(HSHELL_WINDOWCREATED), Intent::Added);
+        // HSHELL_WINDOWDESTROYED is covered by EVENT_OBJECT_DESTROY.
         assert_eq!(shell_hook_intent(2), Intent::Ignore);
         assert_eq!(shell_hook_intent(0), Intent::Ignore);
     }
