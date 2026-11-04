@@ -10,7 +10,6 @@ how a page listens.
 | `dock://theme`       | `ThemeInfo`                     | at start, and when the OS theme or accent colour changes      |
 | `dock://monitors`    | `MonitorInfo[]`                 | at start, and when the display topology changes               |
 | `dock://item-bounce` | `{ itemKey: string }`           | an app was launched from the dock; the page plays the bounce  |
-| `dock://visibility`  | `{ visible: boolean, reason: "autoHide" \| "fullscreen" \| "user" }` | planned: auto-hide showed or hid the dock |
 
 ## Startup sequence (UI side)
 

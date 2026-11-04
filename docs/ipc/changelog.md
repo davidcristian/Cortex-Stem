@@ -3,6 +3,9 @@
 This file lists every version of the [IPC contract](index.md), newest first. A section name links
 to the file that covers that section now.
 
+- **v1.6 (auto-hide):** The planned `dock://visibility` event is dropped: ADR-0008 keeps
+  auto-hide in the UI, which reveals the dock through the hit region (a 2 px strip while hidden).
+  The [Hit region](hit-region.md) section is updated; no command or payload changed.
 - **v1.5 (autostart and toggle shortcut):** `Settings.behavior.toggleShortcut` added (settings
   payload only, no new command or event), and `Settings.system.autostart` is now applied; both
   are described in [Settings the app shell applies](app-shell-settings.md).

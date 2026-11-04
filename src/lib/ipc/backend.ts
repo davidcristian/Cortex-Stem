@@ -24,14 +24,6 @@ export interface BouncePayload {
   itemKey: string;
 }
 
-export type VisibilityReason = 'autoHide' | 'fullscreen' | 'user';
-
-/** Payload of `dock://visibility` (M2). */
-export interface VisibilityPayload {
-  visible: boolean;
-  reason: VisibilityReason;
-}
-
 /** Event name → payload, exactly as docs/ipc/events.md lists them. */
 export interface BackendEvents {
   'dock://state': DockState;
@@ -39,7 +31,6 @@ export interface BackendEvents {
   'dock://theme': ThemeInfo;
   'dock://monitors': MonitorInfo[];
   'dock://item-bounce': BouncePayload;
-  'dock://visibility': VisibilityPayload;
 }
 
 export type BackendEvent = keyof BackendEvents;
