@@ -28,6 +28,9 @@ interface DemoWindow {
     failNextCommand: (message: string) => void;
     simulateFileDrag: (event: FileDrag) => void;
     pinTarget: (target: unknown) => Promise<string>;
+    deleteToRecycleBin: (paths: string[]) => Promise<void>;
+    /** `RecycleBinChanged` as the platform's poll reports it. */
+    pushRecycleBin: (state: { itemCount: number; sizeBytes: number }) => void;
     getSettings: () => Promise<Settings>;
     updateSettings: (settings: Settings) => Promise<Settings>;
     pushWindow: (raw: RawWindow) => void;
@@ -1420,6 +1423,181 @@ test.describe('drop files on the dock to pin', () => {
       orders: [[ids[0], idOf(EXE), ...ids.slice(1)]],
     });
     await expect(page.locator(GAP)).toHaveCount(0);
+  });
+});
+
+test.describe('drop files on the Recycle Bin', () => {
+  const BIN = '.slot[data-kind="recycleBin"]';
+  const PINNED = '.slot[data-pinned="true"]';
+  const GAP = '.drop-gap';
+  /** The bin's lid only tilts on the full icon (ShellIcon.svelte). */
+  const FULL_LID = `${BIN} svg g[transform*="rotate"]`;
+  const TXT = 'C:\\Users\\me\\Desktop\\notes.txt';
+  const FOLDER = 'C:\\Users\\me\\Desktop\\Old photos';
+  const EXE = 'C:\\Tools\\PuTTY\\putty.exe';
+  const idOf = (path: string): string => `exe:${path.replace(/\\/g, '/').toLowerCase()}`;
+  const SLOT = ICON + SLOT_GAP;
+
+  const pinnedKeys = (page: Page): Promise<string[]> =>
+    page.$$eval(PINNED, (els) => els.map((el) => (el as HTMLElement).dataset.key ?? ''));
+
+  /** The paths of every `delete_to_recycle_bin` the UI sent, oldest first. */
+  function recycleRequests(page: Page): Promise<unknown[]> {
+    return page.evaluate(() =>
+      ((window as unknown as DemoWindow).__dockMock?.calls ?? [])
+        .filter((c) => c.type === 'deleteToRecycleBin')
+        .map((c) => c.paths),
+    );
+  }
+
+  function emptyTheBin(page: Page): Promise<void> {
+    return page.evaluate(() => {
+      (window as unknown as DemoWindow).__dockMock?.pushRecycleBin({ itemCount: 0, sizeBytes: 0 });
+    });
+  }
+
+  /** The centre of what `selector` matches, where it is drawn now. */
+  async function centreOf(page: Page, selector: string): Promise<{ x: number; y: number }> {
+    const box = (await page.locator(selector).boundingBox())!;
+    return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  }
+
+  /** Halfway between the centres of pinned items `a` and `b`. */
+  async function between(page: Page, a: number, b: number): Promise<{ x: number; y: number }> {
+    const boxA = (await page.locator(PINNED).nth(a).boundingBox())!;
+    const boxB = (await page.locator(PINNED).nth(b).boundingBox())!;
+    return {
+      x: (boxA.x + boxA.width / 2 + boxB.x + boxB.width / 2) / 2,
+      y: boxA.y + boxA.height / 2,
+    };
+  }
+
+  const highlighted = (page: Page): Promise<string[]> =>
+    page.$$eval('.slot[data-drop-target]', (els) =>
+      els.map((el) => (el as HTMLElement).dataset.key ?? ''),
+    );
+
+  test('a drag over the bin highlights it and opens no gap; the drop recycles every path and pins nothing', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openDock(page);
+    await emptyTheBin(page);
+    await expect(page.locator(FULL_LID)).toHaveCount(0);
+    const before = await pinnedKeys(page);
+    const slot = (await page.locator(BIN).boundingBox())!;
+    const at = await centreOf(page, BIN);
+    // A document, a folder and a program: the bin takes them all.
+    const paths = [TXT, FOLDER, EXE];
+
+    await fileDrag(page, { type: 'enter', paths, position: at });
+    await expect.poll(() => highlighted(page)).toEqual(['fixed:recycle-bin']);
+    await fileDrag(page, { type: 'over', position: { x: at.x + 4, y: at.y - 3 } });
+    // Highlighted like a hovered item: the title pill, the icon a little larger.
+    await expect(page.locator(`${BIN} .tooltip`)).toHaveText('Recycle Bin');
+    await expect
+      .poll(async () => (await page.locator(`${BIN} .bouncer`).boundingBox())?.height)
+      .toBeCloseTo(ICON * 1.2, 1);
+    // It grew upwards from where it stands, like a magnified icon.
+    const grown = (await page.locator(`${BIN} .bouncer`).boundingBox())!;
+    expect(grown.y + grown.height).toBeCloseTo(slot.y + slot.height, 1);
+    // A transform only: the slot and the panel keep their size, nothing moved.
+    expect((await page.locator(BIN).boundingBox())!.width).toBe(slot.width);
+    expect((await page.locator(BIN).boundingBox())!.x).toBe(slot.x);
+    // A gap would be growing by now; there is none.
+    await page.waitForTimeout(250);
+    await expect(page.locator(GAP)).toHaveCount(0);
+    expect(await recycleRequests(page)).toEqual([]);
+    await page.screenshot({ path: `${OUT}/dock-recycle-bin-drop.png` });
+
+    await fileDrag(page, { type: 'drop', paths, position: { x: at.x + 4, y: at.y - 3 } });
+    // One request with every path as dropped; the icon turns full from the
+    // state Rust (here the mock) sends once the bin has them.
+    await expect.poll(() => recycleRequests(page)).toEqual([paths]);
+    await expect(page.locator(FULL_LID)).toHaveCount(1);
+    expect(await highlighted(page)).toEqual([]);
+    await expect(page.locator(`${BIN} .tooltip`)).toHaveCount(0);
+    // Nothing was pinned, launched or reordered, and no gap opened.
+    expect(await callsOfType(page, 'pinTarget')).toBe(0);
+    expect(await callsOfType(page, 'reorderPinned')).toBe(0);
+    expect(await callsOfType(page, 'launch')).toBe(0);
+    expect(await pinnedKeys(page)).toEqual(before);
+    await expect(page.locator(GAP)).toHaveCount(0);
+    await expect(page.getByRole('status')).toHaveCount(0);
+  });
+
+  test('the highlight follows the drag; elsewhere on the panel a program still pins', async ({
+    page,
+  }) => {
+    await openDock(page);
+    const before = await pinnedKeys(page);
+
+    // A program over the bin: the bin lights up, no gap.
+    await fileDrag(page, { type: 'enter', paths: [EXE], position: await centreOf(page, BIN) });
+    await expect.poll(() => highlighted(page)).toEqual(['fixed:recycle-bin']);
+    await expect(page.locator(GAP)).toHaveCount(0);
+
+    // Between two pinned apps: the bin goes dark and the gap opens.
+    const pinAt = await between(page, 0, 1);
+    await fileDrag(page, { type: 'over', position: pinAt });
+    await expect(page.locator(GAP)).toHaveCount(1);
+    await expect.poll(async () => (await page.locator(GAP).boundingBox())?.width).toBe(SLOT);
+    expect(await highlighted(page)).toEqual([]);
+    await expect(page.locator(`${BIN} .tooltip`)).toHaveCount(0);
+
+    // Back to the bin where the open gap pushed it: the gap closes, the bin
+    // lights up, and stays lit as the panel narrows under the pointer.
+    const binNow = await centreOf(page, BIN);
+    await fileDrag(page, { type: 'over', position: binNow });
+    await expect.poll(() => highlighted(page)).toEqual(['fixed:recycle-bin']);
+    await expect(page.locator(GAP)).toHaveCount(0);
+    for (let i = 0; i < 4; i += 1) {
+      await fileDrag(page, { type: 'over', position: binNow });
+      await page.waitForTimeout(60);
+      expect(await highlighted(page)).toEqual(['fixed:recycle-bin']);
+      await expect(page.locator(GAP)).toHaveCount(0);
+    }
+
+    // The padding past the bin counts as the bin (no gap to push it there).
+    const panel = (await page.locator('.dock-panel').boundingBox())!;
+    const padding = { x: panel.x + panel.width - 3, y: binNow.y };
+    await fileDrag(page, { type: 'over', position: padding });
+    await page.waitForTimeout(200);
+    expect(await highlighted(page)).toEqual(['fixed:recycle-bin']);
+    await expect(page.locator(GAP)).toHaveCount(0);
+
+    // The drag leaves: nothing stays highlighted.
+    await fileDrag(page, { type: 'leave' });
+    await expect.poll(() => highlighted(page)).toEqual([]);
+
+    // A drop between two pinned apps pins there and recycles nothing.
+    await fileDrag(page, { type: 'enter', paths: [EXE], position: pinAt });
+    await expect(page.locator(GAP)).toHaveCount(1);
+    await fileDrag(page, { type: 'drop', paths: [EXE], position: pinAt });
+    await expect
+      .poll(() => pinnedKeys(page))
+      .toEqual([before[0], `app:${idOf(EXE)}`, ...before.slice(1)]);
+    expect(await recycleRequests(page)).toEqual([]);
+  });
+
+  test('a refused delete is reported as a failed command', async ({ page }) => {
+    await openDock(page);
+    // The shell refuses the way a Rust error comes back (a string).
+    await page.evaluate(() => {
+      const mock = (window as unknown as DemoWindow).__dockMock!;
+      mock.deleteToRecycleBin = (paths: string[]) =>
+        Promise.reject(`${paths[0]} is open in another program`);
+    });
+    const locked = 'C:\\Users\\me\\Documents\\report.docx';
+    const at = await centreOf(page, BIN);
+    await fileDrag(page, { type: 'enter', paths: [locked], position: at });
+    await fileDrag(page, { type: 'drop', paths: [locked], position: at });
+
+    await expect(page.getByRole('status')).toHaveText(
+      `Moving report.docx to the Recycle Bin failed: ${locked} is open in another program`,
+    );
+    expect(await highlighted(page)).toEqual([]);
+    expect(await callsOfType(page, 'pinTarget')).toBe(0);
   });
 });
 
