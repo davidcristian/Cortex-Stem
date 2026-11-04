@@ -110,4 +110,30 @@
       transition: none;
     }
   }
+
+  /* Forced colours (a Windows contrast theme): the browser drops the
+     gradients that draw the track and the thumb's centre, leaving a lone
+     circle. The slider keeps its drawing, in the contrast theme's system
+     colours: the filled part in the highlight colour, the rest of the track
+     and the thumb's ring in the text colour, all grey when disabled. */
+  @media (forced-colors: active) {
+    input {
+      --accent: Highlight;
+      --track: CanvasText;
+      --thumb-bg: Canvas;
+      --control-border-bottom: CanvasText;
+      forced-color-adjust: none;
+    }
+
+    input:disabled {
+      --accent: GrayText;
+      --track: GrayText;
+      --control-border-bottom: GrayText;
+      opacity: 1;
+    }
+
+    input:focus-visible {
+      outline-color: CanvasText;
+    }
+  }
 </style>

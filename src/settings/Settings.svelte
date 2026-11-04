@@ -29,10 +29,17 @@
   const settings = $derived(store.settings);
   const theme = $derived(resolveTheme(settings?.theme ?? 'system', store.theme, prefersDark));
   const accent = $derived(accentColor(store.theme));
+  const highContrast = $derived(store.theme?.highContrast ?? false);
 
-  // The page follows `data-theme` like the dock does.
+  // The page follows `data-theme` and `data-high-contrast` like the dock does.
   $effect(() => {
-    document.documentElement.dataset.theme = theme;
+    const root = document.documentElement;
+    root.dataset.theme = theme;
+    if (highContrast) {
+      root.dataset.highContrast = '';
+    } else {
+      delete root.dataset.highContrast;
+    }
   });
 
   const edit = (mutate: (draft: Settings) => void): void => store.edit(mutate);
@@ -719,6 +726,34 @@
     --thumb-bg: #ffffff;
     --scrollbar: rgba(0, 0, 0, 0.3);
     --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2 4.5 6 8.5 10 4.5' fill='none' stroke='%231b1b1b' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  }
+
+  /* Windows contrast themes (`data-high-contrast`): solid black or
+     white surfaces, every line, outline and secondary text in the text
+     colour. Under forced colours the browser swaps in the theme's own
+     colours on top; the switches and sliders keep their parts visible
+     through their own `forced-colors` rules. */
+  :global(html[data-high-contrast][data-theme='dark']) {
+    --page-bg: #000000;
+  }
+
+  :global(html[data-high-contrast][data-theme='light']) {
+    --page-bg: #ffffff;
+  }
+
+  :global(html[data-high-contrast]) .page {
+    --card-bg: var(--page-bg);
+    --card-border: var(--text);
+    --divider: var(--text);
+    --text-secondary: var(--text);
+    --control-bg: var(--page-bg);
+    --control-border: var(--text);
+    --control-border-bottom: var(--text);
+    --switch-border: var(--text);
+    --switch-knob: var(--text);
+    --track: var(--text);
+    --thumb-bg: var(--page-bg);
+    --scrollbar: var(--text);
   }
 
   .top {

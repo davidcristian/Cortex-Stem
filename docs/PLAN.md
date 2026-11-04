@@ -43,7 +43,7 @@ contrast themes), the Recycle Bin item, the Start, Task View and Show Desktop
 items, attention flashing, an Acrylic or Mica backdrop option, and a keyboard
 shortcut that shows or hides the dock.
 
-**Status.** Not done. Theme sync also follows
+**Status.** Done, except the backdrop option. Theme sync also follows
 Windows' _Transparency effects_.
 
 **Exit criterion.** Stem is the only launcher for a week of daily use, with

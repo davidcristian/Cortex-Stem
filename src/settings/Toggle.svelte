@@ -108,4 +108,43 @@
       transition: none;
     }
   }
+
+  /* Forced colours (a Windows contrast theme): the browser would paint
+     the knob (a background) in the Canvas colour, so an "on" switch looked
+     like an empty pill. The switch keeps its own drawing in the contrast
+     theme's system colours: outline and knob in the text colour, filled
+     with the highlight colour when on, greyed out when disabled. */
+  @media (forced-colors: active) {
+    input {
+      forced-color-adjust: none;
+      border-color: CanvasText;
+      background: Canvas;
+    }
+
+    input::before {
+      background: CanvasText;
+    }
+
+    input:checked {
+      border-color: Highlight;
+      background: Highlight;
+    }
+
+    input:checked::before {
+      background: HighlightText;
+    }
+
+    input:disabled {
+      border-color: GrayText;
+      opacity: 1;
+    }
+
+    input:disabled::before {
+      background: GrayText;
+    }
+
+    input:focus-visible {
+      outline-color: CanvasText;
+    }
+  }
 </style>

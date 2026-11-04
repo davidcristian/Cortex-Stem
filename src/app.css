@@ -79,6 +79,25 @@ body {
   --attention: #ca5010;
 }
 
+/* Windows contrast themes: `data-high-contrast` is set on <html> by
+   both pages from `ThemeInfo.highContrast`. Every surface solid, lines and
+   separators in the full text colour, no shadows; the panel itself is made
+   opaque and unblurred by the dock (`effectiveOpacity`, `.high-contrast`).
+   WebView2 normally also renders in forced-colours mode then and swaps in the
+   contrast theme's own colours; the `forced-colors` rules next to the parts
+   that would vanish under it (dots, separators, switches) handle that. */
+:root[data-high-contrast] {
+  --panel-border: var(--text);
+  --panel-shadow: none;
+  --separator: var(--text);
+  --tooltip-bg: rgb(var(--panel-tint));
+  --tooltip-border: var(--text);
+}
+
+:root[data-high-contrast][data-theme='light'] {
+  --text: #000000;
+}
+
 /* Browser-only demo wallpaper (mock backend) so translucency and blur are
    visible when the dock is not sitting on a real desktop. */
 html[data-wallpaper='dark'] body {

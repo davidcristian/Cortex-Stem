@@ -1812,4 +1812,18 @@
       transition: none;
     }
   }
+
+  /* Forced colours (WebView2 under a Windows contrast theme): the
+     browser repaints backgrounds in the theme's Canvas colour, so the
+     separators (1 px backgrounds) and the toast's dot would vanish. They take
+     the theme's text colour instead. The panel needs nothing: its border and
+     text are forced to the theme's colours, its background is opaque in high
+     contrast (`effectiveOpacity`). */
+  @media (forced-colors: active) {
+    .separator,
+    .toast::before {
+      forced-color-adjust: none;
+      background: CanvasText;
+    }
+  }
 </style>

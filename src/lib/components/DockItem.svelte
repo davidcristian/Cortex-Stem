@@ -453,4 +453,32 @@
       transition: none;
     }
   }
+
+  /* Forced colours (WebView2 under a Windows contrast theme): the
+     browser repaints every background in the theme's Canvas colour, which
+     erases the dots and turns the tooltip's arrow (transparent borders) into
+     a block. These parts opt out and take the contrast theme's own system
+     colours instead. */
+  @media (forced-colors: active) {
+    .dots i {
+      forced-color-adjust: none;
+      background: CanvasText;
+    }
+
+    .dots.active i,
+    .dots.attention i {
+      background: Highlight;
+      box-shadow: none;
+    }
+
+    .tooltip::after {
+      forced-color-adjust: none;
+      border-top-color: CanvasText;
+    }
+
+    .placeholder {
+      outline: 1px solid CanvasText;
+      outline-offset: -1px;
+    }
+  }
 </style>
