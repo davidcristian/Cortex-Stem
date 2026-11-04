@@ -11,6 +11,9 @@ how a page listens.
 | `dock://monitors`    | `MonitorInfo[]`                 | at start, and when the display topology changes               |
 | `dock://item-bounce` | `{ itemKey: string }`           | an app was launched from the dock; the page plays the bounce  |
 
+Tauri's own `tauri://drag-enter|over|drop|leave` events (files dragged from the shell over a dock
+window) are not part of this contract; see [File drags](file-drags.md).
+
 ## Startup sequence (UI side)
 
 A page subscribes to the events first, then calls `get_dock_state`, `get_settings` and

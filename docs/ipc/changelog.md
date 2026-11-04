@@ -3,6 +3,9 @@
 This file lists every version of the [IPC contract](index.md), newest first. A section name links
 to the file that covers that section now.
 
+- **v1.7 (file drops):** `Backend.onFileDrag` added over Tauri's own `tauri://drag-*` webview
+  events, with positions converted to CSS px in `TauriBackend`; new section
+  [File drags](file-drags.md). No command, event or payload type of this contract changed.
 - **v1.6 (auto-hide):** The planned `dock://visibility` event is dropped: ADR-0008 keeps
   auto-hide in the UI, which reveals the dock through the hit region (a 2 px strip while hidden).
   The [Hit region](hit-region.md) section is updated; no command or payload changed.

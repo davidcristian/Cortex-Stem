@@ -14,6 +14,8 @@ transparent parts. The UI tells Rust where the visible dock is:
 - The UI reports whenever the panel's **rest** geometry changes (startup, items added or
   removed, icon size, separators), never per magnification frame. While a drag-to-reorder is in
   progress, the UI reports the whole viewport as `envelope` and restores the real one afterwards.
+  While a file is dragged over the window ([File drags](file-drags.md)), the `envelope` is one
+  slot wider, for the gap that opens in the panel.
 - Auto-hide is active when `autoHide.mode = always` (ADR-0008). While auto-hide is active and the
   dock is hidden, the UI reports the reveal strip as both `panel` and `envelope`. The strip is
   the bottom 2 CSS px of the window, as long as the resting panel. While the dock is shown, the

@@ -20,6 +20,7 @@ the records in `docs/adr/` give the reasons for the main decisions.
   click-through outside the panel and how it stays topmost.
 - [dock-placement.md](dock-placement.md): where the dock window is placed.
 - [auto-hide.md](auto-hide.md): how the dock hides its panel and brings it back.
+- [file-drops.md](file-drops.md): files dragged from Explorer onto the dock and pinned.
 - [settings.md](settings.md): how settings are stored and how the app shell applies the
   ones that belong to it.
 - [error-handling.md](error-handling.md): the error type of each layer.
