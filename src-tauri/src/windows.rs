@@ -516,10 +516,11 @@ pub fn open_settings_window(app: &AppHandle) -> tauri::Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Visibility helpers (tray, single instance)
+// Visibility helpers (tray, global shortcut, single instance)
 // ---------------------------------------------------------------------------
 
-/// Tray left click: hide the dock if it is visible, show it otherwise.
+/// Tray left click and the global toggle shortcut: hide the dock if
+/// it is visible, show it otherwise.
 pub fn toggle_dock(app: &AppHandle) {
     let Some(window) = app.get_webview_window(DOCK_LABEL) else {
         log::warn!("toggle_dock: no dock window");

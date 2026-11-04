@@ -2,7 +2,8 @@
 //! the dock window has no close button and the app keeps running without a
 //! visible window.
 //!
-//! - left click: show / hide the dock window;
+//! - left click: show / hide the dock window (`behavior.toggleShortcut`
+//!   does the same from the keyboard, see `shortcut.rs`);
 //! - menu: *Settings…* (opens the settings window), *Click through outside
 //!   the dock* (a check item bound to `behavior.clickThrough`), *Restart*,
 //!   *Quit*.

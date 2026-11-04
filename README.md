@@ -37,7 +37,7 @@ flowchart TB
         DOCK["dock.html<br>one per dock window"]
         SET["settings.html"]
     end
-    APP["Tauri app · src-tauri<br>windows · tray · menus"]
+    APP["Tauri app · src-tauri<br>windows · tray · menus · shortcuts"]
     SVC["stem-service<br>engine thread · identity · settings file"]
     CORE["stem-core<br>DockEngine · model · rules"]
     PLAT["stem-platform<br>Platform trait · Win32 · mock"]

@@ -3,9 +3,10 @@
 //! - creates and positions the dock window(s) and the settings window,
 //! - exposes `stem-service` through Tauri commands (`commands`),
 //! - forwards `ServiceEvent`s as Tauri events (`docs/ipc/events.md`),
-//! - wires plugins (single-instance, logging, autostart) and the tray
-//!   icon, and applies the settings that belong to the shell (`autostart`,
-//!   click-through in `windows`, the tray's check mark).
+//! - wires plugins (single-instance, logging, autostart, global shortcut)
+//!   and the tray icon, and applies the settings that belong to the shell
+//!   (`autostart`, `shortcut`, click-through in `windows`, the tray's check
+//!   mark).
 //!
 //! Lifecycle: this is a tray application. The dock window ignores close
 //! requests, closing the settings window only destroys that window, and an
@@ -16,6 +17,7 @@
 mod autostart;
 mod commands;
 mod menus;
+mod shortcut;
 mod tray;
 mod windows;
 
@@ -91,6 +93,7 @@ pub fn run() {
             // Registered here rather than in the builder so that a plugin
             // that fails to start costs only its own feature.
             autostart::init(app.handle(), &service);
+            shortcut::init(app.handle(), &service);
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -327,6 +330,7 @@ fn forward_events(app: AppHandle, service: &DockService) {
                 windows::on_settings_changed(&app, settings);
                 tray::on_settings_changed(&app, settings);
                 autostart::on_settings_changed(&app, settings);
+                shortcut::on_settings_changed(&app, settings);
                 app.emit(events::SETTINGS, settings)
             }
             ServiceEvent::Theme(theme) => app.emit(events::THEME, theme),
