@@ -4,6 +4,7 @@ import { expect, test, type Page } from '@playwright/test';
 
 import type { RawWindow } from '../src/lib/ipc/generated/RawWindow';
 import type { Rect } from '../src/lib/ipc/generated/Rect';
+import type { Settings } from '../src/lib/ipc/generated/Settings';
 
 const OUT = 'e2e/output';
 const APP_SLOT = '.slot[data-kind="app"]';
@@ -18,7 +19,7 @@ interface DemoWindow {
   __dockMock?: {
     calls: Array<{ type: string } & Record<string, unknown>>;
     failNextCommand: (message: string) => void;
-    getSettings: () => Promise<{ iconSize: number; theme: string; pinned: Array<{ id: string }> }>;
+    getSettings: () => Promise<Settings>;
     pushWindow: (raw: RawWindow) => void;
     pushWindowRemoved: (id: number) => void;
   };
@@ -886,9 +887,17 @@ test.describe('settings window', () => {
     await expect(page.locator('.status')).toHaveText('Saved');
     expect((await page.evaluate(SETTINGS_MOCK))?.theme).toBe('light');
 
+    // Autostart is a plain switch.
+    const autostart = page.locator('#autostart');
+    await expect(autostart).toBeEnabled();
+    await expect(autostart).not.toBeChecked();
+    await autostart.click();
+    await expect(autostart).toBeChecked();
+    await expect(page.locator('.status')).toHaveText('Saved');
+    expect((await page.evaluate(SETTINGS_MOCK))?.system.autostart).toBe(true);
+
     // Disabled, not-yet-available options stay disabled.
     await expect(page.locator('#current-monitor')).toBeDisabled();
-    await expect(page.locator('#autostart')).toBeDisabled();
     await expect(page.locator('#position option[value="left"]')).toBeDisabled();
     await expect(page.locator('#auto-hide option[value="always"]')).toBeDisabled();
   });

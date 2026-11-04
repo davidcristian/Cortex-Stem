@@ -528,12 +528,18 @@
       <section aria-labelledby="h-system">
         <h2 id="h-system">System</h2>
         <SettingsCard>
-          <SettingRow id="autostart" label="Start Stem when you sign in" disabled tag="M2">
+          <SettingRow
+            id="autostart"
+            label="Start Stem when you sign in"
+            description="Adds Stem to the apps Windows starts for you"
+          >
             <Toggle
               id="autostart"
               checked={settings.system.autostart}
-              disabled
-              onchange={() => {}}
+              onchange={(v) =>
+                edit((s) => {
+                  s.system.autostart = v;
+                })}
             />
           </SettingRow>
           <SettingRow
