@@ -430,7 +430,11 @@
                 })}
             />
           </SettingRow>
-          <SettingRow id="item-task-view" label="Task View">
+          <SettingRow
+            id="item-task-view"
+            label="Task View"
+            description="Shows your open windows and desktops"
+          >
             <Toggle
               id="item-task-view"
               checked={settings.items.taskView}
@@ -440,7 +444,11 @@
                 })}
             />
           </SettingRow>
-          <SettingRow id="item-show-desktop" label="Show Desktop">
+          <SettingRow
+            id="item-show-desktop"
+            label="Show Desktop"
+            description="Minimises every window; a second click brings them back"
+          >
             <Toggle
               id="item-show-desktop"
               checked={settings.items.showDesktop}
