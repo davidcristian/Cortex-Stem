@@ -454,7 +454,9 @@ test.describe('dock in mock mode', () => {
     expect(await scaleOf(page, 2)).toBeGreaterThan(1);
     expect(await scaleOf(page, 2)).toBeLessThan(await scaleOf(page, 3));
     // The magnified box shows the 192 px ladder bitmap, not the 96 px rest one.
-    expect((await iconPairs(page))[3]).toMatchObject({ shown: [192], magnifiedAttr: true });
+    await expect
+      .poll(async () => (await iconPairs(page))[3])
+      .toMatchObject({ shown: [192], magnifiedAttr: true });
     await page.screenshot({ path: `${OUT}/dock-hover.png` });
 
     // Leaving resets everything.
