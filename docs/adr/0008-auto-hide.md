@@ -29,13 +29,13 @@ work area.
   are rejected
   ([Detecting the reveal](../research/auto-hide.md#detecting-the-reveal)).
 - **The state machine is presentation and lives in the UI**, as a pure,
-  unit-tested module beside the magnification maths (`src/lib/dock/`),
-  like magnification itself: `shown` → (the pointer left the envelope) →
-  `hiding` after `delayMs` → `hidden` → (the pointer in the strip) →
-  `shown`. It never hides while a hold is on: an icon lifted for a drag, a
-  native context menu from the dock open, or an item bouncing for a launch
-  the dock started. Whether a hidden dock comes back when one of its
-  windows needs attention is left open.
+  unit-tested module beside the magnification maths
+  (`src/lib/dock/autohide.ts`), like magnification itself: `shown` → (the
+  pointer left the panel) → `pending` → (`delayMs` passed) → `hidden` →
+  (the pointer in the strip) → `shown`. It never hides while a hold is on:
+  an icon lifted for a drag, a native context menu from the dock open, or
+  an item bouncing for a launch the dock started. Whether a hidden dock
+  comes back when one of its windows needs attention is left open.
 - **Motion:** the panel slides out by its own height plus its shadow, with
   `transform: translateY` over 200 ms (`ease-in` out, `ease-out` back in).
   With `prefers-reduced-motion` it fades instead. The dock window keeps its
