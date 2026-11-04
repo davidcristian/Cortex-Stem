@@ -1111,7 +1111,40 @@ test.describe('settings window', () => {
     // Disabled, not-yet-available options stay disabled.
     await expect(page.locator('#current-monitor')).toBeDisabled();
     await expect(page.locator('#position option[value="left"]')).toBeDisabled();
-    await expect(page.locator('#auto-hide option[value="always"]')).toBeDisabled();
+    await expect(page.locator('#auto-hide option[value="whenOverlapped"]')).toBeDisabled();
+  });
+
+  test('auto-hide can be turned on; "when overlapped" is not there yet and the notes say so', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openSettings(page);
+    const saved = async (): Promise<Settings['autoHide'] | undefined> =>
+      (await page.evaluate(SETTINGS_MOCK))?.autoHide;
+    const mode = page.locator('#auto-hide');
+    await expect(mode).toHaveValue('off');
+    await expect(page.locator('#auto-hide option[value="always"]')).toBeEnabled();
+    const overlapped = page.locator('#auto-hide option[value="whenOverlapped"]');
+    await expect(overlapped).toBeDisabled();
+    await expect(overlapped).toHaveText(/acts as Off/);
+    await expect(page.locator('#auto-hide-description')).toContainText('bottom edge below it');
+    await expect(page.locator('#auto-hide-description')).toContainText('click-through on');
+
+    await mode.selectOption('always');
+    await expect.poll(async () => (await saved())?.mode).toBe('always');
+    await expect(page.locator('.status')).toHaveText('Saved');
+
+    // The delay is in milliseconds, 50 at a time from the keyboard.
+    const delay = page.locator('#auto-hide-delay');
+    await expect(page.locator('output[for="auto-hide-delay"]')).toHaveText('250 ms');
+    await delay.focus();
+    await page.keyboard.press('ArrowRight');
+    await expect(page.locator('output[for="auto-hide-delay"]')).toHaveText('300 ms');
+    await expect.poll(async () => (await saved())?.delayMs).toBe(300);
+    await expect(page.locator('.status')).toHaveText('Saved');
+
+    await page.locator('#auto-hide').scrollIntoViewIfNeeded();
+    await page.screenshot({ path: `${OUT}/settings-autohide.png` });
   });
 
   test('the toggle shortcut applies on Enter and on blur, Escape reverts', async ({ page }) => {

@@ -363,18 +363,25 @@
                 })}
             />
           </SettingRow>
+          <!-- ADR-0008: `whenOverlapped` needs window geometry from the
+               platform and acts like Off without it; the hidden dock leaves
+               its window behind, which takes clicks unless click-through is on. -->
           <SettingRow
             id="auto-hide"
             label="Auto-hide"
-            description="Hide the dock until the pointer touches the screen edge"
+            description="Slides the dock away when the pointer leaves it; touch the bottom edge below it to bring it back. Works best with click-through on: with it off, the space the hidden dock leaves still takes clicks."
           >
             <Select
               id="auto-hide"
               value={settings.autoHide.mode}
               options={[
                 { value: 'off', label: 'Off' },
-                { value: 'always', label: 'Always (M2)', disabled: true },
-                { value: 'whenOverlapped', label: 'When a window overlaps (M2)', disabled: true },
+                { value: 'always', label: 'Always' },
+                {
+                  value: 'whenOverlapped',
+                  label: 'When a window overlaps (not yet: acts as Off)',
+                  disabled: true,
+                },
               ]}
               onchange={(v) =>
                 edit((s) => {
