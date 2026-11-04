@@ -22,7 +22,9 @@ export function exceedsMoveThreshold(dx: number, dy: number, movePx: number): bo
 /**
  * Index the dragged item (`from`) would take when its centre is at `x`:
  * the number of *other* items whose rest centre lies left of it. Ranges
- * over `0..n-1` for `n` items, so every position is reachable.
+ * over `0..n-1` for `n` items, so every position is reachable. With
+ * `from = -1` nothing is lifted (a file dropped from outside the dock,
+ * `filedrop.ts`) and it ranges over `0..=n`.
  */
 export function insertionIndex(x: number, centres: ArrayLike<number>, from: number): number {
   let index = 0;

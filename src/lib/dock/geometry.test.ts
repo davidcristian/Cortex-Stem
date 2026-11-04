@@ -6,6 +6,7 @@ import {
   LAYOUT_UNIT,
   magnifiedRise,
   rectContains,
+  rectContainsPoint,
   sameHitRegion,
   sameRect,
   sameSnap,
@@ -59,6 +60,16 @@ describe('sameRect / rectContains', () => {
     expect(rectContains(outer, { x: 10, y: 10, width: 90, height: 40 })).toBe(true);
     expect(rectContains(outer, { x: 10, y: 10, width: 91, height: 40 })).toBe(false);
     expect(rectContains(outer, { x: -1, y: 10, width: 10, height: 10 })).toBe(false);
+  });
+
+  it('a point is inside from the left/top edge up to, not including, the right/bottom edge', () => {
+    const r = { x: 10, y: 20, width: 100, height: 50 };
+    expect(rectContainsPoint(r, 10, 20)).toBe(true);
+    expect(rectContainsPoint(r, 109.5, 69.5)).toBe(true);
+    expect(rectContainsPoint(r, 110, 40)).toBe(false);
+    expect(rectContainsPoint(r, 50, 70)).toBe(false);
+    expect(rectContainsPoint(r, 9.9, 40)).toBe(false);
+    expect(rectContainsPoint(r, 50, 19.9)).toBe(false);
   });
 });
 

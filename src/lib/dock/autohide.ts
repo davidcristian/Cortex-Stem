@@ -17,7 +17,8 @@
  * `whenOverlapped` until the platform can report window geometry (ADR-0008);
  * switching away from `always` reveals at once. A hold (an icon lifted for
  * a drag, a native context menu open, an item bouncing for a launch the dock
- * started) keeps the dock up while it lasts but never reveals a hidden one.
+ * started, a file from the shell being dragged over the dock) keeps the dock
+ * up while it lasts but never reveals a hidden one.
  * Once hidden, the reveal strip brings the dock back, and so does the dock
  * window being shown on request (ADR-0008: the tray and the toggle shortcut
  * still show it).
@@ -42,8 +43,12 @@ export const MAX_AUTO_HIDE_DELAY_MS = 5000;
  */
 export type AutoHidePhase = 'shown' | 'pending' | 'hidden';
 
-/** What keeps the dock on screen whatever the pointer does. */
-export type AutoHideHold = 'drag' | 'menu' | 'bounce';
+/**
+ * What keeps the dock on screen whatever the pointer does. `fileDrag`: a
+ * file from the shell is being dragged over the dock window, an OLE
+ * drag that the page sees through Tauri's events, never as pointer events.
+ */
+export type AutoHideHold = 'drag' | 'menu' | 'bounce' | 'fileDrag';
 
 export interface AutoHideState {
   /** `autoHide.mode` is `always`. */
@@ -91,7 +96,7 @@ export const INITIAL_AUTO_HIDE: AutoHideState = {
   delayMs: 0,
   phase: 'shown',
   pointerInside: false,
-  holds: { drag: false, menu: false, bounce: false },
+  holds: { drag: false, menu: false, bounce: false, fileDrag: false },
 };
 
 /** Auto-hide applies to this mode now (ADR-0008: `whenOverlapped` waits for window geometry). */
@@ -107,7 +112,7 @@ function clampDelay(ms: number): number {
 }
 
 function held(state: AutoHideState): boolean {
-  return state.holds.drag || state.holds.menu || state.holds.bounce;
+  return state.holds.drag || state.holds.menu || state.holds.bounce || state.holds.fileDrag;
 }
 
 function wantsHide(state: AutoHideState): boolean {

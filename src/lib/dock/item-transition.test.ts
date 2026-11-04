@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  GAP_TRANSITION_MS,
+  gapCss,
+  gapTransition,
   ITEM_START_SCALE,
   ITEM_TRANSITION_MS,
   itemTransition,
@@ -95,5 +98,32 @@ describe('itemTransition', () => {
     expect(config.css?.(1, 0)).toBe(separatorCss(1));
     const app = itemTransition(fakeNode('app'), { enabled: true }, { direction: 'in' });
     expect(app.css?.(1, 0)).toBe(slotCss(1));
+  });
+});
+
+describe('gapCss / gapTransition (the drop gap)', () => {
+  it('grows from nothing to exactly one rest slot, like an item', () => {
+    const d0 = declarations(gapCss(0));
+    expect(d0.width).toBe('calc((var(--icon) + var(--slot-gap)) * 0)');
+    expect(d0.opacity).toBe('0');
+    expect(d0.transform).toBe(`scale(${ITEM_START_SCALE})`);
+    const d1 = declarations(gapCss(1));
+    expect(d1.width).toBe('calc((var(--icon) + var(--slot-gap)) * 1)');
+    expect(d1.opacity).toBe('1');
+    expect(d1.transform).toBe('scale(1)');
+    expect(Object.keys(declarations(gapCss(0.5))).sort()).toEqual([
+      'opacity',
+      'transform',
+      'width',
+    ]);
+  });
+
+  it('takes the 160 ms of the reorder gap, and nothing when disabled', () => {
+    const node = fakeNode('gap');
+    const config = gapTransition(node, { enabled: true });
+    expect(config.duration).toBe(GAP_TRANSITION_MS);
+    expect(GAP_TRANSITION_MS).toBe(160);
+    expect(config.css?.(1, 0)).toBe(gapCss(1));
+    expect(gapTransition(node, { enabled: false })).toEqual({ duration: 0 });
   });
 });

@@ -63,3 +63,26 @@ export function itemTransition(
   const css = node.dataset.kind === 'separator' ? separatorCss : slotCss;
   return { duration: ITEM_TRANSITION_MS, easing: cubicOut, css };
 }
+
+/** The drop gap opens and closes at the pace of the reorder gap (`transform 160ms`). */
+export const GAP_TRANSITION_MS = 160;
+
+/**
+ * Inline CSS of the drop gap at progress `t`: it grows and shrinks like an
+ * item does, to exactly one slot at rest (the gap is never magnified).
+ */
+export function gapCss(t: number): string {
+  const scale = ITEM_START_SCALE + (1 - ITEM_START_SCALE) * t;
+  return (
+    `width: calc((var(--icon) + var(--slot-gap)) * ${t}); ` +
+    `opacity: ${t}; transform: scale(${scale})`
+  );
+}
+
+/** Svelte transition for the `.drop-gap` element (`in:` and `out:`). */
+export function gapTransition(_node: HTMLElement, params: ItemTransitionParams): TransitionConfig {
+  if (!params.enabled) {
+    return { duration: 0 };
+  }
+  return { duration: GAP_TRANSITION_MS, easing: cubicOut, css: gapCss };
+}

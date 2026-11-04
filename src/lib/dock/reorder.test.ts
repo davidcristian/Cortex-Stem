@@ -51,6 +51,12 @@ describe('insertionIndex', () => {
   it('is 0 for a single item', () => {
     expect(insertionIndex(999, Float64Array.of(28), 0)).toBe(0);
   });
+
+  it('ranges over 0..=n when nothing is lifted (from = -1)', () => {
+    expect(insertionIndex(-1000, CENTRES, -1)).toBe(0);
+    expect(insertionIndex(CENTRES[2]! + 1, CENTRES, -1)).toBe(3);
+    expect(insertionIndex(1000, CENTRES, -1)).toBe(5);
+  });
 });
 
 describe('gapShift', () => {

@@ -183,7 +183,7 @@ describe('autoHideStep', () => {
     expect(autoHideStep(off, { type: 'strip' })).toEqual({ state: off, timer: 'none' });
   });
 
-  it.each(['drag', 'menu', 'bounce'] as const)('never hides during a %s', (hold) => {
+  it.each(['drag', 'menu', 'bounce', 'fileDrag'] as const)('never hides during a %s', (hold) => {
     const h = always(250)
       .send({ type: 'pointer', inside: true })
       .send({ type: 'hold', hold, active: true })
@@ -193,6 +193,28 @@ describe('autoHideStep', () => {
     expect(h.phase).toBe('shown');
     // The countdown starts when the hold ends with the pointer away.
     h.send({ type: 'hold', hold, active: false });
+    expect(h.phase).toBe('pending');
+    h.advance(250);
+    expect(h.phase).toBe('hidden');
+  });
+
+  it('a file dragged onto the strip reveals; the drag holds it; its leave starts the countdown', () => {
+    // What Dock.svelte sends for an OLE drag: the hold on enter, `strip`
+    // when the drag is over the strip, the pointer away and the hold off on
+    // leave (no pointer events come during such a drag).
+    const h = always(250).advance(250);
+    expect(h.phase).toBe('hidden');
+    h.send({ type: 'hold', hold: 'fileDrag', active: true });
+    expect(h.phase).toBe('hidden');
+    h.send({ type: 'strip' });
+    expect(h.phase).toBe('shown');
+    h.advance(10_000);
+    expect(h.phase).toBe('shown');
+    h.send({ type: 'pointer', inside: false }).send({
+      type: 'hold',
+      hold: 'fileDrag',
+      active: false,
+    });
     expect(h.phase).toBe('pending');
     h.advance(250);
     expect(h.phase).toBe('hidden');

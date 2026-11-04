@@ -34,6 +34,11 @@ export function rectContains(outer: Rect, inner: Rect): boolean {
   );
 }
 
+/** The point (`x`, `y`) lies within `rect`: left and top edges inclusive, right and bottom exclusive. */
+export function rectContainsPoint(rect: Rect, x: number, y: number): boolean {
+  return x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height;
+}
+
 /** What `set_dock_hit_region` takes: the panel at rest and the envelope magnified icons can reach. */
 export interface HitRegion {
   panel: Rect;
