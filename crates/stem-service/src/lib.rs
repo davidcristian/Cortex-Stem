@@ -30,7 +30,11 @@
 //!   race on the settings file. The engine's own copy follows
 //!   asynchronously through the worker;
 //! - commands are called from any thread; they take the engine lock briefly
-//!   and perform platform calls without holding it;
+//!   and perform platform calls without holding it. `delete_to_recycle_bin`
+//!   blocks for as long as the shell's dialogs are up, so its caller runs it
+//!   off the UI thread; it then refreshes the Recycle Bin's state on a
+//!   short-lived thread (`stem-recycle-bin-refresh`) that queues the answer
+//!   for the worker;
 //! - listeners run on whichever thread produced the event (the worker for
 //!   state, settings, theme and monitors; the caller for `Bounce`). A
 //!   panicking listener is logged and isolated; it does not stop the worker.
@@ -293,6 +297,26 @@ impl DockService {
         Ok(self.inner.platform.shell_action(action)?)
     }
 
+    /// Move dropped files and folders to the Recycle Bin: a file
+    /// drop on its item. An empty list does nothing.
+    ///
+    /// Blocks while the platform does, which can include the user answering
+    /// the shell's dialogs (`Platform::delete_to_recycle_bin`): call it off
+    /// the UI thread. Afterwards, whatever the outcome (part of a refused
+    /// batch may already be in the bin), the bin is queried once on a
+    /// short-lived thread and the answer handed to the engine, so the item's
+    /// icon turns "full" without waiting for the platform's next poll and
+    /// without delaying this call's result by a slow query.
+    pub fn delete_to_recycle_bin(&self, paths: &[String]) -> ServiceResult<()> {
+        if paths.is_empty() {
+            log::debug!("delete_to_recycle_bin with no paths: nothing to do");
+            return Ok(());
+        }
+        let result = self.inner.platform.delete_to_recycle_bin(paths);
+        self.inner.refresh_recycle_bin();
+        Ok(result?)
+    }
+
     /// Start (another instance of) an app, pinned or merely running.
     pub fn launch_app(&self, app_id: &AppId) -> ServiceResult<()> {
         let target = self
@@ -434,6 +458,32 @@ impl Inner {
                     panic_message(payload.as_ref())
                 );
             }
+        }
+    }
+
+    /// Ask the platform for the Recycle Bin's state on a short-lived thread
+    /// (`SHQueryRecycleBinW` walks every drive and can take seconds) and
+    /// queue the answer for the worker like a platform event. A duplicate of
+    /// what the platform's poll reports later changes nothing: the engine
+    /// keeps the latest state and bumps the revision only when the icon flips.
+    fn refresh_recycle_bin(&self) {
+        let platform = Arc::clone(&self.platform);
+        let worker_tx = self.worker_tx.clone();
+        let spawned = std::thread::Builder::new()
+            .name("stem-recycle-bin-refresh".into())
+            .spawn(move || match platform.recycle_bin() {
+                Ok(state) => {
+                    // The worker may be gone (shutdown): nothing to update then.
+                    let _ = worker_tx.send(WorkerMsg::Input(EngineInput::Platform(
+                        PlatformEvent::RecycleBinChanged(state),
+                    )));
+                }
+                Err(e) => log::debug!("recycle bin refresh failed: {e}"),
+            });
+        if let Err(e) = spawned {
+            log::debug!(
+                "no recycle bin refresh (thread not started: {e}); the poll will report it"
+            );
         }
     }
 
@@ -1047,6 +1097,10 @@ mod tests {
             self.mock.recycle_bin()
         }
 
+        fn delete_to_recycle_bin(&self, paths: &[String]) -> PlatformResult<()> {
+            self.mock.delete_to_recycle_bin(paths)
+        }
+
         fn shell_action(&self, action: ShellAction) -> PlatformResult<()> {
             self.mock.shell_action(action)
         }
@@ -1110,6 +1164,78 @@ mod tests {
             state.items.last().unwrap().icon_key,
             Some(IconKey::shell("recycle-bin-full"))
         );
+        service.shutdown();
+    }
+
+    fn bin_icon(state: &DockState) -> Option<IconKey> {
+        state
+            .items
+            .iter()
+            .find(|i| i.kind == DockItemKind::RecycleBin)
+            .and_then(|i| i.icon_key.clone())
+    }
+
+    fn start_empty() -> (DockService, Arc<MockPlatform>, Receiver<ServiceEvent>) {
+        let platform = Arc::new(MockPlatform::new());
+        let store = Box::new(MemorySettingsStore::default());
+        let service = DockService::start(platform.clone(), store).unwrap();
+        let rx = record(&service);
+        (service, platform, rx)
+    }
+
+    #[test]
+    fn a_drop_on_the_bin_recycles_the_paths_and_the_icon_turns_full_without_a_poll() {
+        let (service, platform, rx) = start_empty();
+        assert_eq!(
+            bin_icon(&service.state()),
+            Some(IconKey::shell("recycle-bin-empty"))
+        );
+        let paths = vec![
+            r"C:\Users\me\Desktop\notes.txt".to_owned(),
+            r"C:\Users\me\Desktop\Old photos".to_owned(),
+        ];
+
+        service.delete_to_recycle_bin(&paths).unwrap();
+        assert_eq!(platform.calls(), vec![MockCall::DeleteToRecycleBin(paths)]);
+        // The mock pushes no event and has no poll: only the service's
+        // refresh can tell the engine.
+        let state = wait_state(&rx, |s| {
+            bin_icon(s) == Some(IconKey::shell("recycle-bin-full"))
+        });
+        assert_eq!(service.platform().recycle_bin().unwrap().item_count, 2);
+        assert_eq!(bin_icon(&state), Some(IconKey::shell("recycle-bin-full")));
+        service.shutdown();
+    }
+
+    #[test]
+    fn a_refused_delete_is_an_error_and_the_bin_is_refreshed_anyway() {
+        let (service, platform, rx) = start_empty();
+        // Something is in the bin that no event reported (like the part of a
+        // batch that went before the shell refused an item).
+        platform
+            .delete_to_recycle_bin(&[r"C:\Users\me\earlier.txt".to_owned()])
+            .unwrap();
+        platform.set_recycle_failure(Some(r"C:\Users\me\report.docx is open in Word"));
+
+        let err = service
+            .delete_to_recycle_bin(&[r"C:\Users\me\report.docx".to_owned()])
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            ServiceError::Platform(PlatformError::Other(_))
+        ));
+        assert_eq!(err.to_string(), r"C:\Users\me\report.docx is open in Word");
+        wait_state(&rx, |s| {
+            bin_icon(s) == Some(IconKey::shell("recycle-bin-full"))
+        });
+        service.shutdown();
+    }
+
+    #[test]
+    fn a_drop_without_paths_asks_the_platform_nothing() {
+        let (service, platform, _rx) = start_empty();
+        service.delete_to_recycle_bin(&[]).unwrap();
+        assert_eq!(platform.calls(), vec![]);
         service.shutdown();
     }
 
