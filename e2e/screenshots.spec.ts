@@ -14,11 +14,19 @@ const ICON = 48;
 const SLOT_GAP = 8;
 const PANEL_PADDING = 8;
 
+/** `FileDragEvent` of `src/lib/ipc/backend.ts` (structural: e2e has no `$lib` alias). */
+type FileDrag =
+  | { type: 'enter' | 'drop'; paths: string[]; position: { x: number; y: number } }
+  | { type: 'over'; position: { x: number; y: number } }
+  | { type: 'leave' };
+
 /** What the pages expose in mock mode (`src/lib/ipc/demo.ts`; structural, for `page.evaluate`). */
 interface DemoWindow {
   __dockMock?: {
     calls: Array<{ type: string } & Record<string, unknown>>;
     failNextCommand: (message: string) => void;
+    simulateFileDrag: (event: FileDrag) => void;
+    pinTarget: (target: unknown) => Promise<string>;
     getSettings: () => Promise<Settings>;
     updateSettings: (settings: Settings) => Promise<Settings>;
     pushWindow: (raw: RawWindow) => void;
@@ -813,6 +821,234 @@ test.describe('dock in mock mode', () => {
   });
 });
 
+/** Tauri's file drag events, as the mock delivers them: viewport CSS px. */
+function fileDrag(page: Page, event: FileDrag): Promise<void> {
+  return page.evaluate((e) => {
+    (window as unknown as DemoWindow).__dockMock?.simulateFileDrag(e);
+  }, event);
+}
+
+test.describe('drop files on the dock to pin', () => {
+  const PINNED = '.slot[data-pinned="true"]';
+  const GAP = '.drop-gap';
+  /** A Start-menu shortcut and a program, as Explorer hands them over, and a document. */
+  const LNK =
+    'C:\\Users\\me\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Paint.lnk';
+  const EXE = 'C:\\Tools\\PuTTY\\putty.exe';
+  const TXT = 'C:\\Users\\me\\Documents\\notes.txt';
+  /** The mock's canonical id for a dropped path (`identify_target` of mock.rs). */
+  const idOf = (path: string): string => `exe:${path.replace(/\\/g, '/').toLowerCase()}`;
+  const appKey = (id: string): string => `app:${id}`;
+  const SLOT = ICON + SLOT_GAP;
+
+  const pinnedKeys = (page: Page): Promise<string[]> =>
+    page.$$eval(PINNED, (els) => els.map((el) => (el as HTMLElement).dataset.key ?? ''));
+
+  /** What the UI asked to pin: the targets of `pin_target`, the orders of `reorder_pinned`. */
+  function pinRequests(page: Page): Promise<{ targets: unknown[]; orders: unknown[] }> {
+    return page.evaluate(() => {
+      const calls = (window as unknown as DemoWindow).__dockMock?.calls ?? [];
+      return {
+        targets: calls.filter((c) => c.type === 'pinTarget').map((c) => c.target),
+        orders: calls.filter((c) => c.type === 'reorderPinned').map((c) => c.order),
+      };
+    });
+  }
+
+  /** Halfway between the centres of pinned items `a` and `b`, at the icons' mid-height. */
+  async function between(page: Page, a: number, b: number): Promise<{ x: number; y: number }> {
+    const boxA = (await page.locator(PINNED).nth(a).boundingBox())!;
+    const boxB = (await page.locator(PINNED).nth(b).boundingBox())!;
+    return {
+      x: (boxA.x + boxA.width / 2 + boxB.x + boxB.width / 2) / 2,
+      y: boxA.y + boxA.height / 2,
+    };
+  }
+
+  /** The keys of the slots on either side of the gap. */
+  function gapNeighbours(page: Page): Promise<Array<string | null>> {
+    return page
+      .locator(GAP)
+      .evaluate((gap) => [
+        (gap.previousElementSibling as HTMLElement | null)?.dataset.key ?? null,
+        (gap.nextElementSibling as HTMLElement | null)?.dataset.key ?? null,
+      ]);
+  }
+
+  const gapWidth = async (page: Page): Promise<number | undefined> =>
+    (await page.locator(GAP).boundingBox())?.width;
+  const panelWidth = async (page: Page): Promise<number | undefined> =>
+    (await page.locator('.dock-panel').boundingBox())?.width;
+
+  test('a shortcut and a program dropped between two pinned apps are pinned there', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openDock(page);
+    const before = await pinnedKeys(page);
+    expect(before).toHaveLength(5);
+    const ids = before.map((key) => key.slice('app:'.length));
+    await expect.poll(() => hitRegions(page)).toHaveLength(1);
+    const atRest = (await hitRegions(page))[0]!;
+    const restWidth = (await panelWidth(page))!;
+    const at = await between(page, 1, 2);
+    const paths = [LNK, EXE];
+
+    // Over the panel between the second and third pinned app: a one-slot gap
+    // opens there and the panel widens around it.
+    await fileDrag(page, { type: 'enter', paths, position: at });
+    await expect(page.locator(GAP)).toHaveCount(1);
+    expect(await gapNeighbours(page)).toEqual([before[1], before[2]]);
+    await fileDrag(page, { type: 'over', position: { x: at.x + 3, y: at.y - 4 } });
+    await expect.poll(() => gapWidth(page)).toBe(SLOT);
+    await expect.poll(() => panelWidth(page)).toBeCloseTo(restWidth + SLOT, 1);
+    await expect(page.locator('.drop-indicator')).toBeVisible();
+    expect(await gapNeighbours(page)).toEqual([before[1], before[2]]);
+    // The window keeps taking the drag over the wider panel: the envelope
+    // made room for one more slot; the panel is still the resting one.
+    await expect
+      .poll(async () => (await hitRegions(page)).at(-1))
+      .toEqual({
+        panel: atRest.panel,
+        envelope: {
+          ...atRest.envelope,
+          x: atRest.envelope.x - SLOT / 2,
+          width: atRest.envelope.width + SLOT,
+        },
+      });
+    // Nothing is asked of the backend before the drop.
+    expect(await pinRequests(page)).toEqual({ targets: [], orders: [] });
+    await page.screenshot({ path: `${OUT}/dock-file-drop.png` });
+
+    await fileDrag(page, { type: 'drop', paths, position: { x: at.x + 3, y: at.y - 4 } });
+    const added = [idOf(LNK), idOf(EXE)];
+    // `pin_target` for each path, then one `reorder_pinned` with the new ids at the gap.
+    await expect
+      .poll(() => pinRequests(page))
+      .toEqual({
+        targets: [
+          { kind: 'shortcut', path: LNK },
+          { kind: 'exe', path: EXE, args: [], workingDir: null },
+        ],
+        orders: [[ids[0], ids[1], ...added, ids[2], ids[3], ids[4]]],
+      });
+    await expect
+      .poll(() => pinnedKeys(page))
+      .toEqual([before[0], before[1], ...added.map(appKey), before[2], before[3], before[4]]);
+    // The first new icon took the gap's place: no gap is left.
+    await expect(page.locator(GAP)).toHaveCount(0);
+    await expect(page.locator(`${PINNED}[data-key="${appKey(added[0]!)}"]`)).toHaveAttribute(
+      'data-icon',
+      'loaded',
+    );
+    // The new rest geometry is reported: two slots wider, the envelope back to normal.
+    await expect
+      .poll(async () => (await hitRegions(page)).at(-1)?.panel.width)
+      .toBe(atRest.panel.width + 2 * SLOT);
+    expect((await hitRegions(page)).at(-1)!.envelope.width).toBe(atRest.envelope.width + 2 * SLOT);
+    expect(await callsOfType(page, 'launch')).toBe(0);
+  });
+
+  test('the gap follows the drag, closes above the panel and when the drag leaves', async ({
+    page,
+  }) => {
+    await openDock(page);
+    const before = await pinnedKeys(page);
+    await expect.poll(() => hitRegions(page)).toHaveLength(1);
+    const atRest = (await hitRegions(page))[0]!;
+    const panel = (await page.locator('.dock-panel').boundingBox())!;
+
+    await fileDrag(page, { type: 'enter', paths: [EXE], position: await between(page, 3, 4) });
+    await expect(page.locator(GAP)).toHaveCount(1);
+    expect(await gapNeighbours(page)).toEqual([before[3], before[4]]);
+    await expect.poll(() => gapWidth(page)).toBe(SLOT);
+
+    // Left of the first pinned centre: the gap moves to the front of the group.
+    const first = (await page.locator(PINNED).nth(0).boundingBox())!;
+    const front = { x: first.x + 4, y: first.y + first.height / 2 };
+    await fileDrag(page, { type: 'over', position: front });
+    await expect.poll(() => gapNeighbours(page).catch(() => null)).toEqual(['sep:1', before[0]]);
+    await expect(page.locator(GAP)).toHaveCount(1);
+
+    // Up into the transparent margin above the panel (the envelope still
+    // takes the drag there): no gap; back down, it opens again.
+    await fileDrag(page, { type: 'over', position: { x: front.x, y: panel.y - 10 } });
+    await expect(page.locator(GAP)).toHaveCount(0);
+    await fileDrag(page, { type: 'over', position: front });
+    await expect(page.locator(GAP)).toHaveCount(1);
+
+    // The drag leaves the window: the gap closes, the region is the resting one again.
+    await fileDrag(page, { type: 'leave' });
+    await expect(page.locator(GAP)).toHaveCount(0);
+    await expect.poll(async () => (await hitRegions(page)).at(-1)).toEqual(atRest);
+
+    // A drag released above the panel pins nothing.
+    const above = { x: front.x, y: panel.y - 10 };
+    await fileDrag(page, { type: 'enter', paths: [EXE], position: above });
+    await fileDrag(page, { type: 'drop', paths: [EXE], position: above });
+    await page.waitForTimeout(300);
+    await expect(page.locator(GAP)).toHaveCount(0);
+    expect(await pinRequests(page)).toEqual({ targets: [], orders: [] });
+    expect(await pinnedKeys(page)).toEqual(before);
+  });
+
+  test('a drag of a text file opens no gap and asks nothing', async ({ page }) => {
+    await openDock(page);
+    const before = await pinnedKeys(page);
+    const logged: string[] = [];
+    page.on('console', (message) => logged.push(message.text()));
+    const at = await between(page, 1, 2);
+
+    await fileDrag(page, { type: 'enter', paths: [TXT], position: at });
+    await fileDrag(page, { type: 'over', position: { x: at.x + 5, y: at.y } });
+    await page.waitForTimeout(250);
+    await expect(page.locator(GAP)).toHaveCount(0);
+    await fileDrag(page, { type: 'drop', paths: [TXT], position: { x: at.x + 5, y: at.y } });
+    await page.waitForTimeout(300);
+    await expect(page.locator(GAP)).toHaveCount(0);
+    expect(await pinRequests(page)).toEqual({ targets: [], orders: [] });
+    expect(await pinnedKeys(page)).toEqual(before);
+    expect(logged).toContain(`drop: ${TXT} is not a shortcut or a program; not pinned`);
+  });
+
+  test('a pin that fails is reported; the other path is still pinned at the gap', async ({
+    page,
+  }) => {
+    await openDock(page);
+    const before = await pinnedKeys(page);
+    const ids = before.map((key) => key.slice('app:'.length));
+    // The first `pin_target` fails the way a Rust error comes back (a string).
+    await page.evaluate(() => {
+      const mock = (window as unknown as DemoWindow).__dockMock!;
+      const pin = mock.pinTarget.bind(mock);
+      let failed = false;
+      mock.pinTarget = (target: unknown) => {
+        if (!failed) {
+          failed = true;
+          return Promise.reject('the shortcut has no target');
+        }
+        return pin(target);
+      };
+    });
+    const at = await between(page, 0, 1);
+    await fileDrag(page, { type: 'enter', paths: [LNK, EXE], position: at });
+    await expect(page.locator(GAP)).toHaveCount(1);
+    await fileDrag(page, { type: 'drop', paths: [LNK, EXE], position: at });
+
+    await expect(page.getByRole('status')).toHaveText(
+      'Pinning Paint.lnk failed: the shortcut has no target',
+    );
+    await expect
+      .poll(() => pinnedKeys(page))
+      .toEqual([before[0], appKey(idOf(EXE)), ...before.slice(1)]);
+    expect(await pinRequests(page)).toEqual({
+      targets: [{ kind: 'exe', path: EXE, args: [], workingDir: null }],
+      orders: [[ids[0], idOf(EXE), ...ids.slice(1)]],
+    });
+    await expect(page.locator(GAP)).toHaveCount(0);
+  });
+});
+
 test.describe('auto-hide', () => {
   /** Long enough to tell "counting down" from "hidden" under Playwright's own latency. */
   const DELAY = 600;
@@ -953,6 +1189,42 @@ test.describe('auto-hide', () => {
     // Released there the drag is cancelled, and the pointer is away.
     await page.mouse.up();
     await expect(page.locator('[data-drag]')).toHaveCount(0);
+    await expect(panel).toHaveAttribute('data-autohide', 'pending');
+    await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+  });
+
+  test('a file dragged onto the bottom edge brings it back; it stays up until the drag leaves', async ({
+    page,
+  }) => {
+    await openDock(page);
+    const viewport = page.viewportSize()!;
+    await expect.poll(() => hitRegions(page)).toHaveLength(1);
+    const atRest = (await hitRegions(page))[0]!;
+    const panel = page.locator(PANEL);
+    await setAutoHide(page, 'always');
+    await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+
+    // An OLE drag produces no pointer events: the drag event on the strip reveals.
+    const strip = stripRegion(atRest, viewport.height).panel;
+    const paths = ['C:\\Tools\\PuTTY\\putty.exe'];
+    const onStrip = { x: strip.x + strip.width / 2, y: viewport.height - 1 };
+    await fileDrag(page, { type: 'enter', paths, position: onStrip });
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+    await expect.poll(async () => (await panelStyle(page)).transform).toBe('none');
+
+    // Up over the pinned apps: the gap opens, and the dock stays past the delay.
+    const second = (await page.locator('.slot[data-pinned="true"]').nth(1).boundingBox())!;
+    await fileDrag(page, {
+      type: 'over',
+      position: { x: second.x + second.width - 4, y: second.y + 10 },
+    });
+    await expect(page.locator('.drop-gap')).toHaveCount(1);
+    await page.waitForTimeout(DELAY + SLIDE_MS);
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+
+    // The drag leaves: the gap closes and the countdown starts.
+    await fileDrag(page, { type: 'leave' });
+    await expect(page.locator('.drop-gap')).toHaveCount(0);
     await expect(panel).toHaveAttribute('data-autohide', 'pending');
     await expect(panel).toHaveAttribute('data-autohide', 'hidden');
   });

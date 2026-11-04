@@ -9,15 +9,33 @@
     INITIAL_AUTO_HIDE,
     isAutoHidden,
     REVEAL_STRIP_PX,
+    revealStrip,
     shownHitRegion,
     type AutoHideEvent,
     type AutoHidePhase,
     type AutoHideState,
   } from '$lib/dock/autohide';
   import {
+    dropIndex,
+    fileDropAction,
+    fileNameOf,
+    gapAnchor,
+    itemAt,
+    orderWithDropped,
+    pinCandidates,
+    pinnedIds,
+    pinTargetFor,
+    sameAnchor,
+    type FileDragSpot,
+    type GapAnchor,
+    type ItemSpan,
+    type PinCandidate,
+  } from '$lib/dock/filedrop';
+  import {
     hitRegionFor,
     integerRect,
     magnifiedRise,
+    rectContainsPoint,
     sameHitRegion,
     sameSnap,
     snapOffsets,
@@ -25,7 +43,7 @@
     type SnapMargins,
   } from '$lib/dock/geometry';
   import { iconSources } from '$lib/dock/icon-size';
-  import { itemTransition } from '$lib/dock/item-transition';
+  import { gapTransition, itemTransition } from '$lib/dock/item-transition';
   import { computeScales, maxGrowth, type MagnifyParams } from '$lib/dock/magnify';
   import {
     DRAG_START,
@@ -37,7 +55,8 @@
     type DropBounds,
   } from '$lib/dock/reorder';
   import { accentColor, effectiveOpacity, resolveTheme } from '$lib/dock/theme';
-  import type { Backend } from '$lib/ipc/backend';
+  import type { Backend, CssPoint, FileDragEvent } from '$lib/ipc/backend';
+  import type { AppId } from '$lib/ipc/generated/AppId';
   import type { DockItem as DockItemModel } from '$lib/ipc/generated/DockItem';
   import type { Rect } from '$lib/ipc/generated/Rect';
   import type { DockStore } from '$lib/stores/dock.svelte';
@@ -89,7 +108,13 @@
 
   // --- Settings-derived values -----------------------------------------------
   const settings = $derived(store.settings);
-  const items = $derived(store.state?.items ?? []);
+  /**
+   * The item list a file drop keeps on screen while its pins land:
+   * the snapshots in between would show each new item at the end of the
+   * pinned group first, before the reorder moves it into the gap.
+   */
+  let frozenItems = $state.raw<DockItemModel[] | null>(null);
+  const items = $derived(frozenItems ?? store.state?.items ?? []);
   const theme = $derived(resolveTheme(settings?.theme ?? 'system', store.theme, prefersDark));
   const accent = $derived(accentColor(store.theme));
   const highContrast = $derived(store.theme?.highContrast ?? false);
@@ -131,15 +156,18 @@
 
   // --- Icons ------------------------------------------------------------------
   // The rest bitmaps first: they are what shows at startup; the magnified
-  // ones can arrive behind them.
+  // ones can arrive behind them. The snapshot's items rather than the
+  // rendered ones: the icons of apps a file drop is pinning load while the
+  // gap is still on screen.
   $effect(() => {
-    for (const item of items) {
+    const all = store.state?.items ?? [];
+    for (const item of all) {
       if (item.iconKey !== null) {
         store.ensureIcon(item.iconKey, iconSizes.rest);
       }
     }
     if (dualSources) {
-      for (const item of items) {
+      for (const item of all) {
         if (item.iconKey !== null) {
           store.ensureIcon(item.iconKey, iconSizes.magnified);
         }
@@ -828,6 +856,8 @@
       settling ||
       drag?.started ||
       itemsInFlight(panel) ||
+      // A file drag's gap is open, or closing; `ongapoutroend` measures after it.
+      panel.querySelector('.drop-gap') !== null ||
       // The auto-hide slide or fade is running; `onpaneltransitionend` measures after it.
       panel.getAnimations().length > 0
     ) {
@@ -917,7 +947,9 @@
     }
     const region = hitRegionFor(
       measured,
-      maxGrowth(slotPx, magnify),
+      // A file drag's gap widens the panel by one slot: the window
+      // keeps taking the drag there, magnification or not.
+      maxGrowth(slotPx, magnify) + (fileDrag !== null ? slotPx : 0),
       // A magnified icon's top is iconSize × (maxScale − 1) above its slot's
       // top edge, and the slot sits PANEL_PADDING below the panel's top edge.
       magnifiedRise(iconSize, magnify.maxScale, HIT_SLACK - PANEL_PADDING),
@@ -1040,15 +1072,24 @@
    * below it down to the strip, counts as inside.
    */
   function endDragHold(d: DragSession): void {
-    const rect = panelEl?.getBoundingClientRect();
-    const inside =
-      rect !== undefined &&
-      d.lastX >= rect.left &&
-      d.lastX < rect.right &&
-      d.lastY >= rect.top &&
-      d.lastY < window.innerHeight;
-    autoHideSend({ type: 'pointer', inside });
+    autoHideSend({ type: 'pointer', inside: isOnDock(d.lastX, d.lastY) });
     autoHideSend({ type: 'hold', hold: 'drag', active: false });
+  }
+
+  /**
+   * (`x`, `y`) is over the panel, or below it down to the window's bottom
+   * edge (the strip): where the pointer counts as on the dock after a drag
+   * that produced no pointer event to say so.
+   */
+  function isOnDock(x: number, y: number): boolean {
+    const rect = panelEl?.getBoundingClientRect();
+    return (
+      rect !== undefined &&
+      x >= rect.left &&
+      x < rect.right &&
+      y >= rect.top &&
+      y < window.innerHeight
+    );
   }
 
   function menuOpened(): void {
@@ -1098,6 +1139,274 @@
     });
   });
 
+  // --- Drop files to pin ------------------------------------------------------------
+  // A file dragged from Explorer is an OLE drag: no pointer or HTML5 drag
+  // event reaches the page. Tauri reports it instead (`Backend.onFileDrag`,
+  // CSS px of the viewport), and only while the window takes the pointer,
+  // i.e. once the cursor has entered the panel (docs/ipc/hit-region.md).
+  // Over the panel, with something pinnable in the drag, a one-slot gap
+  // opens among the pinned apps where the drop would go: a real element in
+  // the row (`.drop-gap`) that grows and shrinks like an item, at the
+  // reorder gap's pace, so the panel widens around it and the neighbours
+  // make room. The drop pins each path (`pin_target`) and puts the new ids
+  // at the gap with one `reorder_pinned`; the dock keeps showing the gap
+  // until the snapshot with that order arrives, and the first new item then
+  // takes the gap's place.
+  /** Longest wait for the snapshot with the dropped apps in place; the gap closes after it anyway. */
+  const LANDING_TIMEOUT_MS = 1500;
+
+  interface FileDragSession {
+    /** The paths of the drag that may be programs, in its order. */
+    candidates: PinCandidate[];
+    /** The latest position (viewport CSS px). */
+    x: number;
+    y: number;
+    frame: number;
+  }
+
+  interface Landing {
+    /** The pinned order sent with `reorder_pinned`. */
+    order: AppId[];
+    /** The first newly pinned item: it takes the gap's place. */
+    key: string | null;
+    timer: ReturnType<typeof setTimeout>;
+  }
+
+  let fileDrag: FileDragSession | null = null;
+  /** Where the drop gap is drawn (`gapAnchor`), or `null`. */
+  let dropGap = $state.raw<GapAnchor | null>(null);
+  let landing: Landing | null = null;
+  /** The item that took the gap's place: it does not grow in, and the gap does not shrink away. */
+  let landedKey = $state<string | null>(null);
+
+  function onfiledrag(e: FileDragEvent): void {
+    if (drag?.started) {
+      // A lifted icon owns the dock (an OLE drag holds the mouse, so this
+      // should never happen).
+      return;
+    }
+    switch (e.type) {
+      case 'enter':
+        beginFileDrag(e.paths, e.position);
+        return;
+      case 'over':
+        if (fileDrag !== null) {
+          fileDrag.x = e.position.x;
+          fileDrag.y = e.position.y;
+          scheduleFileDragFrame();
+        }
+        return;
+      case 'drop':
+        dropFiles(e.paths, e.position);
+        return;
+      case 'leave':
+        // Out of the window, or cancelled: the pointer is away.
+        endFileDrag(false, false);
+        return;
+    }
+  }
+
+  function beginFileDrag(paths: readonly string[], at: CssPoint): void {
+    // A session whose leave never came must not linger.
+    endFileDrag(false, false);
+    fileDrag = { candidates: pinCandidates(paths), x: at.x, y: at.y, frame: 0 };
+    // Nothing magnified: the gap's place is found from where the slots are drawn.
+    leaveHoverState();
+    autoHideSend({ type: 'hold', hold: 'fileDrag', active: true });
+    // The envelope makes room for the gap (`currentHitRegion`).
+    reportHitRegion();
+    applyFileDrag();
+  }
+
+  function scheduleFileDragFrame(): void {
+    if (fileDrag !== null && fileDrag.frame === 0) {
+      fileDrag.frame = requestAnimationFrame(applyFileDrag);
+    }
+  }
+
+  /** Open, move or close the gap for where the drag is now. */
+  function applyFileDrag(): void {
+    const d = fileDrag;
+    if (d === null) {
+      return;
+    }
+    if (d.frame !== 0) {
+      cancelAnimationFrame(d.frame);
+      d.frame = 0;
+    }
+    if (isAutoHidden(autoHide) && inRevealStrip(d.x, d.y)) {
+      // Like the pointer touching the strip: the dock comes up for the drop.
+      autoHideSend({ type: 'strip' });
+    }
+    const action = fileDropAction(fileDragSpot(d.x, d.y), d.candidates.length > 0);
+    showGap(action.kind === 'pin' ? gapAnchor(items, action.index) : null);
+  }
+
+  /** Over the reveal strip (ADR-0008), where a hidden dock takes the pointer. */
+  function inRevealStrip(x: number, y: number): boolean {
+    if (stripBox === null) {
+      return false;
+    }
+    const strip = revealStrip({ ...stripBox, y: 0, height: 0 }, window.innerHeight);
+    return rectContainsPoint(strip, x, y);
+  }
+
+  /**
+   * Where a file drag at (`x`, `y`) points, measured where everything is
+   * drawn now (an open gap included). The item under the pointer and the
+   * gap's index are separate answers (`fileDropAction`).
+   */
+  function fileDragSpot(x: number, y: number): FileDragSpot {
+    const panel = panelEl;
+    if (!panel || isAutoHidden(autoHide)) {
+      return { onPanel: false, over: null, index: 0 };
+    }
+    const spans: ItemSpan[] = [];
+    const centres: number[] = [];
+    for (const el of slots) {
+      const rect = el.getBoundingClientRect();
+      spans.push({ key: el.dataset.key ?? '', left: rect.left, right: rect.right });
+      if (el.dataset.kind === 'app' && el.dataset.pinned === 'true') {
+        centres.push(rect.left + rect.width / 2);
+      }
+    }
+    return {
+      onPanel: rectContainsPoint(panel.getBoundingClientRect(), x, y),
+      over: itemAt(x, spans),
+      index: dropIndex(x, centres),
+    };
+  }
+
+  function showGap(anchor: GapAnchor | null): void {
+    if (!sameAnchor(dropGap, anchor)) {
+      dropGap = anchor;
+    }
+  }
+
+  function dropFiles(paths: readonly string[], at: CssPoint): void {
+    const candidates = pinCandidates(paths);
+    for (const path of paths) {
+      if (pinTargetFor(path) === null) {
+        console.info(`drop: ${path} is not a shortcut or a program; not pinned`);
+      }
+    }
+    const action = fileDropAction(fileDragSpot(at.x, at.y), candidates.length > 0);
+    // Released on the dock, the pointer is there now; no `pointerenter` will say so.
+    endFileDrag(isOnDock(at.x, at.y), action.kind === 'pin');
+    if (action.kind !== 'pin') {
+      return;
+    }
+    // A drop still landing shows the truth first; this one starts from it.
+    finishLanding(false);
+    showGap(gapAnchor(items, action.index));
+    void pinDropped(candidates, action.index);
+  }
+
+  /**
+   * The drag is over: say where the pointer is now, release the hold, and
+   * close the gap unless a drop is about to land in it (`keepGap`) or still
+   * landing.
+   */
+  function endFileDrag(pointerOnDock: boolean, keepGap: boolean): void {
+    const d = fileDrag;
+    if (d === null) {
+      return;
+    }
+    fileDrag = null;
+    if (d.frame !== 0) {
+      cancelAnimationFrame(d.frame);
+    }
+    if (!keepGap && frozenItems === null) {
+      showGap(null);
+    }
+    autoHideSend({ type: 'pointer', inside: pointerOnDock });
+    autoHideSend({ type: 'hold', hold: 'fileDrag', active: false });
+    reportHitRegion();
+  }
+
+  /**
+   * Pin each candidate, then put the new ids at `index` in one reorder. A
+   * failed pin is reported like any failed command and the others go on.
+   */
+  async function pinDropped(candidates: readonly PinCandidate[], index: number): Promise<void> {
+    const before = pinnedIds(store.state?.items ?? []);
+    frozenItems = items;
+    const ids: AppId[] = [];
+    for (const candidate of candidates) {
+      try {
+        ids.push(await backend.pinTarget(candidate.target));
+      } catch (err) {
+        report(`Pinning ${fileNameOf(candidate.path)}`)(err);
+      }
+    }
+    if (ids.length === 0) {
+      finishLanding(false);
+      return;
+    }
+    const order = orderWithDropped(before, ids, index);
+    const fresh = ids.find((id) => !before.includes(id));
+    landing = {
+      order,
+      key: fresh === undefined ? null : `app:${fresh}`,
+      timer: setTimeout(() => finishLanding(false), LANDING_TIMEOUT_MS),
+    };
+    try {
+      await backend.reorderPinned(order);
+    } catch (err) {
+      report('Reordering')(err);
+      finishLanding(false);
+      return;
+    }
+    checkLanding();
+  }
+
+  /** The snapshot shows the dropped apps in their place: render it. */
+  function checkLanding(): void {
+    const l = landing;
+    const state = store.state;
+    if (l !== null && state !== null && sameOrder(pinnedIds(state.items), l.order)) {
+      finishLanding(true);
+    }
+  }
+
+  /**
+   * Show the snapshot again and close the gap: at once when an item takes
+   * its place (`landed`), shrinking away otherwise (a failure, the timeout).
+   */
+  function finishLanding(landed: boolean): void {
+    const l = landing;
+    landing = null;
+    if (l !== null) {
+      clearTimeout(l.timer);
+    }
+    if (frozenItems === null) {
+      return;
+    }
+    landedKey = landed && l !== null ? l.key : null;
+    frozenItems = null;
+    showGap(null);
+    scheduleMeasure();
+    if (landedKey !== null) {
+      // The intro and outro decisions are taken in this update; forget the key after it.
+      requestAnimationFrame(() => {
+        landedKey = null;
+      });
+    }
+    if (fileDrag !== null) {
+      // Another drag came in meanwhile: its gap, in the list now shown.
+      scheduleFileDragFrame();
+    }
+  }
+
+  function ongapoutroend(): void {
+    scheduleMeasure();
+  }
+
+  $effect(() => {
+    void store.state;
+    untrack(checkLanding);
+  });
+
   // --- Lifecycle ------------------------------------------------------------------
   onMount(() => {
     const dark = window.matchMedia('(prefers-color-scheme: dark)');
@@ -1121,8 +1430,12 @@
     dark.addEventListener('change', onDark);
     motion.addEventListener('change', onMotion);
     document.addEventListener('visibilitychange', onVisibility);
+    const offFileDrag = backend.onFileDrag(onfiledrag);
     void store.start();
     return () => {
+      offFileDrag();
+      endFileDrag(false, false);
+      finishLanding(false);
       dark.removeEventListener('change', onDark);
       motion.removeEventListener('change', onMotion);
       document.removeEventListener('visibilitychange', onVisibility);
@@ -1144,6 +1457,20 @@
     };
   });
 </script>
+
+{#snippet gap()}
+  <!-- The drop gap: room for the files a drop will pin, with an
+       outline where the first new icon will sit. -->
+  <div
+    class="drop-gap"
+    aria-hidden="true"
+    in:gapTransition|global={{ enabled: itemMotion }}
+    out:gapTransition|global={{ enabled: itemMotion && landedKey === null }}
+    onoutroend={ongapoutroend}
+  >
+    <div class="drop-indicator"></div>
+  </div>
+{/snippet}
 
 <svelte:window
   onkeydown={onwindowkeydown}
@@ -1190,6 +1517,9 @@
       oncontextmenu={onpanelcontextmenu}
     >
       {#each items as item (item.key)}
+        {#if dropGap !== null && dropGap.key === item.key && dropGap.side === 'before'}
+          {@render gap()}
+        {/if}
         {#if item.kind === 'separator'}
           <div
             class="slot separator"
@@ -1213,7 +1543,7 @@
             tooltip={tooltipKey === item.key}
             bounce={bounceEnabled && store.bounceKey === item.key ? store.bounceSerial : 0}
             animate={itemMotion}
-            enter={introsEnabled}
+            enter={introsEnabled && item.key !== landedKey}
             lifted={liftedKey === item.key}
             {onprimary}
             {onmiddle}
@@ -1223,7 +1553,13 @@
             onsettled={onItemSettled}
           />
         {/if}
+        {#if dropGap !== null && dropGap.key === item.key && dropGap.side === 'after'}
+          {@render gap()}
+        {/if}
       {/each}
+      {#if dropGap !== null && dropGap.key === null}
+        {@render gap()}
+      {/if}
     </div>
     {#if autoHideOn && stripBox !== null}
       <!-- The reveal strip (ADR-0008): the bottom edge under the resting
@@ -1393,6 +1729,44 @@
 
   .dock-panel.high-contrast::before {
     border: 2px solid var(--text);
+  }
+
+  /* The drop gap: one slot at rest, the icon box at its bottom like
+     a slot's, never a pointer target. */
+  .drop-gap {
+    position: relative;
+    flex: none;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    box-sizing: border-box;
+    width: calc(var(--icon) + var(--slot-gap));
+    height: var(--icon);
+    transform-origin: 50% 100%;
+    pointer-events: none;
+  }
+
+  .drop-indicator {
+    position: relative;
+    flex: none;
+    box-sizing: border-box;
+    width: var(--icon);
+    height: var(--icon);
+    border: 2px dashed var(--accent);
+    border-radius: 22%;
+  }
+
+  .drop-indicator::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: var(--accent);
+    opacity: 0.18;
+  }
+
+  .dock-panel.high-contrast .drop-indicator {
+    border-color: var(--text);
   }
 
   /* Centred on the icons: 80 % of their height, 10 % off the bottom. */
