@@ -785,6 +785,37 @@ mod tests {
     }
 
     #[test]
+    fn primary_action_keeps_the_active_window_when_click_active_minimizes_is_off() {
+        let mut settings = minimal_settings();
+        settings.behavior.click_active_minimizes = false;
+        let mut engine = DockEngine::new(settings.clone());
+        engine.apply(added(win(1, r"C:\a.exe", "A")));
+        engine.apply(foreground(Some(1)));
+
+        // One window, active -> activated again, not minimised.
+        assert_eq!(
+            engine.primary_action("app:exe:c:/a.exe"),
+            ItemAction::ActivateWindow(WindowId(1))
+        );
+
+        // Several windows still cycle, as with the setting on.
+        engine.apply(added(win(2, r"C:\a.exe", "A2")));
+        assert_eq!(
+            engine.primary_action("app:exe:c:/a.exe"),
+            ItemAction::ActivateWindow(WindowId(2))
+        );
+
+        // The setting is read at click time: turning it on minimises again.
+        engine.apply(removed(2));
+        settings.behavior.click_active_minimizes = true;
+        engine.apply(EngineInput::SettingsChanged(settings));
+        assert_eq!(
+            engine.primary_action("app:exe:c:/a.exe"),
+            ItemAction::MinimizeWindow(WindowId(1))
+        );
+    }
+
+    #[test]
     fn identity_is_requested_once_until_resolved() {
         let mut engine = DockEngine::new(minimal_settings());
         let a = exe_id(r"C:\a.exe");
