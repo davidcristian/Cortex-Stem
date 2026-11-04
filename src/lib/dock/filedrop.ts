@@ -1,11 +1,13 @@
 /**
- * Pinning by dropping files on the dock: pure pieces, so the file
- * drag controller in `Dock.svelte` only measures, calls these, and renders
- * the gap.
+ * Dropping files on the dock: pinning them, or recycling them on
+ * the Recycle Bin item. Pure pieces, so the file drag controller in
+ * `Dock.svelte` only measures, calls these, and renders the gap or the
+ * highlighted bin.
  *
  * Which files can be pinned is Rust's decision (`pin_target`). The UI only
  * leaves out what cannot be a program, so a drag of documents makes no
- * pointless calls and opens no gap.
+ * pointless calls and opens no gap. Which paths can be recycled is Rust's
+ * decision too (`delete_to_recycle_bin`): the bin takes every path.
  */
 
 import type { AppId } from '$lib/ipc/generated/AppId';
@@ -144,6 +146,7 @@ export function gapAnchor(items: readonly DockItem[], index: number): GapAnchor 
 /** A dock item's horizontal extent where it is drawn now (viewport CSS px). */
 export interface ItemSpan {
   key: string;
+  kind: DockItemKind;
   left: number;
   right: number;
 }
@@ -153,31 +156,64 @@ export function itemAt(x: number, spans: readonly ItemSpan[]): ItemSpan | null {
   return spans.find((span) => x >= span.left && x < span.right) ?? null;
 }
 
+/**
+ * The item a file drag at `x` points at: the one under it (`itemAt`), or,
+ * past the right edge of every item, the last one when it is the Recycle
+ * Bin (always the last item), so the panel's padding beyond the bin counts
+ * as the bin. Without that, a drag carrying a program there would open the
+ * pin gap, the gap would push the bin under the pointer, the bin would
+ * close the gap again, and the two would take turns with every move.
+ */
+export function dropTargetAt(x: number, spans: readonly ItemSpan[]): ItemSpan | null {
+  const under = itemAt(x, spans);
+  if (under !== null) {
+    return under;
+  }
+  const last = spans.at(-1);
+  return last !== undefined && last.kind === 'recycleBin' && x >= last.right ? last : null;
+}
+
 /** Where a file drag points, as the dock measured it. */
 export interface FileDragSpot {
   /** Over the panel itself, not the transparent margin around it. */
   onPanel: boolean;
-  /** The item under the pointer (`itemAt`). */
+  /** The item the pointer is at (`dropTargetAt`). */
   over: ItemSpan | null;
   /** Where the pin gap would open (`dropIndex`). */
   index: number;
 }
 
 /**
- * What a file drag does at a spot: nothing, or pin at `index`.
+ * What a file drag carrying `paths` does at a spot: nothing; recycle every
+ * path, over the Recycle Bin item (`key`, which is highlighted meanwhile
+ * and opens no gap); or pin at `index`, anywhere else on the panel when at
+ * least one path is one `pinTargetFor` accepts.
  *
- * Which item is under the pointer is kept apart from where the pin gap
- * would open because a drop on the Recycle Bin item is to delete to the bin
- * instead of pinning (a further action decided here from `over`); for now
- * every spot on the panel pins.
- *
- * `pinnable`: the drag carries at least one path `pinTargetFor` accepts.
+ * The bin takes any drag that carries paths, documents and folders
+ * included: it is the one item a document can be dropped on. Off the panel
+ * (the transparent margin above it) nothing happens.
  */
-export type FileDropAction = { kind: 'none' } | { kind: 'pin'; index: number };
+export type FileDropAction =
+  { kind: 'none' } | { kind: 'recycle'; key: string } | { kind: 'pin'; index: number };
 
-export function fileDropAction(spot: FileDragSpot, pinnable: boolean): FileDropAction {
-  if (!spot.onPanel || !pinnable) {
+export function fileDropAction(spot: FileDragSpot, paths: readonly string[]): FileDropAction {
+  if (!spot.onPanel || paths.length === 0) {
+    return { kind: 'none' };
+  }
+  if (spot.over?.kind === 'recycleBin') {
+    return { kind: 'recycle', key: spot.over.key };
+  }
+  if (!paths.some((path) => pinTargetFor(path) !== null)) {
     return { kind: 'none' };
   }
   return { kind: 'pin', index: spot.index };
+}
+
+/** What the failure toast of a drop on the bin names: the one file or folder, or how many. */
+export function recycleSubject(paths: readonly string[]): string {
+  if (paths.length !== 1) {
+    return `${paths.length} items`;
+  }
+  const path = paths[0]!;
+  return fileNameOf(path.replace(/[/\\]+$/, '')) || path;
 }

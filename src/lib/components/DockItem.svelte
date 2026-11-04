@@ -43,6 +43,12 @@
     enter: boolean;
     /** Being dragged to a new place: raised, shadowed, no dots. */
     lifted: boolean;
+    /**
+     * A file drag points at this item and a drop would land on it
+     * (the Recycle Bin): the icon grows a little, as under the pointer. A
+     * transform only, so nothing reflows while the drag moves.
+     */
+    dropTarget: boolean;
     onprimary: (item: DockItem) => void;
     onmiddle: (item: DockItem) => void;
     oncontext: (item: DockItem, x: number, y: number) => void;
@@ -63,6 +69,7 @@
     animate,
     enter,
     lifted,
+    dropTarget,
     onprimary,
     onmiddle,
     oncontext,
@@ -193,6 +200,7 @@
   data-attention={attention || undefined}
   data-pinned={item.pinned || undefined}
   data-drag={lifted ? 'lifted' : undefined}
+  data-drop-target={dropTarget || undefined}
   in:itemTransition|global={{ enabled: animate && enter }}
   out:itemTransition|global={{ enabled: animate }}
   onintroend={onsettled}
@@ -309,6 +317,21 @@
     opacity: 0;
   }
 
+  /* A file drop would land here (the Recycle Bin): the icon grows
+     from its bottom edge like a magnified one, by a transform on the
+     bouncer so the slot keeps its size and nothing moves under the drag.
+     Scaled about the centre and raised by half the growth, so the bottom
+     stays put without changing `transform-origin`, which would make the
+     icon jump when the highlight eases away. `--drop-lift` also raises the
+     tooltip above the grown icon. */
+  .slot[data-drop-target] {
+    --drop-lift: 0.2;
+  }
+
+  .slot[data-drop-target] .bouncer {
+    transform: translateY(calc(-50% * var(--drop-lift))) scale(calc(1 + var(--drop-lift)));
+  }
+
   .icon img {
     display: block;
     width: 100%;
@@ -418,8 +441,9 @@
   .tooltip {
     position: absolute;
     left: 50%;
-    /* Above the icon, however far the magnification lifted its top edge. */
-    bottom: calc(100% + 10px + var(--icon) * (var(--scale, 1) - 1));
+    /* Above the icon, however far the magnification (or a drop target's
+       growth) lifted its top edge. */
+    bottom: calc(100% + 10px + var(--icon) * (var(--scale, 1) - 1 + var(--drop-lift, 0)));
     transform: translateX(-50%);
     padding: 4px 9px;
     border-radius: 7px;

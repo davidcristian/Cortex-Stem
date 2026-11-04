@@ -17,14 +17,15 @@
   } from '$lib/dock/autohide';
   import {
     dropIndex,
+    dropTargetAt,
     fileDropAction,
     fileNameOf,
     gapAnchor,
-    itemAt,
     orderWithDropped,
     pinCandidates,
     pinnedIds,
     pinTargetFor,
+    recycleSubject,
     sameAnchor,
     type FileDragSpot,
     type GapAnchor,
@@ -58,6 +59,7 @@
   import type { Backend, CssPoint, FileDragEvent } from '$lib/ipc/backend';
   import type { AppId } from '$lib/ipc/generated/AppId';
   import type { DockItem as DockItemModel } from '$lib/ipc/generated/DockItem';
+  import type { DockItemKind } from '$lib/ipc/generated/DockItemKind';
   import type { Rect } from '$lib/ipc/generated/Rect';
   import type { DockStore } from '$lib/stores/dock.svelte';
   import { describeError, Toasts } from '$lib/stores/toasts.svelte';
@@ -1162,12 +1164,18 @@
   // at the gap with one `reorder_pinned`; the dock keeps showing the gap
   // until the snapshot with that order arrives, and the first new item then
   // takes the gap's place.
+  //
+  // Over the Recycle Bin item no gap opens, whatever the drag
+  // carries: the item is highlighted instead, the way hover shows an item
+  // (its icon a little larger, its title pill), and a drop there sends
+  // every path to `delete_to_recycle_bin`. Its icon turns full from the
+  // snapshot Rust sends once the shell is done.
   /** Longest wait for the snapshot with the dropped apps in place; the gap closes after it anyway. */
   const LANDING_TIMEOUT_MS = 1500;
 
   interface FileDragSession {
-    /** The paths of the drag that may be programs, in its order. */
-    candidates: PinCandidate[];
+    /** Every path of the drag, in its order (`fileDropAction` decides what they are good for). */
+    paths: string[];
     /** The latest position (viewport CSS px). */
     x: number;
     y: number;
@@ -1185,6 +1193,8 @@
   let fileDrag: FileDragSession | null = null;
   /** Where the drop gap is drawn (`gapAnchor`), or `null`. */
   let dropGap = $state.raw<GapAnchor | null>(null);
+  /** The item a drop would land on instead of the gap (the Recycle Bin), highlighted; or `null`. */
+  let dropTargetKey = $state<string | null>(null);
   let landing: Landing | null = null;
   /** The item that took the gap's place: it does not grow in, and the gap does not shrink away. */
   let landedKey = $state<string | null>(null);
@@ -1219,7 +1229,7 @@
   function beginFileDrag(paths: readonly string[], at: CssPoint): void {
     // A session whose leave never came must not linger.
     endFileDrag(false, false);
-    fileDrag = { candidates: pinCandidates(paths), x: at.x, y: at.y, frame: 0 };
+    fileDrag = { paths: [...paths], x: at.x, y: at.y, frame: 0 };
     // Nothing magnified: the gap's place is found from where the slots are drawn.
     leaveHoverState();
     autoHideSend({ type: 'hold', hold: 'fileDrag', active: true });
@@ -1234,7 +1244,7 @@
     }
   }
 
-  /** Open, move or close the gap for where the drag is now. */
+  /** Open, move or close the gap, or highlight the bin, for where the drag is now. */
   function applyFileDrag(): void {
     const d = fileDrag;
     if (d === null) {
@@ -1248,8 +1258,9 @@
       // Like the pointer touching the strip: the dock comes up for the drop.
       autoHideSend({ type: 'strip' });
     }
-    const action = fileDropAction(fileDragSpot(d.x, d.y), d.candidates.length > 0);
+    const action = fileDropAction(fileDragSpot(d.x, d.y), d.paths);
     showGap(action.kind === 'pin' ? gapAnchor(items, action.index) : null);
+    dropTargetKey = action.kind === 'recycle' ? action.key : null;
   }
 
   /** Over the reveal strip (ADR-0008), where a hidden dock takes the pointer. */
@@ -1275,14 +1286,20 @@
     const centres: number[] = [];
     for (const el of slots) {
       const rect = el.getBoundingClientRect();
-      spans.push({ key: el.dataset.key ?? '', left: rect.left, right: rect.right });
+      spans.push({
+        key: el.dataset.key ?? '',
+        // `data-kind` is the item's `DockItem.kind` (DockItem.svelte and the separator slot).
+        kind: (el.dataset.kind ?? 'separator') as DockItemKind,
+        left: rect.left,
+        right: rect.right,
+      });
       if (el.dataset.kind === 'app' && el.dataset.pinned === 'true') {
         centres.push(rect.left + rect.width / 2);
       }
     }
     return {
       onPanel: rectContainsPoint(panel.getBoundingClientRect(), x, y),
-      over: itemAt(x, spans),
+      over: dropTargetAt(x, spans),
       index: dropIndex(x, centres),
     };
   }
@@ -1294,18 +1311,22 @@
   }
 
   function dropFiles(paths: readonly string[], at: CssPoint): void {
-    const candidates = pinCandidates(paths);
+    const action = fileDropAction(fileDragSpot(at.x, at.y), paths);
+    // Released on the dock, the pointer is there now; no `pointerenter` will say so.
+    endFileDrag(isOnDock(at.x, at.y), action.kind === 'pin');
+    if (action.kind === 'recycle') {
+      void recycleDropped(paths);
+      return;
+    }
     for (const path of paths) {
       if (pinTargetFor(path) === null) {
         console.info(`drop: ${path} is not a shortcut or a program; not pinned`);
       }
     }
-    const action = fileDropAction(fileDragSpot(at.x, at.y), candidates.length > 0);
-    // Released on the dock, the pointer is there now; no `pointerenter` will say so.
-    endFileDrag(isOnDock(at.x, at.y), action.kind === 'pin');
     if (action.kind !== 'pin') {
       return;
     }
+    const candidates = pinCandidates(paths);
     // A drop still landing shows the truth first; this one starts from it.
     finishLanding(false);
     showGap(gapAnchor(items, action.index));
@@ -1329,6 +1350,7 @@
     if (!keepGap && frozenItems === null) {
       showGap(null);
     }
+    dropTargetKey = null;
     autoHideSend({ type: 'pointer', inside: pointerOnDock });
     autoHideSend({ type: 'hold', hold: 'fileDrag', active: false });
     reportHitRegion();
@@ -1368,6 +1390,19 @@
       return;
     }
     checkLanding();
+  }
+
+  /**
+   * Send a drop on the Recycle Bin to the bin. Rust sorts the paths and the
+   * shell may ask the user first, so this can take a while; a refusal is
+   * reported like any failed command.
+   */
+  async function recycleDropped(paths: readonly string[]): Promise<void> {
+    try {
+      await backend.deleteToRecycleBin([...paths]);
+    } catch (err) {
+      report(`Moving ${recycleSubject(paths)} to the Recycle Bin`)(err);
+    }
   }
 
   /** The snapshot shows the dropped apps in their place: render it. */
@@ -1550,7 +1585,8 @@
               ? store.icon(item.iconKey, iconSizes.magnified)
               : null}
             {showDots}
-            tooltip={tooltipKey === item.key}
+            tooltip={tooltipKey === item.key || (dropTargetKey === item.key && tooltipsEnabled)}
+            dropTarget={dropTargetKey === item.key}
             bounce={bounceEnabled && store.bounceKey === item.key ? store.bounceSerial : 0}
             animate={itemMotion}
             enter={introsEnabled && item.key !== landedKey}

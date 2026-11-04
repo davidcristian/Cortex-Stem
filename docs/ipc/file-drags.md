@@ -26,10 +26,12 @@ command or event to this contract; a drop on the bin calls `delete_to_recycle_bi
   index. The insertion index is the number of pinned items whose drawn centre is left of the
   pointer. A drag with nothing pinnable opens no gap.
 - **Over the Recycle Bin.** While the pointer is over the Recycle Bin item's slot
-  (`DockItem.kind` `recycleBin`), no gap opens, whatever the drag contains (any file type,
-  folders). Instead the item is highlighted as hover shows an item: its icon grows a little (a
-  transform, so nothing reflows) and its title pill shows (when `appearance.tooltips` is on).
-  Elsewhere on the panel the drag pins as above.
+  (`DockItem.kind` `recycleBin`), or over the panel's padding past it, no gap opens, whatever the
+  drag contains (any file type, folders). The padding counts because the bin is the last item: a
+  gap opening there would push the bin under the pointer, and the two would alternate. Instead
+  the item is highlighted as hover shows an item: its icon grows a little (a transform, so
+  nothing reflows) and its title pill shows (when `appearance.tooltips` is on). Elsewhere on the
+  panel the drag pins as above.
 - **Drop.** Over the panel, the page calls `pin_target({ kind: 'shortcut', path })` for each
   `.lnk` path and `pin_target({ kind: 'exe', path, args: [], workingDir: null })` for each
   `.exe` path, one at a time in drag order. It skips other paths and logs them to the console.

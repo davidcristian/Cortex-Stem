@@ -5,6 +5,7 @@ import type { DockItemKind } from '$lib/ipc/generated/DockItemKind';
 
 import {
   dropIndex,
+  dropTargetAt,
   fileDropAction,
   fileNameOf,
   gapAnchor,
@@ -13,8 +14,10 @@ import {
   pinCandidates,
   pinnedIds,
   pinTargetFor,
+  recycleSubject,
   sameAnchor,
   type FileDragSpot,
+  type ItemSpan,
 } from './filedrop';
 
 function item(kind: DockItemKind, key: string, pinned = false): DockItem {
@@ -211,10 +214,10 @@ describe('sameAnchor', () => {
 });
 
 describe('itemAt', () => {
-  const SPANS = [
-    { key: 'a', left: 10, right: 66 },
-    { key: 'sep', left: 72, right: 73 },
-    { key: 'b', left: 79, right: 135 },
+  const SPANS: ItemSpan[] = [
+    { key: 'a', kind: 'app', left: 10, right: 66 },
+    { key: 'sep', kind: 'separator', left: 72, right: 73 },
+    { key: 'b', kind: 'app', left: 79, right: 135 },
   ];
 
   it('finds the item under the pointer; nothing between items', () => {
@@ -228,6 +231,27 @@ describe('itemAt', () => {
   });
 });
 
+describe('dropTargetAt', () => {
+  const app: ItemSpan = { key: 'app:a', kind: 'app', left: 10, right: 66 };
+  const sep: ItemSpan = { key: 'sep:3', kind: 'separator', left: 72, right: 73 };
+  const bin: ItemSpan = { key: 'fixed:recycle-bin', kind: 'recycleBin', left: 79, right: 135 };
+
+  it('is the item under the pointer, or nothing between items', () => {
+    expect(dropTargetAt(30, [app, sep, bin])).toBe(app);
+    expect(dropTargetAt(100, [app, sep, bin])).toBe(bin);
+    expect(dropTargetAt(70, [app, sep, bin])).toBeNull();
+    expect(dropTargetAt(5, [app, sep, bin])).toBeNull();
+  });
+
+  it('counts the padding past the Recycle Bin as the bin, so a gap can never push it under the pointer', () => {
+    expect(dropTargetAt(135, [app, sep, bin])).toBe(bin);
+    expect(dropTargetAt(143, [app, sep, bin])).toBe(bin);
+    // Only the bin: past another last item there is nothing.
+    expect(dropTargetAt(80, [app, sep])).toBeNull();
+    expect(dropTargetAt(80, [])).toBeNull();
+  });
+});
+
 describe('fileDropAction', () => {
   const spot = (over: Partial<FileDragSpot> = {}): FileDragSpot => ({
     onPanel: true,
@@ -235,15 +259,50 @@ describe('fileDropAction', () => {
     index: 2,
     ...over,
   });
+  const BIN: ItemSpan = { key: 'fixed:recycle-bin', kind: 'recycleBin', left: 600, right: 656 };
+  const APP: ItemSpan = { key: 'app:a', kind: 'app', left: 100, right: 156 };
+  const SEPARATOR: ItemSpan = { key: 'sep:3', kind: 'separator', left: 586, right: 587 };
+  const EXE = 'C:\\Tools\\putty.exe';
+  const TXT = 'C:\\Users\\me\\notes.txt';
+  const FOLDER = 'C:\\Users\\me\\Old photos';
 
-  it('pins at the index anywhere on the panel, whatever item is under the pointer', () => {
-    expect(fileDropAction(spot(), true)).toEqual({ kind: 'pin', index: 2 });
-    const bin = { key: 'fixed:recycle-bin', left: 0, right: 56 };
-    expect(fileDropAction(spot({ over: bin, index: 3 }), true)).toEqual({ kind: 'pin', index: 3 });
+  it('pins at the index anywhere else on the panel when the drag carries a program', () => {
+    expect(fileDropAction(spot(), [EXE])).toEqual({ kind: 'pin', index: 2 });
+    expect(fileDropAction(spot({ over: APP, index: 0 }), [TXT, EXE])).toEqual({
+      kind: 'pin',
+      index: 0,
+    });
+    // Next to the bin, on the separator or the padding, is not on the bin.
+    expect(fileDropAction(spot({ over: SEPARATOR, index: 3 }), [EXE])).toEqual({
+      kind: 'pin',
+      index: 3,
+    });
   });
 
-  it('does nothing off the panel or when nothing in the drag can be pinned', () => {
-    expect(fileDropAction(spot({ onPanel: false }), true)).toEqual({ kind: 'none' });
-    expect(fileDropAction(spot(), false)).toEqual({ kind: 'none' });
+  it('recycles over the Recycle Bin item, whatever the drag carries, and never pins there', () => {
+    const recycle = { kind: 'recycle', key: 'fixed:recycle-bin' };
+    expect(fileDropAction(spot({ over: BIN }), [EXE])).toEqual(recycle);
+    expect(fileDropAction(spot({ over: BIN }), [TXT, FOLDER])).toEqual(recycle);
+    expect(fileDropAction(spot({ over: BIN, index: 5 }), ['C:\\Shortcuts\\App.lnk'])).toEqual(
+      recycle,
+    );
+  });
+
+  it('does nothing off the panel, without paths, or elsewhere when nothing can be pinned', () => {
+    expect(fileDropAction(spot({ onPanel: false }), [EXE])).toEqual({ kind: 'none' });
+    expect(fileDropAction(spot({ onPanel: false, over: BIN }), [TXT])).toEqual({ kind: 'none' });
+    expect(fileDropAction(spot({ over: BIN }), [])).toEqual({ kind: 'none' });
+    expect(fileDropAction(spot(), [])).toEqual({ kind: 'none' });
+    expect(fileDropAction(spot(), [TXT, FOLDER])).toEqual({ kind: 'none' });
+    expect(fileDropAction(spot({ over: APP }), [TXT])).toEqual({ kind: 'none' });
+  });
+});
+
+describe('recycleSubject', () => {
+  it('names the one file or folder of a drop, or counts the items', () => {
+    expect(recycleSubject(['C:\\Users\\me\\notes.txt'])).toBe('notes.txt');
+    expect(recycleSubject(['C:\\Users\\me\\Old photos\\'])).toBe('Old photos');
+    expect(recycleSubject(['C:\\'])).toBe('C:');
+    expect(recycleSubject(['C:\\a.txt', 'C:\\b'])).toBe('2 items');
   });
 });
