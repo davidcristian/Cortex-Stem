@@ -2,8 +2,10 @@
 //!
 //! `shell:AppsFolder\<aumid>` parsing, environment-variable detection for
 //! shortcut targets, display-name fallbacks, version-resource lookups,
-//! icon-key construction and Windows command-line splitting/joining. Pure
-//! and tested here.
+//! icon-key construction, Windows command-line splitting/joining, and the
+//! packaged-executable rules (package full name from a path under
+//! `WindowsApps`, which of a package's applications an executable belongs
+//! to). Pure and tested here.
 //!
 //! Paths are handled as strings on purpose: `std::path::Path` only treats
 //! `\` as a separator on Windows, and these helpers must behave the same in
@@ -212,6 +214,167 @@ pub fn hwnd_icon_key(id: u64, process_id: u32) -> IconKey {
 pub fn parse_hwnd_icon_value(value: &str) -> Option<u64> {
     let id = value.split_once(':').map_or(value, |(id, _)| id);
     id.trim().parse().ok()
+}
+
+// ----- Packaged executables ---------------------------------------------------
+
+/// The directory that holds installed packages (`%ProgramFiles%\WindowsApps`,
+/// or `<drive>:\WindowsApps` for apps moved to another drive).
+pub const WINDOWS_APPS_DIR: &str = "WindowsApps";
+
+/// Where an executable lies inside an installed package.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PackagedExe<'a> {
+    /// The package directory under `WindowsApps`, which is the package full
+    /// name (`Microsoft.WindowsTerminal_1.24.12741.0_x64__8wekyb3d8bbwe`).
+    pub package_full_name: &'a str,
+    /// The rest of the path, relative to the package root, without leading
+    /// or trailing separators (`WindowsTerminal.exe`, `app\Claude.exe`).
+    pub relative_path: &'a str,
+}
+
+/// The package an executable belongs to, read from its path: the first
+/// `WindowsApps` component (any case, either separator) followed by a
+/// component shaped like a package full name ([`is_package_full_name`]) and
+/// at least one more component. `None` for every other path, including the
+/// app execution aliases under `%LOCALAPPDATA%\Microsoft\WindowsApps` (a file
+/// name or a family-name directory follows there, not a full name).
+pub fn packaged_exe(path: &str) -> Option<PackagedExe<'_>> {
+    let path = path.trim();
+    // (byte offset, component); separators are one ASCII byte each.
+    let mut components = Vec::new();
+    let mut offset = 0;
+    for component in path.split(['/', '\\']) {
+        components.push((offset, component));
+        offset += component.len() + 1;
+    }
+    components.windows(3).find_map(|w| {
+        let [(_, dir), (_, full_name), (rest_at, _)] = w else {
+            return None;
+        };
+        if !dir.eq_ignore_ascii_case(WINDOWS_APPS_DIR) || !is_package_full_name(full_name) {
+            return None;
+        }
+        let relative_path = path.get(*rest_at..)?.trim_matches(['/', '\\']);
+        (!relative_path.is_empty()).then_some(PackagedExe {
+            package_full_name: full_name,
+            relative_path,
+        })
+    })
+}
+
+/// Whether `name` has the shape of a package full name: five `_`-separated
+/// fields `<name>_<version>_<architecture>_<resource id>_<publisher id>`,
+/// where the name is non-empty, the version is four dot-separated numbers,
+/// the architecture and the publisher id are non-empty and alphanumeric, and
+/// the resource id (usually empty) may be anything without a `_`. The OS
+/// validates the rest when the name is used.
+pub fn is_package_full_name(name: &str) -> bool {
+    let fields: Vec<&str> = name.split('_').collect();
+    let [package, version, architecture, _resource_id, publisher_id] = fields.as_slice() else {
+        return false;
+    };
+    let alphanumeric = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric());
+    let version_parts: Vec<&str> = version.split('.').collect();
+    !package.trim().is_empty()
+        && version_parts.len() == 4
+        && version_parts.iter().all(|p| p.parse::<u16>().is_ok())
+        && alphanumeric(architecture)
+        && alphanumeric(publisher_id)
+}
+
+/// The full AppUserModelID for one entry of `GetPackageApplicationIds`. The
+/// API returns full AUMIDs (`<family>!<app id>`; measured on Windows 11 build
+/// 26300), but its documentation only says "app IDs", so an entry without a
+/// `!` is taken as package-relative and prefixed with the family name. `None`
+/// for a blank entry.
+pub fn package_app_aumid(family: &str, entry: &str) -> Option<String> {
+    let entry = entry.trim();
+    if entry.is_empty() {
+        return None;
+    }
+    if entry.contains('!') {
+        return Some(entry.to_owned());
+    }
+    Some(format!("{}!{entry}", family.trim()))
+}
+
+/// The strings an API wrote into `buffer` together with a table of pointers
+/// to them (`GetPackagesByPackageFamily`, `GetPackageApplicationIds`).
+/// `base` is the address of `buffer[0]`; every address must point inside
+/// the buffer at a UTF-16 boundary and the string must end in a NUL inside
+/// it, or the entry is skipped. Empty strings are skipped. Reads nothing
+/// through the pointers themselves.
+pub fn strings_at(buffer: &[u16], base: usize, addresses: &[usize]) -> Vec<String> {
+    addresses
+        .iter()
+        .filter_map(|&address| {
+            let offset = address.checked_sub(base)?;
+            if offset % 2 != 0 {
+                return None;
+            }
+            let units = buffer.get(offset / 2..)?;
+            let end = units.iter().position(|&u| u == 0)?;
+            (end > 0).then(|| String::from_utf16_lossy(&units[..end]))
+        })
+        .collect()
+}
+
+/// Whether two package-relative paths name the same file: either separator,
+/// no leading or trailing separators, compared without regard to case.
+pub fn same_relative_path(a: &str, b: &str) -> bool {
+    let normalise = |s: &str| {
+        s.trim()
+            .trim_matches(['/', '\\'])
+            .replace('/', "\\")
+            .to_lowercase()
+    };
+    normalise(a) == normalise(b)
+}
+
+/// Pick the application of an installed package that a packaged executable
+/// belongs to, or `None` when that is not certain. `apps` are the package's
+/// full AUMIDs (`GetPackageApplicationIds`), `executables` pairs AUMIDs with
+/// the manifest's `Executable` attribute (empty when the manifest could not
+/// be read), `relative_exe` is the executable's path inside the package and
+/// `shell_knows` says whether `shell:AppsFolder\<aumid>` resolves (asked only
+/// when it decides):
+/// 1. the package's only application;
+/// 2. else the only application whose `Executable` is this executable;
+/// 3. else, among the applications whose `Executable` is this executable
+///    (all of them when none is), the only one the shell knows.
+pub fn choose_package_app<'a>(
+    apps: &'a [String],
+    executables: &[(String, String)],
+    relative_exe: &str,
+    mut shell_knows: impl FnMut(&str) -> bool,
+) -> Option<&'a str> {
+    if let [only] = apps {
+        return Some(only.as_str());
+    }
+    let runs_this_exe = |aumid: &str| {
+        executables
+            .iter()
+            .any(|(a, exe)| a.eq_ignore_ascii_case(aumid) && same_relative_path(exe, relative_exe))
+    };
+    let by_exe: Vec<&'a str> = apps
+        .iter()
+        .map(String::as_str)
+        .filter(|&a| runs_this_exe(a))
+        .collect();
+    if let [only] = by_exe.as_slice() {
+        return Some(*only);
+    }
+    let candidates = if by_exe.is_empty() {
+        apps.iter().map(String::as_str).collect()
+    } else {
+        by_exe
+    };
+    let known: Vec<&'a str> = candidates.into_iter().filter(|&a| shell_knows(a)).collect();
+    match known.as_slice() {
+        [only] => Some(*only),
+        _ => None,
+    }
 }
 
 /// Where each part of a shortcut's identity comes from.
@@ -553,6 +716,255 @@ mod tests {
         assert_eq!(parse_hwnd_icon_value(""), None);
         assert_eq!(parse_hwnd_icon_value(":4242"), None);
         assert_eq!(parse_hwnd_icon_value("x:1"), None);
+    }
+
+    const TERMINAL_FULL_NAME: &str = "Microsoft.WindowsTerminal_1.24.12741.0_x64__8wekyb3d8bbwe";
+
+    #[test]
+    fn packaged_exes_are_found_under_windows_apps() {
+        assert_eq!(
+            packaged_exe(
+                r"C:\Program Files\WindowsApps\Microsoft.WindowsTerminal_1.24.12741.0_x64__8wekyb3d8bbwe\WindowsTerminal.exe"
+            ),
+            Some(PackagedExe {
+                package_full_name: TERMINAL_FULL_NAME,
+                relative_path: "WindowsTerminal.exe",
+            })
+        );
+        // Lower-cased, forward slashes (the form of an `exe:` id), a nested
+        // executable, another drive, and surrounding whitespace.
+        assert_eq!(
+            packaged_exe(
+                " c:/program files/windowsapps/claude_4.4212.0.0_x64__pzs8sxrjxfjjc/app/Claude.exe "
+            ),
+            Some(PackagedExe {
+                package_full_name: "claude_4.4212.0.0_x64__pzs8sxrjxfjjc",
+                relative_path: "app/Claude.exe",
+            })
+        );
+        assert_eq!(
+            packaged_exe(
+                r"D:\WindowsApps\Vendor.App_1.0.0.0_neutral_~_abcdefghijklm\bin\\app.exe\"
+            ),
+            Some(PackagedExe {
+                package_full_name: "Vendor.App_1.0.0.0_neutral_~_abcdefghijklm",
+                relative_path: r"bin\\app.exe",
+            })
+        );
+        // The first `WindowsApps` followed by a full name wins.
+        assert_eq!(
+            packaged_exe(r"C:\WindowsApps\x\WindowsApps\A_1.2.3.4_x86__p\a.exe")
+                .map(|p| p.package_full_name),
+            Some("A_1.2.3.4_x86__p")
+        );
+    }
+
+    #[test]
+    fn other_paths_are_not_packaged_exes() {
+        for path in [
+            r"C:\Program Files\Mozilla Firefox\firefox.exe",
+            // App execution aliases: a file, or a family-name directory.
+            r"C:\Users\me\AppData\Local\Microsoft\WindowsApps\wt.exe",
+            r"C:\Users\me\AppData\Local\Microsoft\WindowsApps\Microsoft.WindowsTerminal_8wekyb3d8bbwe\wt.exe",
+            // The package directory itself, with or without a separator.
+            r"C:\Program Files\WindowsApps\Microsoft.WindowsTerminal_1.24.12741.0_x64__8wekyb3d8bbwe",
+            r"C:\Program Files\WindowsApps\Microsoft.WindowsTerminal_1.24.12741.0_x64__8wekyb3d8bbwe\",
+            // Housekeeping directories and the mock's demo path.
+            r"C:\Program Files\WindowsApps\Deleted\x.exe",
+            r"C:\Program Files\WindowsApps\Terminal\WindowsTerminal.exe",
+            r"C:\Program Files\NotWindowsApps\A_1.2.3.4_x86__p\a.exe",
+            "",
+        ] {
+            assert_eq!(packaged_exe(path), None, "{path}");
+        }
+    }
+
+    #[test]
+    fn package_full_name_shape() {
+        assert!(is_package_full_name(TERMINAL_FULL_NAME));
+        assert!(is_package_full_name(
+            "Microsoft.WindowsTerminal_1.24.12741.0_neutral_~_8wekyb3d8bbwe"
+        ));
+        assert!(is_package_full_name(
+            "Microsoft.Lang_1.0.0.0_neutral_split.scale-125_8wekyb3d8bbwe"
+        ));
+        for name in [
+            // The family name: two fields.
+            "Microsoft.WindowsTerminal_8wekyb3d8bbwe",
+            // Version not four numbers, or out of range.
+            "A_1.2.3_x64__p",
+            "A_1.2.3.x_x64__p",
+            "A_1.2.3.70000_x64__p",
+            // Missing name, architecture or publisher id; one field too many.
+            "_1.2.3.4_x64__p",
+            "A_1.2.3.4___p",
+            "A_1.2.3.4_x64__",
+            "A_1.2.3.4_x64__p_q",
+            "A_1.2.3.4_x-64__p",
+            "Terminal",
+            "",
+        ] {
+            assert!(!is_package_full_name(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn package_app_entries_become_full_aumids() {
+        let family = "Microsoft.WindowsTerminal_8wekyb3d8bbwe";
+        assert_eq!(
+            package_app_aumid(family, "Microsoft.WindowsTerminal_8wekyb3d8bbwe!App"),
+            Some("Microsoft.WindowsTerminal_8wekyb3d8bbwe!App".into())
+        );
+        assert_eq!(
+            package_app_aumid(family, " App "),
+            Some("Microsoft.WindowsTerminal_8wekyb3d8bbwe!App".into())
+        );
+        assert_eq!(package_app_aumid(family, "  "), None);
+    }
+
+    /// A buffer laid out like `GetPackageApplicationIds` fills it: a table of
+    /// pointers followed by the strings they point at.
+    fn string_table(base: usize, strings: &[&str]) -> (Vec<u16>, Vec<usize>) {
+        // Leave room for the table itself, as the API does.
+        let mut buffer = vec![0u16; strings.len() * 4];
+        let mut addresses = Vec::new();
+        for s in strings {
+            addresses.push(base + buffer.len() * 2);
+            buffer.extend(s.encode_utf16());
+            buffer.push(0);
+        }
+        (buffer, addresses)
+    }
+
+    #[test]
+    fn strings_are_read_through_offsets_into_the_buffer() {
+        let base = 0x10_0000;
+        let (buffer, addresses) = string_table(base, &["A_p!App", "A_p!Sécond"]);
+        assert_eq!(
+            strings_at(&buffer, base, &addresses),
+            vec!["A_p!App".to_owned(), "A_p!Sécond".to_owned()]
+        );
+        // Outside the buffer, before it, between two units, or with no NUL
+        // before the end: skipped, never read.
+        let unterminated = vec![0x41u16, 0x42];
+        let bad = [
+            base - 2,
+            base + buffer.len() * 2,
+            addresses[0] + 1,
+            usize::MAX,
+        ];
+        assert!(strings_at(&buffer, base, &bad).is_empty());
+        assert!(strings_at(&unterminated, base, &[base]).is_empty());
+        // An empty string is skipped; a table with no entries reads nothing.
+        assert!(strings_at(&[0, 0], base, &[base]).is_empty());
+        assert!(strings_at(&buffer, base, &[]).is_empty());
+    }
+
+    #[test]
+    fn relative_paths_compare_without_case_or_separator_style() {
+        assert!(same_relative_path(r"app\Claude.exe", "APP/claude.EXE"));
+        assert!(same_relative_path(
+            r"\WindowsTerminal.exe",
+            "windowsterminal.exe/"
+        ));
+        assert!(!same_relative_path(r"amd64\cdb.exe", r"x86\cdb.exe"));
+        assert!(!same_relative_path("cdb.exe", r"amd64\cdb.exe"));
+    }
+
+    fn aumids(ids: &[&str]) -> Vec<String> {
+        ids.iter().map(|id| format!("F_p!{id}")).collect()
+    }
+
+    fn executables(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(id, exe)| (format!("F_p!{id}"), (*exe).to_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn the_only_application_is_chosen_without_asking_anything() {
+        let apps = aumids(&["App"]);
+        let chosen = choose_package_app(&apps, &[], "anything.exe", |_| {
+            panic!("the shell is not asked about a single application")
+        });
+        assert_eq!(chosen, Some("F_p!App"));
+        assert_eq!(choose_package_app(&[], &[], "x.exe", |_| true), None);
+    }
+
+    #[test]
+    fn several_applications_are_told_apart_by_executable() {
+        // The Store: one application per executable.
+        let apps = aumids(&["App", "StoreDesktopExtension", "StoreCLI"]);
+        let exes = executables(&[
+            ("App", "WinStore.App.exe"),
+            ("StoreDesktopExtension", "StoreDesktopExtension.exe"),
+            ("StoreCLI", "store.exe"),
+        ]);
+        let chosen = choose_package_app(&apps, &exes, "winstore.app.exe", |_| {
+            panic!("an executable match decides alone")
+        });
+        assert_eq!(chosen, Some("F_p!App"));
+        // A nested executable must match its whole relative path.
+        let apps = aumids(&["CdbX64", "CdbX86", "Shell"]);
+        let exes = executables(&[
+            ("CdbX64", r"amd64\cdb.exe"),
+            ("CdbX86", r"x86\cdb.exe"),
+            ("Shell", "DbgX.Shell.exe"),
+        ]);
+        assert_eq!(
+            choose_package_app(&apps, &exes, "x86/cdb.exe", |_| true),
+            Some("F_p!CdbX86")
+        );
+    }
+
+    #[test]
+    fn the_shell_breaks_a_tie_or_the_choice_is_left_open() {
+        // Two applications share the executable (Teams); the shell lists one.
+        let apps = aumids(&["RemoteModule", "Main", "Update"]);
+        let exes = executables(&[
+            ("RemoteModule", "ms-teams.exe"),
+            ("Main", "ms-teams.exe"),
+            ("Update", "ms-teamsupdate.exe"),
+        ]);
+        let mut asked = Vec::new();
+        let chosen = choose_package_app(&apps, &exes, "ms-teams.exe", |a| {
+            asked.push(a.to_owned());
+            a.ends_with("!Main")
+        });
+        assert_eq!(chosen, Some("F_p!Main"));
+        // Only the two candidates were looked up, not the updater.
+        assert_eq!(asked, vec!["F_p!RemoteModule", "F_p!Main"]);
+        // The shell lists both: ambiguous.
+        assert_eq!(
+            choose_package_app(&apps, &exes, "ms-teams.exe", |_| true),
+            None
+        );
+
+        // No application runs this executable (a helper process, or the
+        // manifest could not be read): the one the shell lists, if alone.
+        let apps = aumids(&["Spotify", "SpotifyCli", "Widget"]);
+        let exes = executables(&[
+            ("Spotify", "SpotifyMigrator.exe"),
+            ("SpotifyCli", "spotify_cli.exe"),
+            ("Widget", "SpotifyXboxGamebarWebView.exe"),
+        ]);
+        assert_eq!(
+            choose_package_app(&apps, &exes, "Spotify.exe", |a| a.ends_with("!Spotify")),
+            Some("F_p!Spotify")
+        );
+        assert_eq!(
+            choose_package_app(&apps, &[], "Spotify.exe", |a| a.ends_with("!Spotify")),
+            Some("F_p!Spotify")
+        );
+        assert_eq!(
+            choose_package_app(&apps, &exes, "Spotify.exe", |_| true),
+            None
+        );
+        assert_eq!(
+            choose_package_app(&apps, &exes, "Spotify.exe", |_| false),
+            None
+        );
     }
 
     #[test]
