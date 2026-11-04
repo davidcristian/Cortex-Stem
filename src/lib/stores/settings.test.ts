@@ -142,6 +142,7 @@ class FakeBackend implements Backend {
   async setDockContentSize(): Promise<void> {}
   async setDockHitRegion(): Promise<void> {}
   async shellAction(): Promise<void> {}
+  async deleteToRecycleBin(): Promise<void> {}
   async openSettings(): Promise<void> {}
   async quit(): Promise<void> {}
   async showItemMenu(): Promise<void> {}

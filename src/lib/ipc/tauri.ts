@@ -168,6 +168,10 @@ export class TauriBackend implements Backend {
     return invoke<void>('shell_action', { action });
   }
 
+  deleteToRecycleBin(paths: string[]): Promise<void> {
+    return invoke<void>('delete_to_recycle_bin', { paths });
+  }
+
   openSettings(): Promise<void> {
     return invoke<void>('open_settings');
   }

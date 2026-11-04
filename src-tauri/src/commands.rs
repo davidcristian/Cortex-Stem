@@ -1,4 +1,4 @@
-//! Tauri commands, one per entry in `docs/ipc/commands.md` (v1.1). They
+//! Tauri commands, one per entry in `docs/ipc/commands.md` (v1.8). They
 //! validate and clamp their arguments, then translate and delegate to
 //! `stem-service` (semantics live there).
 //!
@@ -14,9 +14,12 @@
 //! blocks on them. The bodies contain no `.await`: they simply run off the
 //! main thread. The `get_*` getters (a mutex read) and the window-geometry
 //! commands (which must touch the window on the main thread) stay
-//! synchronous.
+//! synchronous. `delete_to_recycle_bin` can wait on the user for as long as
+//! the shell's dialogs are up, so it goes one step further and hands the
+//! call to Tauri's blocking pool, keeping the async runtime's workers free.
 
 use std::fmt::{Debug, Display};
+use std::sync::Arc;
 
 use base64::Engine as _;
 use stem_core::{
@@ -59,6 +62,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         set_dock_content_size,
         set_dock_hit_region,
         shell_action,
+        delete_to_recycle_bin,
         open_settings,
         reset_settings,
         quit,
@@ -237,6 +241,44 @@ fn set_dock_hit_region(
 #[tauri::command]
 async fn shell_action(service: State<'_, AppService>, action: ShellAction) -> CmdResult<()> {
     checked("shell_action", &action, service.0.shell_action(action))
+}
+
+/// Move the files and folders of a drop on the Recycle Bin item to the bin
+/// (`docs/ipc/file-drags.md`). Only a dock window may call it. The
+/// shell's file operation waits for the user while its dialogs are up, so
+/// the service call runs on Tauri's blocking pool rather than on a worker
+/// of the async runtime (the shell work itself runs on a thread of the
+/// platform's own); the command resolves when the shell is done. A failure
+/// is logged with the window, the number of paths and the first one.
+#[tauri::command]
+async fn delete_to_recycle_bin(
+    service: State<'_, AppService>,
+    window: tauri::WebviewWindow,
+    paths: Vec<String>,
+) -> CmdResult<()> {
+    let args = (
+        window.label().to_owned(),
+        paths.len(),
+        paths.first().cloned(),
+    );
+    if !window.label().starts_with(crate::windows::DOCK_LABEL) {
+        return checked(
+            "delete_to_recycle_bin",
+            &args,
+            Err::<(), _>("only dock windows take file drops"),
+        );
+    }
+    let service = Arc::clone(&service.0);
+    let joined =
+        tauri::async_runtime::spawn_blocking(move || service.delete_to_recycle_bin(&paths)).await;
+    match joined {
+        Ok(result) => checked("delete_to_recycle_bin", &args, result),
+        Err(e) => checked(
+            "delete_to_recycle_bin",
+            &args,
+            Err::<(), _>(format!("the delete task did not finish: {e}")),
+        ),
+    }
 }
 
 /// Open the settings window, or focus it if it is already open.

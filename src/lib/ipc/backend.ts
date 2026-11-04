@@ -1,5 +1,5 @@
 /**
- * The frontend's only door to the Rust side (docs/ipc/, contract v1.7).
+ * The frontend's only door to the Rust side (docs/ipc/, contract v1.8).
  *
  * One method per command and one `on` subscription per event (plus
  * `onFileDrag` for Tauri's own file drag events). Components
@@ -64,7 +64,7 @@ export type FileDragEvent =
 export type FileDragHandler = (event: FileDragEvent) => void;
 
 /**
- * Commands and events of docs/ipc/ v1.7. Method names are the command
+ * Commands and events of docs/ipc/ v1.8. Method names are the command
  * names in camelCase; argument order follows the command's argument list.
  *
  * Failed commands reject with a `string` (the Rust error message).
@@ -99,6 +99,13 @@ export interface Backend {
   setDockHitRegion(panel: Rect, envelope: Rect): Promise<void>;
   /** Run a shell action directly (menus, Recycle Bin "Empty"). */
   shellAction(action: ShellAction): Promise<void>;
+  /**
+   * Move files and folders to the Recycle Bin: what a file drop on its item
+   * does (docs/ipc/file-drags.md). `paths` as the drop gave them.
+   * Resolves once the shell is done, its own dialogs included; rejects when
+   * nothing could be moved, the user cancelled, or an item was refused.
+   */
+  deleteToRecycleBin(paths: string[]): Promise<void>;
   /** Open the settings window, or focus it if it is already open. */
   openSettings(): Promise<void>;
   /** Restore and persist the defaults; Rust emits `dock://settings` and returns what it kept. */

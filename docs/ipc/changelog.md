@@ -3,6 +3,10 @@
 This file lists every version of the [IPC contract](index.md), newest first. A section name links
 to the file that covers that section now.
 
+- **v1.8 (Recycle Bin drops):** `delete_to_recycle_bin { paths }` added
+  (`Backend.deleteToRecycleBin`): a file drop on the Recycle Bin item highlights it instead of
+  opening the pin gap, and moves every dropped path to the bin; [File drags](file-drags.md)
+  describes it. No event or payload type changed.
 - **v1.7 (file drops):** `Backend.onFileDrag` added over Tauri's own `tauri://drag-*` webview
   events, with positions converted to CSS px in `TauriBackend`; new section
   [File drags](file-drags.md). No command, event or payload type of this contract changed.

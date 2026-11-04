@@ -10,6 +10,8 @@ import {
   defaultSettings,
   fileStem,
   MockBackend,
+  nothingToRecycle,
+  recyclePlan,
   validateSettings,
   type MockOptions,
 } from './mock';
@@ -320,6 +322,102 @@ describe('file drags (docs/ipc/file-drags.md; simulated: a browser gets no OLE d
     expect(other).toEqual(['enter', 'over', 'leave', 'leave']);
     // A drag by itself pins nothing: that is the UI's call.
     expect(b.calls).toEqual([]);
+  });
+});
+
+describe('the Recycle Bin drop (mirror of rules::recycle and the service)', () => {
+  it('recyclePlan keeps plain absolute paths in the shell form, like plan_recycle', () => {
+    expect(
+      recyclePlan([
+        'C:\\Users\\me\\Desktop\\notes.txt',
+        'C:/Users/me/Desktop/Folder/',
+        'd:\\Data\\\\archive.zip',
+        '//nas/share/report.pdf',
+      ]),
+    ).toEqual({
+      recycle: [
+        'C:\\Users\\me\\Desktop\\notes.txt',
+        'C:\\Users\\me\\Desktop\\Folder',
+        'd:\\Data\\archive.zip',
+        '\\\\nas\\share\\report.pdf',
+      ],
+      skipped: [],
+    });
+  });
+
+  it('recyclePlan leaves out odd paths, roots, missing ones, repeats and folder contents', () => {
+    const plan = recyclePlan(
+      [
+        'notes.txt',
+        'C:\\',
+        '\\\\nas\\share',
+        '\\\\?\\C:\\x',
+        'C:\\a\\..\\b',
+        'C:\\Work\\report.docx',
+        'C:\\Work\\gone.txt',
+        'c:/work/REPORT.DOCX',
+        'C:\\Work\\Drafts\\one.txt',
+        'C:\\Work\\Drafts',
+        'C:\\Work\\Drafts2\\two.txt',
+      ],
+      (path) => !path.endsWith('gone.txt'),
+    );
+    expect(plan.recycle).toEqual([
+      'C:\\Work\\report.docx',
+      'C:\\Work\\Drafts',
+      'C:\\Work\\Drafts2\\two.txt',
+    ]);
+    expect(plan.skipped.map((s) => [s.path, s.reason])).toEqual([
+      ['notes.txt', 'notAFilePath'],
+      ['C:\\', 'root'],
+      ['\\\\nas\\share', 'root'],
+      ['\\\\?\\C:\\x', 'notAFilePath'],
+      ['C:\\a\\..\\b', 'notAFilePath'],
+      ['C:\\Work\\gone.txt', 'missing'],
+      ['c:/work/REPORT.DOCX', 'duplicate'],
+      ['C:\\Work\\Drafts\\one.txt', 'insideDropped'],
+    ]);
+  });
+
+  it('nothingToRecycle says why, in the words of nothing_to_recycle', () => {
+    expect(nothingToRecycle({ recycle: [], skipped: [] })).toBe(
+      'no paths to move to the Recycle Bin',
+    );
+    expect(nothingToRecycle(recyclePlan(['C:\\Users\\me\\notes.txt'], () => false))).toBe(
+      'C:\\Users\\me\\notes.txt does not exist',
+    );
+    expect(nothingToRecycle(recyclePlan(['C:\\a.txt', 'C:\\b.txt'], () => false))).toBe(
+      'none of the 2 paths exists',
+    );
+    expect(nothingToRecycle(recyclePlan(['C:\\', 'notes.txt']))).toBe(
+      'none of the 2 paths can be moved to the Recycle Bin',
+    );
+  });
+
+  it('deleteToRecycleBin records the paths and the bin turns full at once', async () => {
+    const b = fast();
+    await b.shellAction('emptyRecycleBin');
+    const states = recordStates(b);
+    const paths = ['C:\\Users\\me\\Desktop\\notes.txt', 'C:\\Users\\me\\Desktop\\Old photos'];
+
+    await b.deleteToRecycleBin(paths);
+    expect(b.calls.at(-1)).toEqual({ type: 'deleteToRecycleBin', paths });
+    expect(states).toHaveLength(1);
+    expect(item(states[0]!, 'fixed:recycle-bin').iconKey).toBe('shell:recycle-bin-full');
+    // Nothing else happened: no pin, no launch.
+    expect(b.calls.map((c) => c.type)).toEqual(['shell', 'deleteToRecycleBin']);
+  });
+
+  it('an empty drop asks nothing; nothing usable rejects like Rust', async () => {
+    const b = fast();
+    await b.shellAction('emptyRecycleBin');
+    await b.deleteToRecycleBin([]);
+    expect(b.calls).toEqual([{ type: 'shell', action: 'emptyRecycleBin' }]);
+    await expect(b.deleteToRecycleBin(['C:\\'])).rejects.toBe('C:\\ is a drive or share root');
+    expect(b.calls.at(-1)).toEqual({ type: 'deleteToRecycleBin', paths: ['C:\\'] });
+    expect(item(await b.getDockState(), 'fixed:recycle-bin').iconKey).toBe(
+      'shell:recycle-bin-empty',
+    );
   });
 });
 
