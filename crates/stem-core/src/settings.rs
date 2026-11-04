@@ -23,6 +23,9 @@ use crate::model::{AppId, LaunchTarget};
 /// breaking change needs a migration step in [`Settings::migrate`].
 pub const SETTINGS_VERSION: u32 = 1;
 
+/// Default of [`Behavior::toggle_shortcut`].
+pub const DEFAULT_TOGGLE_SHORTCUT: &str = "Ctrl+Alt+D";
+
 #[derive(Debug, Error)]
 pub enum SettingsError {
     #[error("settings file is not valid JSON: {0}")]
@@ -461,6 +464,20 @@ pub struct Behavior {
     /// click, including on its empty part. Off is meant for diagnosis, not
     /// as a preference.
     pub click_through: bool,
+    /// Global keyboard shortcut that shows or hides the dock from any app,
+    /// like a left click on the tray icon. It is written as modifiers
+    /// first, then one key, joined by `+`, such as `Ctrl+Alt+D`; letter case
+    /// does not matter. The modifiers are `Ctrl`, `Alt`, `Shift` and `Super`
+    /// (the Windows key). The keys are `A`..`Z`, `0`..`9`, `F1`..`F24`,
+    /// `Space`, `Enter`, `Tab`, `Up`, `Down`, `Left`, `Right`, `Home`, `End`,
+    /// `PageUp`, `PageDown`, `Insert`, `Delete` and punctuation such as `,`
+    /// or `/`.
+    /// Unless the key is one of `F1`..`F24`, the shortcut needs `Ctrl`,
+    /// `Alt` or `Super`, so that ordinary typing never triggers it. Empty
+    /// means no shortcut. A value that Stem cannot register (an unknown
+    /// key, or one another app already holds) is kept as written, but no
+    /// shortcut is active and the log has a warning.
+    pub toggle_shortcut: String,
 }
 
 impl Default for Behavior {
@@ -471,6 +488,7 @@ impl Default for Behavior {
             show_only_current_monitor: false,
             running_indicators: true,
             click_through: true,
+            toggle_shortcut: DEFAULT_TOGGLE_SHORTCUT.to_owned(),
         }
     }
 }
@@ -639,6 +657,9 @@ mod tests {
                 show_only_current_monitor: rng.bool(),
                 running_indicators: rng.bool(),
                 click_through: rng.bool(),
+                toggle_shortcut: rng
+                    .pick(&["", " ", DEFAULT_TOGGLE_SHORTCUT, "ctrl+shift+F9", "Nope+?"])
+                    .to_owned(),
             },
             pinned: (0..rng.below(8))
                 .map(|_| {
@@ -687,6 +708,28 @@ mod tests {
         assert_eq!(s.icon_size, 64);
         assert_eq!(s.magnification.max_scale, 2.0);
         assert!(s.magnification.enabled);
+    }
+
+    #[test]
+    fn toggle_shortcut_defaults_when_missing_and_keeps_what_is_written() {
+        assert_eq!(Behavior::default().toggle_shortcut, "Ctrl+Alt+D");
+
+        // A file written before the field existed (here a v0 file, without
+        // a version either) gets the default next to its other values.
+        let old = Settings::from_json(r#"{"behavior": {"clickActiveMinimizes": false}}"#).unwrap();
+        assert!(!old.behavior.click_active_minimizes);
+        assert_eq!(old.behavior.toggle_shortcut, DEFAULT_TOGGLE_SHORTCUT);
+        assert_eq!(old.version, SETTINGS_VERSION);
+
+        // Empty (no shortcut) and values the app cannot register are kept
+        // as written, so the user sees and can fix them.
+        for written in ["", "Shift+Alt+F12", "not a shortcut"] {
+            let json = format!(r#"{{"behavior": {{"toggleShortcut": {written:?}}}}}"#);
+            let s = Settings::from_json(&json).unwrap();
+            assert_eq!(s.behavior.toggle_shortcut, written);
+            assert!(s.to_json_pretty().contains(r#""toggleShortcut""#));
+            assert_eq!(Settings::from_json(&s.to_json_pretty()).unwrap(), s);
+        }
     }
 
     #[test]

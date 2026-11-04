@@ -144,6 +144,7 @@ export function defaultSettings(): Settings {
       showOnlyCurrentMonitor: false,
       runningIndicators: true,
       clickThrough: true,
+      toggleShortcut: 'Ctrl+Alt+D',
     },
     pinned: [],
     system: {

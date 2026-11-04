@@ -31,4 +31,20 @@ runningIndicators: boolean,
  * click, including on its empty part. Off is meant for diagnosis, not
  * as a preference.
  */
-clickThrough: boolean, };
+clickThrough: boolean, 
+/**
+ * Global keyboard shortcut that shows or hides the dock from any app,
+ * like a left click on the tray icon. It is written as modifiers
+ * first, then one key, joined by `+`, such as `Ctrl+Alt+D`; letter case
+ * does not matter. The modifiers are `Ctrl`, `Alt`, `Shift` and `Super`
+ * (the Windows key). The keys are `A`..`Z`, `0`..`9`, `F1`..`F24`,
+ * `Space`, `Enter`, `Tab`, `Up`, `Down`, `Left`, `Right`, `Home`, `End`,
+ * `PageUp`, `PageDown`, `Insert`, `Delete` and punctuation such as `,`
+ * or `/`.
+ * Unless the key is one of `F1`..`F24`, the shortcut needs `Ctrl`,
+ * `Alt` or `Super`, so that ordinary typing never triggers it. Empty
+ * means no shortcut. A value that Stem cannot register (an unknown
+ * key, or one another app already holds) is kept as written, but no
+ * shortcut is active and the log has a warning.
+ */
+toggleShortcut: string, };
