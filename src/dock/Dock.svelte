@@ -1139,6 +1139,16 @@
     });
   });
 
+  // An app asking for attention brings a hidden dock back and keeps
+  // it up until no item needs attention any more, whatever the motion
+  // settings: the wiggle may be off, the item still has to be seen. From the
+  // snapshot, not the rendered list a file drop may be holding.
+  const needsAttention = $derived(store.state?.items.some((i) => i.needsAttention) ?? false);
+  $effect(() => {
+    const active = needsAttention;
+    untrack(() => autoHideSend({ type: 'hold', hold: 'attention', active }));
+  });
+
   // --- Drop files to pin ------------------------------------------------------------
   // A file dragged from Explorer is an OLE drag: no pointer or HTML5 drag
   // event reaches the page. Tauri reports it instead (`Backend.onFileDrag`,

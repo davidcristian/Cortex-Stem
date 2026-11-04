@@ -30,7 +30,11 @@
     tooltip: boolean;
     /** Changes on every `dock://item-bounce` for this item; 0 = never. */
     bounce: number;
-    /** False under `prefers-reduced-motion` (no bounce, no wiggle, no enter/leave). */
+    /**
+     * False under `prefers-reduced-motion` (no bounce, no wiggle, no
+     * enter/leave). The attention wiggle follows only this: the
+     * launch bounce has its own setting (`appearance.bounceOnLaunch`).
+     */
     animate: boolean;
     /**
      * Play the enter animation if this item appears now. Off until the dock
@@ -84,7 +88,23 @@
   /** A second, larger bitmap exists for magnification; `data-magnified` swaps to it. */
   const dual = $derived(iconState === 'loaded' && typeof magnifiedIconUrl === 'string');
   const windowCount = $derived(item.windows.length);
-  const dotCount = $derived(showDots && item.kind === 'app' ? Math.min(3, windowCount) : 0);
+  /**
+   * An app asking for attention also gets a still cue: its dots give
+   * way to one short pill in the attention colour, shown even with the
+   * running indicators off. The wiggle alone would leave nothing to see under
+   * reduced motion, and the pill differs from the dots by its shape, so it
+   * reads whatever the accent colour is.
+   */
+  const attention = $derived(item.kind === 'app' && item.needsAttention);
+  const dotCount = $derived.by(() => {
+    if (item.kind !== 'app') {
+      return 0;
+    }
+    if (attention) {
+      return 1;
+    }
+    return showDots ? Math.min(3, windowCount) : 0;
+  });
   const allMinimised = $derived(windowCount > 0 && item.windows.every((w) => w.isMinimized));
   const label = $derived.by(() => {
     const parts = [item.title];
@@ -170,6 +190,7 @@
   data-kind={item.kind}
   data-icon={iconState}
   data-active={item.isActive || undefined}
+  data-attention={attention || undefined}
   data-pinned={item.pinned || undefined}
   data-drag={lifted ? 'lifted' : undefined}
   in:itemTransition|global={{ enabled: animate && enter }}
@@ -188,7 +209,7 @@
     <div class="tooltip" role="tooltip">{item.title}</div>
   {/if}
   <div class="bouncer" bind:this={bouncer}>
-    <div class="wiggler" class:attention={item.needsAttention && animate}>
+    <div class="wiggler" class:attention={attention && animate}>
       <div class="icon" class:dual>
         {#if shellName !== null}
           <ShellIcon name={shellName} />
@@ -211,7 +232,13 @@
       </div>
     </div>
   </div>
-  <div class="dots" class:active={item.isActive} class:dim={allMinimised} aria-hidden="true">
+  <div
+    class="dots"
+    class:active={item.isActive}
+    class:dim={allMinimised}
+    class:attention
+    aria-hidden="true"
+  >
     {#each { length: dotCount } as _, i (i)}
       <i></i>
     {/each}
@@ -376,6 +403,16 @@
   .dots.active i {
     opacity: 1;
     box-shadow: 0 0 4px var(--accent);
+  }
+
+  /* Needs attention: a still cue next to the wiggle, the only one
+     under reduced motion: one pill, three dots wide, in the attention colour.
+     Wins over `dim`: minimised apps flash too. */
+  .dots.attention i {
+    width: calc(var(--dot-size) * 3);
+    border-radius: calc(var(--dot-size) / 2);
+    background: var(--attention);
+    opacity: 1;
   }
 
   .tooltip {

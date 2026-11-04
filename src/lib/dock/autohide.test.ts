@@ -8,6 +8,7 @@ import {
   isAutoHidden,
   REVEAL_STRIP_PX,
   revealStrip,
+  REVEALING_HOLDS,
   shownHitRegion,
   type AutoHideEvent,
   type AutoHideState,
@@ -183,20 +184,23 @@ describe('autoHideStep', () => {
     expect(autoHideStep(off, { type: 'strip' })).toEqual({ state: off, timer: 'none' });
   });
 
-  it.each(['drag', 'menu', 'bounce', 'fileDrag'] as const)('never hides during a %s', (hold) => {
-    const h = always(250)
-      .send({ type: 'pointer', inside: true })
-      .send({ type: 'hold', hold, active: true })
-      .send({ type: 'pointer', inside: false });
-    expect(h.phase).toBe('shown');
-    h.advance(10_000);
-    expect(h.phase).toBe('shown');
-    // The countdown starts when the hold ends with the pointer away.
-    h.send({ type: 'hold', hold, active: false });
-    expect(h.phase).toBe('pending');
-    h.advance(250);
-    expect(h.phase).toBe('hidden');
-  });
+  it.each(['drag', 'menu', 'bounce', 'fileDrag', 'attention'] as const)(
+    'never hides during a %s hold',
+    (hold) => {
+      const h = always(250)
+        .send({ type: 'pointer', inside: true })
+        .send({ type: 'hold', hold, active: true })
+        .send({ type: 'pointer', inside: false });
+      expect(h.phase).toBe('shown');
+      h.advance(10_000);
+      expect(h.phase).toBe('shown');
+      // The countdown starts when the hold ends with the pointer away.
+      h.send({ type: 'hold', hold, active: false });
+      expect(h.phase).toBe('pending');
+      h.advance(250);
+      expect(h.phase).toBe('hidden');
+    },
+  );
 
   it('a file dragged onto the strip reveals; the drag holds it; its leave starts the countdown', () => {
     // What Dock.svelte sends for an OLE drag: the hold on enter, `strip`
@@ -257,6 +261,62 @@ describe('autoHideStep', () => {
     expect(h.phase).toBe('hidden');
     h.send({ type: 'hold', hold: 'bounce', active: false }).advance(10_000);
     expect(h.phase).toBe('hidden');
+  });
+
+  it('an item that needs attention brings a hidden dock back and keeps it up until it is answered', () => {
+    expect([...REVEALING_HOLDS]).toEqual(['attention']);
+    const h = always(250).advance(250);
+    expect(h.phase).toBe('hidden');
+    h.send({ type: 'hold', hold: 'attention', active: true });
+    expect(h.phase).toBe('shown');
+    // Revealed for the item, not for the pointer: it is still away.
+    expect(h.state.pointerInside).toBe(false);
+    h.advance(10_000);
+    expect(h.phase).toBe('shown');
+    // The pointer visiting and leaving does not hide it while the item waits.
+    h.send({ type: 'pointer', inside: true }).send({ type: 'pointer', inside: false });
+    h.advance(10_000);
+    expect(h.phase).toBe('shown');
+    // The window was activated from elsewhere: the countdown starts.
+    h.send({ type: 'hold', hold: 'attention', active: false });
+    expect(h.phase).toBe('pending');
+    h.advance(250);
+    expect(h.phase).toBe('hidden');
+  });
+
+  it('attention answered from the dock itself leaves it up under the pointer', () => {
+    const h = always(250).advance(250);
+    h.send({ type: 'hold', hold: 'attention', active: true });
+    // The user clicks the wiggling icon: the pointer is over the panel when the item is answered.
+    h.send({ type: 'pointer', inside: true }).send({
+      type: 'hold',
+      hold: 'attention',
+      active: false,
+    });
+    h.advance(10_000);
+    expect(h.phase).toBe('shown');
+    h.send({ type: 'pointer', inside: false }).advance(250);
+    expect(h.phase).toBe('hidden');
+  });
+
+  it('attention reveals nothing with auto-hide off and repeats are harmless', () => {
+    const off = new Harness().send({ type: 'configure', mode: 'off', delayMs: 250 });
+    off.send({ type: 'hold', hold: 'attention', active: true });
+    expect(off.phase).toBe('shown');
+    expect(off.timers.at(-1)).toBe('none');
+    // Turned on while an item waits: it stays up.
+    off.send({ type: 'configure', mode: 'always', delayMs: 250 }).advance(10_000);
+    expect(off.phase).toBe('shown');
+
+    const h = always(250).advance(250);
+    h.send({ type: 'hold', hold: 'attention', active: true });
+    h.send({ type: 'hold', hold: 'attention', active: true });
+    expect(h.phase).toBe('shown');
+    expect(h.timers.slice(-2)).toEqual(['none', 'none']);
+    // Ending a hold that never began changes nothing.
+    const quiet = always(250).advance(250);
+    quiet.send({ type: 'hold', hold: 'attention', active: false });
+    expect(quiet.phase).toBe('hidden');
   });
 
   it('turning auto-hide off reveals at once and stops the countdown', () => {
@@ -326,6 +386,10 @@ describe('autoHideStep', () => {
     const before = always(250).state;
     const copy = structuredClone(before);
     autoHideStep(before, { type: 'hold', hold: 'drag', active: true });
+    const hidden = always(0).state;
+    const hiddenCopy = structuredClone(hidden);
+    autoHideStep(hidden, { type: 'hold', hold: 'attention', active: true });
+    expect(hidden).toEqual(hiddenCopy);
     autoHideStep(before, { type: 'pointer', inside: true });
     autoHideStep(before, { type: 'configure', mode: 'off', delayMs: 0 });
     expect(before).toEqual(copy);

@@ -55,6 +55,8 @@ body {
   --tooltip-border: rgba(255, 255, 255, 0.14);
   --tile-neutral: rgba(255, 255, 255, 0.16);
   --focus-ring: #4cc2ff;
+  /* An app asking for attention: Windows' orange. */
+  --attention: #f7630c;
 }
 
 :root[data-theme='light'] {
@@ -73,6 +75,8 @@ body {
   --tooltip-border: rgba(0, 0, 0, 0.1);
   --tile-neutral: rgba(0, 0, 0, 0.14);
   --focus-ring: #005fb8;
+  /* Darker on the light panel so the attention pill keeps a 3:1 contrast. */
+  --attention: #ca5010;
 }
 
 /* Browser-only demo wallpaper (mock backend) so translucency and blur are

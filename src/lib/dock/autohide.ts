@@ -10,7 +10,7 @@
  *   shown ──pointer out, nothing held──▶ pending ──delayMs──▶ hidden
  *     ▲                                    │                    │
  *     └─────pointer back, or a hold────────┘                    │
- *     └────────────────────strip touched────────────────────────┘
+ *     └──────────strip touched, or an item needs attention──────┘
  * ```
  *
  * Only `autoHide.mode = always` hides. `off` never does, and neither does
@@ -22,6 +22,10 @@
  * Once hidden, the reveal strip brings the dock back, and so does the dock
  * window being shown on request (ADR-0008: the tray and the toggle shortcut
  * still show it).
+ * The one hold that also reveals is `attention`: an item whose app
+ * flashed its taskbar button brings a hidden dock back and keeps it up until
+ * no item needs attention any more (the window was activated), like the
+ * stock taskbar on auto-hide.
  */
 
 import type { AutoHideMode } from '$lib/ipc/generated/AutoHideMode';
@@ -47,8 +51,17 @@ export type AutoHidePhase = 'shown' | 'pending' | 'hidden';
  * What keeps the dock on screen whatever the pointer does. `fileDrag`: a
  * file from the shell is being dragged over the dock window, an OLE
  * drag that the page sees through Tauri's events, never as pointer events.
+ * `attention`: at least one item has `needsAttention`; the only hold
+ * that also reveals a hidden dock when it begins (`REVEALING_HOLDS`).
  */
-export type AutoHideHold = 'drag' | 'menu' | 'bounce' | 'fileDrag';
+export type AutoHideHold = 'drag' | 'menu' | 'bounce' | 'fileDrag' | 'attention';
+
+/**
+ * Holds whose start brings a hidden dock back. The others only keep a shown
+ * dock up: a bounce for a launch from elsewhere, say, should not pop the dock
+ * up, but an app asking for the user's attention should be seen.
+ */
+export const REVEALING_HOLDS: ReadonlySet<AutoHideHold> = new Set<AutoHideHold>(['attention']);
 
 export interface AutoHideState {
   /** `autoHide.mode` is `always`. */
@@ -96,7 +109,7 @@ export const INITIAL_AUTO_HIDE: AutoHideState = {
   delayMs: 0,
   phase: 'shown',
   pointerInside: false,
-  holds: { drag: false, menu: false, bounce: false, fileDrag: false },
+  holds: { drag: false, menu: false, bounce: false, fileDrag: false, attention: false },
 };
 
 /** Auto-hide applies to this mode now (ADR-0008: `whenOverlapped` waits for window geometry). */
@@ -112,7 +125,8 @@ function clampDelay(ms: number): number {
 }
 
 function held(state: AutoHideState): boolean {
-  return state.holds.drag || state.holds.menu || state.holds.bounce || state.holds.fileDrag;
+  const { holds } = state;
+  return holds.drag || holds.menu || holds.bounce || holds.fileDrag || holds.attention;
 }
 
 function wantsHide(state: AutoHideState): boolean {
@@ -121,9 +135,10 @@ function wantsHide(state: AutoHideState): boolean {
 
 /**
  * The phase `next` (fields already updated, phase still the previous one)
- * should be in. `hidden` is sticky while auto-hide is on: only `strip`
- * leaves it, by setting the phase to `shown` before calling this. `restart`
- * re-arms a running countdown (the delay changed).
+ * should be in. `hidden` is sticky while auto-hide is on: only `strip`,
+ * `show` and a revealing hold leave it, by setting the phase to `shown`
+ * before calling this. `restart` re-arms a running countdown (the delay
+ * changed).
  */
 function settle(next: AutoHideState, restart = false): AutoHideStep {
   const wasPending = next.phase === 'pending';
@@ -170,8 +185,17 @@ export function autoHideStep(state: AutoHideState, event: AutoHideEvent): AutoHi
         return { state, timer: 'none' };
       }
       return settle({ ...state, pointerInside: true, phase: 'shown' });
-    case 'hold':
-      return settle({ ...state, holds: { ...state.holds, [event.hold]: event.active } });
+    case 'hold': {
+      const holds = { ...state.holds, [event.hold]: event.active };
+      // A revealing hold brings a hidden dock back; the pointer stays where
+      // it was, so the countdown starts once the hold ends with it away.
+      const reveal =
+        event.active &&
+        state.enabled &&
+        state.phase === 'hidden' &&
+        REVEALING_HOLDS.has(event.hold);
+      return settle({ ...state, holds, phase: reveal ? 'shown' : state.phase });
+    }
     case 'timeout':
       if (state.phase !== 'pending') {
         // A timer that fired after it stopped mattering.
