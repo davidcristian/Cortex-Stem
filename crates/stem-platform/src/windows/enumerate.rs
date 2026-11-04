@@ -3,7 +3,9 @@
 //! Contract:
 //! - [`enumerate_taskbar_windows`] returns every top-level window that the
 //!   stock taskbar would show, as [`RawWindow`] facts, in Z order (top first).
-//! - [`query_window`] returns `Ok(None)` for windows that do not qualify.
+//! - [`query_window`] returns `Ok(None)` for windows that do not qualify;
+//!   [`query_window_checked`] also says whether such a window may qualify
+//!   later (`rules::recheck`, used by the events thread's re-checks).
 //! - [`is_taskbar_candidate`] is the pure eligibility rule (visible, not a
 //!   tool window, no owner unless `WS_EX_APPWINDOW`, not cloaked unless we
 //!   want to report it, has a title or is a known UWP frame, ...).
@@ -69,6 +71,7 @@ use windows::core::{BOOL, PWSTR};
 use super::{monitors, util};
 use crate::rules::eligibility::{self, Owner, WindowFacts};
 use crate::rules::identity::hwnd_icon_key;
+use crate::rules::recheck::{self, Check};
 use crate::{PlatformError, PlatformResult};
 
 // The pure rule table mirrors dwmapi.h; prove it against the SDK.
@@ -115,6 +118,13 @@ pub fn query_window(hwnd: HWND) -> PlatformResult<Option<RawWindow>> {
     Ok(QueryContext::new().query(hwnd))
 }
 
+/// [`query_window`] that also says how a window that does not qualify
+/// stands for the re-check schedule: `Err` is `Check::Transient`,
+/// `Check::Final` or `Check::Gone`, never `Check::Eligible`.
+pub fn query_window_checked(hwnd: HWND) -> Result<RawWindow, Check> {
+    QueryContext::new().query_checked(hwnd)
+}
+
 pub fn is_taskbar_candidate(hwnd: HWND) -> bool {
     // SAFETY: GetCurrentProcessId has no preconditions.
     let own_pid = unsafe { GetCurrentProcessId() };
@@ -154,14 +164,21 @@ impl QueryContext {
 
     /// Full facts for an eligible window, `None` otherwise.
     fn query(&self, hwnd: HWND) -> Option<RawWindow> {
-        let probe = probe(hwnd, self.own_pid)?;
-        if let Err(reason) = eligibility::evaluate(&probe.facts) {
+        self.query_checked(hwnd).ok()
+    }
+
+    /// Full facts for an eligible window, else how it stands
+    /// (`rules::recheck::classify`; `Gone` for a dead handle).
+    fn query_checked(&self, hwnd: HWND) -> Result<RawWindow, Check> {
+        let probe = probe(hwnd, self.own_pid).ok_or(Check::Gone)?;
+        let check = recheck::classify(&probe.facts);
+        if check != Check::Eligible {
             log::trace!(
-                "window {:?} ({:?}) rejected: {reason:?}",
+                "window {:?} ({:?}) rejected: {check:?}",
                 hwnd.0,
                 probe.facts.class_name
             );
-            return None;
+            return Err(check);
         }
         let id = util::window_id(hwnd);
         let is_cloaked = probe.facts.is_cloaked();
@@ -176,7 +193,7 @@ impl QueryContext {
                 .as_ref()
                 .and_then(|h| process_app_user_model_id(h, process_id))
         });
-        Some(RawWindow {
+        Ok(RawWindow {
             id,
             title: probe.facts.title,
             class_name: probe.facts.class_name,
