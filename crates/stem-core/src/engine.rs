@@ -238,8 +238,14 @@ impl DockEngine {
                 }
             }
             PlatformEvent::WindowAttention { id, flashing } => {
+                // The foreground window already has the user's attention, and
+                // only a foreground change clears the flag, so a flash of the
+                // window in front would keep its icon wiggling. It is never
+                // flagged; together with `ForegroundChanged` above, the
+                // foreground window never needs attention.
+                let in_front = self.foreground == Some(id);
                 if let Some(t) = self.windows.get_mut(&id) {
-                    t.attention = flashing;
+                    t.attention = flashing && !in_front;
                 }
             }
             PlatformEvent::MonitorsChanged(monitors) => self.monitors = monitors,
@@ -680,6 +686,30 @@ mod tests {
         let item = &engine.snapshot().items[0];
         assert!(item.is_active);
         assert!(!item.needs_attention);
+    }
+
+    #[test]
+    fn a_flash_of_the_foreground_window_does_not_ask_for_attention() {
+        let mut engine = DockEngine::new(minimal_settings());
+        engine.apply(added(win(1, r"C:\a.exe", "A")));
+        engine.apply(added(win(2, r"C:\b.exe", "B")));
+        engine.apply(foreground(Some(1)));
+        let before = engine.snapshot();
+
+        // The window in front flashes: nothing to show, nothing to clear later.
+        assert!(!engine.apply(attention(1, true)).changed);
+        assert_eq!(engine.snapshot(), before);
+
+        // A window behind it still asks for attention ...
+        assert!(engine.apply(attention(2, true)).changed);
+        assert!(engine.snapshot().items[1].needs_attention);
+
+        // ... and once the first window is no longer in front, so does it.
+        engine.apply(foreground(Some(2)));
+        assert!(engine.apply(attention(1, true)).changed);
+        let state = engine.snapshot();
+        assert!(state.items[0].needs_attention);
+        assert!(!state.items[1].needs_attention);
     }
 
     #[test]
