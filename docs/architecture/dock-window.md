@@ -5,6 +5,8 @@ panel, and how it stays topmost. The other parts of the dock window are describe
 
 - [dock-placement.md](dock-placement.md): position and size, and one window per monitor;
 - [auto-hide.md](auto-hide.md): auto-hide;
+- [theme.md](theme.md): the theme;
+- [dock-items.md](dock-items.md): the fixed items and the attention cue;
 - [file-drops.md](file-drops.md): file drops.
 
 ## Window flags and focus
