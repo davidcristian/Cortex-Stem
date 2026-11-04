@@ -1,3 +1,8 @@
+<script lang="ts" module>
+  /** Length of the launch bounce; the dock stays up for it under auto-hide. */
+  export const BOUNCE_MS = 1200;
+</script>
+
 <script lang="ts">
   import { itemTransition } from '$lib/dock/item-transition';
   import ShellIcon from '$lib/icons/ShellIcon.svelte';
@@ -117,7 +122,7 @@
         { transform: 'translateY(-9%)', easing: 'ease-in', offset: 0.82 },
         { transform: 'translateY(0)', offset: 1 },
       ],
-      { duration: 1200 },
+      { duration: BOUNCE_MS },
     );
     return () => animation.cancel();
   });

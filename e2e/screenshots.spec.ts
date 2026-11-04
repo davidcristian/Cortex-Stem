@@ -20,6 +20,7 @@ interface DemoWindow {
     calls: Array<{ type: string } & Record<string, unknown>>;
     failNextCommand: (message: string) => void;
     getSettings: () => Promise<Settings>;
+    updateSettings: (settings: Settings) => Promise<Settings>;
     pushWindow: (raw: RawWindow) => void;
     pushWindowRemoved: (id: number) => void;
   };
@@ -807,6 +808,217 @@ test.describe('dock in mock mode', () => {
       ),
     );
     expect(sizes.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+test.describe('auto-hide', () => {
+  /** Long enough to tell "counting down" from "hidden" under Playwright's own latency. */
+  const DELAY = 600;
+  /** The slide in each direction (ADR-0008). */
+  const SLIDE_MS = 200;
+  const PANEL = '.dock-panel';
+  const STRIP = '.reveal-strip';
+
+  async function setAutoHide(
+    page: Page,
+    mode: Settings['autoHide']['mode'],
+    delayMs = DELAY,
+  ): Promise<void> {
+    await page.evaluate(
+      async ([m, d]) => {
+        const mock = (window as unknown as DemoWindow).__dockMock!;
+        const settings = await mock.getSettings();
+        await mock.updateSettings({ ...settings, autoHide: { mode: m, delayMs: d } });
+      },
+      [mode, delayMs] as const,
+    );
+  }
+
+  /** Shown with auto-hide on: the resting region with the envelope grown down to take in the strip. */
+  function shownRegion(atRest: HitRegionCall, viewportHeight: number): HitRegionCall {
+    return {
+      panel: atRest.panel,
+      envelope: { ...atRest.envelope, height: viewportHeight - atRest.envelope.y },
+    };
+  }
+
+  /** Hidden: the bottom 2 px under the resting panel, as both rectangles. */
+  function stripRegion(atRest: HitRegionCall, viewportHeight: number): HitRegionCall {
+    const strip = {
+      x: atRest.panel.x,
+      y: viewportHeight - 2,
+      width: atRest.panel.width,
+      height: 2,
+    };
+    return { panel: strip, envelope: { ...strip } };
+  }
+
+  const lastRegion = async (page: Page): Promise<HitRegionCall | undefined> =>
+    (await hitRegions(page)).at(-1);
+  const panelStyle = (page: Page): Promise<{ top: number; transform: string; opacity: string }> =>
+    page.locator(PANEL).evaluate((el) => ({
+      top: el.getBoundingClientRect().top,
+      transform: getComputedStyle(el).transform,
+      opacity: getComputedStyle(el).opacity,
+    }));
+
+  test('slides away after the delay once the pointer has left; the strip at the bottom edge brings it back', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openDock(page);
+    const viewport = page.viewportSize()!;
+    await expect.poll(() => hitRegions(page)).toHaveLength(1);
+    const atRest = (await hitRegions(page))[0]!;
+    const panel = page.locator(PANEL);
+    await expect(panel).not.toHaveAttribute('data-autohide');
+    await expect(page.locator(STRIP)).toHaveCount(0);
+
+    // The pointer is over the dock when auto-hide comes on: it stays. The
+    // envelope now reaches down to the window's bottom edge.
+    await page.locator(APP_SLOT).nth(3).hover();
+    await setAutoHide(page, 'always');
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+    await expect.poll(() => lastRegion(page)).toEqual(shownRegion(atRest, viewport.height));
+    await page.waitForTimeout(DELAY + SLIDE_MS);
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+
+    // The pointer leaves: the countdown runs while the dock is still there…
+    await page.mouse.move(640, 10);
+    await expect(panel).toHaveAttribute('data-autohide', 'pending');
+    await expect(panel).toBeVisible();
+    // …and past the delay the panel slides out below the window's bottom edge.
+    await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+    await expect(panel).toBeHidden();
+    expect((await panelStyle(page)).top).toBeGreaterThanOrEqual(viewport.height);
+    // Only the 2 px strip under the resting panel takes the pointer now.
+    const strip = stripRegion(atRest, viewport.height);
+    await expect.poll(() => lastRegion(page)).toEqual(strip);
+    expect(await page.locator(STRIP).boundingBox()).toEqual(strip.panel);
+    await page.screenshot({ path: `${OUT}/dock-autohide-hidden.png` });
+
+    // The pointer reaches the bottom edge under the dock: it slides back in,
+    // and the shown region is reported again.
+    const x = strip.panel.x + strip.panel.width / 2;
+    await page.mouse.move(x, viewport.height - 1);
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+    await expect(panel).toBeVisible();
+    await expect.poll(() => lastRegion(page)).toEqual(shownRegion(atRest, viewport.height));
+    await expect.poll(async () => (await panelStyle(page)).transform).toBe('none');
+    expect(Math.floor((await panelStyle(page)).top)).toBe(atRest.panel.y);
+    await page.screenshot({ path: `${OUT}/dock-autohide-revealed.png` });
+
+    // Resting on the edge keeps it up; up into the panel and away again
+    // starts the same countdown.
+    await page.waitForTimeout(DELAY + SLIDE_MS);
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+    await page.locator(APP_SLOT).nth(2).hover();
+    await page.waitForTimeout(DELAY + SLIDE_MS);
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+    await page.mouse.move(640, 10);
+    await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+
+    // Turning auto-hide off reveals it at once, with the plain region again.
+    await setAutoHide(page, 'off');
+    await expect(panel).not.toHaveAttribute('data-autohide');
+    await expect(panel).toBeVisible();
+    await expect(page.locator(STRIP)).toHaveCount(0);
+    await expect.poll(() => lastRegion(page)).toEqual(atRest);
+  });
+
+  test('a drag never hides it; released away from the dock, it hides after the delay', async ({
+    page,
+  }) => {
+    await openDock(page);
+    const panel = page.locator(PANEL);
+    const pinned = page.locator('.slot[data-pinned="true"]');
+    const first = (await pinned.nth(0).boundingBox())!;
+    await page.mouse.move(first.x + first.width / 2, first.y + first.height / 2);
+    await setAutoHide(page, 'always');
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+
+    // Lift the icon and carry it far above the dock, past the delay. The
+    // lifted icon holds the pointer capture, so Chromium reports no leave
+    // here; the panel is told the pointer left anyway (what WebView2 does
+    // when the window loses the mouse), and the drag must still hold.
+    await page.mouse.down();
+    await page.mouse.move(640, 20, { steps: 12 });
+    await expect(pinned.nth(0)).toHaveAttribute('data-drag', 'lifted');
+    await panel.dispatchEvent('pointerleave');
+    await page.waitForTimeout(DELAY + SLIDE_MS);
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+
+    // Released there the drag is cancelled, and the pointer is away.
+    await page.mouse.up();
+    await expect(page.locator('[data-drag]')).toHaveCount(0);
+    await expect(panel).toHaveAttribute('data-autohide', 'pending');
+    await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+  });
+
+  test('the bounce of a launch it started keeps it up until the icon lands', async ({ page }) => {
+    await openDock(page);
+    const panel = page.locator(PANEL);
+    await page.locator(APP_SLOT).nth(3).hover(); // notepad: pinned, not running
+    await setAutoHide(page, 'always');
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+
+    // A middle click launches it (and bounces it for 1.2 s); the pointer leaves at once.
+    await page.mouse.down({ button: 'middle' });
+    await page.mouse.up({ button: 'middle' });
+    await expect.poll(() => callsOfType(page, 'launch')).toBe(1);
+    await page.mouse.move(640, 10);
+    // Without the hold it would be hidden by now (delay 600 ms + slide).
+    await page.waitForTimeout(DELAY + SLIDE_MS);
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+    await expect(panel).toHaveAttribute('data-autohide', 'pending');
+    await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+  });
+
+  test('reduced motion fades instead of sliding; "when overlapped" acts as off for now', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' });
+    await openDock(page);
+    const viewport = page.viewportSize()!;
+    await expect.poll(() => hitRegions(page)).toHaveLength(1);
+    const atRest = (await hitRegions(page))[0]!;
+    const panel = page.locator(PANEL);
+
+    // No delay, and the pointer never came near the dock: it goes at once.
+    await setAutoHide(page, 'always', 0);
+    await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+    await expect(panel).toBeHidden();
+    const faded = await panelStyle(page);
+    expect(faded.transform).toBe('none');
+    expect(faded.opacity).toBe('0');
+    expect(Math.floor(faded.top)).toBe(atRest.panel.y);
+    await expect.poll(() => lastRegion(page)).toEqual(stripRegion(atRest, viewport.height));
+
+    // The strip brings it back; with no delay, leaving the strip hides it again at once.
+    const strip = stripRegion(atRest, viewport.height).panel;
+    await page.mouse.move(strip.x + strip.width / 2, viewport.height - 1);
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+    await expect.poll(async () => (await panelStyle(page)).opacity).toBe('1');
+    await page.mouse.move(640, 10);
+    await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+
+    // The tray or the toggle shortcut hid and showed the window: the page
+    // becomes visible again, and the dock comes back and stays until the
+    // pointer has been over it.
+    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+    await expect(panel).toBeVisible();
+    await page.waitForTimeout(SLIDE_MS * 2);
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+
+    // "When a window overlaps" needs window geometry the platform does not
+    // report yet (ADR-0008): it reveals the dock and never hides it.
+    await setAutoHide(page, 'whenOverlapped', 0);
+    await expect(panel).not.toHaveAttribute('data-autohide');
+    await expect(panel).toBeVisible();
+    await expect.poll(() => lastRegion(page)).toEqual(atRest);
+    await page.waitForTimeout(SLIDE_MS * 2);
+    await expect(panel).toBeVisible();
   });
 });
 

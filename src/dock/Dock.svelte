@@ -1,7 +1,19 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
 
-  import DockItem from '$lib/components/DockItem.svelte';
+  import DockItem, { BOUNCE_MS } from '$lib/components/DockItem.svelte';
+  import {
+    AUTO_HIDE_SLIDE_MS,
+    autoHideStep,
+    hiddenHitRegion,
+    INITIAL_AUTO_HIDE,
+    isAutoHidden,
+    REVEAL_STRIP_PX,
+    shownHitRegion,
+    type AutoHideEvent,
+    type AutoHidePhase,
+    type AutoHideState,
+  } from '$lib/dock/autohide';
   import {
     hitRegionFor,
     integerRect,
@@ -274,6 +286,11 @@
   }
 
   function onpanelpointermove(e: PointerEvent): void {
+    if (!autoHide.pointerInside) {
+      // A move over the panel says where the pointer is even when no
+      // `pointerenter` came (after a drag or a native menu).
+      autoHideSend({ type: 'pointer', inside: true });
+    }
     if (magnify.maxScale <= 1 || drag?.started) {
       return;
     }
@@ -290,6 +307,7 @@
   }
 
   function onpanelpointerenter(): void {
+    autoHideSend({ type: 'pointer', inside: true });
     void backend.setDockHover?.(true).catch(report('set_dock_hover', false));
   }
 
@@ -308,6 +326,7 @@
       }, 160);
     }
     void backend.setDockHover?.(false).catch(report('set_dock_hover', false));
+    autoHideSend({ type: 'pointer', inside: false });
   }
 
   // --- Tooltip ----------------------------------------------------------------
@@ -428,6 +447,7 @@
       d.holdTimer = null;
     }
     d.started = true;
+    autoHideSend({ type: 'hold', hold: 'drag', active: true });
     // No magnification, tooltip or settle transition while dragging; the rest
     // positions measured below must be the unmagnified ones.
     leaveHoverState();
@@ -620,6 +640,7 @@
     drag = null;
     // The window shrinks back now; the pointer may never "leave".
     hovering = false;
+    endDragHold(d);
     pendingOrder = order;
     pendingTimer = setTimeout(clearDragStyles, 600);
     const ids = order.map((key) => key.slice('app:'.length));
@@ -646,6 +667,7 @@
       return;
     }
     hovering = false;
+    endDragHold(d);
     try {
       d.el.releasePointerCapture(d.pointerId);
     } catch {
@@ -723,13 +745,15 @@
     if (drag?.started) {
       return;
     }
-    void backend.showItemMenu(item.key, x, y).catch(report('Menu'));
+    menuOpened();
+    void backend.showItemMenu(item.key, x, y).catch(report('Menu')).finally(menuClosed);
   }
 
   function onpanelcontextmenu(e: MouseEvent): void {
     e.preventDefault();
     if (e.target === panelEl && !drag?.started) {
-      void backend.showDockMenu(e.clientX, e.clientY).catch(report('Menu'));
+      menuOpened();
+      void backend.showDockMenu(e.clientX, e.clientY).catch(report('Menu')).finally(menuClosed);
     }
   }
 
@@ -798,10 +822,18 @@
 
   function measurePanel(): void {
     const panel = panelEl;
-    if (!panel || hovering || settling || drag?.started || itemsInFlight(panel)) {
+    if (
+      !panel ||
+      hovering ||
+      settling ||
+      drag?.started ||
+      itemsInFlight(panel) ||
+      // The auto-hide slide or fade is running; `onpaneltransitionend` measures after it.
+      panel.getAnimations().length > 0
+    ) {
       return;
     }
-    let rect = panel.getBoundingClientRect();
+    let rect = restRect(panel);
     // Snap to whole device pixels. Only here, at rest: a magnified
     // or dragged panel is not measured at all, and the window's height only
     // ever changes by whole device pixels, so a snap survives Rust's resize.
@@ -817,11 +849,32 @@
       snapMargins = snap;
       panel.style.marginLeft = `${snap.marginLeft}px`;
       panel.style.marginBottom = `${snap.marginBottom}px`;
-      rect = panel.getBoundingClientRect();
+      rect = restRect(panel);
     }
     measured = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
     measuredViewportHeight = window.innerHeight;
+    const resting = integerRect(measured);
+    if (stripBox === null || stripBox.x !== resting.x || stripBox.width !== resting.width) {
+      stripBox = { x: resting.x, width: resting.width };
+    }
     reportSize();
+  }
+
+  /**
+   * The panel's box where it rests: `getBoundingClientRect` includes the
+   * auto-hide slide, the panel's only transform (a pure `translateY`; never
+   * measured mid-transition), so its offset is taken off again. Items can
+   * come and go while the dock is hidden, and the strip and the region on
+   * reveal must describe the resting panel.
+   */
+  function restRect(panel: HTMLElement): DOMRect {
+    const rect = panel.getBoundingClientRect();
+    const transform = getComputedStyle(panel).transform;
+    if (transform === '' || transform === 'none') {
+      return rect;
+    }
+    const dy = new DOMMatrixReadOnly(transform).m42;
+    return dy === 0 ? rect : new DOMRect(rect.x, rect.y - dy, rect.width, rect.height);
   }
 
   function reportSize(): void {
@@ -847,6 +900,9 @@
    * measured one plus the growth; reporting the rest y would put
    * the panel far above its real place and the tracker would turn the
    * window click-through while the icon is lifted.
+   *
+   * With auto-hide on, a hidden dock reports the reveal strip as both
+   * rectangles, and a shown one an envelope that takes in the strip.
    */
   function currentHitRegion(): HitRegion | null {
     if (measured === null || measured.width === 0) {
@@ -859,13 +915,19 @@
         envelope: { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight },
       };
     }
-    return hitRegionFor(
+    const region = hitRegionFor(
       measured,
       maxGrowth(slotPx, magnify),
       // A magnified icon's top is iconSize × (maxScale − 1) above its slot's
       // top edge, and the slot sits PANEL_PADDING below the panel's top edge.
       magnifiedRise(iconSize, magnify.maxScale, HIT_SLACK - PANEL_PADDING),
     );
+    if (!autoHide.enabled) {
+      return region;
+    }
+    return isAutoHidden(autoHide)
+      ? hiddenHitRegion(region.panel, window.innerHeight)
+      : shownHitRegion(region, window.innerHeight);
   }
 
   function reportHitRegion(): void {
@@ -902,6 +964,140 @@
     };
   });
 
+  // --- Auto-hide (ADR-0008) ------------------------------------------------
+  // The decisions are the pure machine's (src/lib/dock/autohide.ts); this is
+  // its driver: it feeds it pointer, hold, timer and settings events, runs
+  // its one timer, and applies a phase change to the hit region and the
+  // panel's class. CSS does the slide. Nothing runs while nothing changes.
+  let autoHide: AutoHideState = INITIAL_AUTO_HIDE;
+  let autoHideTimer: ReturnType<typeof setTimeout> | null = null;
+  /** `autoHide.mode` is `always`: the reveal strip is in the DOM. */
+  let autoHideOn = $state(false);
+  /** The machine's phase, for the template (`data-autohide`). */
+  let autoHidePhase = $state<AutoHidePhase>('shown');
+  /** Slid out, or sliding out. */
+  const autoHidden = $derived(autoHidePhase === 'hidden');
+  /** The resting panel's whole-pixel x and width, which the reveal strip shares. */
+  let stripBox = $state<{ x: number; width: number } | null>(null);
+  /** Native menus from this dock that have not closed yet (`show_*_menu` pending). */
+  let menusOpen = 0;
+  let bounceHoldTimer: ReturnType<typeof setTimeout> | null = null;
+  let bounceSeen = 0;
+
+  function autoHideSend(event: AutoHideEvent): void {
+    const before = autoHide;
+    const { state, timer } = autoHideStep(before, event);
+    autoHide = state;
+    if (timer !== 'none' && autoHideTimer !== null) {
+      clearTimeout(autoHideTimer);
+      autoHideTimer = null;
+    }
+    if (timer === 'arm') {
+      autoHideTimer = setTimeout(() => {
+        autoHideTimer = null;
+        autoHideSend({ type: 'timeout' });
+      }, state.delayMs);
+    }
+    const wasHidden = isAutoHidden(before);
+    const hidden = isAutoHidden(state);
+    if (hidden && !wasHidden) {
+      // Out: nothing magnified or pending stays behind, and from now on the
+      // window takes the pointer only in the strip.
+      leaveHoverState();
+      reportHitRegion();
+      scheduleMeasure();
+    } else if (wasHidden && !hidden) {
+      // Back: the normal region goes out before the slide starts (the class
+      // below changes the DOM after this returns), so the panel never slides
+      // in over a click-through window.
+      reportHitRegion();
+    } else if (state.enabled !== before.enabled) {
+      reportHitRegion();
+    }
+    autoHidePhase = state.phase;
+    autoHideOn = state.enabled;
+  }
+
+  /** The panel's own slide or fade ended (not a slot's transition bubbling up). */
+  function onpaneltransitionend(e: TransitionEvent): void {
+    if (e.target === e.currentTarget) {
+      scheduleMeasure();
+    }
+  }
+
+  function onstripenter(): void {
+    autoHideSend({ type: 'strip' });
+  }
+
+  function onstripleave(): void {
+    autoHideSend({ type: 'pointer', inside: false });
+  }
+
+  /**
+   * The drag is over. No `pointerleave` may ever come (the lifted icon was
+   * under the pointer, and the window shrinks back), so where the
+   * pointer is is worked out from the release point: over the panel, or
+   * below it down to the strip, counts as inside.
+   */
+  function endDragHold(d: DragSession): void {
+    const rect = panelEl?.getBoundingClientRect();
+    const inside =
+      rect !== undefined &&
+      d.lastX >= rect.left &&
+      d.lastX < rect.right &&
+      d.lastY >= rect.top &&
+      d.lastY < window.innerHeight;
+    autoHideSend({ type: 'pointer', inside });
+    autoHideSend({ type: 'hold', hold: 'drag', active: false });
+  }
+
+  function menuOpened(): void {
+    menusOpen += 1;
+    if (menusOpen === 1) {
+      autoHideSend({ type: 'hold', hold: 'menu', active: true });
+    }
+  }
+
+  function menuClosed(): void {
+    menusOpen = Math.max(0, menusOpen - 1);
+    if (menusOpen === 0) {
+      autoHideSend({ type: 'hold', hold: 'menu', active: false });
+    }
+  }
+
+  /** An item bounces for a launch the dock started: stay up until it lands. */
+  function holdForBounce(): void {
+    if (bounceHoldTimer !== null) {
+      clearTimeout(bounceHoldTimer);
+    }
+    autoHideSend({ type: 'hold', hold: 'bounce', active: true });
+    bounceHoldTimer = setTimeout(() => {
+      bounceHoldTimer = null;
+      autoHideSend({ type: 'hold', hold: 'bounce', active: false });
+    }, BOUNCE_MS);
+  }
+
+  $effect(() => {
+    const mode = settings?.autoHide.mode ?? 'off';
+    const delayMs = settings?.autoHide.delayMs ?? 0;
+    untrack(() => autoHideSend({ type: 'configure', mode, delayMs }));
+  });
+
+  // Only a bounce that plays holds the dock (none under reduced motion or
+  // with the bounce turned off).
+  $effect(() => {
+    const serial = store.bounceSerial;
+    if (serial === bounceSeen) {
+      return;
+    }
+    bounceSeen = serial;
+    untrack(() => {
+      if (bounceEnabled) {
+        holdForBounce();
+      }
+    });
+  });
+
   // --- Lifecycle ------------------------------------------------------------------
   onMount(() => {
     const dark = window.matchMedia('(prefers-color-scheme: dark)');
@@ -915,16 +1111,31 @@
     const onMotion = (): void => {
       reducedMotion = motion.matches;
     };
+    // The tray and the toggle shortcut hide and show the dock window itself;
+    // shown again while auto-hidden, the dock comes back (ADR-0008).
+    const onVisibility = (): void => {
+      if (document.visibilityState === 'visible') {
+        autoHideSend({ type: 'show' });
+      }
+    };
     dark.addEventListener('change', onDark);
     motion.addEventListener('change', onMotion);
+    document.addEventListener('visibilitychange', onVisibility);
     void store.start();
     return () => {
       dark.removeEventListener('change', onDark);
       motion.removeEventListener('change', onMotion);
+      document.removeEventListener('visibilitychange', onVisibility);
       clearTooltip();
       resetMagnification();
       if (settleTimer !== null) {
         clearTimeout(settleTimer);
+      }
+      if (autoHideTimer !== null) {
+        clearTimeout(autoHideTimer);
+      }
+      if (bounceHoldTimer !== null) {
+        clearTimeout(bounceHoldTimer);
       }
       cancelDrag(false);
       clearDragStyles();
@@ -955,21 +1166,27 @@
   style:--dot-size="{DOT_SIZE}px"
   style:--separator-margin="{SEPARATOR_MARGIN}px"
   style:--bottom-margin="{BOTTOM_MARGIN}px"
+  style:--shadow-room="{SIDE_SLACK}px"
+  style:--slide="{AUTO_HIDE_SLIDE_MS}ms"
+  style:--strip="{REVEAL_STRIP_PX}px"
 >
   {#if store.state !== null && settings !== null}
     <div
       class="dock-panel"
       class:settling
       class:high-contrast={highContrast}
+      class:slid-out={autoHidden}
       bind:this={panelEl}
       role="toolbar"
       aria-label="Stem"
       aria-orientation="horizontal"
       tabindex="-1"
       data-ready="true"
+      data-autohide={autoHideOn ? autoHidePhase : undefined}
       onpointermove={onpanelpointermove}
       onpointerenter={onpanelpointerenter}
       onpointerleave={onpanelpointerleave}
+      ontransitionend={onpaneltransitionend}
       oncontextmenu={onpanelcontextmenu}
     >
       {#each items as item (item.key)}
@@ -1008,6 +1225,19 @@
         {/if}
       {/each}
     </div>
+    {#if autoHideOn && stripBox !== null}
+      <!-- The reveal strip (ADR-0008): the bottom edge under the resting
+           panel. Hidden, the window takes the pointer only here; shown, it
+           counts as part of the dock. Invisible. -->
+      <div
+        class="reveal-strip"
+        aria-hidden="true"
+        style:left="{stripBox.x}px"
+        style:width="{stripBox.width}px"
+        onpointerenter={onstripenter}
+        onpointerleave={onstripleave}
+      ></div>
+    {/if}
   {/if}
 
   <!-- Failure notices: right-aligned just above the panel, never in the way. -->
@@ -1116,6 +1346,44 @@
     border-radius: inherit;
     border: 1px solid var(--panel-border);
     pointer-events: none;
+  }
+
+  /* Auto-hide (ADR-0008): the panel slides out below the window's
+     bottom edge, by its own height plus the margin under it and room for its
+     shadow, and back (ease-in out, ease-out in); the window itself never
+     moves. Out of view it takes neither the pointer nor keyboard focus.
+     Under reduced motion it fades instead. */
+  .dock-panel {
+    transition: transform var(--slide) ease-out;
+  }
+
+  .dock-panel.slid-out {
+    transform: translateY(calc(100% + var(--bottom-margin) + var(--shadow-room)));
+    visibility: hidden;
+    pointer-events: none;
+    transition:
+      transform var(--slide) ease-in,
+      visibility 0s linear var(--slide);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .dock-panel {
+      transition: opacity var(--slide) ease-out;
+    }
+
+    .dock-panel.slid-out {
+      transform: none;
+      opacity: 0;
+      transition:
+        opacity var(--slide) ease-in,
+        visibility 0s linear var(--slide);
+    }
+  }
+
+  .reveal-strip {
+    position: absolute;
+    bottom: 0;
+    height: var(--strip);
   }
 
   .dock-panel.high-contrast {

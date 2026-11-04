@@ -36,10 +36,11 @@ work area.
   an icon lifted for a drag, a native context menu from the dock open, or
   an item bouncing for a launch the dock started. Whether a hidden dock
   comes back when one of its windows needs attention is left open.
-- **Motion:** the panel slides out by its own height plus its shadow, with
-  `transform: translateY` over 200 ms (`ease-in` out, `ease-out` back in).
-  With `prefers-reduced-motion` it fades instead. The dock window keeps its
-  size and place, so no `SetWindowPos` happens on hide or reveal.
+- **Motion:** the panel slides out by its own height plus its margin to
+  the edge and its shadow, with `transform: translateY` over 200 ms
+  (`ease-in` out, `ease-out` back in). With `prefers-reduced-motion` it
+  fades instead. The dock window keeps its size and place, so no
+  `SetWindowPos` happens on hide or reveal.
 - **Settings:** `autoHide.mode` is `off` (the default), `always` or
   `whenOverlapped`. `autoHide.delayMs` is 250 ms by default and at most
   5000 ms. `whenOverlapped` (hide only while a window overlaps the dock's
