@@ -3,6 +3,9 @@
 This file lists every version of the [IPC contract](index.md), newest first. A section name links
 to the file that covers that section now.
 
+- **v1.5 (autostart and toggle shortcut):** `Settings.behavior.toggleShortcut` added (settings
+  payload only, no new command or event), and `Settings.system.autostart` is now applied; both
+  are described in [Settings the app shell applies](app-shell-settings.md).
 - **v1.4 (click-through setting):** `Settings.behavior.clickThrough` added (settings payload
   only, no new command or event). It replaces the `STEM_HIT_REGION` environment variable, which
   was removed.

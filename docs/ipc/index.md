@@ -1,6 +1,6 @@
 # IPC contract: Rust ⇄ frontend
 
-**Contract version: 1.4 (click-through setting).**
+**Contract version: 1.5 (autostart and toggle shortcut).**
 The files in this folder are the contract between the Rust app (`src-tauri`) and the pages in
 `src/`. A change to the contract follows the contract change rules in `AGENTS.md` ("IPC contract
 change control") and is logged in the [changelog](changelog.md).
@@ -33,4 +33,5 @@ change control") and is logged in the [changelog](changelog.md).
 | [hit-region.md](hit-region.md) | Where a dock window takes clicks |
 | [context-menus.md](context-menus.md) | The native right-click menus and their entries |
 | [icon-keys.md](icon-keys.md) | The `shell:` icon keys and the icons that `get_icon` returns |
+| [app-shell-settings.md](app-shell-settings.md) | The settings that the Tauri layer applies itself |
 | [changelog.md](changelog.md) | Every contract version and what it changed |
