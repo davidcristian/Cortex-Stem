@@ -27,5 +27,5 @@ with `forced-color-adjust: none` inside `@media (forced-colors: active)`,
 and use the theme's system colours (`CanvasText`, `Highlight`,
 `HighlightText`, `GrayText`).
 
-The settings window's native title bar follows Windows, not the `theme`
-setting.
+The settings window's native title bar follows the `theme` setting: `light`
+and `dark` set it, and `system` follows Windows.

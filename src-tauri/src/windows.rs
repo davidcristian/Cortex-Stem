@@ -24,9 +24,12 @@
 //! replayed when it is turned on again.
 //!
 //! The settings window (`settings`) is an ordinary decorated window,
-//! created on demand and destroyed when closed.
+//! created on demand and destroyed when closed. Its native title bar follows
+//! the *Theme* setting (`settings.theme`): set when the window is
+//! created and again whenever the setting changes ([`on_settings_changed`]).
 
 use parking_lot::Mutex;
+use stem_core::settings::ThemeMode;
 use stem_core::{MonitorInfo, Rect, Settings};
 use stem_platform::{DockWindowOptions, HitRegion, NativeWindowHandle, PlatformError};
 use stem_service::DockService;
@@ -66,6 +69,12 @@ pub struct DockGeometry {
     /// only acts on a change.
     click_through: Mutex<Option<bool>>,
 }
+
+/// `settings.theme` as the settings window's title bar last took it (or
+/// will take it, while the window is closed), so a settings event only acts
+/// on a change. Kept in Tauri's managed state.
+#[derive(Debug, Default)]
+pub struct SettingsWindowTheme(Mutex<Option<ThemeMode>>);
 
 // ---------------------------------------------------------------------------
 // dock window
@@ -283,11 +292,15 @@ fn push_hit_region(
 }
 
 /// The settings changed (settings window, tray, a command): apply
-/// `behavior.clickThrough` when it differs from what is in effect.
-/// Runs on the service worker thread; the window work hops to the main
-/// thread, where the window getters are direct calls.
+/// `behavior.clickThrough` and `theme` where they differ
+/// from what is in effect. Runs on the service worker thread; the window
+/// work hops to the main thread, where the window getters are direct calls.
 pub fn on_settings_changed(app: &AppHandle, settings: &Settings) {
-    let enabled = settings.behavior.click_through;
+    on_click_through_setting(app, settings.behavior.click_through);
+    on_theme_setting(app, settings.theme);
+}
+
+fn on_click_through_setting(app: &AppHandle, enabled: bool) {
     let Some(geometry) = app.try_state::<DockGeometry>() else {
         return;
     };
@@ -343,6 +356,48 @@ fn apply_click_through(app: &AppHandle, enabled: bool) {
             describe_click_through(false)
         ),
         Err(e) => log::warn!("click-through could not be turned off: {e}"),
+    }
+}
+
+/// `settings.theme` changed: the settings window's title bar follows it (the
+/// page itself follows `dock://settings`). Any thread; never blocks.
+fn on_theme_setting(app: &AppHandle, mode: ThemeMode) {
+    let Some(state) = app.try_state::<SettingsWindowTheme>() else {
+        return;
+    };
+    {
+        let mut current = state.0.lock();
+        if *current == Some(mode) {
+            return;
+        }
+        *current = Some(mode);
+    }
+    let handle = app.clone();
+    if let Err(e) = app.run_on_main_thread(move || apply_settings_window_theme(&handle, mode)) {
+        log::warn!("could not schedule the settings window's theme change: {e}");
+    }
+}
+
+/// Give the open settings window's title bar the theme for `mode`. A closed
+/// window takes the setting when it is created. Main thread.
+fn apply_settings_window_theme(app: &AppHandle, mode: ThemeMode) {
+    let Some(window) = app.get_webview_window(SETTINGS_LABEL) else {
+        log::debug!("theme setting {mode:?}: the settings window is not open");
+        return;
+    };
+    match window.set_theme(native_theme(mode)) {
+        Ok(()) => log::debug!("settings window title bar: {mode:?}"),
+        Err(e) => log::warn!("the settings window's theme could not be set: {e}"),
+    }
+}
+
+/// `settings.theme` → the native window theme: forced light or dark, or
+/// `None` to follow Windows. Pure.
+pub fn native_theme(mode: ThemeMode) -> Option<tauri::Theme> {
+    match mode {
+        ThemeMode::System => None,
+        ThemeMode::Light => Some(tauri::Theme::Light),
+        ThemeMode::Dark => Some(tauri::Theme::Dark),
     }
 }
 
@@ -493,7 +548,8 @@ fn physical_px(css: f64, scale: f64) -> i32 {
 // ---------------------------------------------------------------------------
 
 /// Open the settings window, or show and focus it if it already exists.
-/// Closing it destroys it (Tauri's default); the app keeps running.
+/// Closing it destroys it (Tauri's default); the app keeps running. A new
+/// window's title bar takes the current *Theme* setting. Main thread.
 pub fn open_settings_window(app: &AppHandle) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window(SETTINGS_LABEL) {
         window.show()?;
@@ -501,8 +557,15 @@ pub fn open_settings_window(app: &AppHandle) -> tauri::Result<()> {
         log::debug!("settings window focused");
         return Ok(());
     }
+    let mode = app
+        .try_state::<crate::AppService>()
+        .map(|service| service.0.settings().theme);
+    if let (Some(mode), Some(state)) = (mode, app.try_state::<SettingsWindowTheme>()) {
+        *state.0.lock() = Some(mode);
+    }
     WebviewWindowBuilder::new(app, SETTINGS_LABEL, WebviewUrl::App("settings.html".into()))
         .title("Stem Settings")
+        .theme(mode.and_then(native_theme))
         .inner_size(SETTINGS_SIZE.0, SETTINGS_SIZE.1)
         .min_inner_size(SETTINGS_MIN_SIZE.0, SETTINGS_MIN_SIZE.1)
         .resizable(true)
@@ -615,6 +678,13 @@ mod tests {
         assert!(validate_hit_region(panel, Rect::new(80, 0, 440, 90)).is_err());
         assert!(validate_hit_region(Rect::new(0, 0, -1, 10), Rect::new(0, 0, 10, 10)).is_err());
         assert!(validate_hit_region(Rect::new(0, 0, 1, 1), Rect::new(0, 0, 10, -10)).is_err());
+    }
+
+    #[test]
+    fn native_theme_forces_light_or_dark_and_follows_windows_for_system() {
+        assert_eq!(native_theme(ThemeMode::System), None);
+        assert_eq!(native_theme(ThemeMode::Light), Some(tauri::Theme::Light));
+        assert_eq!(native_theme(ThemeMode::Dark), Some(tauri::Theme::Dark));
     }
 
     #[test]
