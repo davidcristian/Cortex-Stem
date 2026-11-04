@@ -12,9 +12,9 @@
 //!
 //! | Question | Answer |
 //! |----------|--------|
-//! | Which windows | One looked at for a show-type event (`EVENT_OBJECT_CREATE`, `EVENT_OBJECT_SHOW`, shell hook `HSHELL_WINDOWCREATED`) and rejected *only* for a fact that can change without an event we act on: rule 3 `NotVisible` or rule 7 `Cloaked` of `rules::eligibility`, while every other rule passes ([`classify`] → [`Check::Transient`]). |
+//! | Which windows | One looked at for a show-type event (`EVENT_OBJECT_CREATE`, `EVENT_OBJECT_SHOW`, shell hook `HSHELL_WINDOWCREATED`) and rejected *only* for not being visible or for being cloaked (rules 3 `NotVisible` and 7 `Cloaked` of `rules::eligibility`), facts a starting app changes on its own, while every other rule passes ([`classify`] → [`Check::Transient`]). |
 //! | When | [`DELAYS_MS`] after the rejection that scheduled it (250 ms, 1 s, 3 s, all measured from that rejection); after the last attempt the window is dropped. A further show event while it is pending does not restart the schedule. |
-//! | Leaves early | Destroyed ([`RecheckSchedule::forget`]); found eligible, rejected for a final reason, or gone by *any* later query ([`RecheckSchedule::observe`]). A hide does not cancel: a cheap probe is all a re-check costs, and a show / hide / show flicker is how starting apps behave. |
+//! | Leaves early | Destroyed ([`RecheckSchedule::forget`]); found eligible, rejected for a final reason, or gone by *any* later query ([`RecheckSchedule::observe`]). A hide does not cancel: a starting app may hide and show its window again, and a re-check of a rejected window costs only a cheap probe (no process handle, no COM). |
 //! | Bound | At most [`MAX_PENDING`] windows; scheduling one more drops the oldest, so a burst of hidden windows cannot grow the set. |
 //!
 //! Time is an opaque millisecond counter supplied by the caller, as for
@@ -50,8 +50,8 @@ pub enum Check {
     Gone,
 }
 
-/// `true` for the rejections that can clear without an event the events
-/// thread acts on.
+/// `true` for the rejections a window can outgrow by itself while it starts
+/// (rule 3 `NotVisible`, rule 7 `Cloaked`); every other one is final.
 pub fn is_transient(reason: Rejection) -> bool {
     matches!(reason, Rejection::NotVisible | Rejection::Cloaked)
 }
