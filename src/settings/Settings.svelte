@@ -12,6 +12,7 @@
   import SettingRow from './SettingRow.svelte';
   import SettingsCard from './SettingsCard.svelte';
   import Slider from './Slider.svelte';
+  import TextField from './TextField.svelte';
   import Toggle from './Toggle.svelte';
 
   interface Props {
@@ -343,6 +344,22 @@
               onchange={(v) =>
                 edit((s) => {
                   s.behavior.clickThrough = v;
+                })}
+            />
+          </SettingRow>
+          <SettingRow
+            id="toggle-shortcut"
+            label="Toggle the dock"
+            description="Shows or hides the dock from any app. Ctrl, Alt, Shift or Super, then one key, joined by +, like Ctrl+Alt+D; empty for none."
+          >
+            <TextField
+              id="toggle-shortcut"
+              value={settings.behavior.toggleShortcut}
+              placeholder="None"
+              describedby="toggle-shortcut-description"
+              oncommit={(v) =>
+                edit((s) => {
+                  s.behavior.toggleShortcut = v;
                 })}
             />
           </SettingRow>

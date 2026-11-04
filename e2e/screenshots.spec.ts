@@ -902,6 +902,40 @@ test.describe('settings window', () => {
     await expect(page.locator('#auto-hide option[value="always"]')).toBeDisabled();
   });
 
+  test('the toggle shortcut applies on Enter and on blur, Escape reverts', async ({ page }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openSettings(page);
+    const field = page.locator('#toggle-shortcut');
+    const saved = async (): Promise<string | undefined> =>
+      (await page.evaluate(SETTINGS_MOCK))?.behavior.toggleShortcut;
+    await expect(field).toHaveValue('Ctrl+Alt+D');
+    await expect(field).toHaveAccessibleDescription(/Ctrl\+Alt\+D/);
+    await field.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: `${OUT}/settings-shortcut.png` });
+
+    // Typing alone saves nothing; Escape puts the saved value back.
+    await field.fill('Ctrl+Shift+F9');
+    await expect(page.locator('.status')).toHaveText('Saved');
+    expect(await saved()).toBe('Ctrl+Alt+D');
+    await field.press('Escape');
+    await expect(field).toHaveValue('Ctrl+Alt+D');
+
+    // Enter applies the trimmed value.
+    await field.fill('  Ctrl+Shift+F9 ');
+    await field.press('Enter');
+    await expect(page.locator('.status')).toHaveText('Saved');
+    await expect.poll(saved).toBe('Ctrl+Shift+F9');
+    await expect(field).toHaveValue('Ctrl+Shift+F9');
+
+    // Leaving the box applies too; empty means no shortcut.
+    await field.fill('');
+    await page.locator('#tooltips').focus();
+    await expect.poll(saved).toBe('');
+    await expect(field).toHaveValue('');
+    await expect(field).toHaveAttribute('placeholder', 'None');
+    await expect(page.locator('.status')).toHaveText('Saved');
+  });
+
   test('pinned apps can be moved and unpinned', async ({ page }) => {
     await page.emulateMedia({ colorScheme: 'dark' });
     await openSettings(page);
