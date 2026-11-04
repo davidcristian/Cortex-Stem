@@ -19,7 +19,10 @@
 //!   after [`IDENTITY_RETRY_DELAY`], then a fallback identity is used so the
 //!   engine stops asking. When there is nothing to ask (the app has no
 //!   window and no pin any more) the engine is told `IdentityUnavailable`
-//!   instead, so a later appearance requests the identity again;
+//!   instead, so a later appearance requests the identity again. Before its
+//!   first request it re-identifies stale `exe:` pins of packaged apps once
+//!   (`reidentify`), so the rewritten pins are saved and in the
+//!   engine before the identities of the old ones are looked up;
 //! - the **settings** have one authoritative copy (`Inner::settings`). Every
 //!   mutation goes through `Inner::mutate_settings`, which validates,
 //!   persists and hands the engine the new document under one lock, so two
@@ -38,6 +41,7 @@
 
 #![forbid(unsafe_code)]
 
+mod reidentify;
 pub mod store;
 
 use std::collections::VecDeque;
@@ -524,6 +528,84 @@ impl Inner {
         changed
     }
 
+    /// Give every stale `exe:` pin of a packaged app (settings written by
+    /// older builds) the packaged app's `aumid:` id and a `StoreApp` target,
+    /// in place, or drop it when that id is already pinned. Runs once per
+    /// start, first thing on the identity thread (never on the UI thread and
+    /// never on the worker, which does not wait on the OS). Each candidate is
+    /// asked about without any lock held; everything that changed is saved
+    /// in one `mutate_settings`, with one info line per pin. A pin the
+    /// platform cannot identify, or an error, leaves the pin as it is.
+    fn reidentify_stale_pins(&self) {
+        let candidates: Vec<stem_core::settings::PinnedApp> = self
+            .settings
+            .lock()
+            .pinned
+            .iter()
+            .filter(|p| reidentify::is_candidate(p))
+            .cloned()
+            .collect();
+        let mut found = Vec::new();
+        let mut identities = Vec::new();
+        for pin in &candidates {
+            if self.stopping.load(Ordering::SeqCst) {
+                return;
+            }
+            match self.platform.identify_target(&pin.launch) {
+                Ok(identity) => match reidentify::reidentified(pin, &identity) {
+                    Some(entry) => {
+                        identities.push((entry.new_id(), identity));
+                        found.push(entry);
+                    }
+                    None => log::debug!(
+                        "pin {} is not a packaged app's ({}); left alone",
+                        pin.id.as_str(),
+                        identity.id.as_str()
+                    ),
+                },
+                Err(e) => log::debug!(
+                    "re-identifying pin {}: identify_target failed: {e}; left alone",
+                    pin.id.as_str()
+                ),
+            }
+        }
+        if found.is_empty() || self.stopping.load(Ordering::SeqCst) {
+            return;
+        }
+
+        let mut rewrites = Vec::new();
+        let saved = self.mutate_settings(|settings| {
+            rewrites = reidentify::rewrite_pins(&mut settings.pinned, &found);
+            // Make the new pins' identities known before they render, as
+            // `pin_target` does: queued ahead of the `SettingsChanged` that
+            // `mutate_settings` sends.
+            for rewrite in &rewrites {
+                if let reidentify::PinRewrite::Replaced { new, .. } = rewrite
+                    && let Some((_, identity)) = identities.iter().find(|(id, _)| id == new)
+                {
+                    let _ = self
+                        .worker_tx
+                        .send(WorkerMsg::Input(EngineInput::IdentityResolved {
+                            app_id: new.clone(),
+                            identity: identity.clone(),
+                        }));
+                }
+            }
+            !rewrites.is_empty()
+        });
+        match saved {
+            Ok(_) => {
+                for rewrite in &rewrites {
+                    log::info!("{rewrite}");
+                }
+            }
+            Err(e) => log::warn!(
+                "re-identified {} stale pin(s) but could not save the settings: {e}; they stay as they were",
+                rewrites.len()
+            ),
+        }
+    }
+
     /// Ask the platform who `app_id` is and feed the answer to the engine.
     ///
     /// Returns `Some(due)` instead when every attempted platform call failed
@@ -682,9 +764,13 @@ fn worker_loop(rx: &Receiver<WorkerMsg>, inner: &Weak<Inner>) {
     log::debug!("stem-service worker stopped");
 }
 
-/// The identity thread: resolve requests as they come, keep failed ones in
-/// a queue of timed retries, stop on `Shutdown` or when the service stops.
+/// The identity thread: re-identify stale pins once, then resolve
+/// requests as they come, keep failed ones in a queue of timed retries,
+/// stop on `Shutdown` or when the service stops.
 fn resolver_loop(rx: &Receiver<ResolveMsg>, inner: &Weak<Inner>) {
+    if let Some(inner) = inner.upgrade() {
+        inner.reidentify_stale_pins();
+    }
     let mut retries: VecDeque<(Instant, AppId)> = VecDeque::new();
 
     'run: loop {
@@ -805,18 +891,48 @@ mod tests {
         failures_left: AtomicUsize,
         identify_delay: Duration,
         identify_calls: Mutex<Vec<(WindowId, Instant)>>,
+        /// Scripted `identify_target` answers for `Exe` targets, by
+        /// normalised path: an identity, or `None` for a failure. Any
+        /// other target gets the mock's answer.
+        target_answers: Vec<(String, Option<AppIdentity>)>,
+        target_calls: Mutex<Vec<LaunchTarget>>,
     }
 
     impl Relay {
         fn demo() -> Self {
+            Self::over(MockPlatform::with_demo_scenario())
+        }
+
+        fn over(mock: MockPlatform) -> Self {
             Self {
-                mock: MockPlatform::with_demo_scenario(),
+                mock,
                 sink: Mutex::new(None),
                 flaky_window: None,
                 failures_left: AtomicUsize::new(0),
                 identify_delay: Duration::ZERO,
                 identify_calls: Mutex::new(Vec::new()),
+                target_answers: Vec::new(),
+                target_calls: Mutex::new(Vec::new()),
             }
+        }
+
+        /// `identify_target(Exe { path })` answers `answer` (`None`: fails).
+        fn answering(mut self, path: &str, answer: Option<AppIdentity>) -> Self {
+            self.target_answers
+                .push((stem_core::normalize_path(Path::new(path)), answer));
+            self
+        }
+
+        /// How often `identify_target` was asked about the exe at `path`.
+        fn target_calls_for(&self, path: &str) -> usize {
+            let key = stem_core::normalize_path(Path::new(path));
+            self.target_calls
+                .lock()
+                .iter()
+                .filter(|t| {
+                    matches!(t, LaunchTarget::Exe { path, .. } if stem_core::normalize_path(path) == key)
+                })
+                .count()
         }
 
         fn flaky(mut self, id: WindowId, failures: usize) -> Self {
@@ -901,6 +1017,13 @@ mod tests {
         }
 
         fn identify_target(&self, target: &LaunchTarget) -> PlatformResult<AppIdentity> {
+            self.target_calls.lock().push(target.clone());
+            if let LaunchTarget::Exe { path, .. } = target {
+                let key = stem_core::normalize_path(path);
+                if let Some((_, answer)) = self.target_answers.iter().find(|(p, _)| *p == key) {
+                    return answer.clone().ok_or(PlatformError::Timeout);
+                }
+            }
             self.mock.identify_target(target)
         }
 
@@ -1476,6 +1599,223 @@ mod tests {
         assert_eq!(service.monitors(), monitors);
         // No State followed: the snapshot did not change.
         assert!(rx.recv_timeout(Duration::from_millis(100)).is_err());
+        service.shutdown();
+    }
+
+    // ----- stale `exe:` pins of packaged apps ---------------------------------
+
+    const TERMINAL_EXE: &str = r"C:\Program Files\WindowsApps\Microsoft.WindowsTerminal_1.24.12741.0_x64__8wekyb3d8bbwe\WindowsTerminal.exe";
+    const TERMINAL_AUMID: &str = "Microsoft.WindowsTerminal_8wekyb3d8bbwe!App";
+    /// A packaged exe the platform fails on.
+    const BROKEN_EXE: &str =
+        r"C:\Program Files\WindowsApps\Vendor.Broken_1.0.0.0_x64__abcdefghjkmnp\broken.exe";
+    /// A packaged exe the platform keeps as an exe (the mock's answer).
+    const AMBIGUOUS_EXE: &str =
+        r"C:\Program Files\WindowsApps\Vendor.Suite_2.0.0.0_x64__abcdefghjkmnp\helper.exe";
+
+    fn exe_pin(path: &str) -> stem_core::settings::PinnedApp {
+        stem_core::settings::PinnedApp {
+            id: AppId::for_exe(Path::new(path)),
+            label: None,
+            launch: exe_target(path),
+        }
+    }
+
+    fn terminal_pin() -> stem_core::settings::PinnedApp {
+        stem_core::settings::PinnedApp {
+            id: AppId::for_app_user_model_id(TERMINAL_AUMID),
+            label: None,
+            launch: LaunchTarget::StoreApp {
+                app_user_model_id: TERMINAL_AUMID.into(),
+            },
+        }
+    }
+
+    /// What `identify_target` answers for the Terminal's exe.
+    fn terminal_identity() -> AppIdentity {
+        AppIdentity {
+            id: AppId::for_app_user_model_id(TERMINAL_AUMID),
+            display_name: "Terminal".into(),
+            icon_key: Some(IconKey(format!("aumid:{TERMINAL_AUMID}"))),
+            launch: Some(LaunchTarget::StoreApp {
+                app_user_model_id: TERMINAL_AUMID.into(),
+            }),
+        }
+    }
+
+    /// A running Terminal window: package identity, exe under WindowsApps.
+    fn terminal_window() -> RawWindow {
+        RawWindow {
+            id: WindowId(50),
+            title: "PowerShell".into(),
+            class_name: "CASCADIA_HOSTING_WINDOW_CLASS".into(),
+            process_id: 5050,
+            exe_path: Some(PathBuf::from(TERMINAL_EXE)),
+            app_user_model_id: Some(TERMINAL_AUMID.into()),
+            is_visible: true,
+            is_minimized: false,
+            is_cloaked: false,
+            monitor: Some(stem_core::MonitorId("mock-primary".into())),
+            icon_key: None,
+        }
+    }
+
+    /// A settings store that counts saves and keeps the document readable.
+    #[derive(Debug, Default)]
+    struct CountingStore {
+        doc: Arc<MemorySettingsStore>,
+        saves: Arc<AtomicUsize>,
+    }
+
+    impl CountingStore {
+        fn with(settings: &Settings) -> Self {
+            Self {
+                doc: Arc::new(MemorySettingsStore::with_document(
+                    &settings.to_json_pretty(),
+                )),
+                saves: Arc::default(),
+            }
+        }
+    }
+
+    impl SettingsStore for CountingStore {
+        fn load(&self) -> Result<Option<String>, StoreError> {
+            self.doc.load()
+        }
+
+        fn save(&self, json: &str) -> Result<(), StoreError> {
+            self.saves.fetch_add(1, Ordering::SeqCst);
+            self.doc.save(json)
+        }
+
+        fn location(&self) -> String {
+            self.doc.location()
+        }
+    }
+
+    fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !done() {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn relay_with_terminal() -> Relay {
+        let mock = MockPlatform::new();
+        mock.push(PlatformEvent::WindowAdded(terminal_window()));
+        Relay::over(mock)
+            .answering(TERMINAL_EXE, Some(terminal_identity()))
+            .answering(BROKEN_EXE, None)
+    }
+
+    #[test]
+    fn stale_packaged_pins_are_reidentified_once_and_merge_with_their_windows() {
+        let firefox = exe_pin(r"C:\Program Files\Mozilla Firefox\firefox.exe");
+        let mut stale = exe_pin(TERMINAL_EXE);
+        stale.label = Some("Shell".into());
+        let broken = exe_pin(BROKEN_EXE);
+        let ambiguous = exe_pin(AMBIGUOUS_EXE);
+        let settings = Settings {
+            pinned: vec![
+                firefox.clone(),
+                stale.clone(),
+                broken.clone(),
+                ambiguous.clone(),
+            ],
+            ..Settings::default()
+        };
+        let store = CountingStore::with(&settings);
+        let (doc, saves) = (Arc::clone(&store.doc), Arc::clone(&store.saves));
+        let relay = Arc::new(relay_with_terminal());
+        let service = DockService::start(relay.clone(), Box::new(store)).unwrap();
+        let rx = record(&service);
+
+        let new_id = AppId::for_app_user_model_id(TERMINAL_AUMID);
+        wait_until("the rewritten pin", || {
+            service.settings().is_pinned(&new_id)
+        });
+        // Rewritten in place with its label; the pin the platform failed on
+        // and the one it kept as an exe are untouched.
+        let mut rewritten = terminal_pin();
+        rewritten.label = Some("Shell".into());
+        let expected = vec![firefox.clone(), rewritten, broken, ambiguous];
+        assert_eq!(service.settings().pinned, expected);
+        // Saved once, and the file holds exactly that.
+        assert_eq!(saves.load(Ordering::SeqCst), 1);
+        let saved = Settings::from_json(&doc.document().unwrap()).unwrap();
+        assert_eq!(saved.pinned, expected);
+
+        // One item for the pin and the running window, under the AUMID,
+        // with the name the platform gave; the stale exe item is gone.
+        let state = wait_state(&rx, |s| {
+            app_items(s)
+                .iter()
+                .any(|i| i.app_id.as_ref() == Some(&new_id) && i.pinned && i.windows.len() == 1)
+        });
+        let terminal: Vec<&DockItem> = app_items(&state)
+            .into_iter()
+            .filter(|i| i.windows.iter().any(|w| w.id == WindowId(50)) || i.title == "Shell")
+            .collect();
+        assert_eq!(terminal.len(), 1, "{terminal:?}");
+        assert_eq!(terminal[0].title, "Shell");
+        assert!(
+            app_items(&state)
+                .iter()
+                .all(|i| i.app_id.as_ref() != Some(&stale.id))
+        );
+        // The migration asked once about the Terminal's exe; nothing asked
+        // about the old pin afterwards.
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(relay.target_calls_for(TERMINAL_EXE), 1);
+        assert_eq!(saves.load(Ordering::SeqCst), 1);
+        service.shutdown();
+
+        // A second start changes nothing: no save, and the Terminal's exe is
+        // not asked about again (its pin is a StoreApp now).
+        let store = CountingStore {
+            doc: Arc::clone(&doc),
+            saves: Arc::default(),
+        };
+        let saves = Arc::clone(&store.saves);
+        let relay = Arc::new(relay_with_terminal());
+        let service = DockService::start(relay.clone(), Box::new(store)).unwrap();
+        let rx = record(&service);
+        wait_state(&rx, |s| {
+            app_items(s)
+                .iter()
+                .any(|i| i.app_id.as_ref() == Some(&new_id) && i.windows.len() == 1)
+        });
+        wait_until("the remaining candidates to be asked again", || {
+            relay.target_calls_for(BROKEN_EXE) >= 1 && relay.target_calls_for(AMBIGUOUS_EXE) >= 1
+        });
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(saves.load(Ordering::SeqCst), 0);
+        assert_eq!(relay.target_calls_for(TERMINAL_EXE), 0);
+        assert_eq!(service.settings().pinned, expected);
+        service.shutdown();
+    }
+
+    #[test]
+    fn a_stale_pin_of_an_app_that_is_already_pinned_is_dropped() {
+        let notepad = exe_pin(r"C:\Windows\notepad.exe");
+        let stale = exe_pin(TERMINAL_EXE);
+        let settings = Settings {
+            pinned: vec![stale, notepad.clone(), terminal_pin()],
+            ..Settings::default()
+        };
+        let store = CountingStore::with(&settings);
+        let (doc, saves) = (Arc::clone(&store.doc), Arc::clone(&store.saves));
+        let relay = Arc::new(relay_with_terminal());
+        let service = DockService::start(relay, Box::new(store)).unwrap();
+
+        let expected = vec![notepad, terminal_pin()];
+        wait_until("the stale pin to be dropped", || {
+            service.settings().pinned == expected
+        });
+        assert_eq!(saves.load(Ordering::SeqCst), 1);
+        let saved = Settings::from_json(&doc.document().unwrap()).unwrap();
+        assert_eq!(saved.pinned, expected);
         service.shutdown();
     }
 }
