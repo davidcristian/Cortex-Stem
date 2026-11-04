@@ -33,8 +33,5 @@ tauri-plugin-global-shortcut = { workspace = true }
 tauri-plugin-log = { workspace = true }
 tauri-plugin-single-instance = { workspace = true }
 
-# Only for the context-menu popup helper in `menus.rs`: post
-# `WM_NULL` after `TrackPopupMenu` and hand the foreground back. Everything
-# else that is Win32 lives in `stem-platform`.
 [lints]
 workspace = true

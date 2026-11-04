@@ -25,7 +25,7 @@ use tauri::{AppHandle, Manager, Wry};
 
 use crate::AppService;
 
-pub const TRAY_ID: &str = "dock";
+pub const TRAY_ID: &str = "stem";
 const TRAY_PNG: &[u8] = include_bytes!("../icons/tray.png");
 
 const MENU_SETTINGS: &str = "settings";

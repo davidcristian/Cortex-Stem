@@ -47,7 +47,7 @@ pub mod events {
 }
 
 /// File name (without extension) of the log file in the app log dir.
-const LOG_FILE_NAME: &str = "dock";
+const LOG_FILE_NAME: &str = "stem";
 /// The log file is truncated (`RotationStrategy::KeepOne`) past this size.
 const LOG_MAX_BYTES: u128 = 2 * 1024 * 1024;
 
