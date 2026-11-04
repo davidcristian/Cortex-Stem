@@ -21,6 +21,31 @@ windows will have: it resolves a `.lnk` to its target exe, and a Store app
 to its AUMID. A `.lnk` with a `System.AppUserModel.ID` property is
 identified by that AUMID, because its app's windows are grouped by it.
 
+## Executables of packaged apps
+
+An `Exe` target under `\WindowsApps\<package full name>\`
+(`rules::identity::packaged_exe`) is identified as the packaged application
+it belongs to. The platform takes the family from the full name
+(`PackageFamilyNameFromFullName`), then the version installed now
+(`GetPackagesByPackageFamily`, so a path that names a version since updated
+still resolves), then that version's applications
+(`GetPackageApplicationIds`, full AUMIDs). With one application, that
+application is the result. With several, the manifest's `Executable`
+(`IAppxManifestReader`) picks the one that runs this exe, and the
+AppsFolder decides a remaining tie (`rules::identity::choose_package_app`).
+Anything not certain keeps the `exe:` identity.
+
+Settings files from earlier versions of Stem can pin such an app by its exe
+(an `exe:` id and an `Exe` target), and that pin never merges with the
+app's `aumid:` windows. So once per start, before it serves any request,
+the identity thread passes every such pin (`exe:` id, `Exe` target under
+`WindowsApps`, no arguments) through `identify_target`. It rewrites in
+place each pin that comes back with a different `aumid:` id: the pin gets
+that id and a `StoreApp` target, and keeps its label. A pin whose new id is
+already pinned is dropped instead. The settings are saved once, and each
+change is logged at info (`re-identified pin <old> as <new>`). Failures and
+ambiguous results leave the pin as it is (`stem_service::reidentify`).
+
 ## Display names
 
 A display name comes from the AppsFolder for an AUMID that the shell
