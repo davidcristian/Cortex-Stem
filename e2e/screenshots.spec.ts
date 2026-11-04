@@ -1,10 +1,11 @@
 import { mkdirSync } from 'node:fs';
 
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 
 import type { RawWindow } from '../src/lib/ipc/generated/RawWindow';
 import type { Rect } from '../src/lib/ipc/generated/Rect';
 import type { Settings } from '../src/lib/ipc/generated/Settings';
+import type { ThemeInfo } from '../src/lib/ipc/generated/ThemeInfo';
 
 const OUT = 'e2e/output';
 const APP_SLOT = '.slot[data-kind="app"]';
@@ -31,7 +32,89 @@ interface DemoWindow {
     updateSettings: (settings: Settings) => Promise<Settings>;
     pushWindow: (raw: RawWindow) => void;
     pushWindowRemoved: (id: number) => void;
+    pushForeground: (id: number | null) => void;
+    /** `HSHELL_FLASH` as the platform reports it (`WindowAttention`). */
+    pushAttention: (id: number, flashing: boolean) => void;
+    /** `dock://theme`: what Windows reports for accent, mode, contrast and transparency. */
+    setTheme: (theme: ThemeInfo) => void;
   };
+}
+
+/** The mock's demo theme facts (`DEFAULT_THEME` in src/lib/ipc/mock.ts). */
+const OS_THEME: ThemeInfo = {
+  accent: '#0078D4',
+  dark: true,
+  highContrast: false,
+  transparency: true,
+};
+
+/** Report new OS theme facts through the mock, as `dock://theme` would. */
+function setOsTheme(page: Page, theme: Partial<ThemeInfo>): Promise<void> {
+  return page.evaluate(
+    (t) => {
+      (window as unknown as DemoWindow).__dockMock?.setTheme(t);
+    },
+    { ...OS_THEME, ...theme },
+  );
+}
+
+/** Some groups of `Settings`, each with some of its fields. */
+type SettingsPatch = {
+  [K in keyof Settings]?: Settings[K] extends object ? Partial<Settings[K]> : Settings[K];
+};
+
+/** Change some settings through the mock's backend, as the settings window would. */
+function patchSettings(page: Page, patch: SettingsPatch): Promise<void> {
+  return page.evaluate(async (p) => {
+    const mock = (window as unknown as DemoWindow).__dockMock!;
+    const settings = (await mock.getSettings()) as unknown as Record<string, unknown>;
+    for (const [key, value] of Object.entries(p)) {
+      const current = settings[key];
+      settings[key] =
+        typeof value === 'object' && value !== null && !Array.isArray(value)
+          ? { ...(current as object), ...value }
+          : value;
+    }
+    await mock.updateSettings(settings as unknown as Settings);
+  }, patch);
+}
+
+/** Running animations anywhere in the page (CSS animations and transitions, Web Animations). */
+function runningAnimations(page: Page): Promise<number> {
+  return page.evaluate(
+    () => document.getAnimations().filter((a) => a.playState === 'running').length,
+  );
+}
+
+/** Window `id` flashes its taskbar button (`HSHELL_FLASH` → `WindowAttention`), or stops. */
+function flash(page: Page, id: number, flashing = true): Promise<void> {
+  return page.evaluate(
+    ([i, f]) => {
+      (window as unknown as DemoWindow).__dockMock?.pushAttention(i, f);
+    },
+    [id, flashing] as const,
+  );
+}
+
+/** Window `id` became the foreground window by other means than the dock (Alt+Tab, a click on it). */
+function foreground(page: Page, id: number | null): Promise<void> {
+  return page.evaluate((i) => {
+    (window as unknown as DemoWindow).__dockMock?.pushForeground(i);
+  }, id);
+}
+
+/** One computed style property of the first element `locator` matches, or of its pseudo-element. */
+function computed(
+  locator: Locator,
+  property: string,
+  pseudo: string | null = null,
+): Promise<string> {
+  return locator
+    .first()
+    .evaluate((el, [p, ps]) => getComputedStyle(el, ps).getPropertyValue(p), [
+      property,
+      pseudo,
+    ] as const);
 }
 
 /** The mock's recorded side effects of one type so far. */
@@ -821,6 +904,297 @@ test.describe('dock in mock mode', () => {
   });
 });
 
+test.describe('theme sync', () => {
+  const PANEL = '.dock-panel';
+
+  test('follows the accent, light/dark and transparency of Windows live; the theme setting overrides light/dark', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openDock(page);
+    const html = page.locator('html');
+    const panel = page.locator(PANEL);
+    const firstDot = page.locator(`${APP_SLOT} .dots i`).first();
+    const startTile = page.locator('.slot[data-kind="launcher"] svg rect').first();
+    await expect(html).toHaveAttribute('data-theme', 'dark');
+    await expect(firstDot).toHaveCSS('background-color', 'rgb(0, 120, 212)');
+    await expect(panel).toHaveCSS('background-color', 'rgba(28, 28, 30, 0.72)');
+
+    // Windows switches to light mode and an orange accent: the dock follows at once.
+    await setOsTheme(page, { dark: false, accent: '#FF8C00' });
+    await expect(html).toHaveAttribute('data-theme', 'light');
+    await expect(firstDot).toHaveCSS('background-color', 'rgb(255, 140, 0)');
+    expect(await computed(startTile, 'fill')).toBe('rgb(255, 140, 0)');
+    await expect(panel).toHaveCSS('background-color', 'rgba(244, 244, 246, 0.72)');
+
+    // Transparency effects off: the panel is (nearly) opaque, whatever the opacity setting.
+    await setOsTheme(page, { dark: false, accent: '#FF8C00', transparency: false });
+    await expect(panel).toHaveCSS('background-color', 'rgba(244, 244, 246, 0.95)');
+    await page.screenshot({ path: `${OUT}/dock-light-accent-opaque.png` });
+
+    // The theme setting wins over Windows' mode, both ways; "system" follows it again.
+    await patchSettings(page, { theme: 'dark' });
+    await expect(html).toHaveAttribute('data-theme', 'dark');
+    await patchSettings(page, { theme: 'system' });
+    await expect(html).toHaveAttribute('data-theme', 'light');
+    await setOsTheme(page, { dark: true });
+    await expect(html).toHaveAttribute('data-theme', 'dark');
+    await patchSettings(page, { theme: 'light' });
+    await expect(html).toHaveAttribute('data-theme', 'light');
+  });
+
+  test('a contrast theme: an opaque, unblurred panel; solid lines, separators and tooltips', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openDock(page);
+    const html = page.locator('html');
+    const panel = page.locator(PANEL);
+    await setOsTheme(page, { highContrast: true });
+    await expect(html).toHaveAttribute('data-high-contrast', '');
+    await expect(panel).toHaveCSS('background-color', 'rgb(28, 28, 30)');
+    await expect(panel).toHaveCSS('backdrop-filter', 'none');
+    await expect(panel).toHaveCSS('box-shadow', 'none');
+    expect(await computed(panel, 'border-top-width', '::before')).toBe('2px');
+    expect(await computed(panel, 'border-top-color', '::before')).toBe('rgb(255, 255, 255)');
+    await expect(page.locator('[role="separator"]').first()).toHaveCSS(
+      'background-color',
+      'rgb(255, 255, 255)',
+    );
+    await page.locator(APP_SLOT).nth(3).hover();
+    const tooltip = page.locator('.tooltip');
+    await expect(tooltip).toHaveText('notepad');
+    await expect(tooltip).toHaveCSS('background-color', 'rgb(28, 28, 30)');
+    await expect(tooltip).toHaveCSS('border-top-color', 'rgb(255, 255, 255)');
+    await page.screenshot({ path: `${OUT}/dock-high-contrast.png` });
+
+    // A light contrast theme: black lines on the light panel.
+    await setOsTheme(page, { highContrast: true, dark: false });
+    await expect(html).toHaveAttribute('data-theme', 'light');
+    await expect(panel).toHaveCSS('background-color', 'rgb(244, 244, 246)');
+    await expect(tooltip).toHaveCSS('border-top-color', 'rgb(0, 0, 0)');
+
+    // The contrast theme is turned off: translucent again.
+    await page.mouse.move(640, 10);
+    await setOsTheme(page, {});
+    await expect(html).not.toHaveAttribute('data-high-contrast');
+    await expect(panel).toHaveCSS('background-color', 'rgba(28, 28, 30, 0.72)');
+    await expect(panel).not.toHaveCSS('backdrop-filter', 'none');
+  });
+
+  test('in forced colours (a contrast theme in WebView2) the dots, separators and tooltip arrow stay visible', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark', forcedColors: 'active' });
+    await openDock(page);
+    await setOsTheme(page, { highContrast: true });
+    const panel = page.locator(PANEL);
+    await expect(panel).toHaveCSS('backdrop-filter', 'none');
+    // The browser paints backgrounds in the theme's Canvas colour; these opt
+    // out, or they would vanish into the panel.
+    const canvas = await computed(panel, 'background-color');
+    const dot = page.locator(`${APP_SLOT} .dots i`);
+    expect(await computed(dot.first(), 'background-color')).not.toBe(canvas);
+    const activeDot = page.locator(`${APP_SLOT}[data-active] .dots i`).first();
+    expect(await computed(activeDot, 'background-color')).not.toBe(canvas);
+    expect(await computed(activeDot, 'background-color')).not.toBe(
+      await computed(dot.first(), 'background-color'),
+    );
+    expect(await computed(page.locator('[role="separator"]'), 'background-color')).not.toBe(canvas);
+    await page.locator(APP_SLOT).nth(3).hover();
+    const tooltip = page.locator('.tooltip');
+    await expect(tooltip).toHaveText('notepad');
+    // The arrow is one coloured border, not a block of four.
+    expect(await computed(tooltip, 'border-left-color', '::after')).toBe('rgba(0, 0, 0, 0)');
+    expect(await computed(tooltip, 'border-top-color', '::after')).not.toBe('rgba(0, 0, 0, 0)');
+    // The attention pill too.
+    await flash(page, 1);
+    const pill = page.locator(`${APP_SLOT}[data-attention] .dots i`);
+    await expect(pill).toHaveCount(1);
+    expect(await computed(pill, 'background-color')).not.toBe(canvas);
+    await page.screenshot({ path: `${OUT}/dock-forced-colors.png`, animations: 'disabled' });
+  });
+});
+
+test.describe('Start, Task View and Show Desktop', () => {
+  const KINDS = [
+    { kind: 'launcher', key: 'fixed:launcher', title: 'Start', action: 'openStartMenu' },
+    { kind: 'taskView', key: 'fixed:task-view', title: 'Task View', action: 'openTaskView' },
+    {
+      kind: 'showDesktop',
+      key: 'fixed:show-desktop',
+      title: 'Show Desktop',
+      action: 'toggleShowDesktop',
+    },
+  ] as const;
+  const LEFT = KINDS.map(({ kind }) => `.slot[data-kind="${kind}"]`).join(', ');
+
+  /** The keys of the rendered slots (items and separators), left to right. */
+  function keys(page: Page): Promise<string[]> {
+    return page
+      .locator('.dock-panel > .slot:not([data-leaving])')
+      .evaluateAll((els) => els.map((el) => (el as HTMLElement).dataset.key ?? ''));
+  }
+
+  /** What the mock recorded for one call type, oldest first. */
+  function recorded(page: Page, type: string, field: string): Promise<unknown[]> {
+    return page.evaluate(
+      ([t, f]) =>
+        ((window as unknown as DemoWindow).__dockMock?.calls ?? [])
+          .filter((c) => c.type === t)
+          .map((c) => c[f]),
+      [type, field] as const,
+    );
+  }
+
+  test('come and go with their settings, live, each with its icon, click and menu', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openDock(page);
+    // The defaults: Start only, then a separator.
+    expect((await keys(page)).slice(0, 2)).toEqual(['fixed:launcher', 'sep:1']);
+    await expect(page.locator(LEFT)).toHaveCount(1);
+
+    // Task View and Show Desktop are switched on (the settings window does
+    // this through `update_settings`): they grow in after Start.
+    await patchSettings(page, { items: { taskView: true, showDesktop: true } });
+    await expect
+      .poll(async () => (await keys(page)).slice(0, 4))
+      .toEqual(['fixed:launcher', 'fixed:task-view', 'fixed:show-desktop', 'sep:1']);
+    for (const { kind, title } of KINDS) {
+      const slot = page.locator(`.slot[data-kind="${kind}"]`);
+      await expect(slot).toHaveAttribute('aria-label', title);
+      await expect(slot).toHaveAttribute('data-icon', 'shell');
+      await expect(slot).toHaveAttribute('tabindex', '0');
+      // The built-in vector art fills the icon box.
+      await expect.poll(async () => (await slot.locator('svg').boundingBox())?.width).toBe(ICON);
+    }
+    await expect.poll(() => runningAnimations(page)).toBe(0);
+    await page.screenshot({ path: `${OUT}/dock-fixed-items.png` });
+
+    // A click on each asks the backend for its primary action; the engine
+    // maps the item to its shell action. One at a time: the mock's commands
+    // settle after a random latency, so their order is only that of the clicks
+    // when each has landed before the next.
+    for (const [i, { kind }] of KINDS.entries()) {
+      await page.locator(`.slot[data-kind="${kind}"]`).click();
+      await expect
+        .poll(() => recorded(page, 'shell', 'action'))
+        .toEqual(KINDS.slice(0, i + 1).map(({ action }) => action));
+    }
+    // A right-click on each asks for its native menu (built by Rust).
+    for (const [i, { kind }] of KINDS.entries()) {
+      await page.locator(`.slot[data-kind="${kind}"]`).click({ button: 'right' });
+      await expect
+        .poll(() => recorded(page, 'showItemMenu', 'itemKey'))
+        .toEqual(KINDS.slice(0, i + 1).map(({ key }) => key));
+    }
+
+    // All three off, live: the left group and its separator go.
+    await page.mouse.move(640, 10);
+    await patchSettings(page, { items: { launcher: false, taskView: false, showDesktop: false } });
+    await expect(page.locator(LEFT)).toHaveCount(0);
+    await expect.poll(async () => (await keys(page))[0]).toMatch(/^app:/);
+    await expect(page.locator('[role="separator"]')).toHaveCount(2);
+  });
+});
+
+test.describe('attention', () => {
+  const EXPLORER = `${APP_SLOT}[data-key="app:exe:c:/windows/explorer.exe"]`;
+  const EXPLORER_WINDOW = 1;
+  const SPOTIFY = `${APP_SLOT}[data-key="app:exe:c:/program files/spotify/spotify.exe"]`;
+  /** Spotify's only window, minimised in the demo. */
+  const SPOTIFY_WINDOW = 6;
+  /** `--attention` of the dark theme (src/app.css). */
+  const ATTENTION_DARK = 'rgb(247, 99, 12)';
+
+  /** The name of the running animation on an item's wiggler, or `null`. */
+  function wiggle(page: Page, slot: string): Promise<string | null> {
+    return page
+      .locator(slot)
+      .locator('.wiggler')
+      .evaluate((el) => {
+        const running = el.getAnimations().find((a) => a.playState === 'running');
+        return running instanceof CSSAnimation ? running.animationName : null;
+      });
+  }
+
+  test('an app that flashes wiggles until its window is activated; nothing runs before or after', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openDock(page);
+    const explorer = page.locator(EXPLORER);
+    // At rest nothing animates (docs/development/frontend-rules.md: the dock idles at ~0 % CPU).
+    await expect.poll(() => runningAnimations(page)).toBe(0);
+    await expect(page.locator('[data-attention]')).toHaveCount(0);
+
+    await flash(page, EXPLORER_WINDOW);
+    await expect(explorer).toHaveAttribute('data-attention', 'true');
+    await expect(explorer).toHaveAttribute('aria-label', /needs attention/);
+    await expect(explorer.locator('.wiggler')).toHaveClass(/attention/);
+    await expect.poll(() => wiggle(page, EXPLORER)).toMatch(/wiggle/);
+    // That one animation and nothing else.
+    expect(await runningAnimations(page)).toBe(1);
+    // The still cue: one pill, three dots wide, in the attention colour.
+    await expect(explorer.locator('.dots')).toHaveClass(/attention/);
+    await expect(explorer.locator('.dots i')).toHaveCount(1);
+    await expect(explorer.locator('.dots i')).toHaveCSS('background-color', ATTENTION_DARK);
+    await expect(explorer.locator('.dots i')).toHaveCSS('width', '12px');
+    await page.screenshot({ path: `${OUT}/dock-attention.png`, animations: 'disabled' });
+
+    // It keeps going (past one 2 s cycle) until the window is activated…
+    await page.waitForTimeout(2_500);
+    expect(await wiggle(page, EXPLORER)).toMatch(/wiggle/);
+    // …here by a click on the item: the engine activates the window and the
+    // next snapshot clears the flag.
+    await explorer.click();
+    await expect(explorer).toHaveAttribute('data-active', 'true');
+    await expect(explorer).not.toHaveAttribute('data-attention');
+    await expect(explorer.locator('.wiggler')).not.toHaveClass(/attention/);
+    await expect(explorer.locator('.dots')).not.toHaveClass(/attention/);
+    await expect(explorer.locator('.dots i')).toHaveCSS('width', '4px');
+    await page.mouse.move(640, 10);
+    await expect.poll(() => runningAnimations(page)).toBe(0);
+
+    // A minimised app flashing in the background, then switched to without
+    // the dock (Alt+Tab): the pill is not dimmed like its dot was, and it
+    // stops too.
+    const spotify = page.locator(SPOTIFY);
+    await flash(page, SPOTIFY_WINDOW);
+    await expect(spotify).toHaveAttribute('data-attention', 'true');
+    await expect(spotify.locator('.dots i')).toHaveCSS('background-color', ATTENTION_DARK);
+    await expect(spotify.locator('.dots i')).toHaveCSS('opacity', '1');
+    await foreground(page, SPOTIFY_WINDOW);
+    await expect(spotify).not.toHaveAttribute('data-attention');
+    await expect.poll(() => runningAnimations(page)).toBe(0);
+  });
+
+  test('under reduced motion it does not wiggle; its pill still says so, even with the running indicators off', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' });
+    await openDock(page);
+    await patchSettings(page, { behavior: { runningIndicators: false } });
+    await expect(page.locator('.dots i')).toHaveCount(0);
+
+    await flash(page, EXPLORER_WINDOW);
+    const explorer = page.locator(EXPLORER);
+    await expect(explorer).toHaveAttribute('data-attention', 'true');
+    await expect(explorer.locator('.wiggler')).not.toHaveClass(/attention/);
+    // One indicator in the whole dock: the attention pill.
+    await expect(page.locator('.dots i')).toHaveCount(1);
+    await expect(explorer.locator('.dots i')).toHaveCSS('width', '12px');
+    await expect(explorer.locator('.dots i')).toHaveCSS('background-color', ATTENTION_DARK);
+    expect(await runningAnimations(page)).toBe(0);
+    await page.screenshot({ path: `${OUT}/dock-attention-reduced-motion.png` });
+
+    await foreground(page, EXPLORER_WINDOW);
+    await expect(page.locator('.dots i')).toHaveCount(0);
+  });
+});
+
 /** Tauri's file drag events, as the mock delivers them: viewport CSS px. */
 function fileDrag(page: Page, event: FileDrag): Promise<void> {
   return page.evaluate((e) => {
@@ -1248,6 +1622,39 @@ test.describe('auto-hide', () => {
     await expect(panel).toHaveAttribute('data-autohide', 'hidden');
   });
 
+  test('an app asking for attention brings it back and keeps it up until the window is activated', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openDock(page);
+    const viewport = page.viewportSize()!;
+    await expect.poll(() => hitRegions(page)).toHaveLength(1);
+    const atRest = (await hitRegions(page))[0]!;
+    const panel = page.locator(PANEL);
+    // The pointer never came near the dock: it goes after the delay.
+    await setAutoHide(page, 'always');
+    await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+    await expect.poll(() => lastRegion(page)).toEqual(stripRegion(atRest, viewport.height));
+
+    // Explorer flashes its taskbar button: the dock slides in, with the
+    // region of a shown dock, and the item wiggles.
+    await flash(page, 1);
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+    await expect(panel).toBeVisible();
+    await expect.poll(() => lastRegion(page)).toEqual(shownRegion(atRest, viewport.height));
+    await expect(page.locator('[data-attention] .wiggler.attention')).toHaveCount(1);
+    // It stays, with the pointer away, well past the delay.
+    await page.waitForTimeout(DELAY * 2 + SLIDE_MS);
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+
+    // The window is activated from elsewhere: the countdown starts.
+    await foreground(page, 1);
+    await expect(page.locator('[data-attention]')).toHaveCount(0);
+    await expect(panel).toHaveAttribute('data-autohide', 'pending');
+    await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+    await expect.poll(() => lastRegion(page)).toEqual(stripRegion(atRest, viewport.height));
+  });
+
   test('reduced motion fades instead of sliding; "when overlapped" acts as off for now', async ({
     page,
   }) => {
@@ -1494,6 +1901,76 @@ test.describe('settings window', () => {
     await expect(page.locator('output[for="icon-size"]')).toHaveText('48 px');
     await expect(page.locator('.empty')).toHaveText('Nothing is pinned yet.');
     await expect(page.locator('.status')).toHaveText('Saved');
+  });
+
+  test('each fixed item has a switch that applies at once', async ({ page }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openSettings(page);
+    const saved = async (): Promise<Settings['items'] | undefined> =>
+      (await page.evaluate(SETTINGS_MOCK))?.items;
+    const launcher = page.locator('#item-launcher');
+    const taskView = page.locator('#item-task-view');
+    const showDesktop = page.locator('#item-show-desktop');
+    await expect(launcher).toBeChecked();
+    await expect(taskView).not.toBeChecked();
+    await expect(showDesktop).not.toBeChecked();
+    await expect(launcher).toHaveAccessibleName('Start');
+    await expect(taskView).toHaveAccessibleName('Task View');
+    await expect(showDesktop).toHaveAccessibleName('Show Desktop');
+    await expect(page.locator('#item-task-view-description')).toHaveText(/open windows/);
+    await expect(page.locator('#item-show-desktop-description')).toHaveText(/Minimises every/);
+
+    await taskView.click();
+    await expect.poll(async () => (await saved())?.taskView).toBe(true);
+    await showDesktop.click();
+    await expect.poll(async () => (await saved())?.showDesktop).toBe(true);
+    await launcher.click();
+    await expect.poll(async () => (await saved())?.launcher).toBe(false);
+    await expect(page.locator('.status')).toHaveText('Saved');
+    await expect(launcher).not.toBeChecked();
+    await expect(taskView).toBeChecked();
+    await expect(showDesktop).toBeChecked();
+    await page.locator('#h-items').scrollIntoViewIfNeeded();
+    await page.screenshot({ path: `${OUT}/settings-items.png` });
+  });
+
+  test('follows a contrast theme and the accent of Windows; forced colours keep switches and sliders readable', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openSettings(page);
+    const html = page.locator('html');
+    const on = page.locator('#magnification');
+    const off = page.locator('#autostart');
+    await setOsTheme(page, { highContrast: true, accent: '#FF8C00' });
+    await expect(html).toHaveAttribute('data-high-contrast', '');
+    await expect(html).toHaveAttribute('data-theme', 'dark');
+    // Solid black page and cards, every line in the text colour, the Windows accent.
+    await expect(page.locator('body')).toHaveCSS('background-color', 'rgb(0, 0, 0)');
+    await expect(page.locator('.card').first()).toHaveCSS('background-color', 'rgb(0, 0, 0)');
+    await expect(page.locator('.card').first()).toHaveCSS('border-top-color', 'rgb(255, 255, 255)');
+    await expect(off).toHaveCSS('border-top-color', 'rgb(255, 255, 255)');
+    await expect(on).toHaveCSS('background-color', 'rgb(255, 140, 0)');
+    await page.screenshot({ path: `${OUT}/settings-high-contrast.png` });
+
+    // Forced colours, as WebView2 renders under a contrast theme: the
+    // switches' knobs and the sliders' tracks would be painted away.
+    await page.emulateMedia({ colorScheme: 'dark', forcedColors: 'active' });
+    const knob = (toggle: Locator): Promise<string> =>
+      computed(toggle, 'background-color', '::before');
+    expect(await knob(on)).not.toBe(await computed(on, 'background-color'));
+    expect(await knob(off)).not.toBe(await computed(off, 'background-color'));
+    expect(await computed(on, 'background-color')).not.toBe(
+      await computed(off, 'background-color'),
+    );
+    await expect(page.locator('#icon-size')).toHaveCSS('forced-color-adjust', 'none');
+    await page.screenshot({ path: `${OUT}/settings-forced-colors.png` });
+
+    // The contrast theme is turned off again.
+    await page.emulateMedia({ colorScheme: 'dark', forcedColors: 'none' });
+    await setOsTheme(page, {});
+    await expect(html).not.toHaveAttribute('data-high-contrast');
+    await expect(page.locator('body')).toHaveCSS('background-color', 'rgb(32, 32, 32)');
   });
 
   test('every control has a name and the keyboard reaches the first one', async ({ page }) => {
