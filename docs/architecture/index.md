@@ -19,6 +19,7 @@ the records in `docs/adr/` give the reasons for the main decisions.
 - [dock-window.md](dock-window.md): the dock's native window, its flags and focus,
   click-through outside the panel and how it stays topmost.
 - [dock-placement.md](dock-placement.md): where the dock window is placed.
+- [auto-hide.md](auto-hide.md): how the dock hides its panel and brings it back.
 - [settings.md](settings.md): how settings are stored and how the app shell applies the
   ones that belong to it.
 - [error-handling.md](error-handling.md): the error type of each layer.

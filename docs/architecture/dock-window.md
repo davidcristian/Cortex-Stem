@@ -3,7 +3,8 @@
 This file describes the dock's native window: its flags and focus, click-through outside the
 panel, and how it stays topmost. The other parts of the dock window are described in:
 
-- [dock-placement.md](dock-placement.md): position and size, and one window per monitor.
+- [dock-placement.md](dock-placement.md): position and size, and one window per monitor;
+- [auto-hide.md](auto-hide.md): auto-hide.
 
 ## Window flags and focus
 
