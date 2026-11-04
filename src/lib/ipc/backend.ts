@@ -1,7 +1,8 @@
 /**
- * The frontend's only door to the Rust side (docs/ipc/, contract v1.3).
+ * The frontend's only door to the Rust side (docs/ipc/, contract v1.7).
  *
- * One method per command and one `on` subscription per event. Components
+ * One method per command and one `on` subscription per event (plus
+ * `onFileDrag` for Tauri's own file drag events). Components
  * never call `invoke`/`listen` themselves (AGENTS.md §4); they talk to a
  * `Backend`, which is `TauriBackend` inside the app and `MockBackend` in a
  * browser or under Playwright.
@@ -40,8 +41,30 @@ export type EventHandler<E extends BackendEvent> = (payload: BackendEvents[E]) =
 /** Returned by `Backend.on`; calling it stops the subscription. */
 export type Unsubscribe = () => void;
 
+/** A point in CSS px relative to the dock window's viewport (like `MouseEvent.clientX/Y`). */
+export interface CssPoint {
+  x: number;
+  y: number;
+}
+
 /**
- * Commands and events of docs/ipc/ v1.3. Method names are the command
+ * A file drag from the shell over the calling window
+ * (docs/ipc/file-drags.md): Tauri's webview drag-drop events with the
+ * position in CSS px of the viewport. `enter` and `drop` carry the
+ * dragged paths, as the shell gives them; `over` only moves; `leave`
+ * means the drag left the window or was cancelled. An OLE drag like this
+ * produces no pointer or HTML5 drag events in the page.
+ */
+export type FileDragEvent =
+  | { type: 'enter'; paths: string[]; position: CssPoint }
+  | { type: 'over'; position: CssPoint }
+  | { type: 'drop'; paths: string[]; position: CssPoint }
+  | { type: 'leave' };
+
+export type FileDragHandler = (event: FileDragEvent) => void;
+
+/**
+ * Commands and events of docs/ipc/ v1.7. Method names are the command
  * names in camelCase; argument order follows the command's argument list.
  *
  * Failed commands reject with a `string` (the Rust error message).
@@ -92,6 +115,13 @@ export interface Backend {
   showDockMenu(x: number, y: number): Promise<void>;
 
   on<E extends BackendEvent>(event: E, handler: EventHandler<E>): Unsubscribe;
+
+  /**
+   * File drags over this window (docs/ipc/file-drags.md). `TauriBackend`
+   * converts Tauri's physical pixels to CSS px; `MockBackend` delivers what
+   * its `simulateFileDrag` hook is given.
+   */
+  onFileDrag(handler: FileDragHandler): Unsubscribe;
 
   // Planned for M2 (docs/ipc/commands.md). Optional until Rust
   // implements it; the UI checks for presence before calling.

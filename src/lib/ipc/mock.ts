@@ -1,5 +1,5 @@
 /**
- * `MockBackend`: the whole IPC contract (docs/ipc/ v1.2) without Rust, for
+ * `MockBackend`: the whole IPC contract (docs/ipc/ v1.7) without Rust, for
  * browser runs and Playwright screenshots.
  *
  * It mirrors, deliberately in this one file so the two sides can be compared,
@@ -40,6 +40,8 @@ import {
   type BackendEvent,
   type BackendEvents,
   type EventHandler,
+  type FileDragEvent,
+  type FileDragHandler,
   type Unsubscribe,
 } from './backend';
 
@@ -61,9 +63,16 @@ export interface MockOptions {
   log?: boolean;
 }
 
-/** A side effect the mock would have performed on a real OS (mirror of `MockCall`). */
+/**
+ * A side effect the mock would have performed on a real OS (mirror of
+ * `MockCall`), or a pin request (`pinTarget`, `reorderPinned`: what the UI
+ * asked to pin and in which order, so tests can tell one request from
+ * several).
+ */
 export type MockCall =
   | { type: 'windowAction'; windowId: WindowId; action: WindowAction }
+  | { type: 'pinTarget'; target: LaunchTarget }
+  | { type: 'reorderPinned'; order: AppId[] }
   | { type: 'launch'; target: LaunchTarget }
   | { type: 'shell'; action: ShellAction }
   | { type: 'setDockContentSize'; width: number; height: number }
@@ -788,8 +797,12 @@ export class MockBackend implements Backend {
     this.setTheme({ ...this.engine.theme, dark: this.mediaQuery?.matches ?? true });
   };
 
-  /** Every side effect so far, oldest first (for tests; mirror of `MockPlatform::calls`). */
+  /**
+   * Every side effect and pin request so far, oldest first (for tests;
+   * mirror of `MockPlatform::calls`).
+   */
   readonly calls: MockCall[] = [];
+  private readonly fileDragHandlers = new Set<FileDragHandler>();
 
   constructor(options: MockOptions = {}) {
     const scenario = SCENARIOS[options.scenario ?? 'default']();
@@ -906,6 +919,7 @@ export class MockBackend implements Backend {
 
   pinTarget(target: LaunchTarget): Promise<AppId> {
     return this.command(() => {
+      this.record({ type: 'pinTarget', target: structuredClone(target) });
       const identity = identityForTarget(target);
       if (!this.engine.isPinned(identity.id)) {
         // Make the identity known before the new item renders.
@@ -931,6 +945,7 @@ export class MockBackend implements Backend {
 
   reorderPinned(order: AppId[]): Promise<void> {
     return this.command(() => {
+      this.record({ type: 'reorderPinned', order: [...order] });
       const settings = structuredClone(this.engine.settings);
       settings.pinned = reorderPinned(settings.pinned, order);
       this.applySettings(settings);
@@ -1003,6 +1018,14 @@ export class MockBackend implements Backend {
     };
   }
 
+  /** File drags arrive only through `simulateFileDrag`: a browser page gets no OLE drags. */
+  onFileDrag(handler: FileDragHandler): Unsubscribe {
+    this.fileDragHandlers.add(handler);
+    return () => {
+      this.fileDragHandlers.delete(handler);
+    };
+  }
+
   // --- Backend: native context menus. A browser has none; the mock
   // records the request (Rust would build and show the menu itself).
 
@@ -1037,6 +1060,18 @@ export class MockBackend implements Backend {
   }
 
   // --- Scripting hooks (mirror of `MockPlatform::push`), for tests and demos.
+
+  /**
+   * Deliver a file drag event, exactly what `TauriBackend.onFileDrag` would
+   * hand over for an OLE drag from Explorer (positions in CSS px of the
+   * viewport). Synchronous, like Tauri's events arriving between frames.
+   */
+  simulateFileDrag(event: FileDragEvent): void {
+    this.log(`file drag ${event.type}${'paths' in event ? ` ${event.paths.join(', ')}` : ''}`);
+    for (const handler of [...this.fileDragHandlers]) {
+      handler(structuredClone(event));
+    }
+  }
 
   /** Make the next command reject with `message` (what a Rust error looks like across IPC). */
   failNextCommand(message: string): void {

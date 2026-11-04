@@ -6,6 +6,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { getCurrentWebview, type DragDropEvent } from '@tauri-apps/api/webview';
 
 import type { AppId } from '$lib/ipc/generated/AppId';
 import type { DockState } from '$lib/ipc/generated/DockState';
@@ -21,7 +22,81 @@ import type { WindowId } from '$lib/ipc/generated/WindowId';
 
 import { integerRect } from '$lib/dock/geometry';
 
-import type { Backend, BackendEvent, BackendEvents, EventHandler, Unsubscribe } from './backend';
+import type {
+  Backend,
+  BackendEvent,
+  BackendEvents,
+  EventHandler,
+  FileDragEvent,
+  FileDragHandler,
+  Unsubscribe,
+} from './backend';
+
+/**
+ * Tauri's drag-drop payload in the page's terms: positions arrive in
+ * physical pixels relative to the webview's top-left corner and become CSS
+ * px of the viewport by dividing by the device pixel ratio, here and only
+ * here (docs/ipc/file-drags.md).
+ */
+export function fileDragFromTauri(payload: DragDropEvent, devicePixelRatio: number): FileDragEvent {
+  const scale = Number.isFinite(devicePixelRatio) && devicePixelRatio > 0 ? devicePixelRatio : 1;
+  const css = (p: { x: number; y: number }): { x: number; y: number } => ({
+    x: p.x / scale,
+    y: p.y / scale,
+  });
+  switch (payload.type) {
+    case 'enter':
+      return { type: 'enter', paths: [...payload.paths], position: css(payload.position) };
+    case 'over':
+      return { type: 'over', position: css(payload.position) };
+    case 'drop':
+      return { type: 'drop', paths: [...payload.paths], position: css(payload.position) };
+    case 'leave':
+      return { type: 'leave' };
+  }
+}
+
+/**
+ * Subscribe through an async registration and return a synchronous
+ * `Unsubscribe` that works whether or not the registration has completed.
+ * `deliver` is only called while subscribed.
+ */
+function subscribe(
+  what: string,
+  register: (deliver: (fn: () => void) => void) => Promise<UnlistenFn>,
+): Unsubscribe {
+  let disposed = false;
+  let unlisten: UnlistenFn | undefined;
+  const deliver = (fn: () => void): void => {
+    if (!disposed) {
+      fn();
+    }
+  };
+  // Registered now, in the caller's tick: the startup sequence subscribes
+  // before it fetches (docs/ipc/events.md). A synchronous throw (no
+  // webview metadata) is reported like a rejection instead of escaping.
+  let registration: Promise<UnlistenFn>;
+  try {
+    registration = register(deliver);
+  } catch (err) {
+    registration = Promise.reject(err);
+  }
+  void registration.then(
+    (fn) => {
+      if (disposed) {
+        fn();
+      } else {
+        unlisten = fn;
+      }
+    },
+    (err: unknown) => console.error(`${what} failed:`, err),
+  );
+  return () => {
+    disposed = true;
+    unlisten?.();
+    unlisten = undefined;
+  };
+}
 
 export class TauriBackend implements Backend {
   getDockState(): Promise<DockState> {
@@ -114,28 +189,20 @@ export class TauriBackend implements Backend {
   }
 
   on<E extends BackendEvent>(event: E, handler: EventHandler<E>): Unsubscribe {
-    // `listen` resolves asynchronously; the returned function must work
-    // whether or not the registration has completed yet.
-    let disposed = false;
-    let unlisten: UnlistenFn | undefined;
-    void listen<BackendEvents[E]>(event, (e) => {
-      if (!disposed) {
-        handler(e.payload);
-      }
-    }).then(
-      (fn) => {
-        if (disposed) {
-          fn();
-        } else {
-          unlisten = fn;
-        }
-      },
-      (err: unknown) => console.error(`listen(${event}) failed:`, err),
+    return subscribe(`listen(${event})`, (deliver) =>
+      listen<BackendEvents[E]>(event, (e) => deliver(() => handler(e.payload))),
     );
-    return () => {
-      disposed = true;
-      unlisten?.();
-      unlisten = undefined;
-    };
+  }
+
+  /**
+   * Tauri's own `tauri://drag-*` events for this webview (its drag-drop
+   * handler is on for the dock window; `core:default` grants the listen).
+   */
+  onFileDrag(handler: FileDragHandler): Unsubscribe {
+    return subscribe('onDragDropEvent', (deliver) =>
+      getCurrentWebview().onDragDropEvent((e) =>
+        deliver(() => handler(fileDragFromTauri(e.payload, window.devicePixelRatio))),
+      ),
+    );
   }
 }

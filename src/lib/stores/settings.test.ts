@@ -146,6 +146,9 @@ class FakeBackend implements Backend {
   async quit(): Promise<void> {}
   async showItemMenu(): Promise<void> {}
   async showDockMenu(): Promise<void> {}
+  onFileDrag(): Unsubscribe {
+    return () => {};
+  }
 }
 
 const tick = async (): Promise<void> => {

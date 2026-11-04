@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DockState } from '$lib/ipc/generated/DockState';
 import type { Settings } from '$lib/ipc/generated/Settings';
 
-import type { BouncePayload } from './backend';
+import type { BouncePayload, FileDragEvent } from './backend';
 import {
   appIdForExe,
   colorFor,
@@ -270,6 +270,22 @@ describe('pins (mirror of stem-service pin/unpin/reorder)', () => {
     expect((await b.getSettings()).pinned.filter((p) => p.id === id)).toHaveLength(1);
   });
 
+  it('records each pin request and each new order, the way the UI asked for them', async () => {
+    const b = fast();
+    const target = { kind: 'shortcut' as const, path: 'C:\\Links\\Foo.lnk' };
+    const id = await b.pinTarget(target);
+    await b.reorderPinned([id, EXPLORER]);
+    expect(b.calls).toEqual([
+      { type: 'pinTarget', target },
+      { type: 'reorderPinned', order: [id, EXPLORER] },
+    ]);
+    expect((await b.getSettings()).pinned.map((p) => p.id).slice(0, 2)).toEqual([id, EXPLORER]);
+    // A command that failed did nothing and is not recorded.
+    b.failNextCommand('boom');
+    await expect(b.pinTarget(target)).rejects.toBe('boom');
+    expect(b.calls).toHaveLength(2);
+  });
+
   it('a pinned app survives its last window closing; an unpinned one disappears', async () => {
     const b = fast();
     await b.windowAction(1, 'close'); // Explorer is pinned
@@ -278,6 +294,32 @@ describe('pins (mirror of stem-service pin/unpin/reorder)', () => {
     expect(item(state, app(EXPLORER)).windows).toEqual([]);
     expect(keys(state)).not.toContain(app(CODE));
     await expect(b.windowAction(4, 'close')).rejects.toMatch(/window not found/);
+  });
+});
+
+describe('file drags (docs/ipc/file-drags.md; simulated: a browser gets no OLE drags)', () => {
+  it('delivers each simulated event, as a copy, to every subscriber until it unsubscribes', () => {
+    const b = fast();
+    const seen: FileDragEvent[] = [];
+    const other: string[] = [];
+    const off = b.onFileDrag((e) => seen.push(e));
+    b.onFileDrag((e) => other.push(e.type));
+    const enter: FileDragEvent = {
+      type: 'enter',
+      paths: ['C:\\Windows\\notepad.exe'],
+      position: { x: 10, y: 20 },
+    };
+    b.simulateFileDrag(enter);
+    b.simulateFileDrag({ type: 'over', position: { x: 12, y: 20 } });
+    b.simulateFileDrag({ type: 'leave' });
+    expect(seen).toEqual([enter, { type: 'over', position: { x: 12, y: 20 } }, { type: 'leave' }]);
+    expect(seen[0]).not.toBe(enter);
+    off();
+    b.simulateFileDrag({ type: 'leave' });
+    expect(seen).toHaveLength(3);
+    expect(other).toEqual(['enter', 'over', 'leave', 'leave']);
+    // A drag by itself pins nothing: that is the UI's call.
+    expect(b.calls).toEqual([]);
   });
 });
 
