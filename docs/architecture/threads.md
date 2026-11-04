@@ -11,14 +11,20 @@ which work may run on which thread.
 | `stem-service` worker | service | engine updates (it drains every queued input in one batch), calls the listeners (`State` coalesced to at most one per 16 ms) |
 | `dock-identity` | service | platform identity queries (`identify_window`, `identify_target`), one retry after 2 s, then a fallback identity; `IdentityUnavailable` when there was nothing to query; never blocks the event drain |
 | `stem-platform-hit-test` | platform | started by the first `set_dock_hit_region`: a message-only window, raw mouse input (`RIDEV_INPUTSINK`) plus a 4 Hz safety poll (a 30 Hz poll if raw input cannot be registered); `GetCursorPos` → `ScreenToClient` → `rules::hit_region` hysteresis per tracked dock window; posts pass-through transitions to the dock window, whose subclass applies them on the main thread; stopped with the platform |
-| `dock-empty-recycle-bin` | platform | one per `ShellAction::EmptyRecycleBin`: a COM single-threaded apartment (STA) that runs `SHEmptyRecycleBinW` with the shell's confirmation |
+| `stem-recycle` | platform | one per `delete_to_recycle_bin`: a COM single-threaded apartment (STA) that runs `IFileOperation` with the shell's own dialogs (their message loops run here); returns the result to the waiting caller and ends |
+| `dock-empty-recycle-bin` | platform | one per `ShellAction::EmptyRecycleBin`: an STA that runs `SHEmptyRecycleBinW` with the shell's confirmation |
+| `stem-recycle-bin-refresh` | service | one per `delete_to_recycle_bin`, after the platform call: one `recycle_bin()` query, queued for the worker as `RecycleBinChanged`, so the bin's icon updates at once instead of at the next 5 s poll |
 | WebView2 threads | WebView2 | rendering |
 
 Rules: Win32 work that needs a message loop or a COM STA runs on a thread
 that has one: the events thread, or a feature's own thread from the table
 above. Commands may call `Platform` methods directly when the call is quick
 and bounded (`SetForegroundWindow`, `ShellExecuteEx`), never anything that
-pumps messages or waits on another process.
+pumps messages or waits on another process. The one command that waits on the
+user is `delete_to_recycle_bin`, because the shell's dialogs stay up for as
+long as the user leaves them. Its shell work runs on its own `stem-recycle`
+thread, and the command waits for it on Tauri's blocking pool, so neither
+the main thread nor the async runtime's workers are held.
 
 ## The events thread
 
