@@ -14,7 +14,7 @@
 //! - `identity`    display names, AUMIDs, .lnk resolution
 //! - `launch`      ShellExecute & friends
 //! - `theme`       accent colour, light/dark, contrast
-//! - `recycle_bin` SHQueryRecycleBin, open, empty
+//! - `recycle_bin` SHQueryRecycleBin, open, empty; recycle files
 //! - `appbar`      SHAppBarMessage space reservation (M4)
 //! - `shell`       Start menu, Task View, Show Desktop
 //! - `dock_window` extended styles + subclass of our own windows
@@ -127,6 +127,10 @@ impl Platform for WindowsPlatform {
 
     fn recycle_bin(&self) -> PlatformResult<RecycleBinState> {
         recycle_bin::query()
+    }
+
+    fn delete_to_recycle_bin(&self, paths: &[String]) -> PlatformResult<()> {
+        recycle_bin::recycle(paths)
     }
 
     fn shell_action(&self, action: ShellAction) -> PlatformResult<()> {

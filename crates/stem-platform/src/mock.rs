@@ -13,7 +13,7 @@ use stem_core::{
 
 use crate::{
     DockWindowOptions, EventSink, HitRegion, NativeWindowHandle, Platform, PlatformError,
-    PlatformResult,
+    PlatformResult, rules,
 };
 
 #[derive(Default)]
@@ -23,6 +23,8 @@ struct State {
     monitors: Vec<MonitorInfo>,
     theme: ThemeInfo,
     recycle_bin: RecycleBinState,
+    /// When set, `delete_to_recycle_bin` fails with this message.
+    recycle_failure: Option<String>,
     sink: Option<EventSink>,
     /// Every call made, for assertions in tests.
     calls: Vec<MockCall>,
@@ -36,6 +38,7 @@ impl std::fmt::Debug for State {
             .field("monitors", &self.monitors)
             .field("theme", &self.theme)
             .field("recycle_bin", &self.recycle_bin)
+            .field("recycle_failure", &self.recycle_failure)
             .field("started", &self.sink.is_some())
             .field("calls", &self.calls)
             .finish()
@@ -47,6 +50,8 @@ impl std::fmt::Debug for State {
 pub enum MockCall {
     WindowAction(WindowId, WindowAction),
     Launch(LaunchTarget),
+    /// `delete_to_recycle_bin` with these paths, as given.
+    DeleteToRecycleBin(Vec<String>),
     Shell(ShellAction),
     PrepareDockWindow(NativeWindowHandle, DockWindowOptions),
     SetDockHitRegion(NativeWindowHandle, Option<HitRegion>),
@@ -114,6 +119,13 @@ impl MockPlatform {
 
     pub fn clear_calls(&self) {
         self.state.lock().calls.clear();
+    }
+
+    /// Make every later `delete_to_recycle_bin` fail with `message` (what
+    /// the shell refusing an item or the user cancelling looks like), or
+    /// succeed again with `None`.
+    pub fn set_recycle_failure(&self, message: Option<&str>) {
+        self.state.lock().recycle_failure = message.map(str::to_owned);
     }
 
     fn record(&self, call: MockCall) {
@@ -263,6 +275,26 @@ impl Platform for MockPlatform {
 
     fn recycle_bin(&self) -> PlatformResult<RecycleBinState> {
         Ok(self.state.lock().recycle_bin)
+    }
+
+    /// Recorded; then every plain absolute path counts as existing
+    /// (`rules::recycle` with nothing missing) and is added to the bin's
+    /// item count. Silently, like the real bin: no `RecycleBinChanged` is
+    /// pushed, `recycle_bin` reports it (the service asks right after).
+    fn delete_to_recycle_bin(&self, paths: &[String]) -> PlatformResult<()> {
+        self.record(MockCall::DeleteToRecycleBin(paths.to_vec()));
+        let mut s = self.state.lock();
+        if let Some(message) = &s.recycle_failure {
+            return Err(PlatformError::Other(message.clone()));
+        }
+        let plan = rules::recycle::plan_recycle(paths, |_| true);
+        if plan.recycle.is_empty() {
+            return Err(PlatformError::Other(rules::recycle::nothing_to_recycle(
+                &plan,
+            )));
+        }
+        s.recycle_bin.item_count += plan.recycle.len() as u64;
+        Ok(())
     }
 
     fn shell_action(&self, action: ShellAction) -> PlatformResult<()> {
@@ -499,6 +531,47 @@ mod tests {
         assert_eq!(a, b);
         assert_eq!(&a[..8], b"\x89PNG\r\n\x1a\n");
         assert_eq!(p.icon_png(&IconKey::shell("start"), 48).unwrap(), None);
+    }
+
+    #[test]
+    fn delete_to_recycle_bin_records_the_paths_and_fills_the_bin_silently() {
+        let p = MockPlatform::new();
+        let seen: Arc<Mutex<Vec<PlatformEvent>>> = Arc::default();
+        let sink_seen = Arc::clone(&seen);
+        p.start(Arc::new(move |ev| sink_seen.lock().push(ev)))
+            .unwrap();
+        let before = seen.lock().len();
+        assert!(p.recycle_bin().unwrap().is_empty());
+        let paths = vec![
+            r"C:\Users\me\Desktop\notes.txt".to_owned(),
+            r"C:\Users\me\Desktop\Folder".to_owned(),
+            "relative.txt".to_owned(),
+        ];
+
+        p.delete_to_recycle_bin(&paths).unwrap();
+        assert_eq!(p.calls(), vec![MockCall::DeleteToRecycleBin(paths)]);
+        // The relative path is skipped; the other two are in the bin.
+        assert_eq!(p.recycle_bin().unwrap().item_count, 2);
+        assert_eq!(seen.lock().len(), before, "no event: the caller asks");
+
+        // Nothing usable: an error, the bin unchanged.
+        let err = p.delete_to_recycle_bin(&[r"C:\".to_owned()]).unwrap_err();
+        assert_eq!(err.to_string(), r"C:\ is a drive or share root");
+        assert_eq!(p.recycle_bin().unwrap().item_count, 2);
+
+        // A scripted refusal: recorded, an error, the bin unchanged.
+        p.set_recycle_failure(Some("notes.txt is open in another program"));
+        let locked = vec![r"C:\Users\me\locked.docx".to_owned()];
+        let err = p.delete_to_recycle_bin(&locked).unwrap_err();
+        assert_eq!(err.to_string(), "notes.txt is open in another program");
+        assert_eq!(
+            p.calls().last(),
+            Some(&MockCall::DeleteToRecycleBin(locked.clone()))
+        );
+        assert_eq!(p.recycle_bin().unwrap().item_count, 2);
+        p.set_recycle_failure(None);
+        p.delete_to_recycle_bin(&locked).unwrap();
+        assert_eq!(p.recycle_bin().unwrap().item_count, 3);
     }
 
     #[test]

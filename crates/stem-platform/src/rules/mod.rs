@@ -12,4 +12,5 @@ pub mod hit_region;
 pub mod icons;
 pub mod identity;
 pub mod recheck;
+pub mod recycle;
 pub mod theme;

@@ -132,6 +132,25 @@ pub trait Platform: Send + Sync + 'static {
 
     fn recycle_bin(&self) -> PlatformResult<RecycleBinState>;
 
+    /// Move files and folders to the Recycle Bin (what a file drop on
+    /// its item does). `paths` are the dropped paths as the shell gave them.
+    ///
+    /// Each one must be a plain absolute file path that exists
+    /// ([`rules::recycle`]); the others are skipped with a warning, and when
+    /// nothing is left the call fails. The rest go to the bin in one shell
+    /// operation, with the shell's own confirmation, progress and error UI:
+    /// an item that cannot be recycled (its drive has no bin, it is too
+    /// large) is only deleted for good once the user agreed to the shell's
+    /// warning. The bin's new state is not reported here; the caller asks
+    /// [`Platform::recycle_bin`] when it wants it sooner than the poll.
+    ///
+    /// **Blocks** until the shell is done, which includes the user
+    /// answering its dialogs: never call it on the UI thread or on a thread
+    /// that must stay responsive. Fails when the user cancelled or an item
+    /// was refused (in use, access denied); what went to the bin before
+    /// that stays there.
+    fn delete_to_recycle_bin(&self, paths: &[String]) -> PlatformResult<()>;
+
     fn shell_action(&self, action: ShellAction) -> PlatformResult<()>;
 
     /// Apply OS-level styles to a dock window the app layer created.
@@ -248,6 +267,9 @@ mod tests {
             }
             fn recycle_bin(&self) -> PlatformResult<RecycleBinState> {
                 Ok(RecycleBinState::default())
+            }
+            fn delete_to_recycle_bin(&self, _paths: &[String]) -> PlatformResult<()> {
+                Ok(())
             }
             fn shell_action(&self, _action: ShellAction) -> PlatformResult<()> {
                 Ok(())
