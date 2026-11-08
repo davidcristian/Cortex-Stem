@@ -27,7 +27,8 @@ the records in `docs/adr/` give the reasons for the main decisions.
   moved to the Recycle Bin.
 - [settings.md](settings.md): how settings are stored and how the app shell applies the
   ones that belong to it.
-- [error-handling.md](error-handling.md): the error type of each layer.
+- [error-handling.md](error-handling.md): the error type of each layer and how a crash is
+  reported.
 - [performance.md](performance.md): the performance budgets.
 - [security.md](security.md): what the webview and Stem's commands may do.
 - [development-hosts.md](development-hosts.md): how the Windows-only product is developed
