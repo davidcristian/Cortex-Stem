@@ -8,13 +8,15 @@
     id: string;
     label: string;
     description?: string;
-    /** Greyed out; `tag` says why (the milestone that brings it). */
+    /** Greyed out; `tag` says why (by default the milestone that brings it). */
     disabled?: boolean;
     tag?: string;
+    /** The tag's tooltip, when it is not a milestone; default "Planned for milestone {tag}". */
+    tagTitle?: string;
     children: Snippet;
   }
 
-  let { id, label, description, disabled = false, tag, children }: Props = $props();
+  let { id, label, description, disabled = false, tag, tagTitle, children }: Props = $props();
 </script>
 
 <div class="row" class:disabled>
@@ -22,7 +24,7 @@
     <label for={id}>
       {label}
       {#if tag}
-        <span class="tag" title="Planned for milestone {tag}">{tag}</span>
+        <span class="tag" title={tagTitle ?? `Planned for milestone ${tag}`}>{tag}</span>
       {/if}
     </label>
     {#if description}
