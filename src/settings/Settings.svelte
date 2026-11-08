@@ -584,15 +584,15 @@
           <SettingRow
             id="hide-taskbar"
             label="Hide the Windows taskbar"
-            description="While Stem runs; restored when it exits"
-            disabled
-            tag="M4"
+            description="Windows hides it automatically while Stem runs; put back when Stem quits"
           >
             <Toggle
               id="hide-taskbar"
               checked={settings.system.hideWindowsTaskbar}
-              disabled
-              onchange={() => {}}
+              onchange={(v) =>
+                edit((s) => {
+                  s.system.hideWindowsTaskbar = v;
+                })}
             />
           </SettingRow>
           <SettingRow

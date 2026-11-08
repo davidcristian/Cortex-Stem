@@ -1967,10 +1967,23 @@ test.describe('settings window', () => {
     await expect(page.locator('.status')).toHaveText('Saved');
     expect((await page.evaluate(SETTINGS_MOCK))?.system.autostart).toBe(true);
 
+    // Hide the Windows taskbar is live (the switch, no M4 tag);
+    // the app restores the taskbar on exit, which the browser cannot show.
+    const hideTaskbar = page.locator('#hide-taskbar');
+    await expect(hideTaskbar).toBeEnabled();
+    await expect(hideTaskbar).not.toBeChecked();
+    await expect(page.locator('label[for="hide-taskbar"] .tag')).toHaveCount(0);
+    await expect(page.locator('#hide-taskbar-description')).toContainText('while Stem runs');
+    await hideTaskbar.click();
+    await expect(hideTaskbar).toBeChecked();
+    await expect(page.locator('.status')).toHaveText('Saved');
+    expect((await page.evaluate(SETTINGS_MOCK))?.system.hideWindowsTaskbar).toBe(true);
+
     // Disabled, not-yet-available options stay disabled.
     await expect(page.locator('#current-monitor')).toBeDisabled();
     await expect(page.locator('#position option[value="left"]')).toBeDisabled();
     await expect(page.locator('#auto-hide option[value="whenOverlapped"]')).toBeDisabled();
+    await expect(page.locator('#reserve-space')).toBeDisabled();
   });
 
   test('auto-hide can be turned on; "when overlapped" is not there yet and the notes say so', async ({
