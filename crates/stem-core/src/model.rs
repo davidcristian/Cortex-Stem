@@ -158,8 +158,10 @@ pub struct RawWindow {
     /// The window's frame on screen, in physical pixels of the virtual
     /// desktop (the DWM extended frame bounds, else `GetWindowRect`), when
     /// the platform could read it. Refreshed whenever the window is queried,
-    /// not on every move. Nothing renders it: the platform's fullscreen
-    /// detection reads it, and the overlap rule will.
+    /// which the platform does about every 150 ms while the window moves.
+    /// Nothing renders it: the platform's fullscreen detection reads it, and
+    /// the engine's overlap rule (`crate::overlap`) tests it against the
+    /// dock's panel.
     #[serde(default)]
     pub rect: Option<Rect>,
     /// Icon of this specific window (may differ from the app icon).
@@ -276,6 +278,15 @@ pub struct DockState {
     /// whatever `autoHide.mode` says. With a single dock, "the dock's
     /// monitor" is the foreground window's own monitor.
     pub fullscreen: bool,
+    /// A window of another process overlaps the dock's resting panel:
+    /// visible, not minimised, not cloaked, with a frame that
+    /// intersects the panel rect the UI reported through
+    /// `set_dock_panel_rect` (`crate::overlap`). `false` while no panel rect
+    /// is known. The UI hides the dock after `autoHide.delayMs` while it is
+    /// set and `autoHide.mode` is `whenOverlapped`, and shows it again when
+    /// it clears; `fullscreen` and `overlapped` are independent facts.
+    #[serde(default)]
+    pub overlapped: bool,
 }
 
 /// Current OS theme facts, emitted as `dock://theme`.

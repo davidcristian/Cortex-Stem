@@ -25,16 +25,25 @@
 //!   marked active then, and the item lights up as soon as the window is shown
 //!   again without needing another `ForegroundChanged`.
 //! - `fullscreen` is the platform's verdict, stored as is: the engine
-//!   never derives it from window rects (`RawWindow::rect` is kept but not
-//!   rendered, so a rect change alone never bumps the revision).
+//!   never derives it from window rects;
+//! - `overlapped` is the one thing the engine derives from window
+//!   rects: whether a window of another process covers the dock's resting
+//!   panel ([`crate::overlap`]), from the panel rect the app layer feeds in
+//!   as [`EngineInput::DockPanelChanged`]. It is recomputed only after an
+//!   input that can change it (a window's frame, visibility, minimised or
+//!   cloaked state, a window coming or going, a resync, the panel itself),
+//!   in O(windows), and it is part of the snapshot, so a `WindowUpdated`
+//!   that only moves a window bumps the revision exactly when the flag
+//!   flips.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::events::{EngineInput, PlatformEvent};
 use crate::model::{
-    AppId, AppIdentity, DockItem, DockItemKind, DockState, IconKey, MonitorInfo, RawWindow,
+    AppId, AppIdentity, DockItem, DockItemKind, DockState, IconKey, MonitorInfo, RawWindow, Rect,
     RecycleBinState, ShellAction, ThemeInfo, WindowId, WindowInfo,
 };
+use crate::overlap;
 use crate::settings::Settings;
 
 /// Derive the grouping identity of a window from what the platform reported.
@@ -98,6 +107,16 @@ pub struct DockEngine {
     foreground: Option<WindowId>,
     /// The platform's fullscreen verdict; see `DockState::fullscreen`.
     fullscreen: bool,
+    /// Where the dock's panel rests, in the windows' coordinate space;
+    /// `None` before the first report and while the dock window is hidden.
+    panel: Option<Rect>,
+    /// Our own process id, whose windows never count as overlapping. `None`
+    /// when unknown (every window counts then).
+    own_process_id: Option<u32>,
+    /// `DockState::overlapped`, recomputed by [`Self::apply`] when
+    /// `overlap_dirty` was set by the input.
+    overlapped: bool,
+    overlap_dirty: bool,
     monitors: Vec<MonitorInfo>,
     theme: ThemeInfo,
     recycle_bin: RecycleBinState,
@@ -115,11 +134,25 @@ impl DockEngine {
             running_order: Vec::new(),
             foreground: None,
             fullscreen: false,
+            panel: None,
+            own_process_id: None,
+            overlapped: false,
+            overlap_dirty: false,
             monitors: Vec::new(),
             theme: ThemeInfo::default(),
             recycle_bin: RecycleBinState::default(),
             next_seq: 1,
             revision: 0,
+        }
+    }
+
+    /// Tell the engine which process is ours: its windows never
+    /// count as overlapping the dock. Set once at start by the service; the
+    /// next input that touches the overlap rule applies it.
+    pub fn set_own_process_id(&mut self, process_id: Option<u32>) {
+        if self.own_process_id != process_id {
+            self.own_process_id = process_id;
+            self.overlap_dirty = true;
         }
     }
 
@@ -148,6 +181,17 @@ impl DockEngine {
     /// The platform's latest fullscreen verdict.
     pub fn fullscreen(&self) -> bool {
         self.fullscreen
+    }
+
+    /// Where the dock's panel rests, as last fed in; `None` while
+    /// the dock window is hidden or before the UI's first report.
+    pub fn dock_panel(&self) -> Option<Rect> {
+        self.panel
+    }
+
+    /// `DockState::overlapped` as of the last input.
+    pub fn overlapped(&self) -> bool {
+        self.overlapped
     }
 
     pub fn window(&self, id: WindowId) -> Option<&RawWindow> {
@@ -198,8 +242,18 @@ impl DockEngine {
                 // present, `take_new_unresolved` below asks for it afresh.
                 self.identity_requested.remove(&app_id);
             }
+            EngineInput::DockPanelChanged(panel) => {
+                if self.panel != panel {
+                    self.panel = panel;
+                    self.overlap_dirty = true;
+                }
+            }
         }
         self.rebuild_running_order();
+        if self.overlap_dirty {
+            self.overlap_dirty = false;
+            self.overlapped = self.compute_overlapped();
+        }
         let unresolved_apps = self.take_new_unresolved();
         let changed = self.snapshot() != before;
         if changed {
@@ -233,10 +287,13 @@ impl DockEngine {
                 self.windows = next;
                 // A resync can reveal that the foreground window is gone.
                 self.foreground = self.foreground.filter(|id| self.windows.contains_key(id));
+                self.overlap_dirty = true;
             }
             PlatformEvent::WindowAdded(raw) | PlatformEvent::WindowUpdated(raw) => self.upsert(raw),
             PlatformEvent::WindowRemoved(id) => {
-                self.windows.remove(&id);
+                if self.windows.remove(&id).is_some() {
+                    self.overlap_dirty = true;
+                }
                 if self.foreground == Some(id) {
                     self.foreground = None;
                 }
@@ -271,7 +328,12 @@ impl DockEngine {
     fn upsert(&mut self, raw: RawWindow) {
         let id = raw.id;
         match self.windows.get_mut(&id) {
-            Some(t) => t.raw = raw,
+            Some(t) => {
+                if overlap_facts(&t.raw) != overlap_facts(&raw) {
+                    self.overlap_dirty = true;
+                }
+                t.raw = raw;
+            }
             None => {
                 let seq = self.alloc_seq();
                 self.windows.insert(
@@ -282,8 +344,21 @@ impl DockEngine {
                         attention: false,
                     },
                 );
+                self.overlap_dirty = true;
             }
         }
+    }
+
+    /// [`overlap::overlapped`] over the tracked windows, for the panel as
+    /// last reported; `false` without one.
+    fn compute_overlapped(&self) -> bool {
+        self.panel.as_ref().is_some_and(|panel| {
+            overlap::overlapped(
+                panel,
+                self.windows.values().map(|t| &t.raw),
+                self.own_process_id,
+            )
+        })
     }
 
     fn alloc_seq(&mut self) -> u64 {
@@ -441,6 +516,7 @@ impl DockEngine {
             items,
             foreground: self.foreground,
             fullscreen: self.fullscreen,
+            overlapped: self.overlapped,
         }
     }
 
@@ -533,6 +609,18 @@ impl DockEngine {
             None => ItemAction::ActivateWindow(windows[0]),
         }
     }
+}
+
+/// The facts of a window the overlap rule reads (`overlap::covers`): when an
+/// update leaves them as they were, `overlapped` cannot have changed.
+fn overlap_facts(raw: &RawWindow) -> (bool, bool, bool, u32, Option<Rect>) {
+    (
+        raw.is_visible,
+        raw.is_minimized,
+        raw.is_cloaked,
+        raw.process_id,
+        raw.rect,
+    )
 }
 
 fn fixed_item(kind: DockItemKind, key: String, title: &str, icon_key: Option<IconKey>) -> DockItem {
@@ -712,9 +800,220 @@ mod tests {
 
         // A platform that cannot read the frame reports `None`; still no bump.
         raw.rect = None;
-        assert!(!engine.apply(updated(raw)).changed);
+        assert!(!engine.apply(updated(raw.clone())).changed);
         assert_eq!(engine.window(WindowId(1)).and_then(|w| w.rect), None);
         assert_eq!(engine.snapshot().revision, r);
+
+        // With a panel known, a move that stays clear of it is still
+        // stored without a bump.
+        assert!(!engine.apply(panel(Some(PANEL))).changed);
+        raw.rect = Some(Rect::new(0, 0, 800, 600));
+        assert!(!engine.apply(updated(raw)).changed);
+        assert_eq!(engine.snapshot().revision, r);
+        assert!(!engine.overlapped());
+    }
+
+    // ----- a window over the dock ------------------------------------------------
+
+    /// A 560 × 72 panel at the bottom of a 2560 × 1392 work area.
+    const PANEL: Rect = Rect::new(1000, 1320, 560, 72);
+    /// A frame that covers the panel's left half.
+    const OVER: Rect = Rect::new(600, 900, 700, 480);
+    /// A frame in the top-left corner, clear of the panel.
+    const CLEAR: Rect = Rect::new(0, 0, 800, 600);
+
+    fn panel(rect: Option<Rect>) -> EngineInput {
+        EngineInput::DockPanelChanged(rect)
+    }
+
+    fn framed(id: u64, exe: &str, rect: Rect) -> RawWindow {
+        let mut raw = win(id, exe, "W");
+        raw.rect = Some(rect);
+        raw
+    }
+
+    #[test]
+    fn overlapped_follows_the_panel_and_the_windows_and_bumps_only_when_it_flips() {
+        let mut engine = DockEngine::new(minimal_settings());
+        engine.apply(added(framed(1, r"C:\a.exe", OVER)));
+        let r = engine.snapshot().revision;
+        // No panel yet: nothing can overlap it.
+        assert!(!engine.overlapped());
+        assert!(!engine.snapshot().overlapped);
+        assert_eq!(engine.dock_panel(), None);
+
+        // The UI's first report: the window is over it.
+        let out = engine.apply(panel(Some(PANEL)));
+        assert!(out.changed);
+        assert!(out.unresolved_apps.is_empty());
+        assert!(engine.overlapped());
+        assert_eq!(engine.dock_panel(), Some(PANEL));
+        let state = engine.snapshot();
+        assert!(state.overlapped);
+        assert_eq!(state.revision, r + 1);
+        assert_eq!(keys(&state), vec!["app:exe:c:/a.exe"]);
+
+        // The same panel again, and a move that keeps covering it: no bump.
+        assert!(!engine.apply(panel(Some(PANEL))).changed);
+        let mut moved = framed(1, r"C:\a.exe", Rect::new(650, 950, 700, 480));
+        assert!(!engine.apply(updated(moved.clone())).changed);
+        assert_eq!(engine.snapshot().revision, r + 1);
+
+        // Moved clear of it: the flag flips, one bump.
+        moved.rect = Some(CLEAR);
+        assert!(engine.apply(updated(moved.clone())).changed);
+        assert!(!engine.snapshot().overlapped);
+        assert_eq!(engine.snapshot().revision, r + 2);
+
+        // Back over it, then minimised, restored, cloaked, uncloaked, hidden.
+        moved.rect = Some(OVER);
+        assert!(engine.apply(updated(moved.clone())).changed);
+        assert!(engine.snapshot().overlapped);
+        moved.is_minimized = true;
+        assert!(engine.apply(updated(moved.clone())).changed);
+        assert!(!engine.snapshot().overlapped);
+        moved.is_minimized = false;
+        assert!(engine.apply(updated(moved.clone())).changed);
+        assert!(engine.snapshot().overlapped);
+        moved.is_cloaked = true;
+        assert!(engine.apply(updated(moved.clone())).changed);
+        assert!(!engine.snapshot().overlapped);
+        moved.is_cloaked = false;
+        assert!(engine.apply(updated(moved.clone())).changed);
+        assert!(engine.snapshot().overlapped);
+        moved.is_visible = false;
+        assert!(engine.apply(updated(moved.clone())).changed);
+        assert!(!engine.snapshot().overlapped);
+        moved.is_visible = true;
+        assert!(engine.apply(updated(moved)).changed);
+        assert!(engine.snapshot().overlapped);
+
+        // The window closes: clear. A new window over it: set again.
+        assert!(engine.apply(removed(1)).changed);
+        assert!(!engine.snapshot().overlapped);
+        assert!(engine.apply(added(framed(2, r"C:\b.exe", OVER))).changed);
+        assert!(engine.snapshot().overlapped);
+
+        // The dock window was hidden: no panel, nothing overlaps.
+        let r = engine.snapshot().revision;
+        assert!(engine.apply(panel(None)).changed);
+        assert!(!engine.snapshot().overlapped);
+        assert_eq!(engine.dock_panel(), None);
+        assert_eq!(engine.snapshot().revision, r + 1);
+        // Shown again where it was: set again.
+        assert!(engine.apply(panel(Some(PANEL))).changed);
+        assert!(engine.snapshot().overlapped);
+    }
+
+    #[test]
+    fn a_panel_change_that_does_not_flip_overlapped_does_not_bump() {
+        let mut engine = DockEngine::new(minimal_settings());
+        engine.apply(added(framed(1, r"C:\a.exe", CLEAR)));
+        engine.apply(panel(Some(PANEL)));
+        let r = engine.snapshot().revision;
+        // The dock grew by an item: a wider panel, still clear of the window.
+        let wider = Rect::new(972, 1320, 616, 72);
+        assert!(!engine.apply(panel(Some(wider))).changed);
+        assert_eq!(engine.dock_panel(), Some(wider));
+        assert_eq!(engine.snapshot().revision, r);
+        assert!(!engine.apply(panel(None)).changed);
+        assert_eq!(engine.snapshot().revision, r);
+    }
+
+    #[test]
+    fn overlap_ignores_cloaked_windows_whatever_show_only_current_desktop_says() {
+        let mut settings = minimal_settings();
+        settings.behavior.show_only_current_desktop = false;
+        let mut engine = DockEngine::new(settings);
+        engine.apply(added(cloaked(framed(1, r"C:\a.exe", OVER))));
+        engine.apply(panel(Some(PANEL)));
+        // The item is shown (the setting lists other desktops' windows) ...
+        assert_eq!(keys(&engine.snapshot()), vec!["app:exe:c:/a.exe"]);
+        // ... but a cloaked window is not on screen, so it covers nothing.
+        assert!(!engine.snapshot().overlapped);
+        assert!(engine.apply(updated(framed(1, r"C:\a.exe", OVER))).changed);
+        assert!(engine.snapshot().overlapped);
+    }
+
+    #[test]
+    fn our_own_windows_never_overlap_the_dock() {
+        let mut engine = DockEngine::new(minimal_settings());
+        let mut ours = framed(1, r"C:\stem.exe", OVER);
+        ours.process_id = 4242;
+        engine.apply(added(ours.clone()));
+        engine.apply(panel(Some(PANEL)));
+        assert!(engine.snapshot().overlapped);
+
+        // The service tells the engine who we are: the flag clears with the
+        // next input that touches the rule, without a bump of its own.
+        engine.set_own_process_id(Some(4242));
+        let out = engine.apply(updated(ours.clone()));
+        assert!(out.changed);
+        assert!(!engine.snapshot().overlapped);
+        // A window of another process over it still counts.
+        let mut theirs = framed(2, r"C:\b.exe", OVER);
+        theirs.process_id = 4243;
+        assert!(engine.apply(added(theirs)).changed);
+        assert!(engine.snapshot().overlapped);
+        assert!(engine.apply(removed(2)).changed);
+        assert!(!engine.snapshot().overlapped);
+        // Forgetting the id makes ours count again.
+        engine.set_own_process_id(None);
+        assert!(engine.apply(updated(ours)).changed);
+        assert!(engine.snapshot().overlapped);
+    }
+
+    #[test]
+    fn a_resync_recomputes_overlap() {
+        let mut engine = DockEngine::new(minimal_settings());
+        engine.apply(panel(Some(PANEL)));
+        engine.apply(added(framed(1, r"C:\a.exe", CLEAR)));
+        assert!(!engine.snapshot().overlapped);
+
+        // The platform re-enumerates: the window has moved over the dock.
+        let out =
+            engine.apply(PlatformEvent::WindowsSnapshot(vec![framed(1, r"C:\a.exe", OVER)]).into());
+        assert!(out.changed);
+        assert!(engine.snapshot().overlapped);
+        // A resync that lists nothing clears it.
+        assert!(
+            engine
+                .apply(PlatformEvent::WindowsSnapshot(vec![]).into())
+                .changed
+        );
+        assert!(!engine.snapshot().overlapped);
+        // Identical resyncs are no-ops.
+        engine.apply(PlatformEvent::WindowsSnapshot(vec![framed(1, r"C:\a.exe", OVER)]).into());
+        let r = engine.snapshot().revision;
+        assert!(
+            !engine
+                .apply(PlatformEvent::WindowsSnapshot(vec![framed(1, r"C:\a.exe", OVER)]).into())
+                .changed
+        );
+        assert_eq!(engine.snapshot().revision, r);
+    }
+
+    #[test]
+    fn overlap_is_independent_of_fullscreen_the_foreground_and_the_settings() {
+        let mut settings = minimal_settings();
+        let mut engine = DockEngine::new(settings.clone());
+        engine.apply(added(framed(1, r"C:\a.exe", OVER)));
+        engine.apply(panel(Some(PANEL)));
+        assert!(engine.snapshot().overlapped);
+
+        engine.apply(foreground(Some(1)));
+        assert!(engine.snapshot().overlapped);
+        let state = engine.snapshot();
+        engine.apply(fullscreen(true));
+        assert!(engine.snapshot().overlapped);
+        assert!(engine.snapshot().fullscreen);
+        engine.apply(fullscreen(false));
+        assert!(engine.snapshot().overlapped);
+        settings.icon_size = 64;
+        settings.behavior.show_only_current_desktop = false;
+        assert!(!engine.apply(EngineInput::SettingsChanged(settings)).changed);
+        assert!(engine.snapshot().overlapped);
+        assert_eq!(engine.snapshot().items, state.items);
     }
 
     #[test]

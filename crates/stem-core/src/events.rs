@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::model::{
-    AppId, AppIdentity, MonitorInfo, RawWindow, RecycleBinState, ThemeInfo, WindowId,
+    AppId, AppIdentity, MonitorInfo, RawWindow, Rect, RecycleBinState, ThemeInfo, WindowId,
 };
 use crate::settings::Settings;
 
@@ -55,6 +55,13 @@ pub enum EngineInput {
     IdentityUnavailable {
         app_id: AppId,
     },
+    /// Where the dock's panel rests on screen: the rect the UI
+    /// reported through `set_dock_panel_rect`, converted by the app layer to
+    /// physical pixels of the virtual desktop, the same space as
+    /// `RawWindow::rect`. `None` while the dock window is hidden (the tray,
+    /// the toggle shortcut) or before the UI's first report; it clears
+    /// `DockState::overlapped`.
+    DockPanelChanged(Option<Rect>),
 }
 
 impl From<PlatformEvent> for EngineInput {

@@ -26,8 +26,10 @@ isCloaked: boolean, monitor: MonitorId | null,
  * The window's frame on screen, in physical pixels of the virtual
  * desktop (the DWM extended frame bounds, else `GetWindowRect`), when
  * the platform could read it. Refreshed whenever the window is queried,
- * not on every move. Nothing renders it: the platform's fullscreen
- * detection reads it, and the overlap rule will.
+ * which the platform does about every 150 ms while the window moves.
+ * Nothing renders it: the platform's fullscreen detection reads it, and
+ * the engine's overlap rule (`crate::overlap`) tests it against the
+ * dock's panel.
  */
 rect: Rect | null, 
 /**

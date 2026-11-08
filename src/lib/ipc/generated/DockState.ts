@@ -24,4 +24,14 @@ foreground: WindowId | null,
  * whatever `autoHide.mode` says. With a single dock, "the dock's
  * monitor" is the foreground window's own monitor.
  */
-fullscreen: boolean, };
+fullscreen: boolean, 
+/**
+ * A window of another process overlaps the dock's resting panel:
+ * visible, not minimised, not cloaked, with a frame that
+ * intersects the panel rect the UI reported through
+ * `set_dock_panel_rect` (`crate::overlap`). `false` while no panel rect
+ * is known. The UI hides the dock after `autoHide.delayMs` while it is
+ * set and `autoHide.mode` is `whenOverlapped`, and shows it again when
+ * it clears; `fullscreen` and `overlapped` are independent facts.
+ */
+overlapped: boolean, };
