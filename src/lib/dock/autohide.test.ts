@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   AUTO_HIDE_SLIDE_MS,
+  autoHideActive,
   autoHideStep,
   hiddenHitRegion,
+  hideDelayMs,
   INITIAL_AUTO_HIDE,
   isAutoHidden,
   REVEAL_STRIP_PX,
@@ -33,7 +35,7 @@ class Harness {
     if (step.timer === 'clear') {
       this.deadline = null;
     } else if (step.timer === 'arm') {
-      this.deadline = this.now + step.state.delayMs;
+      this.deadline = this.now + hideDelayMs(step.state);
     }
     return this;
   }
@@ -398,6 +400,270 @@ describe('autoHideStep', () => {
   it('slides for 200 ms over a 2 px strip (ADR-0008)', () => {
     expect(AUTO_HIDE_SLIDE_MS).toBe(200);
     expect(REVEAL_STRIP_PX).toBe(2);
+  });
+});
+
+describe('fullscreen', () => {
+  function off(): Harness {
+    return new Harness().send({ type: 'configure', mode: 'off', delayMs: 250 });
+  }
+
+  it('is off at the start and never active with auto-hide off alone', () => {
+    expect(INITIAL_AUTO_HIDE.fullscreen).toBe(false);
+    expect(autoHideActive(INITIAL_AUTO_HIDE)).toBe(false);
+    expect(hideDelayMs(INITIAL_AUTO_HIDE)).toBe(0);
+    const h = off();
+    expect(autoHideActive(h.state)).toBe(false);
+    expect(h.state.enabled).toBe(false);
+    expect(hideDelayMs(h.state)).toBe(250);
+  });
+
+  it('hides at once with the pointer away, whatever the mode', () => {
+    for (const mode of ['off', 'whenOverlapped'] as const) {
+      const h = new Harness().send({ type: 'configure', mode, delayMs: 250 });
+      h.send({ type: 'fullscreen', active: true });
+      expect(h.phase).toBe('hidden');
+      expect(h.timers.at(-1)).toBe('none');
+      expect(isAutoHidden(h.state)).toBe(true);
+      // Active for the strip and the hit region, while `enabled` still says the mode.
+      expect(autoHideActive(h.state)).toBe(true);
+      expect(h.state.enabled).toBe(false);
+      expect(hideDelayMs(h.state)).toBe(0);
+    }
+    // With `always` and the countdown running: out now, countdown dropped.
+    const pending = always(250).send({ type: 'pointer', inside: false }).advance(100);
+    expect(pending.phase).toBe('pending');
+    pending.send({ type: 'fullscreen', active: true });
+    expect(pending.phase).toBe('hidden');
+    expect(pending.timers.at(-1)).toBe('clear');
+    // Already hidden with `always`: nothing to do.
+    const hidden = always(250).advance(250);
+    hidden.send({ type: 'fullscreen', active: true });
+    expect(hidden.phase).toBe('hidden');
+    expect(hidden.timers.at(-1)).toBe('none');
+  });
+
+  it('with the pointer over the dock it stays until the pointer leaves, then hides through a 0 ms countdown', () => {
+    const h = off().send({ type: 'pointer', inside: true });
+    h.send({ type: 'fullscreen', active: true });
+    expect(h.phase).toBe('shown');
+    expect(h.timers.at(-1)).toBe('none');
+    h.advance(10_000);
+    expect(h.phase).toBe('shown');
+    // The leave goes through `pending` and a 0 ms timer, never straight to
+    // `hidden`: a strip-leave followed by a panel-enter in the same dispatch
+    // must leave the dock up (below).
+    h.send({ type: 'pointer', inside: false });
+    expect(h.phase).toBe('pending');
+    expect(h.timers.at(-1)).toBe('arm');
+    expect(hideDelayMs(h.state)).toBe(0);
+    h.advance(0);
+    expect(h.phase).toBe('hidden');
+  });
+
+  it('the strip reveals, the pointer resting there keeps it up, and leaving hides it again', () => {
+    const h = off().send({ type: 'fullscreen', active: true });
+    expect(h.phase).toBe('hidden');
+    h.send({ type: 'strip' });
+    expect(h.phase).toBe('shown');
+    expect(h.state.pointerInside).toBe(true);
+    h.advance(10_000);
+    expect(h.phase).toBe('shown');
+    // From the strip straight into the panel: `pointerleave` of the strip
+    // and `pointerenter` of the panel arrive in one dispatch, before the
+    // 0 ms timer can fire.
+    h.send({ type: 'pointer', inside: false });
+    expect(h.phase).toBe('pending');
+    h.send({ type: 'pointer', inside: true });
+    expect(h.phase).toBe('shown');
+    expect(h.timers.at(-1)).toBe('clear');
+    h.advance(10_000);
+    expect(h.phase).toBe('shown');
+    // Away again: hidden as soon as the timer fires.
+    h.send({ type: 'pointer', inside: false }).advance(0);
+    expect(h.phase).toBe('hidden');
+    // Pointer events elsewhere change nothing while hidden.
+    h.send({ type: 'pointer', inside: true }).send({ type: 'pointer', inside: false });
+    expect(h.phase).toBe('hidden');
+  });
+
+  it('the window shown on request reveals, as with auto-hide on', () => {
+    const h = off().send({ type: 'fullscreen', active: true });
+    h.send({ type: 'show' });
+    expect(h.phase).toBe('shown');
+    h.advance(10_000);
+    expect(h.phase).toBe('shown');
+    h.send({ type: 'pointer', inside: true }).send({ type: 'pointer', inside: false }).advance(0);
+    expect(h.phase).toBe('hidden');
+  });
+
+  it.each(['drag', 'menu', 'bounce', 'fileDrag', 'attention'] as const)(
+    'a %s hold keeps a revealed dock up; its end with the pointer away hides at once',
+    (hold) => {
+      const h = off().send({ type: 'fullscreen', active: true }).send({ type: 'strip' });
+      h.send({ type: 'hold', hold, active: true }).send({ type: 'pointer', inside: false });
+      expect(h.phase).toBe('shown');
+      h.advance(10_000);
+      expect(h.phase).toBe('shown');
+      h.send({ type: 'hold', hold, active: false });
+      expect(h.phase).toBe('pending');
+      h.advance(0);
+      expect(h.phase).toBe('hidden');
+    },
+  );
+
+  it('fullscreen during a drag: the dock stays lifted until the drop, then hides at once', () => {
+    const h = off()
+      .send({ type: 'pointer', inside: true })
+      .send({ type: 'hold', hold: 'drag', active: true })
+      .send({ type: 'pointer', inside: false });
+    h.send({ type: 'fullscreen', active: true });
+    expect(h.phase).toBe('shown');
+    expect(h.timers.at(-1)).toBe('none');
+    h.advance(10_000);
+    expect(h.phase).toBe('shown');
+    // Released away from the dock (what `endDragHold` sends).
+    h.send({ type: 'pointer', inside: false }).send({ type: 'hold', hold: 'drag', active: false });
+    expect(h.phase).toBe('pending');
+    h.advance(0);
+    expect(h.phase).toBe('hidden');
+    // Released over the dock instead: it stays until the pointer leaves.
+    const g = off()
+      .send({ type: 'hold', hold: 'drag', active: true })
+      .send({ type: 'fullscreen', active: true })
+      .send({ type: 'pointer', inside: true })
+      .send({ type: 'hold', hold: 'drag', active: false })
+      .advance(10_000);
+    expect(g.phase).toBe('shown');
+  });
+
+  it('an item that needs attention brings the dock back and keeps it up while fullscreen', () => {
+    const h = off().send({ type: 'fullscreen', active: true });
+    expect(h.phase).toBe('hidden');
+    h.send({ type: 'hold', hold: 'attention', active: true });
+    expect(h.phase).toBe('shown');
+    h.advance(10_000);
+    expect(h.phase).toBe('shown');
+    h.send({ type: 'hold', hold: 'attention', active: false });
+    expect(h.phase).toBe('pending');
+    h.advance(0);
+    expect(h.phase).toBe('hidden');
+    // A bounce for a launch from elsewhere still reveals nothing.
+    h.send({ type: 'hold', hold: 'bounce', active: true });
+    expect(h.phase).toBe('hidden');
+  });
+
+  it('the end of fullscreen shows the dock again with the mode off, and leaves it shown', () => {
+    for (const mode of ['off', 'whenOverlapped'] as const) {
+      const h = new Harness().send({ type: 'configure', mode, delayMs: 250 });
+      h.send({ type: 'fullscreen', active: true });
+      expect(h.phase).toBe('hidden');
+      h.send({ type: 'fullscreen', active: false });
+      expect(h.phase).toBe('shown');
+      expect(h.timers.at(-1)).toBe('none');
+      expect(autoHideActive(h.state)).toBe(false);
+      h.send({ type: 'pointer', inside: true }).send({ type: 'pointer', inside: false });
+      h.advance(10_000);
+      expect(h.phase).toBe('shown');
+    }
+    // Ending while the 0 ms countdown runs: the timer is cleared.
+    const pending = off()
+      .send({ type: 'pointer', inside: true })
+      .send({ type: 'fullscreen', active: true })
+      .send({ type: 'pointer', inside: false });
+    expect(pending.phase).toBe('pending');
+    pending.send({ type: 'fullscreen', active: false });
+    expect(pending.phase).toBe('shown');
+    expect(pending.timers.at(-1)).toBe('clear');
+    pending.advance(10_000);
+    expect(pending.phase).toBe('shown');
+  });
+
+  it('the end of fullscreen with the mode always: hidden stays hidden, shown hides after the normal delay', () => {
+    // Hidden before, during and after: the stock behaviour, no reveal.
+    const hidden = always(250).advance(250);
+    hidden.send({ type: 'fullscreen', active: true }).send({ type: 'fullscreen', active: false });
+    expect(hidden.phase).toBe('hidden');
+    expect(hidden.timers.slice(-2)).toEqual(['none', 'none']);
+    hidden.advance(10_000);
+    expect(hidden.phase).toBe('hidden');
+    hidden.send({ type: 'strip' });
+    expect(hidden.phase).toBe('shown');
+
+    // Revealed from the strip during fullscreen, the pointer away when it
+    // ends: the normal countdown, not the 0 ms one.
+    const shown = always(250).advance(250).send({ type: 'fullscreen', active: true });
+    shown.send({ type: 'strip' }).send({ type: 'hold', hold: 'menu', active: true });
+    shown.send({ type: 'pointer', inside: false });
+    expect(shown.phase).toBe('shown');
+    shown.send({ type: 'fullscreen', active: false });
+    expect(shown.phase).toBe('shown');
+    shown.send({ type: 'hold', hold: 'menu', active: false });
+    expect(shown.phase).toBe('pending');
+    expect(hideDelayMs(shown.state)).toBe(250);
+    shown.advance(249);
+    expect(shown.phase).toBe('pending');
+    shown.advance(1);
+    expect(shown.phase).toBe('hidden');
+
+    // A 0 ms countdown running when fullscreen ends is restarted with the delay.
+    const restarted = always(250)
+      .send({ type: 'pointer', inside: true })
+      .send({ type: 'fullscreen', active: true })
+      .send({ type: 'pointer', inside: false });
+    expect(restarted.phase).toBe('pending');
+    restarted.send({ type: 'fullscreen', active: false });
+    expect(restarted.phase).toBe('pending');
+    expect(restarted.timers.at(-1)).toBe('arm');
+    restarted.advance(249);
+    expect(restarted.phase).toBe('pending');
+    restarted.advance(1);
+    expect(restarted.phase).toBe('hidden');
+  });
+
+  it('settings changes during fullscreen do not reveal; repeats are harmless', () => {
+    const h = off().send({ type: 'fullscreen', active: true });
+    h.send({ type: 'configure', mode: 'always', delayMs: 500 });
+    expect(h.phase).toBe('hidden');
+    h.send({ type: 'configure', mode: 'off', delayMs: 500 });
+    expect(h.phase).toBe('hidden');
+    expect(autoHideActive(h.state)).toBe(true);
+    h.send({ type: 'fullscreen', active: true });
+    expect(h.timers.at(-1)).toBe('none');
+    expect(h.phase).toBe('hidden');
+    // Off twice: the second is a no-op.
+    h.send({ type: 'fullscreen', active: false });
+    expect(h.phase).toBe('shown');
+    const settled = h.state;
+    expect(autoHideStep(settled, { type: 'fullscreen', active: false })).toEqual({
+      state: settled,
+      timer: 'none',
+    });
+  });
+
+  it('a late timer from the 0 ms countdown is ignored once fullscreen ended', () => {
+    const h = off()
+      .send({ type: 'pointer', inside: true })
+      .send({ type: 'fullscreen', active: true })
+      .send({ type: 'pointer', inside: false });
+    expect(h.phase).toBe('pending');
+    h.send({ type: 'fullscreen', active: false });
+    expect(h.phase).toBe('shown');
+    const shown = h.state;
+    expect(autoHideStep(shown, { type: 'timeout' })).toEqual({ state: shown, timer: 'none' });
+  });
+
+  it('never mutates the state it is given', () => {
+    const before = off().send({ type: 'pointer', inside: true }).state;
+    const copy = structuredClone(before);
+    autoHideStep(before, { type: 'fullscreen', active: true });
+    autoHideStep(before, { type: 'fullscreen', active: false });
+    expect(before).toEqual(copy);
+    const hidden = off().send({ type: 'fullscreen', active: true }).state;
+    const hiddenCopy = structuredClone(hidden);
+    autoHideStep(hidden, { type: 'strip' });
+    autoHideStep(hidden, { type: 'fullscreen', active: false });
+    expect(hidden).toEqual(hiddenCopy);
   });
 });
 

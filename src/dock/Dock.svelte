@@ -4,8 +4,10 @@
   import DockItem, { BOUNCE_MS } from '$lib/components/DockItem.svelte';
   import {
     AUTO_HIDE_SLIDE_MS,
+    autoHideActive,
     autoHideStep,
     hiddenHitRegion,
+    hideDelayMs,
     INITIAL_AUTO_HIDE,
     isAutoHidden,
     REVEAL_STRIP_PX,
@@ -933,8 +935,9 @@
    * the panel far above its real place and the tracker would turn the
    * window click-through while the icon is lifted.
    *
-   * With auto-hide on, a hidden dock reports the reveal strip as both
-   * rectangles, and a shown one an envelope that takes in the strip.
+   * With auto-hide active (or a fullscreen app in front) a
+   * hidden dock reports the reveal strip as both rectangles, and a shown one
+   * an envelope that takes in the strip.
    */
   function currentHitRegion(): HitRegion | null {
     if (measured === null || measured.width === 0) {
@@ -956,7 +959,7 @@
       // top edge, and the slot sits PANEL_PADDING below the panel's top edge.
       magnifiedRise(iconSize, magnify.maxScale, HIT_SLACK - PANEL_PADDING),
     );
-    if (!autoHide.enabled) {
+    if (!autoHideActive(autoHide)) {
       return region;
     }
     return isAutoHidden(autoHide)
@@ -1005,7 +1008,10 @@
   // panel's class. CSS does the slide. Nothing runs while nothing changes.
   let autoHide: AutoHideState = INITIAL_AUTO_HIDE;
   let autoHideTimer: ReturnType<typeof setTimeout> | null = null;
-  /** `autoHide.mode` is `always`: the reveal strip is in the DOM. */
+  /**
+   * Auto-hide applies (`autoHideActive`: the mode is `always`, or a
+   * fullscreen app is in front): the reveal strip is in the DOM.
+   */
   let autoHideOn = $state(false);
   /** The machine's phase, for the template (`data-autohide`). */
   let autoHidePhase = $state<AutoHidePhase>('shown');
@@ -1030,7 +1036,7 @@
       autoHideTimer = setTimeout(() => {
         autoHideTimer = null;
         autoHideSend({ type: 'timeout' });
-      }, state.delayMs);
+      }, hideDelayMs(state));
     }
     const wasHidden = isAutoHidden(before);
     const hidden = isAutoHidden(state);
@@ -1045,11 +1051,11 @@
       // below changes the DOM after this returns), so the panel never slides
       // in over a click-through window.
       reportHitRegion();
-    } else if (state.enabled !== before.enabled) {
+    } else if (autoHideActive(state) !== autoHideActive(before)) {
       reportHitRegion();
     }
     autoHidePhase = state.phase;
-    autoHideOn = state.enabled;
+    autoHideOn = autoHideActive(state);
   }
 
   /** The panel's own slide or fade ended (not a slot's transition bubbling up). */
@@ -1149,6 +1155,15 @@
   $effect(() => {
     const active = needsAttention;
     untrack(() => autoHideSend({ type: 'hold', hold: 'attention', active }));
+  });
+
+  // A fullscreen app owns the screen (the platform decides, the
+  // snapshot carries it): the dock gets out of the way whatever the auto-hide
+  // mode, and comes back when the app leaves the foreground or fullscreen.
+  const fullscreen = $derived(store.state?.fullscreen ?? false);
+  $effect(() => {
+    const active = fullscreen;
+    untrack(() => autoHideSend({ type: 'fullscreen', active }));
   });
 
   // --- Drop files to pin ------------------------------------------------------------

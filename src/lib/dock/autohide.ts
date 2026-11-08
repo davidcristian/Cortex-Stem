@@ -26,6 +26,19 @@
  * flashed its taskbar button brings a hidden dock back and keeps it up until
  * no item needs attention any more (the window was activated), like the
  * stock taskbar on auto-hide.
+ *
+ * Fullscreen: while `DockState.fullscreen` says a fullscreen app
+ * owns the screen (a game, a browser after F11, a video, a slideshow), the
+ * machine behaves as if the mode were `always` with no delay, whatever the
+ * mode is: the `fullscreen` event hides at once with the pointer away; with
+ * the pointer over the dock it stays until the pointer leaves, and then goes
+ * through `pending` with a 0 ms timer (so a strip-leave and a panel-enter in
+ * one dispatch cannot hide it). The strip, `show` and the holds work as
+ * usual. When fullscreen ends, a mode other than `always` shows the dock
+ * again at once; `always` takes over through its normal delay, and a dock
+ * that is hidden stays hidden. `enabled` keeps meaning "the mode is
+ * `always`"; `autoHideActive` is what the UI reads for the strip and the
+ * hit region.
  */
 
 import type { AutoHideMode } from '$lib/ipc/generated/AutoHideMode';
@@ -68,6 +81,8 @@ export interface AutoHideState {
   readonly enabled: boolean;
   /** `autoHide.delayMs`, clamped to 0..=5000 and whole. */
   readonly delayMs: number;
+  /** `DockState.fullscreen`: a fullscreen app owns the screen; the dock hides with no delay. */
+  readonly fullscreen: boolean;
   readonly phase: AutoHidePhase;
   /** The last pointer event put the pointer over the panel or the reveal strip. */
   readonly pointerInside: boolean;
@@ -89,12 +104,14 @@ export type AutoHideEvent =
   | { readonly type: 'show' }
   /** A hold began (`active`) or ended. Idempotent. */
   | { readonly type: 'hold'; readonly hold: AutoHideHold; readonly active: boolean }
+  /** `DockState.fullscreen` changed. Idempotent. */
+  | { readonly type: 'fullscreen'; readonly active: boolean }
   /** The timer armed on entering `pending` fired. */
   | { readonly type: 'timeout' };
 
 /**
  * What to do with the one delay timer: `arm` (clearing any running one
- * first) for `state.delayMs`, `clear` it, or leave it alone (`none`).
+ * first) for `hideDelayMs(state)`, `clear` it, or leave it alone (`none`).
  */
 export type TimerCommand = 'none' | 'arm' | 'clear';
 
@@ -107,6 +124,7 @@ export interface AutoHideStep {
 export const INITIAL_AUTO_HIDE: AutoHideState = {
   enabled: false,
   delayMs: 0,
+  fullscreen: false,
   phase: 'shown',
   pointerInside: false,
   holds: { drag: false, menu: false, bounce: false, fileDrag: false, attention: false },
@@ -115,6 +133,20 @@ export const INITIAL_AUTO_HIDE: AutoHideState = {
 /** Auto-hide applies to this mode now (ADR-0008: `whenOverlapped` waits for window geometry). */
 export function autoHideEnabled(mode: AutoHideMode): boolean {
   return mode === 'always';
+}
+
+/**
+ * The dock hides in `state`: the mode is `always`, or a fullscreen app owns
+ * the screen. What decides whether the reveal strip is in the DOM
+ * and the hit region follows the phase.
+ */
+export function autoHideActive(state: AutoHideState): boolean {
+  return state.enabled || state.fullscreen;
+}
+
+/** How long the timer an `arm` asks for runs: no delay at all while fullscreen. */
+export function hideDelayMs(state: AutoHideState): number {
+  return state.fullscreen ? 0 : state.delayMs;
 }
 
 function clampDelay(ms: number): number {
@@ -130,19 +162,23 @@ function held(state: AutoHideState): boolean {
 }
 
 function wantsHide(state: AutoHideState): boolean {
-  return state.enabled && !state.pointerInside && !held(state);
+  return autoHideActive(state) && !state.pointerInside && !held(state);
 }
 
 /**
  * The phase `next` (fields already updated, phase still the previous one)
- * should be in. `hidden` is sticky while auto-hide is on: only `strip`,
+ * should be in. `hidden` is sticky while auto-hide is active: only `strip`,
  * `show` and a revealing hold leave it, by setting the phase to `shown`
  * before calling this. `restart` re-arms a running countdown (the delay
- * changed).
+ * changed). A countdown of 0 ms hides at once, except while fullscreen,
+ * where it goes through `pending` and a 0 ms timer: the pointer leaving
+ * the strip for the panel must not hide the dock between two events of
+ * one dispatch (the `fullscreen` event itself hides at once, see
+ * `autoHideStep`).
  */
 function settle(next: AutoHideState, restart = false): AutoHideStep {
   const wasPending = next.phase === 'pending';
-  if (!next.enabled) {
+  if (!autoHideActive(next)) {
     return { state: { ...next, phase: 'shown' }, timer: wasPending ? 'clear' : 'none' };
   }
   if (next.phase === 'hidden') {
@@ -154,7 +190,7 @@ function settle(next: AutoHideState, restart = false): AutoHideStep {
   if (wasPending && !restart) {
     return { state: next, timer: 'none' };
   }
-  if (next.delayMs === 0) {
+  if (!next.fullscreen && next.delayMs === 0) {
     return { state: { ...next, phase: 'hidden' }, timer: wasPending ? 'clear' : 'none' };
   }
   return { state: { ...next, phase: 'pending' }, timer: 'arm' };
@@ -172,7 +208,7 @@ export function autoHideStep(state: AutoHideState, event: AutoHideEvent): AutoHi
     case 'pointer':
       return settle({ ...state, pointerInside: event.inside });
     case 'strip':
-      if (!state.enabled) {
+      if (!autoHideActive(state)) {
         return { state, timer: 'none' };
       }
       return settle({
@@ -181,7 +217,7 @@ export function autoHideStep(state: AutoHideState, event: AutoHideEvent): AutoHi
         phase: state.phase === 'hidden' ? 'shown' : state.phase,
       });
     case 'show':
-      if (!state.enabled || state.phase !== 'hidden') {
+      if (!autoHideActive(state) || state.phase !== 'hidden') {
         return { state, timer: 'none' };
       }
       return settle({ ...state, pointerInside: true, phase: 'shown' });
@@ -191,10 +227,29 @@ export function autoHideStep(state: AutoHideState, event: AutoHideEvent): AutoHi
       // it was, so the countdown starts once the hold ends with it away.
       const reveal =
         event.active &&
-        state.enabled &&
+        autoHideActive(state) &&
         state.phase === 'hidden' &&
         REVEALING_HOLDS.has(event.hold);
       return settle({ ...state, holds, phase: reveal ? 'shown' : state.phase });
+    }
+    case 'fullscreen': {
+      if (event.active === state.fullscreen) {
+        return { state, timer: 'none' };
+      }
+      const next = { ...state, fullscreen: event.active };
+      if (event.active && next.phase !== 'hidden' && wantsHide(next)) {
+        // A fullscreen app took the screen with the pointer away and nothing
+        // held: out at once, no countdown (a running one is dropped).
+        return {
+          state: { ...next, phase: 'hidden' },
+          timer: state.phase === 'pending' ? 'clear' : 'none',
+        };
+      }
+      // Begun with the pointer over the dock (or a hold on): it stays until
+      // the pointer leaves. Over: the mode decides again, a running 0 ms
+      // countdown restarted with the real delay; a hidden dock stays hidden
+      // with the mode `always`, and comes back with any other.
+      return settle(next, !event.active);
     }
     case 'timeout':
       if (state.phase !== 'pending') {
