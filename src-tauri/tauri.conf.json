@@ -19,6 +19,11 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "publisher": "davidcristian",
+    "copyright": "Copyright (C) 2026 davidcristian",
+    "homepage": "https://github.com/davidcristian/Cortex-Stem",
+    "license": "AGPL-3.0-only",
+    "licenseFile": "../LICENSE",
     "category": "Utility",
     "shortDescription": "A floating dock for Windows 11",
     "longDescription": "Stem replaces the Windows taskbar with a floating, centred, magnifying dock for pinned and running apps.",
@@ -30,7 +35,10 @@
     ],
     "windows": {
       "nsis": {
-        "installMode": "currentUser"
+        "installMode": "currentUser",
+        "installerIcon": "icons/icon.ico",
+        "languages": ["English"],
+        "displayLanguageSelector": false
       }
     }
   }
