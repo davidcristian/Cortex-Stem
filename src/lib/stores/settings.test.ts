@@ -8,20 +8,51 @@ import type {
   Unsubscribe,
 } from '$lib/ipc/backend';
 import type { AppId } from '$lib/ipc/generated/AppId';
+import type { DockItem } from '$lib/ipc/generated/DockItem';
+import type { DockState } from '$lib/ipc/generated/DockState';
 import type { Settings } from '$lib/ipc/generated/Settings';
 import type { ThemeInfo } from '$lib/ipc/generated/ThemeInfo';
 import { defaultSettings, validateSettings } from '$lib/ipc/mock';
 
+import { iconId } from './icon-cache';
 import { SettingsStore } from './settings.svelte';
 
 const THEME: ThemeInfo = { accent: '#0078D4', dark: true, highContrast: false, transparency: true };
 
 const pin = (id: string) => ({ id, label: null, launch: { kind: 'uri' as const, uri: id } });
 
+/** The dock's item for a pinned app once the engine has resolved it. */
+const appItem = (appId: string, title: string, iconKey: string | null): DockItem => ({
+  key: `app:${appId}`,
+  kind: 'app',
+  appId,
+  title,
+  iconKey,
+  pinned: true,
+  windows: [],
+  isActive: false,
+  needsAttention: false,
+  badge: null,
+});
+
+const snapshot = (revision: number, items: DockItem[] = []): DockState => ({
+  revision,
+  items,
+  foreground: null,
+  fullscreen: false,
+  overlapped: false,
+});
+
 /** Scripted backend: a settings document, a call log, and manual control over latency. */
 class FakeBackend implements Backend {
   readonly log: string[] = [];
   stored: Settings = { ...defaultSettings(), pinned: [pin('a'), pin('b'), pin('c')] };
+  /** What `get_dock_state` answers (`null` makes it fail). */
+  state: DockState | null = snapshot(0);
+  /** `get_icon` answers by key; a key that is not listed has no icon (`null`). */
+  readonly iconUrls = new Map<string, string>();
+  /** Every `get_icon` so far, as `key@size`. */
+  readonly iconRequests: string[] = [];
   /** Pending `update_settings` resolvers, oldest first (resolved by the test). */
   readonly pendingUpdates: Array<(settings: Settings) => void> = [];
   failNext: string | null = null;
@@ -123,8 +154,16 @@ class FakeBackend implements Backend {
     return THEME;
   }
 
-  async getDockState() {
-    return { revision: 0, items: [], foreground: null, fullscreen: false, overlapped: false };
+  async getDockState(): Promise<DockState> {
+    this.log.push('get_dock_state');
+    if (this.state === null) {
+      throw 'engine not running';
+    }
+    return this.state;
+  }
+  async getIcon(iconKey: string, size: number): Promise<string | null> {
+    this.iconRequests.push(iconId(iconKey, size));
+    return this.iconUrls.get(iconKey) ?? null;
   }
   async getMonitors() {
     return [];
@@ -135,9 +174,6 @@ class FakeBackend implements Backend {
   async pinApp(): Promise<void> {}
   async pinTarget(): Promise<string> {
     return '';
-  }
-  async getIcon(): Promise<string | null> {
-    return null;
   }
   async setDockContentSize(): Promise<void> {}
   async setDockHitRegion(): Promise<void> {}
@@ -180,12 +216,68 @@ describe('SettingsStore', () => {
     expect(backend.log).toEqual([
       'on:dock://settings',
       'on:dock://theme',
+      'on:dock://state',
       'get_settings',
       'get_theme',
+      'get_dock_state',
     ]);
     expect(store.settings?.pinned.map((p) => p.id)).toEqual(['a', 'b', 'c']);
     expect(store.theme).toEqual(THEME);
+    expect(store.dockState).toEqual(snapshot(0));
     expect(store.status).toBe('saved');
+  });
+
+  it("keeps the dock state current and finds a pin's item in it", async () => {
+    const { backend, store } = await started();
+    expect(store.dockItem('a')).toBeUndefined();
+
+    backend.emit('dock://state', snapshot(2, [appItem('a', 'App A', 'exe:a')]));
+    expect(store.dockItem('a')).toMatchObject({ title: 'App A', iconKey: 'exe:a' });
+    expect(store.dockItem('b')).toBeUndefined();
+
+    // A snapshot older than the one shown is dropped.
+    expect(store.applyState(snapshot(1, []))).toBe(false);
+    expect(store.dockItem('a')?.title).toBe('App A');
+    // The same revision again (the startup fetch after an event) is fine.
+    expect(store.applyState(snapshot(2, [appItem('a', 'Renamed', null)]))).toBe(true);
+    expect(store.dockItem('a')).toMatchObject({ title: 'Renamed', iconKey: null });
+  });
+
+  it('a failed get_dock_state leaves the page usable without names and icons', async () => {
+    const backend = new FakeBackend();
+    backend.state = null;
+    const store = new SettingsStore(backend, 150);
+    await store.start();
+    expect(store.status).toBe('saved');
+    expect(store.settings?.pinned).toHaveLength(3);
+    expect(store.dockState).toBeNull();
+    expect(store.dockItem('a')).toBeUndefined();
+    expect(console.error).toHaveBeenCalledWith('get_dock_state failed:', 'engine not running');
+  });
+
+  it('loads an icon once per key and size, and never a shell: key', async () => {
+    const { backend, store } = await started();
+    backend.iconUrls.set('exe:a', 'data:image/png;base64,AAAA');
+    expect(store.icon('exe:a', 48)).toBeUndefined();
+
+    store.ensureIcon('exe:a', 48);
+    store.ensureIcon('exe:a', 48);
+    store.ensureIcon('exe:b', 48);
+    store.ensureIcon('shell:start', 48);
+    await tick();
+    await tick();
+    expect(backend.iconRequests).toEqual(['exe:a@48', 'exe:b@48']);
+    expect(store.icon('exe:a', 48)).toBe('data:image/png;base64,AAAA');
+    // The backend has no icon for this key: `null`, not a broken image.
+    expect(store.icon('exe:b', 48)).toBeNull();
+    expect(store.icon('shell:start', 48)).toBeUndefined();
+
+    // Another size (a display with another scale) is its own entry.
+    store.ensureIcon('exe:a', 72);
+    await tick();
+    await tick();
+    expect(backend.iconRequests).toEqual(['exe:a@48', 'exe:b@48', 'exe:a@72']);
+    expect(store.icon('exe:a', 72)).toBe('data:image/png;base64,AAAA');
   });
 
   it('shows edits at once, coalesces them, and saves 150 ms after the last one', async () => {
@@ -363,5 +455,7 @@ describe('SettingsStore', () => {
     expect(backend.log.filter((l) => l.startsWith('update_settings'))).toEqual([]);
     backend.emit('dock://settings', { ...defaultSettings(), iconSize: 32 });
     expect(store.settings?.iconSize).toBe(60);
+    backend.emit('dock://state', snapshot(5, [appItem('a', 'App A', null)]));
+    expect(store.dockState?.revision).toBe(0);
   });
 });
