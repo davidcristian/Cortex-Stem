@@ -18,8 +18,9 @@
  * says a window covers the resting panel (see below). Switching to a mode
  * that does not hide right now reveals at once. A hold (an icon lifted for
  * a drag, a native context menu open, an item bouncing for a launch the dock
- * started, a file from the shell being dragged over the dock) keeps the dock
- * up while it lasts but never reveals a hidden one.
+ * started, a file from the shell being dragged over the dock, an item with
+ * keyboard focus) keeps the dock up while it lasts but never reveals a
+ * hidden one.
  * Once hidden, the reveal strip brings the dock back, and so does the dock
  * window being shown on request (ADR-0008: the tray and the toggle shortcut
  * still show it).
@@ -83,8 +84,11 @@ export type AutoHidePhase = 'shown' | 'pending' | 'hidden';
  * drag that the page sees through Tauri's events, never as pointer events.
  * `attention`: at least one item has `needsAttention`; the only hold
  * that also reveals a hidden dock when it begins (`REVEALING_HOLDS`).
+ * `focus`: an item has keyboard focus: the dock must not slide away
+ * from under it. Like `menu` it never reveals (a hidden panel cannot take
+ * focus, so it can only begin while the dock is shown).
  */
-export type AutoHideHold = 'drag' | 'menu' | 'bounce' | 'fileDrag' | 'attention';
+export type AutoHideHold = 'drag' | 'menu' | 'bounce' | 'fileDrag' | 'attention' | 'focus';
 
 /**
  * Holds whose start brings a hidden dock back. The others only keep a shown
@@ -152,7 +156,14 @@ export const INITIAL_AUTO_HIDE: AutoHideState = {
   overlapped: false,
   phase: 'shown',
   pointerInside: false,
-  holds: { drag: false, menu: false, bounce: false, fileDrag: false, attention: false },
+  holds: {
+    drag: false,
+    menu: false,
+    bounce: false,
+    fileDrag: false,
+    attention: false,
+    focus: false,
+  },
 };
 
 /** The mode hides whenever the pointer is away. */
@@ -189,7 +200,9 @@ function clampDelay(ms: number): number {
 
 function held(state: AutoHideState): boolean {
   const { holds } = state;
-  return holds.drag || holds.menu || holds.bounce || holds.fileDrag || holds.attention;
+  return (
+    holds.drag || holds.menu || holds.bounce || holds.fileDrag || holds.attention || holds.focus
+  );
 }
 
 function wantsHide(state: AutoHideState): boolean {

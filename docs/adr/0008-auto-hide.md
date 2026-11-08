@@ -34,7 +34,7 @@ work area.
   pointer left the panel) → `pending` → (`delayMs` passed) → `hidden` →
   (the pointer in the strip) → `shown`. It never hides while a hold is on:
   an icon lifted for a drag, a native context menu from the dock open, an
-  item bouncing for a launch the dock started,
+  item bouncing for a launch the dock started, an item with keyboard focus,
   or a file dragged over the dock. An item that needs attention (its window
   flashed its taskbar button) is the one hold that also reveals a hidden
   dock, and it keeps the dock up until no item needs attention, as the

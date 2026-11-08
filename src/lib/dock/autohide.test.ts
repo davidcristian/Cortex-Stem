@@ -190,7 +190,7 @@ describe('autoHideStep', () => {
     expect(autoHideStep(off, { type: 'strip' })).toEqual({ state: off, timer: 'none' });
   });
 
-  it.each(['drag', 'menu', 'bounce', 'fileDrag', 'attention'] as const)(
+  it.each(['drag', 'menu', 'bounce', 'fileDrag', 'attention', 'focus'] as const)(
     'never hides during a %s hold',
     (hold) => {
       const h = always(250)
@@ -266,6 +266,72 @@ describe('autoHideStep', () => {
     h.send({ type: 'hold', hold: 'bounce', active: true });
     expect(h.phase).toBe('hidden');
     h.send({ type: 'hold', hold: 'bounce', active: false }).advance(10_000);
+    expect(h.phase).toBe('hidden');
+  });
+
+  it('an item with keyboard focus keeps the dock up; once focus leaves it hides after the delay', () => {
+    // What Dock.svelte sends: the hold on the panel's focusin, off on its
+    // focusout (moving between items sends nothing). The pointer is away
+    // throughout, as when the keyboard is used alone.
+    const h = always(250).send({ type: 'hold', hold: 'focus', active: true });
+    expect(h.phase).toBe('shown');
+    expect(h.timers.at(-1)).toBe('clear');
+    h.advance(10_000);
+    expect(h.phase).toBe('shown');
+    // The pointer visiting and leaving does not hide it while an item has focus.
+    h.send({ type: 'pointer', inside: true }).send({ type: 'pointer', inside: false });
+    h.advance(10_000);
+    expect(h.phase).toBe('shown');
+    // Escape, Tab out or a click elsewhere: the countdown starts.
+    h.send({ type: 'hold', hold: 'focus', active: false });
+    expect(h.phase).toBe('pending');
+    expect(h.timers.at(-1)).toBe('arm');
+    h.advance(249);
+    expect(h.phase).toBe('pending');
+    h.advance(1);
+    expect(h.phase).toBe('hidden');
+  });
+
+  it('keyboard focus never reveals a hidden dock and changes nothing with auto-hide off', () => {
+    expect(REVEALING_HOLDS.has('focus')).toBe(false);
+    const h = always(250).advance(250);
+    expect(h.phase).toBe('hidden');
+    h.send({ type: 'hold', hold: 'focus', active: true });
+    expect(h.phase).toBe('hidden');
+    expect(h.timers.at(-1)).toBe('none');
+    h.send({ type: 'hold', hold: 'focus', active: false }).advance(10_000);
+    expect(h.phase).toBe('hidden');
+
+    const off = new Harness().send({ type: 'configure', mode: 'off', delayMs: 250 });
+    off.send({ type: 'hold', hold: 'focus', active: true });
+    off.send({ type: 'hold', hold: 'focus', active: false }).advance(10_000);
+    expect(off.phase).toBe('shown');
+    expect(off.timers.every((t) => t === 'none')).toBe(true);
+  });
+
+  it('keyboard focus holds a fullscreen dock until it leaves, then hides through a 0 ms countdown', () => {
+    const h = new Harness()
+      .send({ type: 'configure', mode: 'off', delayMs: 250 })
+      .send({ type: 'hold', hold: 'focus', active: true })
+      .send({ type: 'fullscreen', active: true });
+    expect(h.phase).toBe('shown');
+    h.advance(10_000);
+    expect(h.phase).toBe('shown');
+    h.send({ type: 'hold', hold: 'focus', active: false });
+    expect(h.phase).toBe('pending');
+    h.advance(0);
+    expect(h.phase).toBe('hidden');
+  });
+
+  it('focus and a menu opened from it overlap: the dock stays until both have ended', () => {
+    // Shift+F10 on a focused item: the menu hold comes on top of the focus one.
+    const h = always(250)
+      .send({ type: 'hold', hold: 'focus', active: true })
+      .send({ type: 'hold', hold: 'menu', active: true })
+      .send({ type: 'hold', hold: 'menu', active: false })
+      .advance(10_000);
+    expect(h.phase).toBe('shown');
+    h.send({ type: 'hold', hold: 'focus', active: false }).advance(250);
     expect(h.phase).toBe('hidden');
   });
 
@@ -411,9 +477,11 @@ describe('autoHideStep', () => {
     const before = always(250).state;
     const copy = structuredClone(before);
     autoHideStep(before, { type: 'hold', hold: 'drag', active: true });
+    autoHideStep(before, { type: 'hold', hold: 'focus', active: true });
     const hidden = always(0).state;
     const hiddenCopy = structuredClone(hidden);
     autoHideStep(hidden, { type: 'hold', hold: 'attention', active: true });
+    autoHideStep(hidden, { type: 'hold', hold: 'focus', active: true });
     expect(hidden).toEqual(hiddenCopy);
     autoHideStep(before, { type: 'pointer', inside: true });
     autoHideStep(before, { type: 'configure', mode: 'off', delayMs: 0 });
@@ -520,7 +588,7 @@ describe('fullscreen', () => {
     expect(h.phase).toBe('hidden');
   });
 
-  it.each(['drag', 'menu', 'bounce', 'fileDrag', 'attention'] as const)(
+  it.each(['drag', 'menu', 'bounce', 'fileDrag', 'attention', 'focus'] as const)(
     'a %s hold keeps a revealed dock up; its end with the pointer away hides at once',
     (hold) => {
       const h = off().send({ type: 'fullscreen', active: true }).send({ type: 'strip' });
@@ -808,7 +876,7 @@ describe('when overlapped', () => {
     expect(h.phase).toBe('hidden');
   });
 
-  it.each(['drag', 'menu', 'bounce', 'fileDrag', 'attention'] as const)(
+  it.each(['drag', 'menu', 'bounce', 'fileDrag', 'attention', 'focus'] as const)(
     'a %s hold keeps the dock up over an overlapping window; its end with the pointer away starts the countdown',
     (hold) => {
       const h = dodging(250)
