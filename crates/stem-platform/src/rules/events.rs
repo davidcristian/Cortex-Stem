@@ -42,9 +42,10 @@ pub const EVENT_OBJECT_CREATE: u32 = 0x8000;
 pub const EVENT_OBJECT_DESTROY: u32 = 0x8001;
 pub const EVENT_OBJECT_SHOW: u32 = 0x8002;
 pub const EVENT_OBJECT_HIDE: u32 = 0x8003;
-/// Hooked on its own by the fullscreen tracker, with a callback that
-/// keeps only the foreground window's moves; it is not in the translation
-/// table and never reaches [`event_intent`].
+/// Hooked on its own, with a callback that keeps only moves
+/// and resizes of top-level windows ([`location_change_tracked`]) and a loop
+/// that coalesces them; it is not in the translation table and never reaches
+/// [`event_intent`].
 pub const EVENT_OBJECT_LOCATIONCHANGE: u32 = 0x800B;
 pub const EVENT_OBJECT_NAMECHANGE: u32 = 0x800C;
 pub const EVENT_OBJECT_CLOAKED: u32 = 0x8017;
@@ -150,6 +151,15 @@ pub fn win_event_intent(event: u32, id_object: i32, id_child: i32, top_level: To
         TopLevel::Unknown if intent == Intent::Removed => intent,
         TopLevel::No | TopLevel::Unknown => Intent::Ignore,
     }
+}
+
+/// Filter of the `EVENT_OBJECT_LOCATIONCHANGE` hook's callback:
+/// whether a report is about a top-level window as a whole moving or
+/// resizing, and so worth a thread message. Caret and cursor moves
+/// (`OBJID_CARET`, `OBJID_CURSOR`), child controls and a window that is
+/// already gone are dropped in the callback, before they cost anything.
+pub fn location_change_tracked(id_object: i32, id_child: i32, top_level: TopLevel) -> bool {
+    id_object == OBJID_WINDOW && id_child == CHILDID_SELF && top_level == TopLevel::Yes
 }
 
 /// Translate the `wParam` of a `RegisterShellHookWindow` message.
@@ -338,6 +348,36 @@ mod tests {
                 "{ev:#06x}"
             );
         }
+    }
+
+    #[test]
+    fn location_changes_count_only_for_whole_top_level_windows() {
+        assert!(location_change_tracked(
+            OBJID_WINDOW,
+            CHILDID_SELF,
+            TopLevel::Yes
+        ));
+        // The cursor (-9) and the caret (-8) move with every mouse move and
+        // keystroke; the client area (-4) is not the window.
+        for object in [-9, -8, -4] {
+            assert!(!location_change_tracked(
+                object,
+                CHILDID_SELF,
+                TopLevel::Yes
+            ));
+        }
+        assert!(!location_change_tracked(OBJID_WINDOW, 1, TopLevel::Yes));
+        assert!(!location_change_tracked(
+            OBJID_WINDOW,
+            CHILDID_SELF,
+            TopLevel::No
+        ));
+        // Nothing can be queried about a window that is already gone.
+        assert!(!location_change_tracked(
+            OBJID_WINDOW,
+            CHILDID_SELF,
+            TopLevel::Unknown
+        ));
     }
 
     #[test]

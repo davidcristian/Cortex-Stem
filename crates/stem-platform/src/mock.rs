@@ -143,6 +143,26 @@ impl MockPlatform {
         self.state.lock().taskbar_auto_hide = enabled;
     }
 
+    /// A window moved or resized: give it a new frame (`None` for a
+    /// frame the platform could not read) and report it the way the events
+    /// thread does after a move, with one `WindowUpdated`. Unknown ids are
+    /// ignored, like a move of a window the thread does not track.
+    pub fn move_window(&self, id: WindowId, rect: Option<Rect>) {
+        let updated = {
+            let mut s = self.state.lock();
+            match s.windows.iter_mut().find(|w| w.id == id) {
+                Some(w) => {
+                    w.rect = rect;
+                    Some(w.clone())
+                }
+                None => None,
+            }
+        };
+        if let Some(raw) = updated {
+            self.push(PlatformEvent::WindowUpdated(raw));
+        }
+    }
+
     fn record(&self, call: MockCall) {
         self.state.lock().calls.push(call);
     }
@@ -456,7 +476,7 @@ fn demo_monitor() -> MonitorInfo {
     }
 }
 
-fn demo_window(id: u64, exe: &str, title: &str, minimized: bool) -> RawWindow {
+fn demo_window(id: u64, exe: &str, title: &str, minimized: bool, rect: Rect) -> RawWindow {
     RawWindow {
         id: WindowId(id),
         title: title.into(),
@@ -468,44 +488,60 @@ fn demo_window(id: u64, exe: &str, title: &str, minimized: bool) -> RawWindow {
         is_minimized: minimized,
         is_cloaked: false,
         monitor: Some(MonitorId("mock-primary".into())),
-        // The demo has no geometry; the TS mirror leaves it `null` too.
-        rect: None,
+        rect: Some(rect),
         icon_key: None,
     }
 }
 
+/// The demo's windows, each with a plausible frame on the demo monitor:
+/// all of them end above the bottom 250 px of the work area, where
+/// the dock's panel rests, so nothing overlaps it until a test moves one
+/// (`move_window`). A minimised window keeps the frame it would be restored
+/// to; the overlap rule ignores it while it is minimised. The TS mirror
+/// (`src/lib/ipc/mock.ts`) uses the same frames.
 fn demo_windows() -> Vec<RawWindow> {
     vec![
-        demo_window(1, r"C:\Windows\explorer.exe", "Downloads", false),
+        demo_window(
+            1,
+            r"C:\Windows\explorer.exe",
+            "Downloads",
+            false,
+            Rect::new(120, 90, 1100, 700),
+        ),
         demo_window(
             2,
             r"C:\Program Files\Mozilla Firefox\firefox.exe",
             "Stem — Mozilla Firefox",
             false,
+            Rect::new(640, 60, 1500, 1000),
         ),
         demo_window(
             3,
             r"C:\Program Files\Mozilla Firefox\firefox.exe",
             "GitHub — Mozilla Firefox",
             true,
+            Rect::new(700, 120, 1400, 900),
         ),
         demo_window(
             4,
             r"C:\Users\me\AppData\Local\Programs\Microsoft VS Code\Code.exe",
             "lib.rs — Stem",
             false,
+            Rect::new(200, 40, 1600, 1000),
         ),
         demo_window(
             5,
             r"C:\Program Files\WindowsApps\Terminal\WindowsTerminal.exe",
             "PowerShell",
             false,
+            Rect::new(1300, 500, 1000, 600),
         ),
         demo_window(
             6,
             r"C:\Program Files\Spotify\Spotify.exe",
             "Spotify Premium",
             true,
+            Rect::new(400, 200, 1200, 800),
         ),
     ]
 }

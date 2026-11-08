@@ -27,16 +27,26 @@
 //! - `WM_DISPLAYCHANGE`/`WM_DPICHANGED` -> `MonitorsChanged` + `WindowsSnapshot`.
 //! - `WM_SETTINGCHANGE` ("ImmersiveColorSet") and `WM_DWMCOLORIZATIONCOLORCHANGED`
 //!   -> `ThemeChanged` (via `theme::current_theme`).
+//! - Window moves: one more `SetWinEventHook`, for
+//!   `EVENT_OBJECT_LOCATIONCHANGE` alone, whose callback keeps only
+//!   `OBJID_WINDOW`/`CHILDID_SELF` reports about top-level windows
+//!   (`rules::events::location_change_tracked`) and posts. The loop collects
+//!   the windows it already tracks (`known`) into a small set and, once per
+//!   [`LOCATION_SETTLE`] (150 ms, a one-shot [`ThreadTimer`] armed by the
+//!   first report of a burst), re-queries each of them and emits
+//!   `WindowUpdated` only when its facts differ from the last report (the
+//!   frame included), so a window being dragged costs the engine at most
+//!   about seven updates a second and a window that is not tracked costs
+//!   nothing here (the re-checks handle newcomers). The engine turns
+//!   the frames into `DockState::overlapped`.
 //! - Fullscreen: the thread keeps the platform's verdict on whether
 //!   the foreground window owns the whole screen (`fullscreen::evaluate`
 //!   over `rules::fullscreen`) and emits `FullscreenChanged` when it
 //!   changes, plus once right after the start snapshot. It is re-evaluated
 //!   on every foreground report (WinEvent or shell hook, our own windows
 //!   included), on a display change, and whenever the foreground window
-//!   moves or resizes: one more `SetWinEventHook`, for
-//!   `EVENT_OBJECT_LOCATIONCHANGE` alone, whose callback keeps only
-//!   `OBJID_WINDOW`/`CHILDID_SELF` reports about the window this thread last
-//!   saw in the foreground and posts. Each trigger arms one
+//!   moves or resizes (the location reports above about the window this
+//!   thread last saw in the foreground). Each trigger arms one
 //!   [`FULLSCREEN_SETTLE`] timer (150 ms) if none is running, so a burst (F11
 //!   in a browser fires dozens of location changes) costs one evaluation,
 //!   against the live `GetForegroundWindow`. `info` on each change
@@ -76,17 +86,17 @@
 //! through the thread's own queue makes that static unnecessary, so nothing
 //! here assumes a single instance (each thread has its own queue). The only
 //! process-wide value is the registered `SHELLHOOK` message id, which is a
-//! per-process constant by definition. The location hook's filter needs the
-//! last foreground window inside its callback; that is a thread-local
-//! ([`FOREGROUND_HWND`]), written by the loop on the same thread.
+//! per-process constant by definition.
 //!
 //! **Translation.** The event → intent table and the title debounce policy
 //! live in `rules::events` and are unit-tested on Linux. `WindowRemoved` is
-//! only emitted for windows this thread reported earlier (`known`), which
-//! keeps child-control `DESTROY` storms off the engine's channel. A window
-//! that stops qualifying (hidden, cloaked by its app, title emptied) is
-//! reported as removed; one that starts qualifying on any update is reported
-//! as added, so a missed `SHOW` is healed by the next event about it.
+//! only emitted for windows this thread reported earlier (`known`, which
+//! also keeps the facts last reported about each, for the move path's
+//! comparison), which keeps child-control `DESTROY` storms off the engine's
+//! channel. A window that stops qualifying (hidden, cloaked by its app,
+//! title emptied) is reported as removed; one that starts qualifying on any
+//! update is reported as added, so a missed `SHOW` is healed by the next
+//! event about it.
 //!
 //! **Re-checks.** Some windows are shown before they can be judged:
 //! a Store app's `ApplicationFrameWindow` launched in the background was
@@ -104,14 +114,13 @@
 //! `JoinHandle`s and channel ends; raw handles (`HWND`, `HWINEVENTHOOK`,
 //! timer ids) are `!Send` and never leave the events thread.
 
-use std::cell::Cell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TryRecvError, bounded};
-use stem_core::{PlatformEvent, RecycleBinState, ThemeInfo, WindowId};
+use stem_core::{PlatformEvent, RawWindow, RecycleBinState, ThemeInfo, WindowId};
 use windows::Win32::Foundation::{
     ERROR_CLASS_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM,
 };
@@ -171,7 +180,7 @@ const MSG_SHELLHOOK: u32 = WM_APP + 2;
 const MSG_SETTINGCHANGE: u32 = WM_APP + 3;
 const MSG_THEMECHANGE: u32 = WM_APP + 4;
 const MSG_DISPLAYCHANGE: u32 = WM_APP + 5;
-/// The foreground window moved or resized; `lParam` = its `HWND`.
+/// A top-level window moved or resized; `lParam` = its `HWND`.
 const MSG_LOCATIONCHANGE: u32 = WM_APP + 6;
 
 const CLASS_NAME: &str = "DockPlatformEvents";
@@ -183,19 +192,15 @@ pub const RECYCLE_BIN_POLL: Duration = Duration::from_secs(5);
 /// How long after a foreground or location report the fullscreen verdict
 /// is taken: one evaluation per burst, after the geometry settled.
 pub const FULLSCREEN_SETTLE: Duration = Duration::from_millis(150);
+/// How long after the first location report of a burst the moved windows
+/// are re-queried: a window being dragged is reported to the engine
+/// at most once per this interval.
+pub const LOCATION_SETTLE: Duration = Duration::from_millis(150);
 const START_TIMEOUT: Duration = Duration::from_secs(5);
 const STOP_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// `RegisterWindowMessageW("SHELLHOOK")`: a per-process constant.
 static SHELL_HOOK_MESSAGE: OnceLock<u32> = OnceLock::new();
-
-thread_local! {
-    /// The foreground window as the events thread last saw it (the raw
-    /// `HWND` value; 0 for none), for the location hook's callback, which
-    /// runs on this thread and has no user pointer. Written by the loop on
-    /// each foreground report and each evaluation.
-    static FOREGROUND_HWND: Cell<isize> = const { Cell::new(0) };
-}
 
 /// Handle to the running event thread and its recycle-bin poller. Dropping
 /// it without `stop` asks both threads to quit but does not wait for them;
@@ -566,6 +571,19 @@ impl Drop for ThreadTimer {
     }
 }
 
+/// What a successful or failed query of one window was reported as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Report {
+    /// `WindowAdded`: the window was not tracked before.
+    Added,
+    /// `WindowUpdated`.
+    Updated,
+    /// Nothing: the facts equal the last report (only on the move path).
+    Unchanged,
+    /// `WindowRemoved` (or nothing, when it was not tracked): it no longer qualifies.
+    Removed,
+}
+
 /// Everything the loop owns. Field order is drop order: the timers, then
 /// hooks, then the window, then the COM apartment last.
 struct ThreadState {
@@ -573,8 +591,16 @@ struct ThreadState {
     thread_id: u32,
     started: Instant,
     /// Windows reported to the engine (snapshot or `WindowAdded`) and not
-    /// yet removed.
-    known: HashSet<WindowId>,
+    /// yet removed, each with the facts last reported about it (what a
+    /// coalesced re-query after a move compares against).
+    known: HashMap<WindowId, RawWindow>,
+    /// Tracked windows that moved or resized since the last flush.
+    moved: HashSet<WindowId>,
+    /// The [`LOCATION_SETTLE`] timer, while a flush of `moved` is pending.
+    location_timer: Option<ThreadTimer>,
+    /// The foreground window as this thread last saw it (the raw `HWND`
+    /// value; 0 for none): a move of it re-evaluates fullscreen.
+    foreground_hwnd: isize,
     titles: TitleDebouncer,
     title_timer: Option<ThreadTimer>,
     /// Windows not ready when they appeared, keyed by `WindowId.0`.
@@ -600,7 +626,8 @@ impl ThreadState {
         for &(min, max) in rules::HOOK_RANGES {
             hooks.push(WinEventHook::install(min, max)?);
         }
-        // The foreground window's moves, through their own callback.
+        // Moves and resizes of top-level windows, through
+        // their own callback.
         hooks.push(WinEventHook::install_with(
             EVENT_OBJECT_LOCATIONCHANGE,
             EVENT_OBJECT_LOCATIONCHANGE,
@@ -612,7 +639,10 @@ impl ThreadState {
             sink,
             thread_id,
             started: Instant::now(),
-            known: HashSet::new(),
+            known: HashMap::new(),
+            moved: HashSet::new(),
+            location_timer: None,
+            foreground_hwnd: 0,
             titles: TitleDebouncer::default(),
             title_timer: None,
             rechecks: RecheckSchedule::default(),
@@ -694,7 +724,7 @@ impl ThreadState {
                 // The monitor bounds a frame is judged against changed.
                 self.schedule_fullscreen_check();
             }
-            MSG_LOCATIONCHANGE => self.schedule_fullscreen_check(),
+            MSG_LOCATIONCHANGE => self.on_location_change(hwnd),
             WM_TIMER => self.on_timer(msg.wParam.0),
             _ => {}
         }
@@ -727,10 +757,10 @@ impl ThreadState {
             Intent::Foreground => self.emit_foreground(hwnd),
             Intent::Attention => {
                 let id = util::window_id(hwnd);
-                if !self.known.contains(&id) {
+                if !self.known.contains_key(&id) {
                     self.refresh_window(hwnd, "HSHELL_FLASH");
                 }
-                if self.known.contains(&id) {
+                if self.known.contains_key(&id) {
                     self.emit(PlatformEvent::WindowAttention { id, flashing: true });
                 }
             }
@@ -760,6 +790,72 @@ impl ThreadState {
         {
             self.check_fullscreen();
         }
+        if self
+            .location_timer
+            .as_ref()
+            .is_some_and(|t| t.id() == timer_id)
+        {
+            self.flush_moved();
+        }
+    }
+
+    /// A top-level window moved or resized: a tracked one is
+    /// re-queried at the next flush; the foreground one also re-evaluates
+    /// fullscreen. Untracked windows cost nothing here.
+    fn on_location_change(&mut self, hwnd: HWND) {
+        if hwnd.0 as isize == self.foreground_hwnd {
+            self.schedule_fullscreen_check();
+        }
+        let id = util::window_id(hwnd);
+        if !self.known.contains_key(&id) {
+            return;
+        }
+        if self.moved.insert(id) && self.moved.len() == 1 {
+            log::trace!("window {:#x} is moving; flush in {LOCATION_SETTLE:?}", id.0);
+        }
+        self.schedule_location_flush();
+    }
+
+    /// Make sure the moved windows are re-queried [`LOCATION_SETTLE`] from
+    /// now. A timer already armed is kept, so a burst costs one query per
+    /// window; when no timer can be had the flush runs at once rather than
+    /// never.
+    fn schedule_location_flush(&mut self) {
+        if self.location_timer.is_some() {
+            return;
+        }
+        match ThreadTimer::start(LOCATION_SETTLE) {
+            Some(timer) => self.location_timer = Some(timer),
+            None => self.flush_moved(),
+        }
+    }
+
+    /// The location timer fired: re-query every window that moved since the
+    /// last flush and is still tracked, and report the ones whose facts
+    /// changed (`WindowUpdated`) or that no longer qualify (`WindowRemoved`).
+    fn flush_moved(&mut self) {
+        // Thread timers repeat; this one is one-shot.
+        self.location_timer = None;
+        let mut ids: Vec<WindowId> = self.moved.drain().collect();
+        ids.sort_unstable();
+        let mut updated = 0usize;
+        let mut removed = 0usize;
+        for id in &ids {
+            if !self.known.contains_key(id) {
+                continue;
+            }
+            match self.query_window(util::hwnd(*id), true).1 {
+                Report::Updated => updated += 1,
+                Report::Removed => removed += 1,
+                Report::Added | Report::Unchanged => {}
+            }
+        }
+        if !ids.is_empty() {
+            log::trace!(
+                "{} moved window(s) re-queried: {updated} updated, {removed} no longer qualify",
+                ids.len()
+            );
+        }
     }
 
     /// Something that can change the fullscreen verdict happened:
@@ -784,7 +880,7 @@ impl ThreadState {
         self.fullscreen_timer = None;
         // SAFETY: GetForegroundWindow has no preconditions; NULL is a valid answer.
         let foreground = unsafe { GetForegroundWindow() };
-        FOREGROUND_HWND.with(|f| f.set(foreground.0 as isize));
+        self.foreground_hwnd = foreground.0 as isize;
         let verdict = fullscreen::evaluate(foreground);
         if self.fullscreen == Some(verdict.fullscreen) {
             return;
@@ -805,24 +901,55 @@ impl ThreadState {
     /// resolve a pending re-check that the result settles. Returns how the
     /// window stands and whether this call added it.
     fn query_and_report(&mut self, hwnd: HWND) -> (Check, bool) {
+        let (check, report) = self.query_window(hwnd, false);
+        (check, report == Report::Added)
+    }
+
+    /// The query behind [`Self::query_and_report`] and the move path:
+    /// with `only_changes` a `WindowUpdated` goes out only when the
+    /// facts differ from the last report, so a window dragged around costs
+    /// the engine nothing while its frame is unchanged between two flushes.
+    fn query_window(&mut self, hwnd: HWND, only_changes: bool) -> (Check, Report) {
         let id = util::window_id(hwnd);
-        let (check, added) = match enumerate::query_window_checked(hwnd) {
-            Ok(raw) => {
-                let added = self.known.insert(id);
-                if added {
-                    self.emit(PlatformEvent::WindowAdded(raw));
-                } else {
-                    self.emit(PlatformEvent::WindowUpdated(raw));
-                }
-                (Check::Eligible, added)
-            }
+        let (check, report) = match enumerate::query_window_checked(hwnd) {
+            Ok(raw) => (Check::Eligible, self.report_queried(id, raw, only_changes)),
             Err(check) => {
+                if only_changes {
+                    log::trace!("moved window {:#x} no longer qualifies: {check:?}", id.0);
+                }
                 self.remove_window(id);
-                (check, false)
+                (check, Report::Removed)
             }
         };
         self.rechecks.observe(id.0, check);
-        (check, added)
+        (check, report)
+    }
+
+    /// Emit what a successful query of `id` means: `WindowAdded` for a
+    /// window not tracked yet, else `WindowUpdated`, unless `only_changes`
+    /// and the facts equal the last report. `known` keeps the facts either
+    /// way.
+    fn report_queried(&mut self, id: WindowId, raw: RawWindow, only_changes: bool) -> Report {
+        match self.known.get(&id) {
+            None => {
+                self.known.insert(id, raw.clone());
+                self.emit(PlatformEvent::WindowAdded(raw));
+                Report::Added
+            }
+            Some(previous) if only_changes && *previous == raw => Report::Unchanged,
+            Some(_) => {
+                if only_changes {
+                    log::trace!(
+                        "moved window {:#x}: WindowUpdated, frame {:?}",
+                        id.0,
+                        raw.rect
+                    );
+                }
+                self.known.insert(id, raw.clone());
+                self.emit(PlatformEvent::WindowUpdated(raw));
+                Report::Updated
+            }
+        }
     }
 
     /// [`Self::query_and_report`] for an event about the window (`cause`
@@ -923,7 +1050,8 @@ impl ThreadState {
 
     fn remove_window(&mut self, id: WindowId) {
         self.titles.forget(id.0);
-        if self.known.remove(&id) {
+        self.moved.remove(&id);
+        if self.known.remove(&id).is_some() {
             self.emit(PlatformEvent::WindowRemoved(id));
         }
     }
@@ -950,10 +1078,10 @@ impl ThreadState {
         // A foreground change is when a dock that has silently
         // dropped out of the topmost band gets covered; the check is posted.
         super::dock_window::assert_topmost_all();
-        // The location hook filters for this window from now on, and
+        // Moves of this window re-evaluate fullscreen from now on, and
         // the verdict is taken once the switch has settled. Our own windows
         // count too: the settings window in front of a game ends fullscreen.
-        FOREGROUND_HWND.with(|f| f.set(hwnd.0 as isize));
+        self.foreground_hwnd = hwnd.0 as isize;
         self.schedule_fullscreen_check();
         if !hwnd.is_invalid() && util::is_own_process_window(hwnd) {
             // The dock (or the settings window) got the foreground: not an
@@ -967,7 +1095,7 @@ impl ThreadState {
         let id = (!hwnd.is_invalid() && enumerate::is_taskbar_candidate(hwnd))
             .then(|| util::window_id(hwnd));
         if let Some(id) = id
-            && !self.known.contains(&id)
+            && !self.known.contains_key(&id)
         {
             // A candidate we never saw shown (missed event): report it first
             // so the engine can mark it active.
@@ -979,7 +1107,8 @@ impl ThreadState {
     fn emit_snapshot(&mut self) {
         match enumerate::enumerate_taskbar_windows() {
             Ok(windows) => {
-                self.known = windows.iter().map(|w| w.id).collect();
+                self.known = windows.iter().map(|w| (w.id, w.clone())).collect();
+                self.moved.clear();
                 self.titles = TitleDebouncer::default();
                 self.title_timer = None;
                 // Listed now; windows still not ready stay pending.
@@ -1060,11 +1189,12 @@ unsafe extern "system" fn win_event_proc(
     );
 }
 
-/// `WINEVENTPROC` of the `EVENT_OBJECT_LOCATIONCHANGE` hook: keep
-/// only moves and resizes of the window this thread last saw in the
-/// foreground, and post. Everything else (caret and cursor moves, child
-/// controls, every other window) is dropped here, before it costs a message.
-/// Runs on the events thread.
+/// `WINEVENTPROC` of the `EVENT_OBJECT_LOCATIONCHANGE` hook:
+/// keep only moves and resizes of top-level windows as a whole
+/// (`rules::events::location_change_tracked`), and post. Everything else
+/// (caret and cursor moves, child controls, windows already gone) is
+/// dropped here, before it costs a message; which windows matter is the
+/// loop's business (`on_location_change`). Runs on the events thread.
 unsafe extern "system" fn location_event_proc(
     _hook: HWINEVENTHOOK,
     event: u32,
@@ -1074,14 +1204,20 @@ unsafe extern "system" fn location_event_proc(
     _event_thread: u32,
     _event_time_ms: u32,
 ) {
-    if event != EVENT_OBJECT_LOCATIONCHANGE
-        || hwnd.is_invalid()
-        || id_object != OBJID_WINDOW.0
-        || id_child != CHILDID_SELF as i32
-    {
+    if event != EVENT_OBJECT_LOCATIONCHANGE || hwnd.is_invalid() {
         return;
     }
-    if FOREGROUND_HWND.with(Cell::get) != hwnd.0 as isize {
+    // SAFETY: GetAncestor accepts any handle value and returns NULL for
+    // windows that are already gone.
+    let root = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    let top_level = if root.is_invalid() {
+        TopLevel::Unknown
+    } else if root == hwnd {
+        TopLevel::Yes
+    } else {
+        TopLevel::No
+    };
+    if !rules::location_change_tracked(id_object, id_child, top_level) {
         return;
     }
     post_to_self(MSG_LOCATIONCHANGE, WPARAM(0), LPARAM(hwnd.0 as isize));
