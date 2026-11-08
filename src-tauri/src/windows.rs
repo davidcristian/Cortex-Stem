@@ -777,9 +777,21 @@ pub fn toggle_dock(app: &AppHandle) {
 }
 
 /// Show and focus every window we have (the dock, and the settings window
-/// when it is open). Used when a second instance is started.
+/// when it is open). Used when a second instance is started. A dock window
+/// that is on screen with its panel slid out by auto-hide is asked to bring
+/// the panel back instead (`dock://show`, as [`toggle_dock`] does).
 pub fn reveal_all(app: &AppHandle) {
     for (label, window) in app.webview_windows() {
+        if label.starts_with(DOCK_LABEL)
+            && window.is_visible().unwrap_or(false)
+            && is_auto_hidden(app, &label)
+        {
+            log::debug!("dock reveal requested by a second instance");
+            if let Err(e) = app.emit_to(&label, crate::events::SHOW, ()) {
+                log::warn!("reveal {label}: {e}");
+            }
+            continue;
+        }
         if let Err(e) = window.show().and_then(|()| window.set_focus()) {
             log::warn!("reveal {label}: {e}");
         } else if label.starts_with(DOCK_LABEL) {
