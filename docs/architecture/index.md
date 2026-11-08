@@ -24,6 +24,7 @@ the records in `docs/adr/` give the reasons for the main decisions.
   behaviour over a fullscreen app.
 - [theme.md](theme.md): how the dock and the settings window follow the theme.
 - [dock-items.md](dock-items.md): the fixed items and the attention cue.
+- [keyboard.md](keyboard.md): how the dock is used with the keyboard.
 - [file-drops.md](file-drops.md): files dragged from Explorer onto the dock, pinned or
   moved to the Recycle Bin.
 - [settings.md](settings.md): how settings are stored and how the app shell applies the

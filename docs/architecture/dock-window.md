@@ -8,6 +8,7 @@ panel, and how it stays topmost. The other parts of the dock window are describe
 - [auto-hide.md](auto-hide.md): auto-hide and fullscreen;
 - [theme.md](theme.md): the theme;
 - [dock-items.md](dock-items.md): the fixed items and the attention cue;
+- [keyboard.md](keyboard.md): the keyboard;
 - [file-drops.md](file-drops.md): file drops, also on the Recycle Bin.
 
 ## Window flags and focus
