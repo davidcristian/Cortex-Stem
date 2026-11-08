@@ -12,9 +12,13 @@ together. With _Primary monitor only_, the other docks close.
 
 By default, every dock lists every window. Turn on _Show only windows on the
 dock's monitor_ to have each dock list only the windows on its own monitor.
-Pinned apps stay on every dock. A click on a pinned app on a dock whose
-monitor has none of the app's windows activates its window on the other
-monitor, instead of starting a second copy.
+Pinned apps stay on every dock. A click on an app's icon then acts only on
+the windows that dock shows: it brings forward, minimises or cycles through
+the app's windows on that monitor. A pinned app with no window on a dock's
+monitor shows no dot on that dock. A click on it there starts the app again,
+as for an app that is not running, even while the app has windows on
+another monitor. (An app that allows only one copy usually brings its window
+forward instead.) Its menu also lists only the windows on that monitor.
 
 When you change a display's scale, the dock on it draws its icons at the new
 size and stays in its place, without a restart.

@@ -111,12 +111,21 @@ fn get_monitors(service: State<'_, AppService>) -> Vec<MonitorInfo> {
     service.0.monitors()
 }
 
+/// A click on a dock item. The calling window's label names the dock it
+/// happened in, whose own view of the windows the service acts on
+/// (`docs/ipc/windows.md` §Dock windows per monitor); the payload is the item key
+/// alone.
 #[tauri::command]
-async fn primary_click(service: State<'_, AppService>, item_key: String) -> CmdResult<()> {
+async fn primary_click(
+    window: tauri::WebviewWindow,
+    service: State<'_, AppService>,
+    item_key: String,
+) -> CmdResult<()> {
+    let dock = window.label();
     checked(
         "primary_click",
-        &item_key,
-        service.0.primary_click(&item_key),
+        &(dock, &item_key),
+        service.0.primary_click(&item_key, dock),
     )
 }
 

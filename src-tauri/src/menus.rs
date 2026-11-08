@@ -3,18 +3,23 @@
 //!
 //! Flow: the UI reports *where* the user right-clicked (`show_item_menu`,
 //! `show_dock_menu`; CSS px in the calling dock window's viewport). This
-//! module builds a menu from the service's current snapshot and settings,
-//! pops it up at that point (scaled by the window's scale factor), and,
-//! through the app-wide menu event handler that [`init`] registers,
-//! dispatches the chosen entry to the service. Menus are built fresh per
-//! call and never cached: window lists and pinned state change under them.
+//! module builds a menu from the item as the calling dock lists it
+//! (`DockService::dock_item`: with a dock per monitor and
+//! `showOnlyCurrentMonitor` on, only the windows on that dock's monitor)
+//! and the settings, pops it up at that point (scaled by the
+//! window's scale factor), and, through the app-wide menu event handler that
+//! [`init`] registers, dispatches the chosen entry to the service. Menus are
+//! built fresh per call and never cached: window lists and pinned state
+//! change under them.
 //!
 //! Item ids encode the action: `ctx:activate:<windowId>`,
 //! `ctx:launch:<appId>`, `ctx:pin:<appId>`, `ctx:unpin:<appId>`,
-//! `ctx:close-all:<appId>`, `ctx:shell:<shellAction>` (camelCase, as
-//! serialised), `ctx:settings`, `ctx:quit`. Everything starts with `ctx:`
-//! because the tray's items (`tray.rs`) share the same global event stream
-//! and must not collide; ids without the prefix are not ours and are ignored.
+//! `ctx:close-all:<dockLabel>:<appId>` (the dock whose windows it closes;
+//! dock labels have no `:`, app ids may), `ctx:shell:<shellAction>`
+//! (camelCase, as serialised), `ctx:settings`, `ctx:quit`. Everything starts
+//! with `ctx:` because the tray's items (`tray.rs`) share the same global
+//! event stream and must not collide; ids without the prefix are not ours
+//! and are ignored.
 //!
 //! Threading: `popup_at` runs the modal menu loop on the main thread, so the
 //! command blocks until the menu closes (as every Win32 context menu does;
@@ -36,9 +41,7 @@
 
 use std::sync::Arc;
 
-use stem_core::{
-    AppId, DockItem, DockItemKind, DockState, Settings, ShellAction, WindowAction, WindowId,
-};
+use stem_core::{AppId, DockItem, DockItemKind, Settings, ShellAction, WindowAction, WindowId};
 use stem_service::{DockService, ServiceResult};
 use tauri::menu::{ContextMenu, Menu, MenuBuilder, MenuEvent, MenuItemBuilder};
 use tauri::{AppHandle, Manager, PhysicalPosition, State, WebviewWindow, Wry};
@@ -66,8 +69,9 @@ pub fn init(app: &AppHandle) -> tauri::Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Show the context menu of one dock item at `(x, y)` CSS px of the calling
-/// dock window. Separators have no menu (returns `Ok` without showing one);
-/// an unknown key rejects. Returns once the menu has closed.
+/// dock window, with the windows that dock lists. Separators have no menu
+/// (returns `Ok` without showing one); an unknown key rejects. Returns once
+/// the menu has closed.
 #[tauri::command]
 pub(crate) fn show_item_menu(
     app: AppHandle,
@@ -80,9 +84,13 @@ pub(crate) fn show_item_menu(
     let args = (window.label().to_owned(), item_key.clone(), x, y);
     let shown = (|| {
         let point = popup_point(&window, x, y)?;
-        let state = service.0.state();
+        let dock = window.label();
+        let item = service
+            .0
+            .dock_item(&item_key, dock)
+            .ok_or_else(|| format!("unknown dock item: {item_key}"))?;
         let settings = service.0.settings();
-        let Some(menu) = item_menu(&app, &state, &settings, &item_key)? else {
+        let Some(menu) = item_menu(&app, &item, &settings, dock)? else {
             log::debug!("no context menu for {item_key}");
             return Ok(());
         };
@@ -176,22 +184,18 @@ fn popup(
 // Menu contents
 // ---------------------------------------------------------------------------
 
-/// The menu for `key`, or `None` for items that have none (separators).
+/// The menu for `item` as the dock window `dock` lists it, or `None` for
+/// items that have none (separators).
 fn item_menu(
     app: &AppHandle,
-    state: &DockState,
+    item: &DockItem,
     settings: &Settings,
-    key: &str,
+    dock: &str,
 ) -> Result<Option<Menu<Wry>>, String> {
-    let item = state
-        .items
-        .iter()
-        .find(|i| i.key == key)
-        .ok_or_else(|| format!("unknown dock item: {key}"))?;
     let menu = MenuBuilder::new(app);
     let menu = match item.kind {
         DockItemKind::Separator => return Ok(None),
-        DockItemKind::App => app_entries(app, menu, item, settings)?,
+        DockItemKind::App => app_entries(app, menu, item, settings, dock)?,
         DockItemKind::Launcher => shell_entry(menu, ShellAction::OpenStartMenu, "Open Start menu"),
         DockItemKind::TaskView => shell_entry(menu, ShellAction::OpenTaskView, "Open Task View"),
         DockItemKind::ShowDesktop => {
@@ -229,12 +233,14 @@ fn shell_entry<'a>(menu: Builder<'a>, action: ShellAction, text: &str) -> Builde
 }
 
 /// An app item: its windows (activate), *New window*, *Pin* / *Unpin*,
-/// *Close all windows*.
+/// *Close all windows* (of the dock window `dock`). `item` is the dock's
+/// view of it, so the windows are the ones that dock lists.
 fn app_entries<'a>(
     app: &AppHandle,
     mut menu: Builder<'a>,
     item: &DockItem,
     settings: &Settings,
+    dock: &str,
 ) -> Result<Builder<'a>, String> {
     let app_id = item
         .app_id
@@ -269,7 +275,11 @@ fn app_entries<'a>(
     }
     if !item.windows.is_empty() {
         menu = menu.text(
-            MenuAction::CloseAll(app_id.clone()).id(),
+            MenuAction::CloseAll {
+                dock: dock.to_owned(),
+                app: app_id.clone(),
+            }
+            .id(),
             "Close all windows",
         );
     }
@@ -317,7 +327,11 @@ enum MenuAction {
     Launch(AppId),
     Pin(AppId),
     Unpin(AppId),
-    CloseAll(AppId),
+    /// Every window of `app` that the dock window `dock` lists.
+    CloseAll {
+        dock: String,
+        app: AppId,
+    },
     Shell(ShellAction),
     Settings,
     Quit,
@@ -330,7 +344,9 @@ impl MenuAction {
             Self::Launch(app) => format!("{ID_PREFIX}launch:{}", app.as_str()),
             Self::Pin(app) => format!("{ID_PREFIX}pin:{}", app.as_str()),
             Self::Unpin(app) => format!("{ID_PREFIX}unpin:{}", app.as_str()),
-            Self::CloseAll(app) => format!("{ID_PREFIX}close-all:{}", app.as_str()),
+            Self::CloseAll { dock, app } => {
+                format!("{ID_PREFIX}close-all:{dock}:{}", app.as_str())
+            }
             Self::Shell(action) => format!("{ID_PREFIX}shell:{}", shell_action_name(*action)),
             Self::Settings => format!("{ID_PREFIX}settings"),
             Self::Quit => format!("{ID_PREFIX}quit"),
@@ -353,7 +369,13 @@ impl MenuAction {
             "launch" => app().map(Self::Launch),
             "pin" => app().map(Self::Pin),
             "unpin" => app().map(Self::Unpin),
-            "close-all" => app().map(Self::CloseAll),
+            // The dock label first: it has no `:`, the app id may.
+            "close-all" => arg.split_once(':').and_then(|(dock, app)| {
+                (!dock.is_empty() && !app.is_empty()).then(|| Self::CloseAll {
+                    dock: dock.to_owned(),
+                    app: AppId(app.to_owned()),
+                })
+            }),
             "shell" => parse_shell_action(arg).map(Self::Shell),
             _ => None,
         }
@@ -417,25 +439,21 @@ fn perform(service: &DockService, action: &MenuAction) -> ServiceResult<()> {
         MenuAction::Launch(app) => service.launch_app(app),
         MenuAction::Pin(app) => service.pin_app(app),
         MenuAction::Unpin(app) => service.unpin_app(app),
-        MenuAction::CloseAll(app) => close_all(service, app),
+        MenuAction::CloseAll { dock, app } => close_all(service, dock, app),
         MenuAction::Shell(shell) => service.shell_action(*shell),
         // Handled on the main thread by `on_menu_event`.
         MenuAction::Settings | MenuAction::Quit => Ok(()),
     }
 }
 
-/// Close every window the app has *now* (the list may have changed since
-/// the menu was built). Every window is tried; the first error is returned.
-fn close_all(service: &DockService, app_id: &AppId) -> ServiceResult<()> {
-    let state = service.state();
-    let windows: Vec<WindowId> = state
-        .items
-        .iter()
-        .filter(|item| item.app_id.as_ref() == Some(app_id))
-        .flat_map(|item| item.windows.iter().map(|w| w.id))
-        .collect();
+/// Close every window of the app that the dock window `dock` lists *now*
+/// (the list may have changed since the menu was built): with a dock per
+/// monitor and `showOnlyCurrentMonitor` on, only those on its monitor.
+/// Every window is tried; the first error is returned.
+fn close_all(service: &DockService, dock: &str, app_id: &AppId) -> ServiceResult<()> {
+    let windows = service.windows_on_dock(app_id, dock);
     if windows.is_empty() {
-        log::debug!("close all: {app_id:?} has no windows any more");
+        log::debug!("close all: {app_id:?} has no windows in {dock:?} any more");
     }
     let mut first_error = None;
     for id in windows {
@@ -460,7 +478,14 @@ mod tests {
                 "aumid:Microsoft.WindowsCalculator_8wekyb3d8bbwe!App".into(),
             )),
             MenuAction::Unpin(AppId("uri:ms-settings:".into())),
-            MenuAction::CloseAll(AppId("class:notepad".into())),
+            MenuAction::CloseAll {
+                dock: "dock-DISPLAY3".into(),
+                app: AppId("class:notepad".into()),
+            },
+            MenuAction::CloseAll {
+                dock: "dock".into(),
+                app: AppId("exe:c:/windows/notepad.exe".into()),
+            },
             MenuAction::Shell(ShellAction::EmptyRecycleBin),
             MenuAction::Settings,
             MenuAction::Quit,
@@ -475,6 +500,14 @@ mod tests {
             "ctx:shell:openStartMenu"
         );
         assert_eq!(MenuAction::Activate(WindowId(7)).id(), "ctx:activate:7");
+        assert_eq!(
+            MenuAction::CloseAll {
+                dock: "dock-DISPLAY3".into(),
+                app: AppId("exe:c:/windows/notepad.exe".into()),
+            }
+            .id(),
+            "ctx:close-all:dock-DISPLAY3:exe:c:/windows/notepad.exe"
+        );
     }
 
     #[test]
@@ -490,6 +523,9 @@ mod tests {
             "ctx:shell:OpenStartMenu",
             "ctx:shell:",
             "ctx:close-all",
+            "ctx:close-all:dock",
+            "ctx:close-all:dock:",
+            "ctx:close-all::exe:c:/a.exe",
         ] {
             assert_eq!(MenuAction::parse(id), None, "{id}");
         }

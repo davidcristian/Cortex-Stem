@@ -58,9 +58,9 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use parking_lot::Mutex;
 use stem_core::{
-    AppId, AppIdentity, DockEngine, DockState, EngineInput, IconKey, ItemAction, LaunchTarget,
-    MonitorId, MonitorInfo, PlatformEvent, Rect, Settings, SettingsError, ShellAction, ThemeInfo,
-    WindowAction, WindowId,
+    AppId, AppIdentity, DockEngine, DockItem, DockState, EngineInput, IconKey, ItemAction,
+    LaunchTarget, MonitorId, MonitorInfo, PlatformEvent, Rect, Settings, SettingsError,
+    ShellAction, ThemeInfo, WindowAction, WindowId,
 };
 use stem_platform::{Platform, PlatformError};
 use thiserror::Error;
@@ -295,10 +295,14 @@ impl DockService {
         })
     }
 
-    /// The dock's "click": launch, activate, minimise, or run a shell action.
-    pub fn primary_click(&self, item_key: &str) -> ServiceResult<()> {
-        let action = self.inner.engine.lock().primary_action(item_key);
-        log::debug!("primary click on {item_key}: {action:?}");
+    /// The dock's "click" on `item_key` in the dock window `dock` (its
+    /// label): launch, activate, minimise, or run a shell action. Only the
+    /// windows that dock lists take part (`DockEngine::primary_action`):
+    /// with a dock per monitor and `showOnlyCurrentMonitor` on, the
+    /// ones on its own monitor.
+    pub fn primary_click(&self, item_key: &str, dock: &str) -> ServiceResult<()> {
+        let action = self.inner.engine.lock().primary_action(item_key, dock);
+        log::debug!("primary click on {item_key} in {dock:?}: {action:?}");
         match action {
             ItemAction::Launch(app_id) => self.launch_app(&app_id),
             ItemAction::ActivateWindow(id) => Ok(self
@@ -312,6 +316,21 @@ impl DockService {
             ItemAction::Shell(action) => Ok(self.inner.platform.shell_action(action)?),
             ItemAction::None => Err(ServiceError::UnknownItem(item_key.to_owned())),
         }
+    }
+
+    /// The item `item_key` as the dock window `dock` lists it, which its
+    /// context menu is built from (`DockEngine::dock_item`): an app
+    /// item with only the windows that dock lists. `None` for an unknown
+    /// key.
+    pub fn dock_item(&self, item_key: &str, dock: &str) -> Option<DockItem> {
+        self.inner.engine.lock().dock_item(item_key, dock)
+    }
+
+    /// The windows of `app_id` the dock window `dock` lists, now
+    /// (`DockEngine::windows_on_dock`): what its menu's *Close all
+    /// windows* closes.
+    pub fn windows_on_dock(&self, app_id: &AppId, dock: &str) -> Vec<WindowId> {
+        self.inner.engine.lock().windows_on_dock(app_id, dock)
     }
 
     pub fn window_action(&self, id: WindowId, action: WindowAction) -> ServiceResult<()> {
@@ -906,6 +925,10 @@ mod tests {
 
     use super::*;
 
+    /// The primary monitor's dock window. Most tests never register its
+    /// monitor, so its clicks consider every window.
+    const DOCK: &str = "dock";
+
     fn start() -> (DockService, Arc<MockPlatform>, Receiver<ServiceEvent>) {
         let platform = Arc::new(MockPlatform::with_demo_scenario());
         let store = Box::new(MemorySettingsStore::default());
@@ -1276,9 +1299,9 @@ mod tests {
         let code_key = item_titled(&state, "Code").unwrap().key.clone();
 
         // Firefox has two windows and the first is active -> cycle to the second.
-        service.primary_click(&firefox_key).unwrap();
+        service.primary_click(&firefox_key, DOCK).unwrap();
         // Code has one inactive window -> activate.
-        service.primary_click(&code_key).unwrap();
+        service.primary_click(&code_key, DOCK).unwrap();
         assert_eq!(
             platform.calls(),
             vec![
@@ -1297,20 +1320,20 @@ mod tests {
 
         // Now Code is active with a single window -> minimise.
         platform.clear_calls();
-        service.primary_click(&code_key).unwrap();
+        service.primary_click(&code_key, DOCK).unwrap();
         assert_eq!(
             platform.calls(),
             vec![MockCall::WindowAction(WindowId(4), WindowAction::Minimize)]
         );
 
         // Launcher.
-        service.primary_click("fixed:launcher").unwrap();
+        service.primary_click("fixed:launcher", DOCK).unwrap();
         assert_eq!(
             platform.calls().last(),
             Some(&MockCall::Shell(ShellAction::OpenStartMenu))
         );
         assert!(matches!(
-            service.primary_click("bogus"),
+            service.primary_click("bogus", DOCK),
             Err(ServiceError::UnknownItem(_))
         ));
     }
@@ -1343,7 +1366,7 @@ mod tests {
 
         // Clicking it now launches and bounces.
         platform.clear_calls();
-        service.primary_click(&spotify.key).unwrap();
+        service.primary_click(&spotify.key, DOCK).unwrap();
         assert!(matches!(
             platform.calls().as_slice(),
             [MockCall::Launch(LaunchTarget::Exe { .. })]
@@ -1600,7 +1623,7 @@ mod tests {
         assert!(panics.load(Ordering::SeqCst) >= 2);
 
         // Commands and the final flush work as usual.
-        service.primary_click("fixed:launcher").unwrap();
+        service.primary_click("fixed:launcher", DOCK).unwrap();
         service.shutdown();
         assert!(service.worker.lock().is_none());
     }
@@ -1979,6 +2002,78 @@ mod tests {
         let state = wait_state(&rx, |s| fullscreen_on(s, r"\\.\DISPLAY3"));
         assert!(!fullscreen_on(&state, DEMO_MONITOR));
         assert!(overlapped_on(&state, r"\\.\DISPLAY3"));
+        service.shutdown();
+    }
+
+    #[test]
+    fn clicks_and_menus_of_a_dock_act_on_the_windows_on_its_monitor() {
+        let (service, platform, rx) = start();
+        let state = wait_state(&rx, resolved);
+        let firefox = item_titled(&state, "firefox").unwrap().clone();
+        let firefox_id = firefox.app_id.clone().unwrap();
+        let second_dock = "dock-DISPLAY3";
+        let second = MonitorId(r"\\.\DISPLAY3".into());
+
+        // Firefox's second window (3) is dragged to the second monitor; its
+        // first (2), in the foreground, stays on the primary. One dock per
+        // monitor, each listing only the windows on its own.
+        let mut moved = platform
+            .windows()
+            .unwrap()
+            .into_iter()
+            .find(|w| w.id == WindowId(3))
+            .unwrap();
+        moved.monitor = Some(second.clone());
+        platform.push(PlatformEvent::WindowUpdated(moved));
+        let mut settings = service.settings();
+        settings.monitors = stem_core::settings::MonitorMode::All;
+        settings.behavior.show_only_current_monitor = true;
+        service.update_settings(settings.clone()).unwrap();
+        service.set_dock_panel(DOCK, Some(demo_monitor_id()), None);
+        service.set_dock_panel(second_dock, Some(second), None);
+        // The worker applies its queue in order: once both docks are in a
+        // snapshot, so are the move and the settings.
+        wait_state(&rx, |s| s.docks.len() == 2);
+        assert_eq!(service.windows_on_dock(&firefox_id, DOCK), [WindowId(2)]);
+        assert_eq!(
+            service.windows_on_dock(&firefox_id, second_dock),
+            [WindowId(3)]
+        );
+
+        // The primary's dock shows only the active window 2: minimise it
+        // (every window would cycle to 3). The second dock shows only 3,
+        // which is not active: activate it.
+        platform.clear_calls();
+        service.primary_click(&firefox.key, DOCK).unwrap();
+        service.primary_click(&firefox.key, second_dock).unwrap();
+        assert_eq!(
+            platform.calls(),
+            vec![
+                MockCall::WindowAction(WindowId(2), WindowAction::Minimize),
+                MockCall::WindowAction(WindowId(3), WindowAction::Activate),
+            ]
+        );
+
+        // The second dock's menu lists window 3 alone; the primary's, 2.
+        let listed = |dock: &str| -> Vec<WindowId> {
+            let item = service.dock_item(&firefox.key, dock).unwrap();
+            item.windows.iter().map(|w| w.id).collect()
+        };
+        assert_eq!(listed(second_dock), [WindowId(3)]);
+        assert_eq!(listed(DOCK), [WindowId(2)]);
+        assert_eq!(service.dock_item("bogus", second_dock), None);
+
+        // The setting off: both docks list, click and close every window.
+        settings.behavior.show_only_current_monitor = false;
+        service.update_settings(settings).unwrap();
+        wait_until("the setting to reach the engine", || {
+            service.windows_on_dock(&firefox_id, second_dock).len() == 2
+        });
+        assert_eq!(
+            service.windows_on_dock(&firefox_id, DOCK),
+            [WindowId(2), WindowId(3)]
+        );
+        assert_eq!(listed(second_dock), [WindowId(2), WindowId(3)]);
         service.shutdown();
     }
 

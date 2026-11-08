@@ -11,7 +11,7 @@ OS ──WinEvents/shell hook──▶ events thread ──PlatformEvent──�
        ├─ unresolved apps → platform.identify_*() → IdentityResolved → channel
        └─ changed → listeners → Tauri emit("dock://state", snapshot) → UI
 UI click ──invoke("primary_click")──▶ service.primary_click
-       engine.primary_action(key)
+       engine.primary_action(key, dock)
          → Launch | ActivateWindow | MinimizeWindow | Shell | None
        → platform.launch / window_action / shell_action
 ```
