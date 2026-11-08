@@ -1,6 +1,7 @@
 # Auto-hide
 
-This file describes how the dock hides its panel and brings it back.
+This file describes how the dock hides its panel and brings it back, and how it behaves
+while a fullscreen app covers the screen.
 
 Auto-hide ([ADR-0008](../adr/0008-auto-hide.md)) is presentation, so the UI
 implements it: a pure state machine (`src/lib/dock/autohide.ts`, unit-tested)
@@ -32,3 +33,21 @@ An item that needs attention also reveals the dock. The `attention` hold is
 the one hold that reveals when it begins. It keeps the dock up until no item
 needs attention any more, like the stock taskbar on auto-hide. The platform
 has no auto-hide mechanism of its own, and auto-hide needs no IPC change.
+
+## Fullscreen
+
+While `DockState.fullscreen` is
+set, the same machine behaves as if the mode were `always` with no delay,
+whatever the mode is. `autoHideActive`, which the strip and the hit region
+follow, is true when the mode is `always` or during fullscreen.
+
+With the pointer away the dock slides out at once. With the pointer over
+it the dock stays, and it hides the moment the pointer leaves, through
+`pending` and a 0 ms timer, so a strip-leave and a panel-enter in one
+dispatch cannot hide it. The strip, the holds and `attention` work as
+above.
+
+When fullscreen ends, a mode other than `always` shows the dock again.
+`always` resumes its normal delay, and a hidden dock stays hidden. The
+platform makes the fullscreen decision ([Data flow](data-flow.md)). The UI
+only passes the fact into the machine, next to `attention`.

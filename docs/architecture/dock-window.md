@@ -4,7 +4,7 @@ This file describes the dock's native window: its flags and focus, click-through
 panel, and how it stays topmost. The other parts of the dock window are described in:
 
 - [dock-placement.md](dock-placement.md): position and size, and one window per monitor;
-- [auto-hide.md](auto-hide.md): auto-hide;
+- [auto-hide.md](auto-hide.md): auto-hide and fullscreen;
 - [theme.md](theme.md): the theme;
 - [dock-items.md](dock-items.md): the fixed items and the attention cue;
 - [file-drops.md](file-drops.md): file drops, also on the Recycle Bin.

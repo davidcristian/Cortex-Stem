@@ -1,6 +1,7 @@
 # Data flow
 
-This file describes how events from Windows reach the UI and how a click reaches Windows.
+This file describes how events from Windows reach the UI, how a click reaches Windows, and
+which facts about the screen the engine publishes on the way.
 
 ```
 OS ──WinEvents/shell hook──▶ events thread ──PlatformEvent──▶ channel
@@ -26,3 +27,17 @@ UI click ──invoke("primary_click")──▶ service.primary_click
 - **Snapshots, not diffs.** `DockState` is small (tens of items). Sending
   it whole avoids the bugs of keeping a second copy in step through diffs.
   The service coalesces the emits to at most one per 16 ms.
+- **Facts about the screen reach the UI the same way.** The events thread
+  decides whether a fullscreen app covers the screen, because it has the
+  foreground `HWND`, its frame and its monitor. The decision is
+  `windows::fullscreen` over the pure `rules::fullscreen`. The shell's
+  state (`SHQueryUserNotificationState`) counts first. Otherwise a window
+  counts when its frame covers its monitor's full bounds and it is not
+  minimised, maximised, a shell surface or a window of Stem's own process.
+  The thread evaluates this once at start and again 150 ms after a
+  foreground change, a display change or a move of the foreground window
+  (an `EVENT_OBJECT_LOCATIONCHANGE` hook filtered to that window). It
+  emits `PlatformEvent::FullscreenChanged` once
+  at start and then only when the result changes. The engine stores the result and
+  publishes it as `DockState.fullscreen`, and the UI applies it. There is no separate
+  event for it, and nothing polls.

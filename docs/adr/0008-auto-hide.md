@@ -67,3 +67,34 @@ work area.
   global shortcut and the tray toggle still show it.
 - The reveal itself needs no IPC beyond the hit region and the content size
   the UI reports.
+
+## Fullscreen
+
+A fullscreen app (a game, a browser after F11, a video in fullscreen, a
+slideshow) must have the screen to itself, whatever the auto-hide mode, the
+way the stock taskbar hides for a "rude" window. The platform decides
+what is fullscreen. The events thread checks the foreground window
+(`rules::fullscreen`) 150 ms after a foreground change, a move of the
+foreground window or a display change. The window is fullscreen when the
+shell's `SHQueryUserNotificationState` returns `QUNS_BUSY`,
+`QUNS_RUNNING_D3D_FULL_SCREEN` or `QUNS_PRESENTATION_MODE`, or when its
+frame covers its monitor's full bounds and it is not minimised, not
+maximised, not a shell surface and not one of Stem's windows. The thread
+emits `PlatformEvent::FullscreenChanged` when the result changes. The
+engine stores it as `DockState.fullscreen`; there is no separate `dock://visibility`
+event. A maximised window is excluded on purpose: with the stock taskbar
+auto-hidden, the work area is the whole monitor, and every maximised
+window would otherwise count.
+
+In the UI the same machine takes one more event, `fullscreen`. While it is
+set, the dock behaves as if the mode were `always` with no delay: it goes
+out at once with the pointer away, stays up while the pointer is over it,
+and goes out the moment the pointer leaves, through `pending` and a 0 ms
+timer, so a strip-leave and a panel-enter in one dispatch cannot hide it.
+The reveal strip, `show` and the holds work as in the other modes, so the user can still
+reach the dock over a fullscreen app, and `attention` still reveals. When
+fullscreen ends, a mode other than `always` shows the dock again at once;
+`always` resumes its own delay, and a hidden dock stays hidden. `enabled`
+means "the mode is `always`". `autoHideActive` (the mode is `always`, or
+fullscreen) is what the strip and the hit region follow. No setting turns this off: like the
+stock taskbar's, it is always on.

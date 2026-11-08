@@ -9,8 +9,8 @@ the records in `docs/adr/` give the reasons for the main decisions.
 
 - [layers.md](layers.md): the layers of the code, what each crate depends on and how it
   is tested.
-- [data-flow.md](data-flow.md): how events from Windows reach the UI and how a click
-  reaches Windows.
+- [data-flow.md](data-flow.md): how events from Windows reach the UI, how a click reaches
+  Windows, and which facts about the screen the engine publishes.
 - [threads.md](threads.md): every thread Stem starts, what runs on it, and the rules for
   which work runs where.
 - [identity.md](identity.md): how windows and pins are grouped into apps, and how an app
@@ -19,7 +19,8 @@ the records in `docs/adr/` give the reasons for the main decisions.
 - [dock-window.md](dock-window.md): the dock's native window, its flags and focus,
   click-through outside the panel and how it stays topmost.
 - [dock-placement.md](dock-placement.md): where the dock window is placed.
-- [auto-hide.md](auto-hide.md): how the dock hides its panel and brings it back.
+- [auto-hide.md](auto-hide.md): how the dock hides its panel and brings it back, and its
+  behaviour over a fullscreen app.
 - [theme.md](theme.md): how the dock and the settings window follow the theme.
 - [dock-items.md](dock-items.md): the fixed items and the attention cue.
 - [file-drops.md](file-drops.md): files dragged from Explorer onto the dock, pinned or
