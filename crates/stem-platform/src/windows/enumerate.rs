@@ -5,7 +5,9 @@
 //!   stock taskbar would show, as [`RawWindow`] facts, in Z order (top first).
 //! - [`query_window`] returns `Ok(None)` for windows that do not qualify;
 //!   [`query_window_checked`] also says whether such a window may qualify
-//!   later (`rules::recheck`, used by the events thread's re-checks).
+//!   later (`rules::recheck`, used by the events thread's re-checks);
+//!   [`query_moved_window`] is the same for a window that moved, with its
+//!   desktop answer supplied instead of asked.
 //! - [`is_taskbar_candidate`] is the pure eligibility rule (visible, not a
 //!   tool window, no owner unless `WS_EX_APPWINDOW`, not cloaked unless we
 //!   want to report it, has a title or is a known UWP frame, ...).
@@ -71,10 +73,13 @@
 //!   `IVirtualDesktopManager::IsWindowOnCurrentVirtualDesktop`
 //!   (`windows::virtual_desktop`), asked for every eligible window through
 //!   the calling thread's manager: the events thread has one; a thread
-//!   without one, or a window the shell refuses, gives `None`, and the
-//!   engine falls back to the cloak state. A full enumeration renews the
-//!   manager; a single query reuses it. Eligibility itself does not look
-//!   at it: a shell-cloaked window stays listed, `is_cloaked = true`.
+//!   without one, a window the shell refuses, or a query during the pause
+//!   that follows a slow call gives `None`, and the engine falls back to
+//!   the cloak state. A full enumeration renews the manager; a single query
+//!   reuses it; [`query_moved_window`] (the move path) does not ask at all
+//!   and reuses the answer last reported about the window, since a move
+//!   does not change the desktop. Eligibility itself does not look at it: a
+//!   shell-cloaked window stays listed, `is_cloaked = true`.
 
 use std::path::PathBuf;
 use std::sync::{Mutex, PoisonError};
@@ -151,11 +156,7 @@ pub fn enumerate_taskbar_windows() -> PlatformResult<Vec<RawWindow>> {
         "enumerated {} taskbar windows out of {} top-level windows; virtual desktop facts {}",
         out.len(),
         handles.len(),
-        if ctx.desktops.is_available() {
-            "asked"
-        } else {
-            "unavailable on this thread"
-        }
+        ctx.desktop_facts()
     );
     Ok(out)
 }
@@ -169,6 +170,18 @@ pub fn query_window(hwnd: HWND) -> PlatformResult<Option<RawWindow>> {
 /// `Check::Final` or `Check::Gone`, never `Check::Eligible`.
 pub fn query_window_checked(hwnd: HWND) -> Result<RawWindow, Check> {
     QueryContext::new().query_checked(hwnd)
+}
+
+/// [`query_window_checked`] for a window that moved or resized (the events
+/// thread's move path): `on_current_desktop` is the answer last
+/// reported about the window and goes into the result as it is; the shell
+/// is not asked (a move does not change the desktop, and the call
+/// into Explorer has no timeout).
+pub fn query_moved_window(
+    hwnd: HWND,
+    on_current_desktop: Option<bool>,
+) -> Result<RawWindow, Check> {
+    QueryContext::with(|| DesktopSource::Known(on_current_desktop)).query_checked(hwnd)
 }
 
 pub fn is_taskbar_candidate(hwnd: HWND) -> bool {
@@ -192,35 +205,61 @@ unsafe extern "system" fn collect_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
     BOOL(1)
 }
 
+/// Where a query takes `RawWindow::on_current_desktop` from.
+enum DesktopSource {
+    /// The shell, through the thread's manager.
+    Ask(virtual_desktop::DesktopQuery),
+    /// An answer the caller already has (the move path).
+    Known(Option<bool>),
+}
+
 /// Per-call context: our own pid, a COM apartment for the property-store
 /// read, and the thread's virtual desktop manager, initialised once
 /// per enumeration instead of once per window. Field order is drop order:
 /// the manager reference goes before the apartment.
 struct QueryContext {
     own_pid: u32,
-    desktops: virtual_desktop::DesktopQuery,
+    desktop: DesktopSource,
     _com: util::ComApartment,
 }
 
 impl QueryContext {
     /// For one window: the thread's manager as it is.
     fn new() -> Self {
-        Self::with(virtual_desktop::DesktopQuery::for_this_thread)
+        Self::with(|| DesktopSource::Ask(virtual_desktop::DesktopQuery::for_this_thread()))
     }
 
     /// For a full enumeration: a fresh manager on a thread that has one.
     fn renewed() -> Self {
-        Self::with(virtual_desktop::DesktopQuery::renewed)
+        Self::with(|| DesktopSource::Ask(virtual_desktop::DesktopQuery::renewed()))
     }
 
-    fn with(desktops: fn() -> virtual_desktop::DesktopQuery) -> Self {
+    fn with(desktop: impl FnOnce() -> DesktopSource) -> Self {
         // The apartment first: the manager is created inside it.
         let com = util::ComApartment::sta();
         Self {
             // SAFETY: GetCurrentProcessId has no preconditions.
             own_pid: unsafe { GetCurrentProcessId() },
-            desktops: desktops(),
+            desktop: desktop(),
             _com: com,
+        }
+    }
+
+    /// The desktop answer for `hwnd` (see [`DesktopSource`]).
+    fn on_current_desktop(&self, hwnd: HWND) -> Option<bool> {
+        match &self.desktop {
+            DesktopSource::Ask(query) => query.is_window_on_current_desktop(hwnd),
+            DesktopSource::Known(answer) => *answer,
+        }
+    }
+
+    /// How this context gets its desktop facts, for the enumeration's log line.
+    fn desktop_facts(&self) -> &'static str {
+        match &self.desktop {
+            DesktopSource::Ask(query) if !query.is_available() => "unavailable on this thread",
+            DesktopSource::Ask(_) if virtual_desktop::is_paused() => "paused after a slow call",
+            DesktopSource::Ask(_) => "asked",
+            DesktopSource::Known(_) => "reused",
         }
     }
 
@@ -265,7 +304,7 @@ impl QueryContext {
             is_visible: probe.facts.is_visible,
             is_minimized: probe.is_minimized,
             is_cloaked,
-            on_current_desktop: self.desktops.is_window_on_current_desktop(hwnd),
+            on_current_desktop: self.on_current_desktop(hwnd),
             monitor: monitors::monitor_for_window(hwnd),
             rect: window_frame(hwnd),
             icon_key: Some(hwnd_icon_key(id.0, probe.facts.process_id)),

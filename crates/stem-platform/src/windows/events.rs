@@ -34,7 +34,9 @@
 //!   (`rules::events::location_change_tracked`) and posts. The loop collects
 //!   the windows it already tracks (`known`) into a small set and, once per
 //!   [`LOCATION_SETTLE`] (150 ms, a one-shot [`ThreadTimer`] armed by the
-//!   first report of a burst), re-queries each of them and emits
+//!   first report of a burst), re-queries each of them
+//!   (`enumerate::query_moved_window`, which reuses the desktop answer
+//!   last reported instead of asking the shell) and emits
 //!   `WindowUpdated` only when its facts differ from the last report (the
 //!   frame included), so a window being dragged costs the engine at most
 //!   about seven updates a second and a window that is not tracked costs
@@ -54,11 +56,15 @@
 //!   window's monitor, so a fullscreen window that changes monitor
 //!   is a change too. `info` on each change (`fullscreen on: <class>
 //!   <title> on <monitor>` / `fullscreen off`).
-//! - Virtual desktops: every query fills
+//! - Virtual desktops: every query but the move path's fills
 //!   `RawWindow::on_current_desktop` from the shell's
 //!   `IVirtualDesktopManager` (`windows::virtual_desktop`), whose
 //!   per-thread instance this thread enables in `setup`, inside its COM
-//!   apartment, and releases before it. A desktop switch has no event of
+//!   apartment, and releases before it; the move path keeps the answer last
+//!   reported (a move does not change the desktop). The call has no
+//!   timeout: a slow one pauses the asking for 30 s (`None` meanwhile), a
+//!   hung one blocks this thread until Explorer answers (see
+//!   `windows::virtual_desktop`). A desktop switch has no event of
 //!   its own: its signature is the shell cloaking and uncloaking top-level
 //!   windows in a burst, and each of those events already re-queries its
 //!   window. When two of them arrive within 100 ms
@@ -1076,10 +1082,17 @@ impl ThreadState {
     /// The query behind [`Self::query_and_report`] and the move path:
     /// with `only_changes` a `WindowUpdated` goes out only when the
     /// facts differ from the last report, so a window dragged around costs
-    /// the engine nothing while its frame is unchanged between two flushes.
+    /// the engine nothing while its frame is unchanged between two flushes,
+    /// and a tracked window keeps the desktop answer last reported instead
+    /// of asking the shell again (a move does not change the
+    /// desktop, and the shell's call has no timeout).
     fn query_window(&mut self, hwnd: HWND, only_changes: bool) -> (Check, Report) {
         let id = util::window_id(hwnd);
-        let (check, report) = match enumerate::query_window_checked(hwnd) {
+        let queried = match self.known.get(&id).filter(|_| only_changes) {
+            Some(last) => enumerate::query_moved_window(hwnd, last.on_current_desktop),
+            None => enumerate::query_window_checked(hwnd),
+        };
+        let (check, report) = match queried {
             Ok(raw) => (Check::Eligible, self.report_queried(id, raw, only_changes)),
             Err(check) => {
                 if only_changes {

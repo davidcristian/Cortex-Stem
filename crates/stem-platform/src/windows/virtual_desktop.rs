@@ -39,21 +39,47 @@
 //! gets `None` for every window: the facts it needs do not include this
 //! one, and the engine's fallback covers the rest.
 //!
-//! The per-window call is made on every query (it is one bounded COM call,
-//! and an `HWND` is reused once its window is destroyed), but a refusal is
-//! logged at debug once per window (`rules::events::DesktopQueryFailures`,
-//! shared by every thread like `rules::process_access`) and at trace after
-//! that; a later success forgets the refusal.
+//! The per-window call is made on every query that needs it (an `HWND` is
+//! reused once its window is destroyed, so an old answer cannot be kept
+//! for good), except the events thread's move path: a window that
+//! moves does not change desktop (a move to another desktop is a cloak
+//! event, which asks), so `enumerate::query_moved_window` reuses the
+//! answer last reported about it and the shell is not asked at all while a
+//! window is dragged. A refusal is logged at debug once per window
+//! (`rules::events::DesktopQueryFailures`, shared by every thread like
+//! `rules::process_access`) and at trace after that; a later success
+//! forgets the refusal.
+//!
+//! # Not bounded, only paused
+//!
+//! `IsWindowOnCurrentVirtualDesktop` is a COM call into Explorer and COM
+//! offers no timeout for it: a call that Explorer does not answer blocks
+//! the calling thread (the events thread) until Explorer answers or exits.
+//! What is bounded is the cost of a *slow* Explorer: each call is timed
+//! (`Instant` around it), and one that took longer than 200 ms stops the
+//! calls for the next 30 s (`rules::backoff::SlowCallBackoff`, shared by
+//! every thread): every answer is then `None`, so the engine falls back to
+//! the cloak state, and the first query after the pause asks again. The
+//! first pause is logged at warn (`IsWindowOnCurrentVirtualDesktop took …;
+//! not asking for 30 s`), later ones at debug, the end of each at debug
+//! (`asking the shell again`). So a slow Explorer costs at most one slow
+//! call per 30 s; a hung one still blocks the events thread once, for as
+//! long as it hangs. The manager's creation (`CoCreateInstance`, at each
+//! snapshot and after a failed creation) is neither timed nor paused.
+//! Running the calls on a helper thread with a timeout would bound the
+//! hung case too.
 
 use std::cell::RefCell;
 use std::marker::PhantomData;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::{CLSCTX_ALL, CoCreateInstance};
 use windows::Win32::UI::Shell::{IVirtualDesktopManager, VirtualDesktopManager};
 
 use super::util;
+use crate::rules::backoff::{Gate, SlowCallBackoff, Verdict};
 use crate::rules::events::DesktopQueryFailures;
 
 /// The calling thread's manager slot. See the module documentation.
@@ -75,6 +101,13 @@ thread_local! {
 /// Windows whose refusal has been logged, shared by every thread
 /// that queries windows so the line appears once per window.
 static FAILURES: Mutex<DesktopQueryFailures> = Mutex::new(DesktopQueryFailures::new());
+
+/// The pause after a slow call (see *Not bounded, only paused*), shared by
+/// every thread: a slow Explorer is slow for all of them.
+static BACKOFF: Mutex<SlowCallBackoff> = Mutex::new(SlowCallBackoff::new());
+
+/// The origin of [`BACKOFF`]'s millisecond clock.
+static CLOCK: OnceLock<Instant> = OnceLock::new();
 
 /// Keeps the calling thread's manager slot open while alive. Create it on a
 /// thread that holds a COM apartment (`util::ComApartment`) for longer than
@@ -180,15 +213,30 @@ impl DesktopQuery {
     }
 
     /// `Some(true)` / `Some(false)` from the shell; `None` without a manager
-    /// on this thread or when the shell refuses the window (logged once per
-    /// window, see the module documentation).
+    /// on this thread, while a pause after a slow call runs, or when the
+    /// shell refuses the window (logged once per window, see the module
+    /// documentation).
     pub fn is_window_on_current_desktop(&self, hwnd: HWND) -> Option<bool> {
         let manager = self.manager.as_ref()?;
         let id = util::window_id(hwnd).0;
+        match backoff().gate(now_ms()) {
+            Gate::Call => {}
+            Gate::Resume => log::debug!(
+                "the pause after a slow IsWindowOnCurrentVirtualDesktop is over; asking the \
+                 shell again"
+            ),
+            Gate::Skip => {
+                log::trace!("window {id:#x}: not asking the shell (paused after a slow call)");
+                return None;
+            }
+        }
+        let started = Instant::now();
         // SAFETY: `manager` is a live interface created in this thread's
         // apartment; the call accepts any handle value and reports a dead
         // or refused one through the Result.
-        match unsafe { manager.IsWindowOnCurrentVirtualDesktop(hwnd) } {
+        let answer = unsafe { manager.IsWindowOnCurrentVirtualDesktop(hwnd) };
+        note_duration(id, started.elapsed());
+        match answer {
             Ok(on_current) => {
                 failures().clear(id);
                 Some(on_current.as_bool())
@@ -231,4 +279,42 @@ fn create_manager() -> windows::core::Result<IVirtualDesktopManager> {
 /// nothing here can cause) still yields the set.
 fn failures() -> MutexGuard<'static, DesktopQueryFailures> {
     FAILURES.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The shared pause; a poisoned lock still yields it.
+fn backoff() -> MutexGuard<'static, SlowCallBackoff> {
+    BACKOFF.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Whether the shell is not being asked right now, after a slow call (for
+/// the enumeration's log line).
+pub fn is_paused() -> bool {
+    backoff().is_paused(now_ms())
+}
+
+/// Milliseconds since the first use of [`BACKOFF`]'s clock.
+fn now_ms() -> u64 {
+    let elapsed = CLOCK.get_or_init(Instant::now).elapsed();
+    u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+}
+
+/// Feed one call's duration to the pause and log a pause that it starts.
+fn note_duration(id: u64, elapsed: Duration) {
+    let elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+    let Verdict::Paused { first, .. } = backoff().record(now_ms(), elapsed_ms) else {
+        return;
+    };
+    let pause = Duration::from_millis(SlowCallBackoff::PAUSE_MS);
+    if first {
+        log::warn!(
+            "IsWindowOnCurrentVirtualDesktop took {elapsed:?} for window {id:#x} (Explorer is \
+             slow to answer); not asking for {pause:?}: windows on other desktops are told \
+             apart by their cloak state meanwhile (logged once at warn; later pauses at debug)"
+        );
+    } else {
+        log::debug!(
+            "IsWindowOnCurrentVirtualDesktop took {elapsed:?} for window {id:#x}; not asking \
+             for {pause:?}"
+        );
+    }
 }
