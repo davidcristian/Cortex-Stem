@@ -49,6 +49,7 @@
   } from '$lib/dock/geometry';
   import { iconSources, type IconSources } from '$lib/dock/icon-size';
   import { gapTransition, itemTransition } from '$lib/dock/item-transition';
+  import { nextFocusIndex, successorKey, tabStopKey } from '$lib/dock/keyboard';
   import { computeScales, maxGrowth, type MagnifyParams } from '$lib/dock/magnify';
   import { dockFactsFor, dockMonitor, itemsForMonitor, monitorFromSearch } from '$lib/dock/monitor';
   import {
@@ -855,6 +856,14 @@
       cancelDrag(true);
       return;
     }
+    // Otherwise Escape lets go of the focused item: its pill goes,
+    // and with auto-hide on the countdown starts.
+    const active = document.activeElement;
+    if (e.key === 'Escape' && active instanceof HTMLElement && panelEl?.contains(active)) {
+      e.preventDefault();
+      active.blur();
+      return;
+    }
     if (e.key === ',' && e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
       e.preventDefault();
       openSettings();
@@ -1579,6 +1588,125 @@
     untrack(checkLanding);
   });
 
+  // --- Keyboard -----------------------------------------------------------------
+  // The toolbar is one tab stop with a roving tabindex: the item the focus
+  // was on last has tabindex 0, every other one -1 (`tabStopKey`). Arrows,
+  // Home and End move the focus (`nextFocusIndex`, src/lib/dock/keyboard.ts,
+  // pure); Enter, Space and the menu keys are the item's own (DockItem). An
+  // item with keyboard focus (`:focus-visible`) shows its title pill as
+  // hover does, without magnifying, and holds auto-hide (`focus`). Left and
+  // middle clicks never focus an item (DockItem prevents their mouse down);
+  // a right-click may, but that focus is not `:focus-visible`, so it moves
+  // the tab stop and nothing else.
+  /** The item the focus was on last: the toolbar's tab stop while it is still there. */
+  let focusedKey = $state<string | null>(null);
+  /** The item that has keyboard focus (`:focus-visible`), or `null`. */
+  let keyboardKey = $state<string | null>(null);
+  const tabStop = $derived(tabStopKey(items, focusedKey));
+  /**
+   * The focused item's pill; the pointer's, a lifted icon and a file drag
+   * over the bin come first (one pill at a time).
+   */
+  const focusTooltipKey = $derived(
+    tooltipsEnabled && tooltipKey === null && liftedKey === null && dropTargetKey === null
+      ? keyboardKey
+      : null,
+  );
+
+  /** `target` is an item's slot in this panel (not a separator, not the panel itself). */
+  function itemSlotOf(target: EventTarget | null): HTMLElement | null {
+    if (
+      !(target instanceof HTMLElement) ||
+      target.dataset.key === undefined ||
+      target.dataset.kind === 'separator' ||
+      !panelEl?.contains(target)
+    ) {
+      return null;
+    }
+    return target;
+  }
+
+  function focusItem(key: string): void {
+    focusedKey = key;
+    slots.find((el) => el.dataset.key === key)?.focus();
+  }
+
+  function onpanelkeydown(e: KeyboardEvent): void {
+    if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || drag?.started) {
+      return;
+    }
+    const key = itemSlotOf(e.target)?.dataset.key;
+    const current = key === undefined ? -1 : items.findIndex((i) => i.key === key);
+    const next = nextFocusIndex(items, current, e.key);
+    if (next === null) {
+      return;
+    }
+    e.preventDefault();
+    focusItem(items[next]!.key);
+  }
+
+  function onpanelfocusin(e: FocusEvent): void {
+    const slot = itemSlotOf(e.target);
+    if (slot === null) {
+      return;
+    }
+    focusedKey = slot.dataset.key ?? null;
+    keyboardKey = slot.matches(':focus-visible') ? focusedKey : null;
+    autoHideSend({ type: 'hold', hold: 'focus', active: keyboardKey !== null });
+  }
+
+  function onpanelfocusout(e: FocusEvent): void {
+    if (itemSlotOf(e.relatedTarget) !== null) {
+      // On to another item: its `focusin` follows.
+      return;
+    }
+    const key = itemSlotOf(e.target)?.dataset.key;
+    if (key !== undefined && !items.some((i) => i.key === key)) {
+      // The item is being removed: the effect below moves the focus on.
+      return;
+    }
+    releaseKeyboardFocus();
+  }
+
+  function releaseKeyboardFocus(): void {
+    keyboardKey = null;
+    autoHideSend({ type: 'hold', hold: 'focus', active: false });
+  }
+
+  // The item with the focus left the dock (its app's last window closed):
+  // the focus moves on to its neighbour (`successorKey`), so the keyboard
+  // stays in the toolbar, and the tab stop goes with it. After the slots
+  // effect above, which has collected the new slots by then.
+  let renderedItems: readonly DockItemModel[] = [];
+  $effect(() => {
+    const now = items;
+    untrack(() => {
+      const before = renderedItems;
+      renderedItems = now;
+      const key = focusedKey;
+      if (key === null || now.some((i) => i.key === key)) {
+        return;
+      }
+      const active = document.activeElement;
+      const hadFocus =
+        keyboardKey === key || (active instanceof HTMLElement && active.dataset.key === key);
+      const next = successorKey(before, now, key);
+      focusedKey = next;
+      if (!hadFocus) {
+        return;
+      }
+      const el = next === null ? undefined : slots.find((s) => s.dataset.key === next);
+      if (el !== undefined) {
+        el.focus();
+        return;
+      }
+      if (active instanceof HTMLElement && panelEl?.contains(active)) {
+        active.blur();
+      }
+      releaseKeyboardFocus();
+    });
+  });
+
   // --- Lifecycle ------------------------------------------------------------------
   onMount(() => {
     const dark = window.matchMedia('(prefers-color-scheme: dark)');
@@ -1695,6 +1823,9 @@
       onpointerleave={onpanelpointerleave}
       ontransitionend={onpaneltransitionend}
       oncontextmenu={onpanelcontextmenu}
+      onkeydown={onpanelkeydown}
+      onfocusin={onpanelfocusin}
+      onfocusout={onpanelfocusout}
     >
       {#each items as item (item.key)}
         {#if dropGap !== null && dropGap.key === item.key && dropGap.side === 'before'}
@@ -1722,12 +1853,15 @@
               ? iconUrlAt(item.iconKey, iconSizes.magnified, previousIconSizes?.magnified)
               : null}
             {showDots}
-            tooltip={tooltipKey === item.key || (dropTargetKey === item.key && tooltipsEnabled)}
+            tooltip={tooltipKey === item.key ||
+              focusTooltipKey === item.key ||
+              (dropTargetKey === item.key && tooltipsEnabled)}
             dropTarget={dropTargetKey === item.key}
             bounce={bounceEnabled && store.bounceKey === item.key ? store.bounceSerial : 0}
             animate={itemMotion}
             enter={introsEnabled && item.key !== landedKey}
             lifted={liftedKey === item.key}
+            tabStop={tabStop === item.key}
             {onprimary}
             {onmiddle}
             {oncontext}

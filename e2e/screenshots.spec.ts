@@ -827,7 +827,8 @@ test.describe('dock in mock mode', () => {
     for (let i = 0; i < count; i += 1) {
       const button = buttons.nth(i);
       await expect(button).toHaveAttribute('aria-label', /\S/);
-      await expect(button).toHaveAttribute('tabindex', '0');
+      // One tab stop, the first item until the focus has been elsewhere.
+      await expect(button).toHaveAttribute('tabindex', i === 0 ? '0' : '-1');
     }
     await expect(page.locator('[role="separator"]')).toHaveCount(3);
 
@@ -1303,7 +1304,8 @@ test.describe('Start, Task View and Show Desktop', () => {
       const slot = page.locator(`.slot[data-kind="${kind}"]`);
       await expect(slot).toHaveAttribute('aria-label', title);
       await expect(slot).toHaveAttribute('data-icon', 'shell');
-      await expect(slot).toHaveAttribute('tabindex', '0');
+      // Start is the toolbar's one tab stop; the others are reached by arrow.
+      await expect(slot).toHaveAttribute('tabindex', kind === 'launcher' ? '0' : '-1');
       // The built-in vector art fills the icon box.
       await expect.poll(async () => (await slot.locator('svg').boundingBox())?.width).toBe(ICON);
     }
@@ -3106,6 +3108,356 @@ test.describe('one dock per monitor', () => {
       width: 900,
       height: 400,
     });
+    await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+  });
+});
+
+test.describe('keyboard navigation', () => {
+  const PANEL = '.dock-panel';
+  const ITEMS = `${PANEL} > [role="button"]`;
+  const FIREFOX = 'app:exe:c:/program files/mozilla firefox/firefox.exe';
+  const SPOTIFY = 'app:exe:c:/program files/spotify/spotify.exe';
+  const EXPLORER = 'app:exe:c:/windows/explorer.exe';
+  const EXPLORER_WINDOW = 1;
+  /** Long enough to tell "counting down" from "hidden" under Playwright's own latency. */
+  const DELAY = 600;
+  const SLIDE_MS = 200;
+
+  /** What `spyPrimaryClick` adds to the page. */
+  interface PrimarySpyWindow {
+    __dockMock: { primaryClick: (itemKey: string) => Promise<void> };
+    __primaryClicks: string[];
+  }
+
+  /** Record every `primaryClick` the dock makes (the mock itself records only its effect). */
+  function spyPrimaryClick(page: Page): Promise<void> {
+    return page.evaluate(() => {
+      const w = window as unknown as PrimarySpyWindow;
+      const mock = w.__dockMock;
+      const original = mock.primaryClick.bind(mock);
+      w.__primaryClicks = [];
+      mock.primaryClick = (itemKey: string): Promise<void> => {
+        w.__primaryClicks.push(itemKey);
+        return original(itemKey);
+      };
+    });
+  }
+
+  function primaryClicks(page: Page): Promise<string[]> {
+    return page.evaluate(() => [...(window as unknown as PrimarySpyWindow).__primaryClicks]);
+  }
+
+  /** Every `show_item_menu` request so far, oldest first. */
+  function itemMenus(page: Page): Promise<Array<{ itemKey: string; x: number; y: number }>> {
+    return page.evaluate(() =>
+      ((window as unknown as DemoWindow).__dockMock?.calls ?? [])
+        .filter((c) => c.type === 'showItemMenu')
+        .map((c) => ({ itemKey: c.itemKey as string, x: c.x as number, y: c.y as number })),
+    );
+  }
+
+  /** The focused item's key; `'panel'` for the panel itself; `null` when the focus is not in the dock. */
+  function focused(page: Page): Promise<string | null> {
+    return page.evaluate(() => {
+      const active = document.activeElement;
+      if (!(active instanceof HTMLElement) || active.closest('.dock-panel') === null) {
+        return null;
+      }
+      return active.dataset.key ?? 'panel';
+    });
+  }
+
+  /** Every item's key in toolbar order (no separators). */
+  function itemKeys(page: Page): Promise<string[]> {
+    return page
+      .locator(ITEMS)
+      .evaluateAll((els) => els.map((el) => (el as HTMLElement).dataset.key ?? ''));
+  }
+
+  /** The keys of the elements in the panel that Tab stops at. */
+  function tabStops(page: Page): Promise<string[]> {
+    return page
+      .locator(`${PANEL} [tabindex="0"]`)
+      .evaluateAll((els) => els.map((el) => (el as HTMLElement).dataset.key ?? 'panel'));
+  }
+
+  /** The slot of the item `key`. */
+  function slot(page: Page, key: string): Locator {
+    return page.locator(`${PANEL} > [data-key="${key}"]`);
+  }
+
+  /** Tab into the toolbar and arrow along to the item `key`. */
+  async function focusItem(page: Page, key: string): Promise<void> {
+    await page.keyboard.press('Tab');
+    const keys = await itemKeys(page);
+    expect(keys).toContain(key);
+    await page.keyboard.press('Home');
+    for (let i = 0; i < keys.length && (await focused(page)) !== key; i += 1) {
+      await page.keyboard.press('ArrowRight');
+    }
+    expect(await focused(page)).toBe(key);
+  }
+
+  test('Tab reaches the toolbar once; arrows, Home and End move the focus past separators; it comes back where it was', async ({
+    page,
+  }) => {
+    await openDock(page);
+    const toolbar = page.getByRole('toolbar', { name: 'Stem' });
+    await expect(toolbar).toHaveAttribute('aria-orientation', 'horizontal');
+    const separators = page.locator(`${PANEL} > [role="separator"]`);
+    await expect(separators).toHaveCount(3);
+    for (let i = 0; i < 3; i += 1) {
+      await expect(separators.nth(i)).toHaveAttribute('aria-orientation', 'vertical');
+      await expect(separators.nth(i)).not.toHaveAttribute('tabindex');
+    }
+    const keys = await itemKeys(page);
+    expect(keys).toHaveLength(9); // Start + 7 apps + Recycle Bin
+    const first = keys[0]!;
+    const last = keys.at(-1)!;
+    expect(first).toBe('fixed:launcher');
+
+    // One tab stop, the first item; Tab reaches it, and the next Tab leaves the dock.
+    expect(await tabStops(page)).toEqual([first]);
+    await page.keyboard.press('Tab');
+    expect(await focused(page)).toBe(first);
+    await page.keyboard.press('Tab');
+    expect(await focused(page)).toBeNull();
+    await page.keyboard.press('Shift+Tab');
+    expect(await focused(page)).toBe(first);
+
+    // ArrowRight visits every item once, never a separator, and stops at the end.
+    const right: Array<string | null> = [];
+    for (let i = 0; i < keys.length; i += 1) {
+      await page.keyboard.press('ArrowRight');
+      right.push(await focused(page));
+    }
+    expect(right).toEqual([...keys.slice(1), last]);
+    // ArrowLeft goes back the same way and stops at the start.
+    const left: Array<string | null> = [];
+    for (let i = 0; i < keys.length; i += 1) {
+      await page.keyboard.press('ArrowLeft');
+      left.push(await focused(page));
+    }
+    expect(left).toEqual([...keys.slice(0, -1).reverse(), first]);
+    // ArrowDown and ArrowUp do the same (for a dock on a side edge later).
+    await page.keyboard.press('ArrowDown');
+    expect(await focused(page)).toBe(keys[1]);
+    await page.keyboard.press('ArrowUp');
+    expect(await focused(page)).toBe(first);
+    // End and Home.
+    await page.keyboard.press('End');
+    expect(await focused(page)).toBe(last);
+    await page.keyboard.press('Home');
+    expect(await focused(page)).toBe(first);
+
+    // The tab stop follows the focus, and Tab out and back returns to it.
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('ArrowRight');
+    expect(await focused(page)).toBe(keys[2]);
+    expect(await tabStops(page)).toEqual([keys[2]]);
+    await page.keyboard.press('Tab');
+    expect(await focused(page)).toBeNull();
+    await page.keyboard.press('Shift+Tab');
+    expect(await focused(page)).toBe(keys[2]);
+    // Nothing was magnified on the way.
+    expect(await page.locator(`${PANEL} .slot[data-magnified]`).count()).toBe(0);
+  });
+
+  test('Enter and Space ask for the primary action; Shift+F10 and the menu key open the menu once, at the centre and top edge', async ({
+    page,
+  }) => {
+    await openDock(page);
+    await spyPrimaryClick(page);
+    await focusItem(page, FIREFOX);
+    await page.keyboard.press('Enter');
+    await expect.poll(() => primaryClicks(page)).toEqual([FIREFOX]);
+    await page.keyboard.press(' ');
+    await expect.poll(() => primaryClicks(page)).toEqual([FIREFOX, FIREFOX]);
+    expect(await focused(page)).toBe(FIREFOX);
+
+    // Shift+F10: one native menu request for the item, at its slot's
+    // horizontal centre and top edge (CSS px of the viewport).
+    const box = (await slot(page, FIREFOX).boundingBox())!;
+    await page.keyboard.press('Shift+F10');
+    await expect.poll(() => callsOfType(page, 'showItemMenu')).toBe(1);
+    const [request] = await itemMenus(page);
+    expect(request!.itemKey).toBe(FIREFOX);
+    expect(request!.x).toBeCloseTo(box.x + box.width / 2, 1);
+    expect(request!.y).toBeCloseTo(box.y, 1);
+    expect(request!.x).toBeGreaterThan(box.x);
+    expect(request!.x).toBeLessThan(box.x + box.width);
+    expect(request!.y).toBeGreaterThanOrEqual(box.y - 0.5);
+    expect(request!.y).toBeLessThan(box.y + box.height);
+    // The browser's own keyboard `contextmenu` did not ask a second time.
+    await page.waitForTimeout(200);
+    expect(await callsOfType(page, 'showItemMenu')).toBe(1);
+
+    // The context menu key: the same (on Windows Chromium sends its own
+    // `contextmenu` on the key's release, which the item swallows).
+    await page.keyboard.press('ContextMenu');
+    await expect.poll(() => callsOfType(page, 'showItemMenu')).toBe(2);
+    await page.waitForTimeout(200);
+    const menus = await itemMenus(page);
+    expect(menus).toHaveLength(2);
+    expect(menus[1]).toEqual(request);
+    expect(await callsOfType(page, 'showDockMenu')).toBe(0);
+    expect(await focused(page)).toBe(FIREFOX);
+  });
+
+  test('the focused item shows its title pill and focus ring without magnifying; the pointer pill wins; Escape lets go', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openDock(page);
+    await page.mouse.move(640, 10);
+    await focusItem(page, FIREFOX);
+    const firefox = slot(page, FIREFOX);
+    const pill = page.locator('.tooltip');
+    await expect(pill).toHaveCount(1);
+    await expect(firefox.locator('.tooltip')).toBeVisible();
+    const title = (await firefox.locator('.tooltip').textContent()) ?? '';
+    expect(title.length).toBeGreaterThan(0);
+    expect((await firefox.getAttribute('aria-label'))?.startsWith(`${title},`)).toBe(true);
+    // The focus ring is on the icon; nothing is magnified.
+    expect(await computed(firefox.locator('.icon'), 'outline-style')).toBe('solid');
+    expect(await firefox.evaluate((el) => el.style.getPropertyValue('--scale') || '1')).toBe('1');
+    await expect(firefox).not.toHaveAttribute('data-magnified');
+    await page.screenshot({ path: `${OUT}/dock-keyboard-focus.png` });
+
+    // The pill follows the focus.
+    await page.keyboard.press('ArrowRight');
+    const next = (await focused(page))!;
+    expect(next).not.toBe(FIREFOX);
+    await expect(slot(page, next).locator('.tooltip')).toBeVisible();
+    await expect(pill).toHaveCount(1);
+
+    // The pointer over another item: its pill replaces the focused one's;
+    // the pointer gone, the focused item's pill is back.
+    const keys = await itemKeys(page);
+    const hovered = keys[keys.indexOf(next) + 2]!;
+    await slot(page, hovered).hover();
+    await expect(slot(page, hovered).locator('.tooltip')).toBeVisible();
+    await expect(pill).toHaveCount(1);
+    await page.mouse.move(640, 10);
+    await expect(slot(page, next).locator('.tooltip')).toBeVisible();
+    await expect(pill).toHaveCount(1);
+
+    // Escape lets go of the item: no focus, no pill; the tab stop stays.
+    await page.keyboard.press('Escape');
+    expect(await focused(page)).toBeNull();
+    await expect(pill).toHaveCount(0);
+    expect(await tabStops(page)).toEqual([next]);
+
+    // With the title pills turned off, focus shows none either.
+    // (After the blur Chromium resumes from the item: Tab goes past it and
+    // out of the page, Shift+Tab comes back to the tab stop.)
+    await patchSettings(page, { appearance: { tooltips: false } });
+    await page.keyboard.press('Tab');
+    expect(await focused(page)).toBeNull();
+    await page.keyboard.press('Shift+Tab');
+    expect(await focused(page)).toBe(next);
+    await page.waitForTimeout(150);
+    await expect(pill).toHaveCount(0);
+  });
+
+  test('when the focused item leaves the dock the focus moves on to its neighbour, and lets go as usual', async ({
+    page,
+  }) => {
+    // With motion the leaving slot lingers for its animation; without, it
+    // goes at once (and Chromium may blur it on the way out).
+    for (const reducedMotion of ['no-preference', 'reduce'] as const) {
+      await page.emulateMedia({ reducedMotion });
+      await openDock(page);
+      await page.mouse.move(640, 10);
+      const keys = await itemKeys(page);
+      const neighbour = keys[keys.indexOf(CODE_KEY) + 1]!;
+      await focusItem(page, CODE_KEY);
+      // Code's only window closes: the (unpinned) item goes.
+      await page.evaluate((id) => {
+        (window as unknown as DemoWindow).__dockMock?.pushWindowRemoved(id);
+      }, CODE_WINDOW_ID);
+      await expect(
+        page.locator(`${PANEL} > [data-key="${CODE_KEY}"]:not([data-leaving])`),
+      ).toHaveCount(0);
+      await expect.poll(() => focused(page)).toBe(neighbour);
+      await expect(slot(page, CODE_KEY)).toHaveCount(0);
+      expect(await tabStops(page)).toEqual([neighbour]);
+      await expect(slot(page, neighbour).locator('.tooltip')).toBeVisible();
+      // The hold moved with the focus and goes with it.
+      await patchSettings(page, { autoHide: { mode: 'always', delayMs: 0 } });
+      await page.waitForTimeout(SLIDE_MS);
+      await expect(page.locator(PANEL)).toHaveAttribute('data-autohide', 'shown');
+      await page.keyboard.press('Escape');
+      await expect(page.locator(PANEL)).toHaveAttribute('data-autohide', 'hidden');
+    }
+  });
+
+  test("labels say when all of an app's windows are minimised and when it needs attention", async ({
+    page,
+  }) => {
+    await openDock(page);
+    // Spotify's only window is minimised in the demo.
+    await expect(slot(page, SPOTIFY)).toHaveAttribute('aria-label', /, 1 window, minimised$/);
+    // Firefox has two windows, neither minimised, and is the active app.
+    await expect(slot(page, FIREFOX)).toHaveAttribute('aria-label', /, 2 windows, active$/);
+    await flash(page, EXPLORER_WINDOW);
+    await expect(slot(page, EXPLORER)).toHaveAttribute('aria-label', /, needs attention$/);
+  });
+
+  test('with auto-hide always the dock stays up while an item has keyboard focus and hides after the delay once it leaves', async ({
+    page,
+  }) => {
+    await openDock(page);
+    const panel = page.locator(PANEL);
+    await page.mouse.move(640, 10);
+    await page.keyboard.press('Tab');
+    expect(await focused(page)).toBe('fixed:launcher');
+    await patchSettings(page, { autoHide: { mode: 'always', delayMs: DELAY } });
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+    await page.waitForTimeout(DELAY + SLIDE_MS + 200);
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+    // Moving between items keeps it up.
+    await page.keyboard.press('ArrowRight');
+    await page.waitForTimeout(DELAY + SLIDE_MS);
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+    await expect(panel).toBeVisible();
+
+    // Escape: the countdown starts, and the dock slides away after it.
+    await page.keyboard.press('Escape');
+    await expect(panel).toHaveAttribute('data-autohide', 'pending');
+    await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+    await expect(panel).toBeHidden();
+    // Hidden, the panel takes no focus, and Tab does not bring it back.
+    await page.keyboard.press('Tab');
+    expect(await focused(page)).toBeNull();
+    await page.waitForTimeout(SLIDE_MS);
+    await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+
+    // Revealed from the bottom edge and focused again, it stays when the
+    // pointer leaves; Tab out of the dock starts the countdown.
+    const strip = (await page.locator('.reveal-strip').boundingBox())!;
+    await page.mouse.move(strip.x + strip.width / 2, strip.y + 1);
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+    await expect(panel).toBeVisible();
+    await page.keyboard.press('Shift+Tab');
+    expect(await focused(page)).not.toBeNull();
+    await page.mouse.move(640, 10);
+    await page.waitForTimeout(DELAY + SLIDE_MS + 200);
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+    await page.keyboard.press('Tab');
+    expect(await focused(page)).toBeNull();
+    await expect(panel).toHaveAttribute('data-autohide', 'pending');
+    await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+
+    // A right-click is no keyboard focus, whatever it does to the focus:
+    // its menu closed and the pointer gone, the dock hides as before, with
+    // no pill left behind.
+    await page.mouse.move(strip.x + strip.width / 2, strip.y + 1);
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+    await slot(page, FIREFOX).click({ button: 'right' });
+    await expect.poll(() => callsOfType(page, 'showItemMenu')).toBe(1);
+    await page.mouse.move(640, 10);
+    await expect(page.locator('.tooltip')).toHaveCount(0);
     await expect(panel).toHaveAttribute('data-autohide', 'hidden');
   });
 });

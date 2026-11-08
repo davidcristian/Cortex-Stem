@@ -25,8 +25,9 @@ fades instead.
 
 The dock does not hide while you drag one of its icons, while one of its
 menus is open, while an icon bounces for an app you started from the dock,
-or while a file is dragged over it. An app that requests attention brings a
-hidden dock back and keeps it on screen until you switch to that app.
+while a file is dragged over it, or while one of its icons has the keyboard
+focus. An app that requests attention brings a hidden dock back and keeps it
+on screen until you switch to that app.
 
 A fullscreen app (a game, a video in fullscreen, a browser after F11, a
 slideshow) hides the dock on its monitor in every mode. The dock hides at

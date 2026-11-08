@@ -44,6 +44,11 @@
     /** Being dragged to a new place: raised, shadowed, no dots. */
     lifted: boolean;
     /**
+     * The toolbar's one tab stop (a roving tabindex): `tabindex` 0
+     * for this item, -1 for the others. The dock moves it with the focus.
+     */
+    tabStop: boolean;
+    /**
      * A file drag points at this item and a drop would land on it
      * (the Recycle Bin): the icon grows a little, as under the pointer. A
      * transform only, so nothing reflows while the drag moves.
@@ -51,6 +56,11 @@
     dropTarget: boolean;
     onprimary: (item: DockItem) => void;
     onmiddle: (item: DockItem) => void;
+    /**
+     * Open the item's native menu at (`x`, `y`), CSS px of the viewport: the
+     * pointer for a right-click; the item's horizontal centre and top edge
+     * for Shift+F10 and the context menu key.
+     */
     oncontext: (item: DockItem, x: number, y: number) => void;
     onhover: (item: DockItem | null) => void;
     /** A pointer went down on the item (the dock may start a drag from it). */
@@ -69,6 +79,7 @@
     animate,
     enter,
     lifted,
+    tabStop,
     dropTarget,
     onprimary,
     onmiddle,
@@ -119,6 +130,9 @@
       parts.push('1 window');
     } else if (windowCount > 1) {
       parts.push(`${windowCount} windows`);
+    }
+    if (allMinimised) {
+      parts.push('minimised');
     }
     if (item.isActive) {
       parts.push('active');
@@ -174,10 +188,32 @@
     oncontext(item, e.clientX, e.clientY);
   }
 
-  function onkeydown(e: KeyboardEvent): void {
+  function onkeydown(e: KeyboardEvent & { currentTarget: HTMLElement }): void {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       onprimary(item);
+      return;
+    }
+    // The keyboard's way to the menu: Shift+F10 or the context menu
+    // key, at the slot's horizontal centre and top edge (there is no pointer
+    // position), so a menu that has to open upwards near the bottom of the
+    // screen sits just above the icon instead of over it. `preventDefault`
+    // keeps Chromium from also sending its own `contextmenu` for Shift+F10
+    // (it does so for an unhandled key down).
+    const shiftF10 = e.key === 'F10' && e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey;
+    if (shiftF10 || e.key === 'ContextMenu') {
+      e.preventDefault();
+      const rect = e.currentTarget.getBoundingClientRect();
+      oncontext(item, rect.left + rect.width / 2, rect.top);
+    }
+  }
+
+  function onkeyup(e: KeyboardEvent): void {
+    // On Windows Chromium sends the context menu key's `contextmenu` on the
+    // key's release, unless the release is handled: the menu is already open
+    // from the key down, and must not be asked for twice.
+    if (e.key === 'ContextMenu') {
+      e.preventDefault();
     }
   }
 </script>
@@ -190,7 +226,7 @@
 <div
   class="slot"
   role="button"
-  tabindex="0"
+  tabindex={tabStop ? 0 : -1}
   aria-label={label}
   aria-pressed={item.isActive ? 'true' : undefined}
   data-key={item.key}
@@ -210,6 +246,7 @@
   {onmousedown}
   {oncontextmenu}
   {onkeydown}
+  {onkeyup}
   onpointerenter={() => onhover(item)}
   onpointerleave={() => onhover(null)}
 >
