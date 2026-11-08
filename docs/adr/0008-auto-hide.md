@@ -90,7 +90,9 @@ set, the dock behaves as if the mode were `always` with no delay: it goes
 out at once with the pointer away, stays up while the pointer is over it,
 and goes out the moment the pointer leaves, through `pending` and a 0 ms
 timer, so a strip-leave and a panel-enter in one dispatch cannot hide it.
-The reveal strip, `show` and the holds work as in the other modes, so the user can still
+On screen the strip fills the whole margin under the panel, so no gap
+between the two counts as away on the pointer's way up. The reveal strip,
+`show` and the holds work as in the other modes, so the user can still
 reach the dock over a fullscreen app, and `attention` still reveals. When
 fullscreen ends, a mode other than `always` shows the dock again at once;
 `always` resumes its own delay, and a hidden dock stays hidden. `enabled`
@@ -98,6 +100,37 @@ means "the mode is `always`". `autoHideActive` (the mode is `always`, or
 fullscreen, or the mode is `whenOverlapped` and a window overlaps) is what
 the strip and the hit region follow. No setting turns this off: like the
 stock taskbar's, it is always on.
+
+Fullscreen above a visible stock taskbar gets no strip. The dock window
+sits on the work area's bottom edge, which with the stock taskbar visible (the
+default) is about 48 px above the screen's bottom edge. A fullscreen app
+covers the taskbar too, so a strip there would be a line across the
+fullscreen picture, and every pointer crossing it would flash the dock over
+the video. So there is no strip, and the hidden dock reports no clickable
+area, while both of these hold:
+
+- only fullscreen makes the machine active: the mode is not `always`,
+  and under `whenOverlapped` no window overlaps the dock;
+- this dock's monitor (from `get_monitors` / `dock://monitors`, matched by
+  the page's own monitor) has a work area that stops short of its bounds on
+  the bottom edge
+  (`workArea.y + workArea.height < bounds.y + bounds.height`).
+
+No clickable area means a 0 × 0 rectangle at the viewport's origin as both
+`panel` and `envelope` ([`docs/ipc/hit-region.md`](../ipc/hit-region.md)
+rejects only negative sizes, and a rectangle with no area contains no
+point), so the window is click-through everywhere. Only `show` (the tray or the toggle shortcut,
+`dock://show`) and `attention` bring the dock back; once shown, it reports
+its plain region. With the taskbar auto-hidden (Windows' own setting, or
+*Hide the Windows taskbar*) the work area reaches the screen's edge and the
+strip works as above. The mode `always` and an overlap keep their strip on
+the work area's edge, as the Consequences above describe.
+
+The machine also clears its pointer flag (`pointerInside`) whenever
+auto-hide stops applying: `strip` and `show` set it without the pointer
+being over the panel, and a removed strip sends no `pointerleave`. The page
+reads the panel's `:hover` again when auto-hide comes back on, so a dock
+shown on request during one fullscreen still hides at the next.
 
 ## When overlapped
 
