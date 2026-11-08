@@ -302,7 +302,7 @@ impl DockEngine {
             let listed = self.windows_on_dock(app_id, dock);
             item.windows.retain(|w| listed.contains(&w.id));
             item.is_active = item.windows.iter().any(|w| w.is_active);
-            item.needs_attention &= !item.windows.is_empty();
+            item.needs_attention = item.windows.iter().any(|w| w.needs_attention);
         }
         Some(item)
     }
@@ -2565,10 +2565,11 @@ mod tests {
         assert!(!item.is_active);
         assert!(item.needs_attention);
         assert_eq!(item.title, "A");
-        // The primary's: A only, active.
+        // The primary's: A only, active, and no attention: only B flashed.
         let item = engine.dock_item(NOTEPAD_KEY, DOCK).unwrap();
         assert_eq!(ids(&item.windows), vec![1]);
         assert!(item.is_active);
+        assert!(!item.needs_attention);
 
         // A dock that lists none of the windows keeps the item, without
         // windows, active state or attention.
