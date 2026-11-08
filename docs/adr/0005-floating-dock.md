@@ -17,8 +17,8 @@ the stock taskbar) is a different product with different layout rules
   the window, and the UI centres the panel in it, so items animating in and
   out never resize the window.
 - No AppBar reservation by default; the dock overlays other windows.
-  Reservation (`system.reserveScreenSpace`) and hiding the stock taskbar
-  are planned as opt-in settings for M4.
+  Reservation (`system.reserveScreenSpace`) is planned as an opt-in setting
+  for M4. Hiding the stock taskbar (`system.hideWindowsTaskbar`) is opt-in.
 - Visual language: translucent rounded panel, 1 px hairline border, soft
   shadow, icons with a running-indicator dot, separators between groups,
   bounce on launch, a tooltip above the hovered icon.

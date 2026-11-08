@@ -31,6 +31,19 @@ worker:
   entry. It is compared with `is_enabled()` and written only when they
   differ, one sync at a time on Tauri's blocking pool. The mock platform
   leaves it alone.
+- `system.hideWindowsTaskbar` (`taskbar.rs`): Windows' own *Automatically
+  hide the taskbar* setting, through
+  `SHAppBarMessage(ABM_SETSTATE, ABS_AUTOHIDE)`. Stem never hides
+  `Shell_TrayWnd`, so the change is reversible and still applies after an
+  Explorer restart. Windows persists
+  the setting, so the state the user had is kept in a marker file,
+  `taskbar.json` under `%LOCALAPPDATA%\dev.davidcristian.stem\`. The marker
+  is written before the first change and deleted after the restore. A
+  marker found at start means the previous run crashed, and its saved state
+  is still the one to restore. The decision is the pure
+  `stem_platform::rules::taskbar::plan`. The syncs run like autostart's. The
+  restore at `RunEvent::Exit` runs inline because the process is ending.
+  The mock platform keeps the marker in memory.
 - `behavior.toggleShortcut` (`shortcut.rs`):
   `tauri-plugin-global-shortcut`, which registers with `RegisterHotKey` on a
   hidden main-thread window and makes callers wait for the main thread. So

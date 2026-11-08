@@ -5,8 +5,8 @@
 //! - forwards `ServiceEvent`s as Tauri events (`docs/ipc/events.md`),
 //! - wires plugins (single-instance, logging, autostart, global shortcut)
 //!   and the tray icon, and applies the settings that belong to the shell
-//!   (`autostart`, `shortcut`, click-through in `windows`, the tray's check
-//!   mark).
+//!   (`autostart`, `taskbar`, `shortcut`, click-through in `windows`, the
+//!   tray's check mark).
 //!
 //! Lifecycle: this is a tray application. The dock window ignores close
 //! requests, closing the settings window only destroys that window, and an
@@ -18,6 +18,7 @@ mod autostart;
 mod commands;
 mod menus;
 mod shortcut;
+mod taskbar;
 mod tray;
 mod windows;
 
@@ -94,6 +95,7 @@ pub fn run() {
             // Registered here rather than in the builder so that a plugin
             // that fails to start costs only its own feature.
             autostart::init(app.handle(), &service);
+            taskbar::init(app.handle(), &service);
             shortcut::init(app.handle(), &service);
             Ok(())
         })
@@ -111,6 +113,8 @@ pub fn run() {
             }
             RunEvent::Exit => {
                 log::info!("exiting");
+                // Before the service goes: the restore talks to the platform.
+                taskbar::on_exit(app);
                 if let Some(service) = app.try_state::<AppService>() {
                     service.0.shutdown();
                 }
@@ -331,6 +335,7 @@ fn forward_events(app: AppHandle, service: &DockService) {
                 windows::on_settings_changed(&app, settings);
                 tray::on_settings_changed(&app, settings);
                 autostart::on_settings_changed(&app, settings);
+                taskbar::on_settings_changed(&app, settings);
                 shortcut::on_settings_changed(&app, settings);
                 app.emit(events::SETTINGS, settings)
             }

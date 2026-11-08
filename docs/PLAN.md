@@ -85,7 +85,13 @@ out of the monitor's work area, so that maximised windows stop short of it.
 after a crash; screen space reserved for the dock as an AppBar; the left,
 right and top positions.
 
-**Status.** Not done.
+**Status.**
+
+- _Hide the Windows taskbar_ (`system.hideWindowsTaskbar`) turns on Windows'
+  own taskbar auto-hide (`ABM_SETSTATE`) while Stem runs. Quitting Stem puts
+  the user's own state back. After a crash the taskbar stays hidden until
+  Stem starts again: the next start puts it back, or keeps it hidden while
+  the setting is on. Stem keeps the user's state in `taskbar.json` until then.
 
 **Exit criterion.** None.
 
@@ -111,7 +117,8 @@ area, stacks and folders, widgets (clock, battery, volume), and theming.
 ## Explicit non-goals (for now)
 
 - Replacing the notification area (system tray). The stock taskbar stays
-  available for the tray, the input indicators and the clock, auto-hidden.
+  available for the tray, the input indicators and the clock, auto-hidden
+  while _Hide the Windows taskbar_ is on.
 - Supporting Windows 10 (DWM backdrop APIs and some WinEvents differ).
 - macOS or Linux builds.
 
