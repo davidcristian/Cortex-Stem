@@ -3,6 +3,7 @@
 
   import { moveItem } from '$lib/dock/reorder';
   import { accentColor, resolveTheme } from '$lib/dock/theme';
+  import type { IconKey } from '$lib/ipc/generated/IconKey';
   import type { PinnedApp } from '$lib/ipc/generated/PinnedApp';
   import type { Settings } from '$lib/ipc/generated/Settings';
   import type { SettingsStore } from '$lib/stores/settings.svelte';
@@ -15,6 +16,9 @@
   import TextField from './TextField.svelte';
   import Toggle from './Toggle.svelte';
 
+  /** CSS px of a pinned app's icon in the list. */
+  const PIN_ICON_PX = 24;
+
   interface Props {
     /** Created once by the page entry; it owns the backend subscription. */
     store: SettingsStore;
@@ -24,6 +28,8 @@
 
   // --- Environment facts ----------------------------------------------------
   let prefersDark = $state(false);
+  /** Device pixels per CSS px; the pin icons are requested at this × 24 px. */
+  let dpr = $state(1);
 
   // --- Derived ----------------------------------------------------------------
   const settings = $derived(store.settings);
@@ -51,10 +57,40 @@
   const icons = (v: number): string => (v === 1 ? '1 icon' : `${v} icons`);
   const millis = (v: number): string => `${Math.round(v)} ms`;
 
-  /** What the dock shows for the entry: the user's label, else the app id. */
+  /**
+   * What the dock shows for the entry: the user's label, else the
+   * title the engine resolved for the app (its item in the dock state), else
+   * the app id while nothing is known yet.
+   */
   function pinnedName(pin: PinnedApp): string {
-    return pin.label ?? pin.id;
+    return pin.label ?? store.dockItem(pin.id)?.title ?? pin.id;
   }
+
+  /** The icon key the dock resolved for the pinned app, if any yet. */
+  function pinIconKey(pin: PinnedApp): IconKey | null {
+    return store.dockItem(pin.id)?.iconKey ?? null;
+  }
+
+  /** Device pixels of a pin icon on this display. */
+  const pinIconSize = $derived(Math.max(1, Math.round(PIN_ICON_PX * dpr)));
+
+  /** A data URL, `null` when there is no icon (yet or at all), `undefined` while it loads. */
+  function pinIcon(pin: PinnedApp): string | null | undefined {
+    const key = pinIconKey(pin);
+    return key === null ? null : store.icon(key, pinIconSize);
+  }
+
+  // Request the icon of every pin whose identity the dock has resolved; the
+  // cache makes repeats free, so this may run on every change of the pins,
+  // the dock state or the display scale.
+  $effect(() => {
+    for (const pin of settings?.pinned ?? []) {
+      const key = pinIconKey(pin);
+      if (key !== null) {
+        store.ensureIcon(key, pinIconSize);
+      }
+    }
+  });
 
   /** Where the entry launches from. */
   function launchSummary(pin: PinnedApp): string {
@@ -98,9 +134,21 @@
       prefersDark = dark.matches;
     };
     dark.addEventListener('change', onDark);
+    // The scale changes when the window moves to a monitor with another DPI
+    // (no resize event need follow); a query on the current value fires once
+    // it stops matching, and is then re-armed on the new one.
+    let scaleQuery: MediaQueryList | null = null;
+    const watchScale = (): void => {
+      scaleQuery?.removeEventListener('change', watchScale);
+      dpr = window.devicePixelRatio || 1;
+      scaleQuery = window.matchMedia(`(resolution: ${dpr}dppx)`);
+      scaleQuery.addEventListener('change', watchScale);
+    };
+    watchScale();
     void store.start();
     return () => {
       dark.removeEventListener('change', onDark);
+      scaleQuery?.removeEventListener('change', watchScale);
       store.stop();
     };
   });
@@ -488,7 +536,22 @@
           {:else}
             <ul class="pins" aria-label="Pinned apps">
               {#each settings.pinned as pin, index (pin.id)}
-                <li class="pin">
+                {@const icon = pinIcon(pin)}
+                <li
+                  class="pin"
+                  data-id={pin.id}
+                  data-icon={icon === undefined ? 'loading' : icon === null ? 'none' : 'loaded'}
+                >
+                  <!-- Decorative: the name is the text beside it. A neutral
+                       tile stands in until the dock has resolved the app
+                       (and stays when it has no icon); never a broken image. -->
+                  <span class="pin-icon" aria-hidden="true">
+                    {#if icon}
+                      <img src={icon} alt="" draggable="false" />
+                    {:else}
+                      <span class="placeholder"></span>
+                    {/if}
+                  </span>
                   <div class="pin-text">
                     <span class="pin-name">{pinnedName(pin)}</span>
                     <span class="pin-launch">{launchSummary(pin)}</span>
@@ -832,9 +895,9 @@
 
   .pin {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: auto minmax(0, 1fr) auto;
     align-items: center;
-    gap: 16px;
+    gap: 14px;
     min-height: 56px;
     box-sizing: border-box;
     padding: 8px 12px 8px 16px;
@@ -842,6 +905,37 @@
 
   .pin + .pin {
     border-top: 1px solid var(--divider);
+  }
+
+  .pin-icon {
+    display: block;
+    width: 24px;
+    height: 24px;
+  }
+
+  .pin-icon img,
+  .pin-icon .placeholder {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  /* Same tile as the dock draws while an icon loads (`--placeholder` from app.css). */
+  .pin-icon .placeholder {
+    border-radius: 22%;
+    background: var(--placeholder);
+  }
+
+  :global(html[data-high-contrast]) .pin-icon .placeholder {
+    outline: 1px solid var(--text);
+    outline-offset: -1px;
+  }
+
+  @media (forced-colors: active) {
+    .pin-icon .placeholder {
+      outline: 1px solid CanvasText;
+      outline-offset: -1px;
+    }
   }
 
   .pin-text {

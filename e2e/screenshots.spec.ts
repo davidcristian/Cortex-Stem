@@ -2202,6 +2202,13 @@ test.describe('settings window', () => {
     await page.goto('/settings.html?mock=1');
     await expect(page.locator('.page[data-ready="true"]')).toBeVisible();
     await expect(page.locator('.status')).toHaveText('Saved');
+    // The dock resolves the pinned apps ~300 ms after start; their names and
+    // icons then replace the ids and placeholders. Wait for that, so
+    // the names the tests read and the screenshots are stable.
+    await expect(page.locator('.pin:not([data-icon="loaded"])')).toHaveCount(0);
+    await page.waitForFunction(() =>
+      Array.from(document.images).every((img) => img.complete && img.naturalWidth > 0),
+    );
   }
 
   test('no browser context menu anywhere on the page', async ({ page }) => {
@@ -2379,13 +2386,30 @@ test.describe('settings window', () => {
     await expect(page.locator('.status')).toHaveText('Saved');
   });
 
-  test('pinned apps can be moved and unpinned', async ({ page }) => {
+  test("pinned apps show the dock's names and icons, and can be moved and unpinned", async ({
+    page,
+  }) => {
     await page.emulateMedia({ colorScheme: 'dark' });
     await openSettings(page);
     const names = () => page.locator('.pin-name').allTextContents();
     const before = await names();
-    expect(before).toHaveLength(5);
-    expect(before[4]).toBe('Settings'); // the labelled entry shows its label
+    // The titles the dock resolved (the mock derives them from the exe
+    // name), never the raw ids; the user's label still wins (the last one).
+    expect(before).toEqual(['explorer', 'firefox', 'WindowsTerminal', 'notepad', 'Settings']);
+    // Each resolved pin has the dock's icon for it: a data URL from
+    // `get_icon` (the mock draws SVG; Rust returns PNG), drawn at 24 CSS px.
+    const icons = page.locator('.pin img');
+    await expect(icons).toHaveCount(5);
+    for (const src of await icons.evaluateAll((imgs) =>
+      imgs.map((img) => (img as HTMLImageElement).src),
+    )) {
+      expect(src).toMatch(/^data:image\//);
+    }
+    expect((await icons.first().boundingBox())!.width).toBe(24);
+    expect((await icons.first().boundingBox())!.height).toBe(24);
+    await expect(page.locator('.pin .placeholder')).toHaveCount(0);
+    // The launch target stays as the second line.
+    await expect(page.locator('.pin-launch').first()).toHaveText('C:\\Windows\\explorer.exe');
 
     await page.getByRole('button', { name: `Move ${before[0]} down` }).click();
     await expect.poll(names).toEqual([before[1], before[0], before[2], before[3], before[4]]);
@@ -2398,6 +2422,58 @@ test.describe('settings window', () => {
 
     await page.locator('#h-pinned').scrollIntoViewIfNeeded();
     await page.screenshot({ path: `${OUT}/settings-pinned.png` });
+  });
+
+  test('a pin the dock has not resolved yet shows its id and a placeholder, then its name and icon', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openSettings(page);
+    // A settings file naming an app the dock has never seen. The mock
+    // resolves the identity ~300 ms after the change, as the service does
+    // lazily; the row's first facts are read in the page, in the same frame
+    // it appears, so no round trip can land after the resolution.
+    const PAINT = 'exe:c:/windows/system32/mspaint.exe';
+    const unresolved = await page.evaluate(async (id) => {
+      const mock = (window as unknown as DemoWindow).__dockMock!;
+      const settings = await mock.getSettings();
+      settings.pinned.push({
+        id,
+        label: null,
+        launch: {
+          kind: 'exe',
+          path: 'C:\\Windows\\System32\\mspaint.exe',
+          args: [],
+          workingDir: null,
+        },
+      });
+      await mock.updateSettings(settings);
+      let row: HTMLElement | null = null;
+      for (let i = 0; i < 10 && row === null; i += 1) {
+        await new Promise(requestAnimationFrame);
+        row = document.querySelector<HTMLElement>(`.pin[data-id="${id}"]`);
+      }
+      return row === null
+        ? null
+        : {
+            icon: row.dataset.icon,
+            name: row.querySelector('.pin-name')?.textContent,
+            images: row.querySelectorAll('img').length,
+            placeholders: row.querySelectorAll('.placeholder').length,
+          };
+    }, PAINT);
+    expect(unresolved).toEqual({ icon: 'none', name: PAINT, images: 0, placeholders: 1 });
+
+    // Resolved: the name and the icon replace them, in the same row (the
+    // list is keyed by the pin id); the other rows are untouched.
+    const row = page.locator(`.pin[data-id="${PAINT}"]`);
+    await expect(row.locator('.pin-name')).toHaveText('mspaint');
+    await expect(row).toHaveAttribute('data-icon', 'loaded');
+    await expect(row.locator('img')).toHaveAttribute('src', /^data:image\//);
+    await expect(row.locator('.placeholder')).toHaveCount(0);
+    await expect(page.locator('.pin')).toHaveCount(6);
+    await expect(page.locator('.pin:not([data-icon="loaded"])')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Unpin mspaint' })).toBeVisible();
   });
 
   test('reset asks first, then restores the defaults', async ({ page }) => {
