@@ -16,7 +16,11 @@
 //! host); this module is its I/O, performing a [`Plan`] in field order. A
 //! marker that cannot be written leaves the taskbar alone (a state that
 //! cannot be restored is not changed); a set that fails is logged at `warn`
-//! and keeps the marker, so the next start retries.
+//! and keeps the marker, so the next start retries. A live state that
+//! cannot be read (no tray: Explorer crashed or is restarting; or Explorer
+//! did not answer in time) never writes a new marker and never deletes the
+//! one there is: the plan may still attempt the set, and the marker stays
+//! for the next start.
 //!
 //! Syncs run at start and whenever a settings change flips the value, as in
 //! `autostart`: `SHAppBarMessage` waits on Explorer, so each sync is a task
@@ -25,7 +29,13 @@
 //! value, so the last change wins in whatever order the tasks start. The
 //! exit restore ([`on_exit`]) runs inline on the thread that ends the app:
 //! the process ends right after, so there is no later moment for it, and
-//! a sync task still queued at that point dies with the process.
+//! a sync task still queued at that point dies with the process. It cannot
+//! hang the quit: the platform bounds each call's wait on Explorer to about
+//! 500 ms (`stem_platform::windows::taskbar`), so the restore returns within
+//! about 1 s (one read, at most one set), within about 500 ms when Explorer
+//! is hung outright (the calls after a timeout fail at once); only a sync
+//! still running when Quit is chosen (right after a settings change) is
+//! waited for first, which can add up to about 1 s more.
 //!
 //! The mock platform (demo runs) keeps the marker in memory instead of on
 //! disk, so nothing real is touched while the whole flow still runs against
@@ -141,8 +151,10 @@ pub fn on_settings_changed(app: &AppHandle, settings: &Settings) {
 /// Put the taskbar back as the user had it (`RunEvent::Exit`, the real quit
 /// path). Runs **inline** on the calling thread, unlike the syncs: the
 /// process ends right after this, so a task on the blocking pool would never
-/// run, and one wait on Explorer (bounded by the shell) is acceptable on
-/// the way out. Waits for a sync in flight, so the two never interleave.
+/// run, and a bounded wait on Explorer is acceptable on the way out (about
+/// 1 s at most, see the module documentation). Waits for a sync in flight,
+/// so the two never interleave. With the live state unreadable the restore
+/// is attempted and the marker stays for the next start.
 pub fn on_exit(app: &AppHandle) {
     let (Some(sync), Some(service)) = (
         app.try_state::<TaskbarSync>(),
@@ -158,14 +170,16 @@ pub fn on_exit(app: &AppHandle) {
 }
 
 /// The taskbar's auto-hide state now; `None`, after a warning, when it
-/// cannot be read (the plan then counts it as off and sets without
-/// comparing).
+/// cannot be read (no tray, or no answer in time): the plan then neither
+/// writes nor deletes the marker, and sets without comparing only when
+/// there is a marker to restore from.
 fn live_state(platform: &dyn Platform) -> Option<bool> {
     match platform.taskbar_auto_hide() {
         Ok(state) => Some(state),
         Err(e) => {
             log::warn!(
-                "taskbar: could not read whether the taskbar auto-hides ({e}); counting it as off"
+                "taskbar: could not read whether the taskbar auto-hides ({e}); the marker is \
+                 neither written nor deleted this time"
             );
             None
         }

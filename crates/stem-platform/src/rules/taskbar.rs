@@ -25,10 +25,16 @@
 //! - setting **off**, and the app's exit: with a marker, put back the state
 //!   it holds and delete it; with none, nothing (Stem never touched the
 //!   taskbar, whatever its state is);
-//! - a live state that could not be read (`None`) counts as "off" for the
-//!   marker, and every set is performed without a comparison: the set is
-//!   idempotent, and a state that cannot be read is no reason to leave it
-//!   as it may be.
+//! - a live state that could not be read (`None`: no tray, Explorer
+//!   restarting or not answering) never writes a new marker and never
+//!   deletes an existing one. With no marker there is nothing to put back
+//!   and no way to know what to remember, so setting on changes nothing (a
+//!   state that cannot be restored is not changed) until the next sync (a
+//!   later start, or the setting flipped). With a marker, the set is still
+//!   attempted without a comparison (it is idempotent), but the marker
+//!   stays, so the next start, with a readable state, finishes the restore.
+//!   Reading `None` as "off" would delete the marker after a restore that
+//!   never happened and remember the wrong state at the next start.
 //!
 //! Not tracked: the user flipping Windows' own setting while Stem runs. The
 //! restore puts back what the marker holds.
@@ -71,16 +77,25 @@ impl Plan {
 /// (`None`: no file); `live` is the taskbar's auto-hide state right now
 /// (`None`: it could not be read).
 pub fn plan(hide: bool, marker: Option<Marker>, live: Option<bool>) -> Plan {
-    if hide {
-        Plan {
-            write_marker: marker.is_none().then(|| Marker {
-                previous_auto_hide: live.unwrap_or(false),
-            }),
+    if !hide {
+        return restore(marker, live);
+    }
+    match (marker, live) {
+        // The previous run did not restore: keep its marker.
+        (Some(_), live) => Plan {
+            write_marker: None,
             set_auto_hide: set_unless(live, true),
             delete_marker: false,
-        }
-    } else {
-        restore(marker, live)
+        },
+        (None, Some(live)) => Plan {
+            write_marker: Some(Marker {
+                previous_auto_hide: live,
+            }),
+            set_auto_hide: set_unless(Some(live), true),
+            delete_marker: false,
+        },
+        // Nothing to remember it by: leave the taskbar alone.
+        (None, None) => Plan::NOTHING,
     }
 }
 
@@ -90,12 +105,14 @@ pub fn plan_exit(marker: Option<Marker>, live: Option<bool>) -> Plan {
     restore(marker, live)
 }
 
+/// Put back what `marker` holds; delete it only when the live state could
+/// be read (otherwise the next start finishes the restore).
 fn restore(marker: Option<Marker>, live: Option<bool>) -> Plan {
     match marker {
         Some(marker) => Plan {
             write_marker: None,
             set_auto_hide: set_unless(live, marker.previous_auto_hide),
-            delete_marker: true,
+            delete_marker: live.is_some(),
         },
         None => Plan::NOTHING,
     }
@@ -236,15 +253,18 @@ mod tests {
     }
 
     #[test]
-    fn an_unreadable_live_state_counts_as_off_and_every_set_is_performed() {
-        assert_eq!(
-            plan(true, None, None),
-            Plan {
-                write_marker: Some(WAS_OFF),
-                set_auto_hide: Some(true),
-                delete_marker: false,
-            }
-        );
+    fn an_unreadable_live_state_without_a_marker_changes_nothing() {
+        // No tray (Explorer crashed or restarting) or no answer: there is no
+        // state to remember, so nothing is written and nothing is set.
+        assert_eq!(plan(true, None, None), Plan::NOTHING);
+        assert_eq!(plan(false, None, None), Plan::NOTHING);
+        assert_eq!(plan_exit(None, None), Plan::NOTHING);
+    }
+
+    #[test]
+    fn an_unreadable_live_state_with_a_marker_sets_but_keeps_the_marker() {
+        // Setting on: the marker is kept as it is and auto-hide is set
+        // without a comparison.
         assert_eq!(
             plan(true, Some(WAS_ON), None),
             Plan {
@@ -253,12 +273,14 @@ mod tests {
                 delete_marker: false,
             }
         );
+        // Setting off and exit: the restore is attempted, the marker stays
+        // for the next start to finish the job with a readable state.
         assert_eq!(
             plan(false, Some(WAS_OFF), None),
             Plan {
                 write_marker: None,
                 set_auto_hide: Some(false),
-                delete_marker: true,
+                delete_marker: false,
             }
         );
         assert_eq!(
@@ -266,7 +288,56 @@ mod tests {
             Plan {
                 write_marker: None,
                 set_auto_hide: Some(true),
+                delete_marker: false,
+            }
+        );
+    }
+
+    #[test]
+    fn an_unreadable_live_state_never_writes_or_deletes_a_marker() {
+        let markers = [None, Some(WAS_OFF), Some(WAS_ON)];
+        for marker in markers {
+            for hide in [false, true] {
+                let planned = plan(hide, marker, None);
+                assert_eq!(planned.write_marker, None, "plan({hide}, {marker:?}, None)");
+                assert!(!planned.delete_marker, "plan({hide}, {marker:?}, None)");
+            }
+            let planned = plan_exit(marker, None);
+            assert_eq!(planned.write_marker, None, "plan_exit({marker:?}, None)");
+            assert!(!planned.delete_marker, "plan_exit({marker:?}, None)");
+        }
+    }
+
+    #[test]
+    fn the_start_after_an_unreadable_exit_finishes_the_restore() {
+        // Exit with Explorer gone: the restore is attempted, the marker stays.
+        let exit = plan_exit(Some(WAS_OFF), None);
+        assert!(!exit.delete_marker);
+        // The next start, setting off, with the state readable again (the
+        // set at exit may or may not have landed): restore and delete.
+        assert_eq!(
+            plan(false, Some(WAS_OFF), Some(true)),
+            Plan {
+                write_marker: None,
+                set_auto_hide: Some(false),
                 delete_marker: true,
+            }
+        );
+        assert_eq!(
+            plan(false, Some(WAS_OFF), Some(false)),
+            Plan {
+                write_marker: None,
+                set_auto_hide: None,
+                delete_marker: true,
+            }
+        );
+        // Setting on: the old marker still holds the user's state.
+        assert_eq!(
+            plan(true, Some(WAS_OFF), Some(false)),
+            Plan {
+                write_marker: None,
+                set_auto_hide: Some(true),
+                delete_marker: false,
             }
         );
     }
