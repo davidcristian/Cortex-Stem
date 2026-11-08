@@ -21,6 +21,7 @@
 //! | Shell hook | `HSHELL_WINDOWCREATED`                                    | `Added`        | as for `EVENT_OBJECT_SHOW` |
 //! | Shell hook | `HSHELL_WINDOWACTIVATED`, `HSHELL_RUDEAPPACTIVATED`       | `Foreground`   | `ForegroundChanged` |
 //! | Shell hook | `HSHELL_FLASH`                                            | `Attention`    | `WindowAttention { flashing: true }` |
+//! | Shell hook | `HSHELL_WINDOWDESTROYED`, `HSHELL_REDRAW`, every other code | `Ignore`     | — (a WinEvent already covers each; see `windows::events`, *Sources*); the message is still named by [`shell_hook_name`] in one trace line |
 //! | any        | anything else                                             | `Ignore`       | — |
 //!
 //! `Added` from either source is a *show-type* event: when it finds the
@@ -57,8 +58,20 @@ pub const OBJID_WINDOW: i32 = 0;
 pub const CHILDID_SELF: i32 = 0;
 
 pub const HSHELL_WINDOWCREATED: u32 = 1;
+pub const HSHELL_WINDOWDESTROYED: u32 = 2;
+pub const HSHELL_ACTIVATESHELLWINDOW: u32 = 3;
 pub const HSHELL_WINDOWACTIVATED: u32 = 4;
+pub const HSHELL_GETMINRECT: u32 = 5;
 pub const HSHELL_REDRAW: u32 = 6;
+pub const HSHELL_TASKMAN: u32 = 7;
+pub const HSHELL_LANGUAGE: u32 = 8;
+pub const HSHELL_SYSMENU: u32 = 9;
+pub const HSHELL_ENDTASK: u32 = 10;
+pub const HSHELL_ACCESSIBILITYSTATE: u32 = 11;
+pub const HSHELL_APPCOMMAND: u32 = 12;
+pub const HSHELL_WINDOWREPLACED: u32 = 13;
+pub const HSHELL_WINDOWREPLACING: u32 = 14;
+pub const HSHELL_MONITORCHANGED: u32 = 16;
 /// Set on `HSHELL_RUDEAPPACTIVATED` and `HSHELL_FLASH`.
 pub const HSHELL_HIGHBIT: u32 = 0x8000;
 pub const HSHELL_RUDEAPPACTIVATED: u32 = HSHELL_WINDOWACTIVATED | HSHELL_HIGHBIT;
@@ -169,6 +182,31 @@ pub fn shell_hook_intent(code: u32) -> Intent {
         HSHELL_WINDOWACTIVATED | HSHELL_RUDEAPPACTIVATED => Intent::Foreground,
         HSHELL_FLASH => Intent::Attention,
         _ => Intent::Ignore,
+    }
+}
+
+/// The name of a shell hook code (every one `winuser.h` documents), for the
+/// one trace line per message that lets a trace log be counted per source.
+pub fn shell_hook_name(code: u32) -> &'static str {
+    match code {
+        HSHELL_WINDOWCREATED => "HSHELL_WINDOWCREATED",
+        HSHELL_WINDOWDESTROYED => "HSHELL_WINDOWDESTROYED",
+        HSHELL_ACTIVATESHELLWINDOW => "HSHELL_ACTIVATESHELLWINDOW",
+        HSHELL_WINDOWACTIVATED => "HSHELL_WINDOWACTIVATED",
+        HSHELL_GETMINRECT => "HSHELL_GETMINRECT",
+        HSHELL_REDRAW => "HSHELL_REDRAW",
+        HSHELL_TASKMAN => "HSHELL_TASKMAN",
+        HSHELL_LANGUAGE => "HSHELL_LANGUAGE",
+        HSHELL_SYSMENU => "HSHELL_SYSMENU",
+        HSHELL_ENDTASK => "HSHELL_ENDTASK",
+        HSHELL_ACCESSIBILITYSTATE => "HSHELL_ACCESSIBILITYSTATE",
+        HSHELL_APPCOMMAND => "HSHELL_APPCOMMAND",
+        HSHELL_WINDOWREPLACED => "HSHELL_WINDOWREPLACED",
+        HSHELL_WINDOWREPLACING => "HSHELL_WINDOWREPLACING",
+        HSHELL_MONITORCHANGED => "HSHELL_MONITORCHANGED",
+        HSHELL_RUDEAPPACTIVATED => "HSHELL_RUDEAPPACTIVATED",
+        HSHELL_FLASH => "HSHELL_FLASH",
+        _ => "an unknown shell hook code",
     }
 }
 
@@ -399,8 +437,81 @@ mod tests {
         assert_eq!(HSHELL_WINDOWCREATED, 1);
         assert_eq!(shell_hook_intent(HSHELL_WINDOWCREATED), Intent::Added);
         // HSHELL_WINDOWDESTROYED is covered by EVENT_OBJECT_DESTROY.
-        assert_eq!(shell_hook_intent(2), Intent::Ignore);
+        assert_eq!(HSHELL_WINDOWDESTROYED, 2);
+        assert_eq!(shell_hook_intent(HSHELL_WINDOWDESTROYED), Intent::Ignore);
         assert_eq!(shell_hook_intent(0), Intent::Ignore);
+    }
+
+    /// Every code `winuser.h` documents has a name (so the per-message trace
+    /// line can be counted per source), and only the four translated
+    /// ones have an intent other than `Ignore`.
+    #[test]
+    fn every_shell_hook_code_is_named_and_only_four_are_translated() {
+        let documented = [
+            (HSHELL_WINDOWCREATED, "HSHELL_WINDOWCREATED", Intent::Added),
+            (
+                HSHELL_WINDOWDESTROYED,
+                "HSHELL_WINDOWDESTROYED",
+                Intent::Ignore,
+            ),
+            (
+                HSHELL_ACTIVATESHELLWINDOW,
+                "HSHELL_ACTIVATESHELLWINDOW",
+                Intent::Ignore,
+            ),
+            (
+                HSHELL_WINDOWACTIVATED,
+                "HSHELL_WINDOWACTIVATED",
+                Intent::Foreground,
+            ),
+            (HSHELL_GETMINRECT, "HSHELL_GETMINRECT", Intent::Ignore),
+            (HSHELL_REDRAW, "HSHELL_REDRAW", Intent::Ignore),
+            (HSHELL_TASKMAN, "HSHELL_TASKMAN", Intent::Ignore),
+            (HSHELL_LANGUAGE, "HSHELL_LANGUAGE", Intent::Ignore),
+            (HSHELL_SYSMENU, "HSHELL_SYSMENU", Intent::Ignore),
+            (HSHELL_ENDTASK, "HSHELL_ENDTASK", Intent::Ignore),
+            (
+                HSHELL_ACCESSIBILITYSTATE,
+                "HSHELL_ACCESSIBILITYSTATE",
+                Intent::Ignore,
+            ),
+            (HSHELL_APPCOMMAND, "HSHELL_APPCOMMAND", Intent::Ignore),
+            (
+                HSHELL_WINDOWREPLACED,
+                "HSHELL_WINDOWREPLACED",
+                Intent::Ignore,
+            ),
+            (
+                HSHELL_WINDOWREPLACING,
+                "HSHELL_WINDOWREPLACING",
+                Intent::Ignore,
+            ),
+            (
+                HSHELL_MONITORCHANGED,
+                "HSHELL_MONITORCHANGED",
+                Intent::Ignore,
+            ),
+            (
+                HSHELL_RUDEAPPACTIVATED,
+                "HSHELL_RUDEAPPACTIVATED",
+                Intent::Foreground,
+            ),
+            (HSHELL_FLASH, "HSHELL_FLASH", Intent::Attention),
+        ];
+        // winuser.h numbers them 1..=14 and 16, plus the two high-bit forms.
+        let mut codes: Vec<u32> = documented.iter().map(|&(code, _, _)| code).collect();
+        codes.sort_unstable();
+        let mut expected: Vec<u32> = (1..=14).collect();
+        expected.extend([16, 0x8004, 0x8006]);
+        assert_eq!(codes, expected);
+        for (code, name, intent) in documented {
+            assert_eq!(shell_hook_name(code), name, "{code:#x}");
+            assert_eq!(shell_hook_intent(code), intent, "{name}");
+        }
+        for stray in [0, 15, 17, 0x8000, 0x8001, 0x8005, u32::MAX] {
+            assert_eq!(shell_hook_name(stray), "an unknown shell hook code");
+            assert_eq!(shell_hook_intent(stray), Intent::Ignore);
+        }
     }
 
     #[test]

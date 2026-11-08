@@ -1,12 +1,13 @@
 //! The event thread.
 //!
 //! Contract:
-//! - [`EventHookThread::start`] spawns a thread that: creates a message-only
-//!   window, installs `SetWinEventHook` out-of-context hooks for
+//! - [`EventHookThread::start`] spawns a thread that: creates a hidden
+//!   top-level window, installs `SetWinEventHook` out-of-context hooks for
 //!   `EVENT_OBJECT_CREATE/DESTROY/SHOW/HIDE/CLOAKED/UNCLOAKED/NAMECHANGE`,
 //!   `EVENT_SYSTEM_FOREGROUND`, `EVENT_SYSTEM_MINIMIZESTART/END`, registers a
 //!   shell hook window (`RegisterShellHookWindow`) for `HSHELL_WINDOWCREATED`,
-//!   `HSHELL_FLASH` and activations, and then runs a `GetMessageW` loop.
+//!   `HSHELL_FLASH` and activations (the second source; see *Sources*
+//!   below), and then runs a `GetMessageW` loop.
 //! - Hook callbacks only translate the event and push a [`stem_core::PlatformEvent`]
 //!   into `sink`; all filtering goes through `enumerate::query_window_checked`.
 //! - Late-visible windows: a window that a create/show event or
@@ -113,6 +114,62 @@
 //! **Thread safety.** [`EventHookThread`] stores only the thread id, the
 //! `JoinHandle`s and channel ends; raw handles (`HWND`, `HWINEVENTHOOK`,
 //! timer ids) are `!Send` and never leave the events thread.
+//!
+//! # Sources
+//!
+//! Two OS mechanisms feed the loop, through the same queue and the same
+//! `query_window_checked` path. Which drives which `PlatformEvent`:
+//!
+//! | `PlatformEvent`      | WinEvent (primary)                                    | Shell hook (second source) |
+//! |----------------------|-------------------------------------------------------|----------------------------|
+//! | `WindowAdded`        | `EVENT_OBJECT_CREATE`, `EVENT_OBJECT_SHOW` (+ re-checks) | `HSHELL_WINDOWCREATED` |
+//! | `WindowRemoved`      | `EVENT_OBJECT_DESTROY`, `EVENT_OBJECT_HIDE`, any query that finds the window no longer eligible | — (`HSHELL_WINDOWDESTROYED` ignored, below) |
+//! | `WindowUpdated`      | `EVENT_OBJECT_NAMECHANGE` (debounced), `EVENT_SYSTEM_MINIMIZESTART/END`, `EVENT_OBJECT_CLOAKED/UNCLOAKED`, `EVENT_OBJECT_LOCATIONCHANGE` (coalesced) | — (`HSHELL_REDRAW` ignored, below) |
+//! | `ForegroundChanged`  | `EVENT_SYSTEM_FOREGROUND`                             | `HSHELL_WINDOWACTIVATED`, `HSHELL_RUDEAPPACTIVATED` |
+//! | `WindowAttention`    | — (no WinEvent exists for a flash)                    | `HSHELL_FLASH` |
+//!
+//! **Duplicates.** The two sources report the same facts about the same
+//! windows a few milliseconds apart, in no fixed order. They are coalesced
+//! by `known`: the first source to find a new window eligible produces the
+//! one `WindowAdded` (and the debug line `window 0x… added by <source>`);
+//! the other finds it tracked and produces a `WindowUpdated` with the same
+//! facts, which the engine's upsert absorbs (no fact changed, so nothing
+//! downstream moves). A foreground switch reported by both yields two
+//! `ForegroundChanged` with the same id, likewise absorbed, and arms the
+//! fullscreen timer once. No duplicate `WindowAdded` can reach the engine
+//! from this thread: `report_queried` consults `known` for every emission.
+//!
+//! **When one source is silent.** The WinEvent hooks are required:
+//! `start` fails if one cannot be installed. The shell hook is optional: a
+//! failed `RegisterShellHookWindow` logs a warning and the dock runs on
+//! WinEvents alone, losing only the attention cue (`HSHELL_FLASH` has no
+//! WinEvent equivalent; the other three shell codes duplicate a WinEvent).
+//! A WinEvent missed for one window (for example a Store app's frame
+//! judged too early) is healed by `HSHELL_WINDOWCREATED`, by the re-checks,
+//! and by the foreground path, which reports an untracked candidate before
+//! `ForegroundChanged`; a window missed by every event is listed by the next
+//! snapshot (display change). Which source gets to a window first is what
+//! the trace log shows: every received event is logged once
+//! as `<EVENT_…> for window 0x…` or `<HSHELL_…> for window 0x…`, and every
+//! shell code that is dropped as `<HSHELL_…> (0x…) ignored`.
+//!
+//! **Deliberately not translated.** `HSHELL_WINDOWDESTROYED` is left to
+//! `EVENT_OBJECT_DESTROY`: the WinEvent is delivered for every window (the
+//! callback accepts it even when `GetAncestor` can no longer see the
+//! window), `EVENT_OBJECT_HIDE` covers a window that hides rather than
+//! dies, and a removal is idempotent (`remove_window` emits only for a
+//! tracked window), so the shell's code could only repeat a removal that
+//! has happened or is about to. `HSHELL_REDRAW` (the taskbar's "title or
+//! icon changed") is left out because titles already arrive as
+//! `EVENT_OBJECT_NAMECHANGE` through the debouncer and window icons are
+//! read once per session by the UI (`hwnd:` keys are not re-fetched), so it
+//! would add a `WindowUpdated` with unchanged facts per repaint. The
+//! remaining codes (`HSHELL_GETMINRECT`, `HSHELL_ACTIVATESHELLWINDOW`,
+//! `HSHELL_TASKMAN`, `HSHELL_LANGUAGE`, `HSHELL_SYSMENU`, `HSHELL_ENDTASK`,
+//! `HSHELL_ACCESSIBILITYSTATE`, `HSHELL_APPCOMMAND`,
+//! `HSHELL_WINDOWREPLACED/REPLACING`, `HSHELL_MONITORCHANGED`) are about
+//! the shell's own UI or carry no window; all are named by
+//! `rules::events::shell_hook_name` and dropped after their trace line.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
@@ -135,7 +192,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
     EVENT_OBJECT_HIDE, EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_NAMECHANGE, EVENT_OBJECT_SHOW,
     EVENT_OBJECT_UNCLOAKED, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZEEND,
     EVENT_SYSTEM_MINIMIZESTART, GA_ROOT, GetAncestor, GetForegroundWindow, GetMessageW,
-    HSHELL_HIGHBIT, HSHELL_REDRAW, HSHELL_WINDOWACTIVATED, HSHELL_WINDOWCREATED, KillTimer, MSG,
+    HSHELL_ACCESSIBILITYSTATE, HSHELL_ACTIVATESHELLWINDOW, HSHELL_APPCOMMAND, HSHELL_ENDTASK,
+    HSHELL_GETMINRECT, HSHELL_HIGHBIT, HSHELL_LANGUAGE, HSHELL_MONITORCHANGED, HSHELL_REDRAW,
+    HSHELL_SYSMENU, HSHELL_TASKMAN, HSHELL_WINDOWACTIVATED, HSHELL_WINDOWCREATED,
+    HSHELL_WINDOWDESTROYED, HSHELL_WINDOWREPLACED, HSHELL_WINDOWREPLACING, KillTimer, MSG,
     OBJID_WINDOW, PostThreadMessageW, RegisterClassExW, RegisterShellHookWindow,
     RegisterWindowMessageW, SPI_SETWORKAREA, SetTimer, TranslateMessage, UnregisterClassW,
     WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_APP, WM_DISPLAYCHANGE,
@@ -165,8 +225,20 @@ const _: () = {
     assert!(rules::OBJID_WINDOW == OBJID_WINDOW.0);
     assert!(rules::CHILDID_SELF == CHILDID_SELF as i32);
     assert!(rules::HSHELL_WINDOWCREATED == HSHELL_WINDOWCREATED);
+    assert!(rules::HSHELL_WINDOWDESTROYED == HSHELL_WINDOWDESTROYED);
+    assert!(rules::HSHELL_ACTIVATESHELLWINDOW == HSHELL_ACTIVATESHELLWINDOW);
     assert!(rules::HSHELL_WINDOWACTIVATED == HSHELL_WINDOWACTIVATED);
+    assert!(rules::HSHELL_GETMINRECT == HSHELL_GETMINRECT);
     assert!(rules::HSHELL_REDRAW == HSHELL_REDRAW);
+    assert!(rules::HSHELL_TASKMAN == HSHELL_TASKMAN);
+    assert!(rules::HSHELL_LANGUAGE == HSHELL_LANGUAGE);
+    assert!(rules::HSHELL_SYSMENU == HSHELL_SYSMENU);
+    assert!(rules::HSHELL_ENDTASK == HSHELL_ENDTASK);
+    assert!(rules::HSHELL_ACCESSIBILITYSTATE == HSHELL_ACCESSIBILITYSTATE);
+    assert!(rules::HSHELL_APPCOMMAND == HSHELL_APPCOMMAND);
+    assert!(rules::HSHELL_WINDOWREPLACED == HSHELL_WINDOWREPLACED);
+    assert!(rules::HSHELL_WINDOWREPLACING == HSHELL_WINDOWREPLACING);
+    assert!(rules::HSHELL_MONITORCHANGED == HSHELL_MONITORCHANGED);
     assert!(rules::HSHELL_HIGHBIT == HSHELL_HIGHBIT);
 };
 
@@ -732,6 +804,9 @@ impl ThreadState {
 
     fn on_win_event(&mut self, event: u32, hwnd: HWND) {
         let cause = rules::event_name(event);
+        // One line per event that passed the callback's filter, so a trace
+        // log can be counted per source against the shell hook's.
+        log::trace!("{cause} for window {:#x}", hwnd.0 as isize);
         match rules::event_intent(event) {
             Intent::Added => self.on_window_shown(hwnd, cause),
             Intent::Updated => {
@@ -752,19 +827,29 @@ impl ThreadState {
     }
 
     fn on_shell_hook(&mut self, code: u32, hwnd: HWND) {
-        match rules::shell_hook_intent(code) {
-            Intent::Added => self.on_window_shown(hwnd, "HSHELL_WINDOWCREATED"),
+        let name = rules::shell_hook_name(code);
+        let intent = rules::shell_hook_intent(code);
+        if intent == Intent::Ignore {
+            // Dropped, but counted. `lParam` is not a window for
+            // every code (`HSHELL_GETMINRECT`, `HSHELL_APPCOMMAND`,
+            // `HSHELL_LANGUAGE`), hence the raw value.
+            log::trace!("{name} ({code:#x}) ignored; lParam {:#x}", hwnd.0 as isize);
+            return;
+        }
+        log::trace!("{name} for window {:#x}", hwnd.0 as isize);
+        match intent {
+            Intent::Added => self.on_window_shown(hwnd, name),
             Intent::Foreground => self.emit_foreground(hwnd),
             Intent::Attention => {
                 let id = util::window_id(hwnd);
                 if !self.known.contains_key(&id) {
-                    self.refresh_window(hwnd, "HSHELL_FLASH");
+                    self.refresh_window(hwnd, name);
                 }
                 if self.known.contains_key(&id) {
                     self.emit(PlatformEvent::WindowAttention { id, flashing: true });
                 }
             }
-            _ => {}
+            Intent::Removed | Intent::Updated | Intent::TitleChanged | Intent::Ignore => {}
         }
     }
 
@@ -959,12 +1044,17 @@ impl ThreadState {
         let id = util::window_id(hwnd);
         let pending_since = self.rechecks.pending_since(id.0);
         let (check, added) = self.query_and_report(hwnd);
-        if added && let Some(since) = pending_since {
-            log::debug!(
-                "late window {:#x} added by {cause}, {} ms after it was first rejected",
-                id.0,
-                self.now_ms().saturating_sub(since)
-            );
+        // One `added` line per `WindowAdded`, naming the source that won
+        // (one per window, whichever source came first).
+        if added {
+            match pending_since {
+                Some(since) => log::debug!(
+                    "late window {:#x} added by {cause}, {} ms after it was first rejected",
+                    id.0,
+                    self.now_ms().saturating_sub(since)
+                ),
+                None => log::debug!("window {:#x} added by {cause}", id.0),
+            }
         }
         check
     }
@@ -1052,6 +1142,9 @@ impl ThreadState {
         self.titles.forget(id.0);
         self.moved.remove(&id);
         if self.known.remove(&id).is_some() {
+            // The pair of the `added` line; the trace line before it
+            // names the event that caused it.
+            log::debug!("window {:#x} removed", id.0);
             self.emit(PlatformEvent::WindowRemoved(id));
         }
     }
