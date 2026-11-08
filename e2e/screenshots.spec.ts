@@ -1,4 +1,4 @@
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 
 import { expect, test, type Locator, type Page } from '@playwright/test';
 
@@ -49,6 +49,83 @@ interface DemoWindow {
     /** `dock://show`: the tray or the shortcut pressed while the panel is auto-hidden. */
     requestShow: () => void;
   };
+}
+
+/** What `installMediaQueryShim` adds to the page. */
+interface MediaQueryShimWindow {
+  __fireMediaQueryChanges?: () => number;
+}
+
+/**
+ * Chromium's device emulation (`Emulation.setDeviceMetricsOverride`)
+ * changes `devicePixelRatio` and what a fresh `matchMedia('(resolution:
+ * …dppx)')` answers, but does not notify the `MediaQueryList`s a page
+ * already holds, which a real DPI change does (the dock's watcher,
+ * src/lib/dock/dpr.ts, relies on that `change` event and assumes WebView2
+ * sends it). Installed before the page loads, this records every list and
+ * its `change` listeners; `__fireMediaQueryChanges` then dispatches `change`
+ * to the lists whose answer flipped, and says how many did. The dock's own
+ * path runs for real; only the browser's missing notification is stood in
+ * for.
+ */
+async function installMediaQueryShim(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    interface Entry {
+      list: MediaQueryList;
+      listeners: Set<EventListenerOrEventListenerObject>;
+      matches: boolean;
+    }
+    const native = window.matchMedia.bind(window);
+    const entries: Entry[] = [];
+    window.matchMedia = (query: string): MediaQueryList => {
+      const list = native(query);
+      const entry: Entry = { list, listeners: new Set(), matches: list.matches };
+      const add = list.addEventListener.bind(list);
+      const remove = list.removeEventListener.bind(list);
+      list.addEventListener = ((
+        type: string,
+        listener: EventListenerOrEventListenerObject,
+        options?: boolean | AddEventListenerOptions,
+      ): void => {
+        if (type === 'change') {
+          entry.listeners.add(listener);
+        }
+        add(type, listener, options);
+      }) as typeof list.addEventListener;
+      list.removeEventListener = ((
+        type: string,
+        listener: EventListenerOrEventListenerObject,
+        options?: boolean | EventListenerOptions,
+      ): void => {
+        if (type === 'change') {
+          entry.listeners.delete(listener);
+        }
+        remove(type, listener, options);
+      }) as typeof list.removeEventListener;
+      entries.push(entry);
+      return list;
+    };
+    (window as unknown as MediaQueryShimWindow).__fireMediaQueryChanges = (): number => {
+      let fired = 0;
+      for (const entry of entries) {
+        const matches = native(entry.list.media).matches;
+        if (matches === entry.matches) {
+          continue;
+        }
+        entry.matches = matches;
+        const event = new MediaQueryListEvent('change', { media: entry.list.media, matches });
+        for (const listener of [...entry.listeners]) {
+          if (typeof listener === 'function') {
+            listener.call(entry.list, event);
+          } else {
+            listener.handleEvent(event);
+          }
+        }
+        fired += 1;
+      }
+      return fired;
+    };
+  });
 }
 
 /** The mock monitor's work area (`demoMonitor` in src/lib/ipc/mock.ts). */
@@ -392,6 +469,93 @@ test.describe('dock at 1× device pixel ratio', () => {
     expect((await iconPairs(page)).every((p) => !p.magnifiedAttr)).toBe(true);
     // Measured again after the settle: the snap is idempotent.
     expect(await snapState(page)).toEqual(atRest);
+  });
+
+  test('a scale change re-requests the icons at the new ratio and reports the geometry again', async ({
+    page,
+  }) => {
+    await installMediaQueryShim(page);
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openDock(page);
+    await expectIconPairs(page, { rest: 48, magnified: 96, shown: [48], magnifiedAttr: false });
+    // The reports made at 1×; the dock sends each only when its numbers
+    // change, so what follows is the scale change's doing.
+    const sizesBefore = await contentSizes(page);
+    const regionsBefore = await hitRegions(page);
+    const panelsBefore = await callsOfType(page, 'setDockPanelRect');
+    expect(sizesBefore.length).toBeGreaterThan(0);
+    expect(regionsBefore.length).toBeGreaterThan(0);
+    expect(panelsBefore).toBeGreaterThan(0);
+
+    // The display scale goes to 200 %: the viewport keeps its CSS size,
+    // `devicePixelRatio` changes and the `(resolution: 1dppx)` query stops
+    // matching. Chromium's device emulation (CDP; Playwright has no
+    // page-level API for it, so the context's own emulation is overridden
+    // through a session) does that much, but it does not fire the lists'
+    // `change` event as a real DPI change does: the shim installed above
+    // dispatches it to the one list that flipped, the dock's.
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send('Emulation.setDeviceMetricsOverride', {
+      width: 1280,
+      height: 240,
+      deviceScaleFactor: 2,
+      mobile: false,
+    });
+    await expect.poll(() => page.evaluate(() => window.devicePixelRatio)).toBe(2);
+    expect(
+      await page.evaluate(() =>
+        (window as unknown as MediaQueryShimWindow).__fireMediaQueryChanges!(),
+      ),
+    ).toBe(1);
+
+    // Every slot keeps its 1× bitmap on screen until its 2× one has arrived
+    // (never the loading placeholder in between): 96 px at rest, drawn 1:1.
+    const swap = await page.evaluate(async (selector) => {
+      let placeholderSeen = false;
+      for (let frame = 0; frame < 600; frame += 1) {
+        const slots = Array.from(document.querySelectorAll<HTMLElement>(selector));
+        if (slots.some((slot) => slot.dataset.icon !== 'loaded')) {
+          placeholderSeen = true;
+        }
+        const rests = slots.map(
+          (slot) => slot.querySelector<HTMLImageElement>('img.rest')?.naturalWidth ?? 0,
+        );
+        if (rests.every((width) => width === 96)) {
+          return { placeholderSeen, done: true };
+        }
+        await new Promise(requestAnimationFrame);
+      }
+      return { placeholderSeen, done: false };
+    }, APP_SLOT);
+    expect(swap).toEqual({ placeholderSeen: false, done: true });
+    // 48 × 2 = 96 px at rest; 48 × 1.6 × 2 = 153.6 → the ladder's 192 magnified.
+    await expectIconPairs(page, { rest: 96, magnified: 192, shown: [96], magnifiedAttr: false });
+
+    // The panel is measured again on the new device pixel grid and
+    // the three reports go out once more. Their CSS numbers are the ones
+    // from 1× (the viewport did not change); Rust converts them at the new
+    // scale.
+    await expect.poll(() => contentSizes(page)).toHaveLength(sizesBefore.length + 1);
+    expect((await contentSizes(page)).at(-1)).toEqual(sizesBefore.at(-1));
+    await expect.poll(() => hitRegions(page)).toHaveLength(regionsBefore.length + 1);
+    expect((await hitRegions(page)).at(-1)).toEqual(regionsBefore.at(-1));
+    await expect.poll(() => callsOfType(page, 'setDockPanelRect')).toBe(panelsBefore + 1);
+    const atRest = await snapState(page);
+    expect(atRest.dpr).toBe(2);
+    expectWholeDevicePx(atRest.panel.left, 2);
+    expectWholeDevicePx(atRest.panel.top, 2);
+    expectWholeDevicePx(atRest.icon.left, 2);
+    expectWholeDevicePx(atRest.icon.top, 2);
+    // `page.screenshot` puts the context's own emulation (1×) back; the
+    // session that set 2× captures the page as it is: 2560 × 480 device px.
+    const shot = await cdp.send('Page.captureScreenshot', { format: 'png' });
+    writeFileSync(`${OUT}/dock-dark-1x-to-2x.png`, Buffer.from(shot.data, 'base64'));
+    expect(await page.evaluate(() => window.devicePixelRatio)).toBe(2);
+
+    // Hovering draws the new ladder bitmap.
+    await page.locator(APP_SLOT).nth(3).hover();
+    await expect.poll(() => scaleOf(page, 3)).toBeGreaterThan(1.5);
+    expect((await iconPairs(page))[3]).toMatchObject({ shown: [192], magnifiedAttr: true });
   });
 });
 

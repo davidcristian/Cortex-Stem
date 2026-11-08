@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
 
+  import { watchDevicePixelRatio } from '$lib/dock/dpr';
   import { moveItem } from '$lib/dock/reorder';
   import { accentColor, resolveTheme } from '$lib/dock/theme';
   import type { IconKey } from '$lib/ipc/generated/IconKey';
@@ -135,20 +136,15 @@
     };
     dark.addEventListener('change', onDark);
     // The scale changes when the window moves to a monitor with another DPI
-    // (no resize event need follow); a query on the current value fires once
-    // it stops matching, and is then re-armed on the new one.
-    let scaleQuery: MediaQueryList | null = null;
-    const watchScale = (): void => {
-      scaleQuery?.removeEventListener('change', watchScale);
-      dpr = window.devicePixelRatio || 1;
-      scaleQuery = window.matchMedia(`(resolution: ${dpr}dppx)`);
-      scaleQuery.addEventListener('change', watchScale);
-    };
-    watchScale();
+    // or the display scale is changed (no resize event need follow); the pin
+    // icons are requested again at the new size.
+    const stopScale = watchDevicePixelRatio(window, (ratio) => {
+      dpr = ratio;
+    });
     void store.start();
     return () => {
       dark.removeEventListener('change', onDark);
-      scaleQuery?.removeEventListener('change', watchScale);
+      stopScale();
       store.stop();
     };
   });

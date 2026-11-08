@@ -17,6 +17,7 @@
     type AutoHidePhase,
     type AutoHideState,
   } from '$lib/dock/autohide';
+  import { watchDevicePixelRatio } from '$lib/dock/dpr';
   import {
     dropIndex,
     dropTargetAt,
@@ -46,7 +47,7 @@
     type HitRegion,
     type SnapMargins,
   } from '$lib/dock/geometry';
-  import { iconSources } from '$lib/dock/icon-size';
+  import { iconSources, type IconSources } from '$lib/dock/icon-size';
   import { gapTransition, itemTransition } from '$lib/dock/item-transition';
   import { computeScales, maxGrowth, type MagnifyParams } from '$lib/dock/magnify';
   import {
@@ -63,6 +64,7 @@
   import type { AppId } from '$lib/ipc/generated/AppId';
   import type { DockItem as DockItemModel } from '$lib/ipc/generated/DockItem';
   import type { DockItemKind } from '$lib/ipc/generated/DockItemKind';
+  import type { IconKey } from '$lib/ipc/generated/IconKey';
   import type { Rect } from '$lib/ipc/generated/Rect';
   import type { DockStore } from '$lib/stores/dock.svelte';
   import { describeError, Toasts } from '$lib/stores/toasts.svelte';
@@ -109,6 +111,7 @@
   // --- Environment facts ----------------------------------------------------
   let prefersDark = $state(false);
   let reducedMotion = $state(false);
+  /** Device pixels per CSS px, followed live (`onScaleChanged`). */
   let dpr = $state(1);
 
   // --- Settings-derived values -----------------------------------------------
@@ -138,6 +141,34 @@
   // of the ladder).
   const iconSizes = $derived(iconSources(iconSize, magnify.maxScale, dpr));
   const dualSources = $derived(iconSizes.magnified !== iconSizes.rest);
+  /**
+   * The sizes before the latest change of `iconSizes` (a scale change,
+   * the icon size or the magnification settings). An item keeps
+   * drawing the bitmap it has at those sizes until the one at the new sizes
+   * has arrived (`iconUrlAt`), instead of showing the loading placeholder in
+   * between. Taken in the effect's teardown: the sizes it captured are the
+   * ones the items were drawn from.
+   */
+  let previousIconSizes = $state.raw<IconSources | null>(null);
+  $effect.pre(() => {
+    const sizes = iconSizes;
+    return () => {
+      previousIconSizes = sizes;
+    };
+  });
+
+  /** The item's bitmap at `size`; while it loads, the one at `fallback` when there is one. */
+  function iconUrlAt(
+    key: IconKey,
+    size: number,
+    fallback: number | undefined,
+  ): string | null | undefined {
+    const url = store.icon(key, size);
+    if (url !== undefined || fallback === undefined || fallback === size) {
+      return url;
+    }
+    return store.icon(key, fallback);
+  }
   const tooltipsEnabled = $derived(settings?.appearance.tooltips ?? true);
   const bounceEnabled = $derived((settings?.appearance.bounceOnLaunch ?? true) && !reducedMotion);
   const itemMotion = $derived(!reducedMotion);
@@ -1003,6 +1034,29 @@
     void backend.setDockPanelRect(panel).catch(report('set_dock_panel_rect', false));
   }
 
+  /**
+   * The device pixel ratio is `ratio` (`watchDevicePixelRatio`): at
+   * mount, and again when the display scale changes or the window lands on
+   * a monitor with another DPI. The icons follow through `iconSizes`; the
+   * panel is measured again, which snaps it to the new device pixel grid;
+   * and the content size, the hit region and the panel rect go out
+   * again even where their CSS numbers did not change: Rust converts each
+   * report with the window's scale factor, so a report belongs to the scale
+   * it was made at, and the app layer's own re-layout on its
+   * `ScaleFactorChanged` is not the only thing that ties them to the new one.
+   */
+  function onScaleChanged(ratio: number): void {
+    const previous = dpr;
+    dpr = ratio;
+    if (previous === ratio) {
+      return;
+    }
+    reported = { width: 0, height: 0 };
+    reportedHit = null;
+    reportedPanel = null;
+    scheduleMeasure();
+  }
+
   // Settings can change the headroom and the envelope without changing the panel box.
   $effect(() => {
     void magnify;
@@ -1515,7 +1569,7 @@
     const motion = window.matchMedia('(prefers-reduced-motion: reduce)');
     prefersDark = dark.matches;
     reducedMotion = motion.matches;
-    dpr = window.devicePixelRatio || 1;
+    const stopScale = watchDevicePixelRatio(window, onScaleChanged);
     const onDark = (): void => {
       prefersDark = dark.matches;
     };
@@ -1547,6 +1601,7 @@
       finishLanding(false);
       dark.removeEventListener('change', onDark);
       motion.removeEventListener('change', onMotion);
+      stopScale();
       document.removeEventListener('visibilitychange', onVisibility);
       clearTooltip();
       resetMagnification();
@@ -1644,9 +1699,11 @@
         {:else}
           <DockItem
             {item}
-            iconUrl={item.iconKey !== null ? store.icon(item.iconKey, iconSizes.rest) : null}
+            iconUrl={item.iconKey !== null
+              ? iconUrlAt(item.iconKey, iconSizes.rest, previousIconSizes?.rest)
+              : null}
             magnifiedIconUrl={item.iconKey !== null && dualSources
-              ? store.icon(item.iconKey, iconSizes.magnified)
+              ? iconUrlAt(item.iconKey, iconSizes.magnified, previousIconSizes?.magnified)
               : null}
             {showDots}
             tooltip={tooltipKey === item.key || (dropTargetKey === item.key && tooltipsEnabled)}
