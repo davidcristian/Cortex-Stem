@@ -16,10 +16,15 @@
 //! - a window is grouped under the id [`app_id_for`] derives from its *current*
 //!   facts, so a window whose AppUserModelID shows up late simply moves to the
 //!   other item (first-seen order is kept per window, not per app);
-//! - [`EngineOutcome::changed`] is defined by comparing snapshots, not by what
-//!   kind of input arrived, so inputs that only touch facts outside the
-//!   snapshot (monitors, theme, launch targets, identities of apps that are
-//!   not shown) never bump the revision;
+//! - [`EngineOutcome::changed`] is defined by comparing snapshots (items,
+//!   foreground and the per-dock facts in
+//!   [`DockState::docks`]), not by what kind of input arrived, so inputs that
+//!   only touch facts outside the snapshot (theme, launch targets, identities
+//!   of apps that are not shown) never bump the revision. The monitor list
+//!   is such a fact too, except that a `MonitorsChanged` bumps the revision
+//!   when it moves a fullscreen verdict that names no monitor to another
+//!   dock (the primary changed, or the list emptied, or it was reordered
+//!   with no monitor flagged primary);
 //! - `foreground` is the OS truth and is only ever an id the engine tracks. It
 //!   may point at a window no item shows (cloaked, invisible); nothing is
 //!   marked active then, and the item lights up as soon as the window is shown
@@ -70,11 +75,15 @@ pub fn app_id_for(raw: &RawWindow) -> AppId {
 /// What the engine wants the app layer to do after applying an input.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct EngineOutcome {
-    /// The renderable snapshot (items or foreground) differs from the one
-    /// before this input; emit a new `dock://state`. Inputs that only change
-    /// [`DockEngine::monitors`], [`DockEngine::theme`], settings that do not
-    /// alter items, or identities of apps that are not shown leave this
-    /// `false` and do not advance the revision.
+    /// The renderable snapshot (items, foreground or the per-dock facts in
+    /// [`DockState::docks`]) differs from the one before this input;
+    /// emit a new `dock://state`. Inputs that only change
+    /// [`DockEngine::theme`], settings that do not alter items, or
+    /// identities of apps that are not shown leave this `false` and do not
+    /// advance the revision. So does a change of [`DockEngine::monitors`],
+    /// unless it moves a fullscreen verdict that names no monitor to another
+    /// dock (the primary changed, or the list emptied, or it was reordered
+    /// with no monitor flagged primary).
     pub changed: bool,
     /// Apps the engine saw for the first time and has no [`AppIdentity`] for.
     /// Resolve them via the platform and feed back `EngineInput::IdentityResolved`.

@@ -8,8 +8,8 @@
 //!   events + settings into a [`model::DockState`] snapshot and decides what a
 //!   click on an item should do;
 //! - the **overlap rule** ([`overlap`]): whether a window covers the dock's
-//!   resting panel, which the engine reports as
-//!   [`model::DockState::overlapped`].
+//!   resting panel, which the engine reports per dock as
+//!   [`model::DockFacts::overlapped`] in [`model::DockState::docks`].
 //!
 //! Rules (see `AGENTS.md`): no `unsafe`, no platform APIs, no `tauri`. Every
 //! behaviour here is unit-testable on any host, which is where most of the
