@@ -3,6 +3,13 @@
 This file lists every version of the [IPC contract](index.md), newest first. A section name links
 to the file that covers that section now.
 
+- **v1.10 (when overlapped):** `set_dock_panel_rect { rect }` added (`Backend.setDockPanelRect`):
+  the dock window's resting panel in CSS px, whatever the auto-hide phase; new section
+  [Dock panel](dock-panel.md). `DockState.overlapped: boolean` added: the engine's result, `true`
+  while a window of another process covers that panel. It is sent in `dock://state`, which now
+  also fires when it changes. With `autoHide.mode = whenOverlapped` the UI hides the dock after
+  the delay while it is set. The mocks' demo windows now have `rect`s (`MockBackend.moveWindow`,
+  `dockPanel`). No other command or event changed.
 - **v1.9 (fullscreen):** `DockState.fullscreen: boolean` added: the platform's result, `true`
   while a fullscreen app covers the screen. It is sent in `dock://state`, which now also fires
   when it changes; the UI hides the dock while it is set, whatever `autoHide.mode` says.

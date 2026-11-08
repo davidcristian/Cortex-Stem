@@ -11,8 +11,12 @@ is a condition that keeps the dock on screen.
 With `autoHide.mode = always` the panel hides `delayMs` after the pointer
 left it. It never hides while an icon is lifted for a drag, a native menu
 from the dock is open (the span of the `show_*_menu` promise) or an item
-bounces for a launch the dock started. `whenOverlapped` behaves like `off`
-until the platform reports window geometry.
+bounces for a launch the dock started. With `whenOverlapped` the same
+happens only while `DockState.overlapped`
+is set, that is while a window covers its resting
+panel. The dock comes back as soon as no window does. For that, the UI
+reports the resting panel through `set_dock_panel_rect` in every phase
+([Data flow](data-flow.md)).
 
 The panel slides out downwards in 200 ms, by `translateY`: by its own height,
 the margin under it and room for its shadow. Under reduced motion it
@@ -51,4 +55,5 @@ above.
 When fullscreen ends, a mode other than `always` shows the dock again.
 `always` resumes its normal delay, and a hidden dock stays hidden. The
 platform makes the fullscreen decision ([Data flow](data-flow.md)). The UI
-only passes the fact into the machine, next to `attention`.
+only passes the fact into the machine, next to `attention` and `overlapped`,
+which are independent of it; each keeps its effect while it still applies.

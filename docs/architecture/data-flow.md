@@ -36,8 +36,21 @@ UI click ──invoke("primary_click")──▶ service.primary_click
   minimised, maximised, a shell surface or a window of Stem's own process.
   The thread evaluates this once at start and again 150 ms after a
   foreground change, a display change or a move of the foreground window
-  (an `EVENT_OBJECT_LOCATIONCHANGE` hook filtered to that window). It
+  (an `EVENT_OBJECT_LOCATIONCHANGE` hook on every top-level window). It
   emits `PlatformEvent::FullscreenChanged` once
   at start and then only when the result changes. The engine stores the result and
   publishes it as `DockState.fullscreen`, and the UI applies it. There is no separate
   event for it, and nothing polls.
+- **Whether a window covers the dock** is the one fact the engine computes
+  from window frames. The UI reports where its panel rests
+  (`set_dock_panel_rect`, in CSS px). The app layer converts that rect to
+  physical screen pixels (again whenever it moves the window, and `None`
+  while the dock window is hidden) and passes it to the engine as
+  `EngineInput::DockPanelChanged`. The pure `stem_core::overlap` rule then
+  gives `DockState.overlapped`. A window counts when it is visible, not minimised and
+  not cloaked, belongs to another process, and its `RawWindow.rect`
+  intersects the panel. The engine computes the fact again after every
+  input that can change it, and increases the revision only when the
+  fact changes. The events thread keeps the frames current: once per
+  150 ms burst of moves it queries the tracked windows that moved again,
+  and emits `WindowUpdated` only when something changed.

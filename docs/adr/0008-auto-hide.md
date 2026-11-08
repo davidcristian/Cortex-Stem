@@ -47,7 +47,7 @@ work area.
   fades instead. The dock window keeps its size and place, so no
   `SetWindowPos` happens on hide or reveal.
 - **Settings:** `autoHide.mode` is `off` (the default), `always` or
-  `whenOverlapped` (hide while a window overlaps the dock). `autoHide.delayMs` is
+  `whenOverlapped` (see "When overlapped" below). `autoHide.delayMs` is
   250 ms by default and at most 5000 ms.
 - With click-through off, the whole dock window takes clicks even while
   the panel is hidden; the settings page says that auto-hide works best
@@ -94,5 +94,56 @@ reach the dock over a fullscreen app, and `attention` still reveals. When
 fullscreen ends, a mode other than `always` shows the dock again at once;
 `always` resumes its own delay, and a hidden dock stays hidden. `enabled`
 means "the mode is `always`". `autoHideActive` (the mode is `always`, or
-fullscreen) is what the strip and the hit region follow. No setting turns this off: like the
+fullscreen, or the mode is `whenOverlapped` and a window overlaps) is what
+the strip and the hit region follow. No setting turns this off: like the
 stock taskbar's, it is always on.
+
+## When overlapped
+
+With `autoHide.mode = whenOverlapped` the dock hides, after
+`autoHide.delayMs`, while a window on its monitor overlaps the panel where
+it rests, and comes back when none does, the way macOS's dock moves out
+of the way of a window dragged over it. Rust computes the fact from the
+window frames the platform reports (`RawWindow.rect`) and one more input,
+the resting panel.
+
+- **The UI reports the resting panel**, not the hit region. While hidden
+  the hit region is the 2 px strip, which no window could ever overlap, so
+  the dock would hide and come back over and over. The resting panel (where
+  it sits when shown, CSS px of the viewport) is reported through its own
+  command, `set_dock_panel_rect`, whenever that rect changes (content,
+  settings, the window growing for a drag), whatever the auto-hide phase.
+  The app layer converts it once, with the window's position and scale
+  factor, to physical pixels of the virtual desktop (the frames' space). It
+  converts it again whenever it moves the window (a monitor or work-area
+  change moves the window under an unchanged viewport), and hands the
+  service `None` while the dock window is hidden by the tray or the toggle
+  shortcut.
+- **The rule is pure** (`stem_core::overlap`): a window overlaps when it is
+  visible, not minimised, not cloaked (whatever `showOnlyCurrentDesktop`
+  is set to: a cloaked window is not on screen), has a frame, belongs to
+  another process, and its frame intersects the panel with a positive
+  area. The monitor is implicit in the geometry. The engine stores the panel,
+  recomputes the flag after every input that can change it (a frame,
+  visibility, minimised or cloaked state, a window coming or going, a
+  resync, the panel) and puts it in the snapshot as `DockState.overlapped`.
+  A `WindowUpdated` that only moves a window bumps the revision exactly when
+  the flag flips.
+- **Frames stay current** through an `EVENT_OBJECT_LOCATIONCHANGE` hook for
+  every top-level window. The callback keeps only
+  `OBJID_WINDOW`/`CHILDID_SELF` reports about top-level windows. The loop
+  collects the ones it tracks and, 150 ms after the first report of a burst,
+  queries each again and emits `WindowUpdated` only when its facts changed. A
+  dragged window costs the engine at most about seven updates a second, and
+  the UI one `dock://state` per flip. No poll.
+- **In the UI** the same machine takes `overlapped`. With the mode
+  `whenOverlapped` it is active while the flag is set (`autoHideActive`,
+  above). A window arriving over the dock starts the normal countdown
+  (never an instant hide: a window dragged past must not make the dock
+  jump); the strip, `show` and the holds work as always; and the flag
+  clearing shows the dock again at once. `fullscreen` and `overlapped` are
+  independent; whichever still applies keeps the dock hidden. A countdown
+  of 0 ms goes through `pending` and a 0 ms timer in every mode, so a
+  strip-leave and a panel-enter in one dispatch can never hide the dock.
+- The settings page offers *When a window overlaps* next to *Always*; the
+  delay applies to both.
