@@ -32,7 +32,7 @@ hidden reveals its panel when it is shown again (`visibilitychange`).
 An item that needs attention also reveals the dock. The `attention` hold is
 the one hold that reveals when it begins. It keeps the dock up until no item
 needs attention any more, like the stock taskbar on auto-hide. The platform
-has no auto-hide mechanism of its own, and auto-hide needs no IPC change.
+has no auto-hide mechanism of its own.
 
 ## Fullscreen
 

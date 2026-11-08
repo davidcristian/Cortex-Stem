@@ -23,6 +23,16 @@
 //! the UI's latest report is remembered while the setting is off and
 //! replayed when it is turned on again.
 //!
+//! The dock panel: the UI reports where its panel rests
+//! (`set_dock_panel_rect`, CSS px of the viewport); [`apply_dock_panel`]
+//! remembers the rect and hands it to the service in physical pixels of the
+//! virtual desktop ([`panel_on_screen`]: scaled like the hit region and
+//! offset by the window's position), which is what the engine compares
+//! window frames against. The conversion is redone whenever this module
+//! moves the window ([`place`]: a monitor or work-area change moves it
+//! without the UI's viewport changing), and the service gets `None` while
+//! the window is hidden by the tray or the toggle shortcut ([`toggle_dock`]).
+//!
 //! The settings window (`settings`) is an ordinary decorated window,
 //! created on demand and destroyed when closed. Its native title bar follows
 //! the *Theme* setting (`settings.theme`): set when the window is
@@ -68,6 +78,9 @@ pub struct DockGeometry {
     /// `behavior.clickThrough` as currently in effect, so a settings event
     /// only acts on a change.
     click_through: Mutex<Option<bool>>,
+    /// The resting panel of the latest `set_dock_panel_rect`,
+    /// converted again whenever the window moves or is shown.
+    panel_css: Mutex<Option<Rect>>,
 }
 
 /// `settings.theme` as the settings window's title bar last took it (or
@@ -291,6 +304,94 @@ fn push_hit_region(
     }
 }
 
+/// Argument check for `set_dock_panel_rect` (`docs/ipc/dock-panel.md`):
+/// non-negative sizes. Pure.
+pub fn validate_panel_rect(rect: Rect) -> Result<(), String> {
+    if rect.width < 0 || rect.height < 0 {
+        return Err(format!("the panel has a negative size: {rect:?}"));
+    }
+    Ok(())
+}
+
+/// Remember the UI's resting panel (CSS px, viewport-relative) and hand it
+/// to the service in physical screen pixels; `None` goes instead
+/// while the window is hidden. Runs on the main thread.
+pub fn apply_dock_panel(app: &AppHandle, window: &WebviewWindow, rect: Rect) -> Result<(), String> {
+    let service = app
+        .try_state::<crate::AppService>()
+        .ok_or_else(|| "service not available".to_owned())?;
+    if let Some(geometry) = app.try_state::<DockGeometry>() {
+        *geometry.panel_css.lock() = Some(rect);
+    }
+    push_dock_panel(&service.0, window, rect)
+}
+
+/// The service call behind [`apply_dock_panel`]: CSS px → physical screen
+/// px from the window's position and scale factor, then
+/// `DockService::set_dock_panel`; a hidden window reports no panel. Main
+/// thread (the getters are window calls).
+fn push_dock_panel(service: &DockService, window: &WebviewWindow, css: Rect) -> Result<(), String> {
+    if !window.is_visible().map_err(|e| e.to_string())? {
+        service.set_dock_panel(None);
+        return Ok(());
+    }
+    let origin = window.outer_position().map_err(|e| e.to_string())?;
+    let scale = window.scale_factor().map_err(|e| e.to_string())?;
+    let panel = panel_on_screen((origin.x, origin.y), css, scale);
+    log::trace!(
+        "dock panel of {:?}: {css:?} css at {scale}x from {origin:?} -> {panel:?}",
+        window.label()
+    );
+    service.set_dock_panel(Some(panel));
+    Ok(())
+}
+
+/// The window was moved by this module (`place`), or shown again: convert
+/// the UI's latest panel rect for the window's new place. `origin` is the
+/// window's top-left corner in physical pixels when known (just placed),
+/// else it is read from the window. Main thread; silent when the UI has
+/// reported nothing yet.
+fn sync_dock_panel(window: &WebviewWindow, origin: Option<(i32, i32)>) {
+    let app = window.app_handle();
+    let (Some(service), Some(geometry)) = (
+        app.try_state::<crate::AppService>(),
+        app.try_state::<DockGeometry>(),
+    ) else {
+        return;
+    };
+    let Some(css) = *geometry.panel_css.lock() else {
+        return;
+    };
+    let result = match origin {
+        Some(origin) if window.is_visible().unwrap_or(false) => match window.scale_factor() {
+            Ok(scale) => {
+                service
+                    .0
+                    .set_dock_panel(Some(panel_on_screen(origin, css, scale)));
+                Ok(())
+            }
+            Err(e) => Err(e.to_string()),
+        },
+        _ => push_dock_panel(&service.0, window, css),
+    };
+    if let Err(e) = result {
+        log::debug!("the dock panel could not be converted after a move: {e}");
+    }
+}
+
+/// The resting panel in physical pixels of the virtual desktop: `css`
+/// scaled like a hit region (`scale_rect`, rounded outwards) and offset by
+/// the window's top-left corner `origin` (physical px). Pure.
+pub fn panel_on_screen(origin: (i32, i32), css: Rect, scale: f64) -> Rect {
+    let scaled = scale_rect(css, scale);
+    Rect::new(
+        origin.0.saturating_add(scaled.x),
+        origin.1.saturating_add(scaled.y),
+        scaled.width,
+        scaled.height,
+    )
+}
+
 /// The settings changed (settings window, tray, a command): apply
 /// `behavior.clickThrough` and `theme` where they differ
 /// from what is in effect. Runs on the service worker thread; the window
@@ -496,12 +597,16 @@ fn position_window(window: &WebviewWindow, monitor: Option<&MonitorInfo>) -> tau
     place(window, full_width_rect(work_area, height))
 }
 
+/// Size and position the dock window, then redo the panel conversion for
+/// its new place.
 fn place(window: &WebviewWindow, rect: Rect) -> tauri::Result<()> {
     window.set_size(PhysicalSize::new(
         rect.width.unsigned_abs(),
         rect.height.unsigned_abs(),
     ))?;
-    window.set_position(PhysicalPosition::new(rect.x, rect.y))
+    window.set_position(PhysicalPosition::new(rect.x, rect.y))?;
+    sync_dock_panel(window, Some((rect.x, rect.y)));
+    Ok(())
 }
 
 /// Before the platform reported monitors, fall back to Tauri's own view: the
@@ -583,15 +688,20 @@ pub fn open_settings_window(app: &AppHandle) -> tauri::Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Tray left click and the global toggle shortcut: hide the dock if
-/// it is visible, show it otherwise.
+/// it is visible, show it otherwise. A hidden dock has no panel on screen
+/// for the engine; a shown one gets its panel back.
 pub fn toggle_dock(app: &AppHandle) {
     let Some(window) = app.get_webview_window(DOCK_LABEL) else {
         log::warn!("toggle_dock: no dock window");
         return;
     };
     let result = match window.is_visible() {
-        Ok(true) => window.hide(),
-        Ok(false) => window.show(),
+        Ok(true) => window.hide().inspect(|()| {
+            if let Some(service) = app.try_state::<crate::AppService>() {
+                service.0.set_dock_panel(None);
+            }
+        }),
+        Ok(false) => window.show().inspect(|()| sync_dock_panel(&window, None)),
         Err(e) => Err(e),
     };
     match result {
@@ -606,6 +716,8 @@ pub fn reveal_all(app: &AppHandle) {
     for (label, window) in app.webview_windows() {
         if let Err(e) = window.show().and_then(|()| window.set_focus()) {
             log::warn!("reveal {label}: {e}");
+        } else if label.starts_with(DOCK_LABEL) {
+            sync_dock_panel(&window, None);
         }
     }
 }
@@ -678,6 +790,28 @@ mod tests {
         assert!(validate_hit_region(panel, Rect::new(80, 0, 440, 90)).is_err());
         assert!(validate_hit_region(Rect::new(0, 0, -1, 10), Rect::new(0, 0, 10, 10)).is_err());
         assert!(validate_hit_region(Rect::new(0, 0, 1, 1), Rect::new(0, 0, 10, -10)).is_err());
+    }
+
+    #[test]
+    fn panel_on_screen_scales_like_a_hit_region_and_offsets_by_the_window_origin() {
+        // A 561 × 64 panel at (360, 168) in a window placed at (0, 1248) at 1×.
+        assert_eq!(
+            panel_on_screen((0, 1248), Rect::new(360, 168, 561, 64), 1.0),
+            Rect::new(360, 1416, 561, 64)
+        );
+        // 150 %: the CSS rect rounds outwards before the offset (11 css → 16.5 → 16).
+        assert_eq!(
+            panel_on_screen((100, 2000), Rect::new(11, 0, 10, 8), 1.5),
+            Rect::new(116, 2000, 16, 12)
+        );
+        // A monitor left of the primary: negative origin, kept.
+        assert_eq!(
+            panel_on_screen((-1920, 944), Rect::new(600, 20, 500, 70), 1.0),
+            Rect::new(-1320, 964, 500, 70)
+        );
+        assert_eq!(validate_panel_rect(Rect::new(0, 0, 0, 0)), Ok(()));
+        assert!(validate_panel_rect(Rect::new(0, 0, -1, 10)).is_err());
+        assert!(validate_panel_rect(Rect::new(0, 0, 10, -1)).is_err());
     }
 
     #[test]

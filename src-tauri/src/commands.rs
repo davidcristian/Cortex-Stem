@@ -1,4 +1,4 @@
-//! Tauri commands, one per entry in `docs/ipc/commands.md` (v1.8). They
+//! Tauri commands, one per entry in `docs/ipc/commands.md` (v1.10). They
 //! validate and clamp their arguments, then translate and delegate to
 //! `stem-service` (semantics live there).
 //!
@@ -61,6 +61,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         get_icon,
         set_dock_content_size,
         set_dock_hit_region,
+        set_dock_panel_rect,
         shell_action,
         delete_to_recycle_bin,
         open_settings,
@@ -234,6 +235,32 @@ fn set_dock_hit_region(
         "set_dock_hit_region",
         &args,
         crate::windows::apply_hit_region(&app, &window, panel, envelope),
+    )
+}
+
+/// The dock UI reports where its panel rests (CSS px relative to the
+/// viewport, whatever the auto-hide phase; see `docs/ipc/dock-panel.md`),
+/// so the engine can tell when a window overlaps it. Only a dock
+/// window may call it; the rect must have non-negative sizes. Synchronous:
+/// it reads the window's position and scale factor on the main thread, and
+/// the service call only queues the converted rect for its worker.
+#[tauri::command]
+fn set_dock_panel_rect(app: AppHandle, window: tauri::WebviewWindow, rect: Rect) -> CmdResult<()> {
+    let args = (window.label().to_owned(), rect);
+    if !window.label().starts_with(crate::windows::DOCK_LABEL) {
+        return checked(
+            "set_dock_panel_rect",
+            &args,
+            Err::<(), _>("only dock windows have a panel"),
+        );
+    }
+    if let Err(e) = crate::windows::validate_panel_rect(rect) {
+        return checked("set_dock_panel_rect", &args, Err::<(), _>(e));
+    }
+    checked(
+        "set_dock_panel_rect",
+        &args,
+        crate::windows::apply_dock_panel(&app, &window, rect),
     )
 }
 
