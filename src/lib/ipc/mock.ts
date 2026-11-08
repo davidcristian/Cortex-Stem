@@ -966,8 +966,11 @@ class Engine {
     if (!t) {
       return this.apply(false);
     }
-    const changed = t.attention !== flashing;
-    t.attention = flashing;
+    // As `PlatformEvent::WindowAttention` in engine.rs: the window
+    // in front already has the user's attention, so its flash flags nothing.
+    const next = flashing && this.foreground !== id;
+    const changed = t.attention !== next;
+    t.attention = next;
     return this.apply(changed);
   }
 

@@ -1142,6 +1142,22 @@ describe('attention per window (mirror of WindowInfo::needs_attention)', () => {
     // Other items never carry the flag of another app's window.
     expect(states.at(-1)!.items.every((i) => i.windows.every((w) => !w.needsAttention))).toBe(true);
   });
+
+  it('never flags the window in front, like the engine', async () => {
+    // Window 2 (Firefox) is in front in the demo.
+    const b = fast();
+    const states = recordStates(b);
+    await b.getDockState();
+    const before = states.length;
+
+    b.pushAttention(2, true);
+    expect(states.length).toBe(before);
+    expect(flags(await b.getDockState(), app(FIREFOX))).toEqual([false, [false, false]]);
+
+    // A window behind it still asks.
+    b.pushAttention(3, true);
+    expect(flags(states.at(-1)!, app(FIREFOX))).toEqual([true, [false, true]]);
+  });
 });
 
 describe('context menus (docs/ipc/context-menus.md, v1.2; native in Rust, recorded here)', () => {
