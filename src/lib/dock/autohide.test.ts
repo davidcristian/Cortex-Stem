@@ -12,6 +12,7 @@ import {
   INITIAL_AUTO_HIDE,
   isAutoHidden,
   NO_HIT_REGION,
+  onDockAt,
   onlyFullscreenHides,
   REVEAL_STRIP_PX,
   revealStrip,
@@ -1159,6 +1160,42 @@ describe('the reveal strip', () => {
     expect(revealStripHeight('pending', 7.5)).toBe(7.5);
     // Never thinner than the strip itself.
     expect(revealStripHeight('shown', 0)).toBe(REVEAL_STRIP_PX);
+  });
+
+  it('counts the band below the panel as the dock after a drop only with the strip there', () => {
+    // A 400 x 60 panel 8 px above the bottom of a 100 px viewport.
+    const panel = { x: 100, y: 32, width: 400, height: 60 };
+    for (const stripOn of [true, false]) {
+      // Over the panel, whatever the strip.
+      expect(onDockAt(panel, 300, 60, 100, stripOn)).toBe(true);
+      expect(onDockAt(panel, 100, 32, 100, stripOn)).toBe(true);
+      expect(onDockAt(panel, 499, 91, 100, stripOn)).toBe(true);
+      // Beside it, above it, below the viewport: never.
+      expect(onDockAt(panel, 99, 60, 100, stripOn)).toBe(false);
+      expect(onDockAt(panel, 500, 60, 100, stripOn)).toBe(false);
+      expect(onDockAt(panel, 300, 31, 100, stripOn)).toBe(false);
+      expect(onDockAt(panel, 300, 100, 100, stripOn)).toBe(false);
+      // Beside the band.
+      expect(onDockAt(panel, 99, 95, 100, stripOn)).toBe(false);
+      expect(onDockAt(panel, 500, 95, 100, stripOn)).toBe(false);
+    }
+    // The band from the panel's bottom edge down to the viewport's.
+    for (const y of [92, 95, 99]) {
+      expect(onDockAt(panel, 300, y, 100, true)).toBe(true);
+      expect(onDockAt(panel, 300, y, 100, false)).toBe(false);
+    }
+  });
+
+  it('has the strip for a drop in fullscreen at the screen edge and none above a visible taskbar', () => {
+    const panel = { x: 100, y: 32, width: 400, height: 60 };
+    const fullscreen = off().send({ type: 'fullscreen', active: true }).send({ type: 'show' });
+    expect(onDockAt(panel, 300, 95, 100, revealStripOn(fullscreen.state, true))).toBe(true);
+    expect(onDockAt(panel, 300, 95, 100, revealStripOn(fullscreen.state, false))).toBe(false);
+    // `always` keeps its strip on the work area's edge, taskbar or not.
+    const pinned = always().send({ type: 'fullscreen', active: true });
+    expect(onDockAt(panel, 300, 95, 100, revealStripOn(pinned.state, false))).toBe(true);
+    // Auto-hide off: no strip, so the band is not the dock.
+    expect(onDockAt(panel, 300, 95, 100, revealStripOn(INITIAL_AUTO_HIDE, true))).toBe(false);
   });
 
   it('above a visible taskbar the hidden dock comes back only on request or for attention', () => {

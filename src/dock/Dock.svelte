@@ -10,6 +10,7 @@
     hideDelayMs,
     INITIAL_AUTO_HIDE,
     isAutoHidden,
+    onDockAt,
     revealStrip,
     revealStripHeight,
     revealStripOn,
@@ -1241,17 +1242,16 @@
 
   /**
    * (`x`, `y`) is over the panel, or below it down to the window's bottom
-   * edge (the strip): where the pointer counts as on the dock after a drag
-   * that produced no pointer event to say so.
+   * edge while the reveal strip is there to report the pointer leaving
+   * (`onDockAt`; not in fullscreen above a visible taskbar): where
+   * the pointer counts as on the dock after a drag that produced no pointer
+   * event to say so.
    */
   function isOnDock(x: number, y: number): boolean {
     const rect = panelEl?.getBoundingClientRect();
     return (
       rect !== undefined &&
-      x >= rect.left &&
-      x < rect.right &&
-      y >= rect.top &&
-      y < window.innerHeight
+      onDockAt(rect, x, y, window.innerHeight, revealStripOn(autoHide, atScreenEdge))
     );
   }
 

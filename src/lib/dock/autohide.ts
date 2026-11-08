@@ -249,6 +249,28 @@ export function revealStripOn(state: AutoHideState, atScreenEdge: boolean): bool
 }
 
 /**
+ * (`x`, `y`) is on the dock where no pointer event says so (a drag or a
+ * file drag released): over `panel` (the panel as drawn, CSS px of
+ * the viewport), or, with the reveal strip in the DOM (`stripOn`,
+ * `revealStripOn`), in the band below it, as wide as the panel, down to the
+ * bottom edge of a viewport `viewportHeight` px tall: the strip fills that
+ * band while the dock is on screen (`revealStripHeight`), so its
+ * `pointerleave` reports the pointer going. Without a strip (fullscreen
+ * above a visible taskbar, or auto-hide off) nothing there would, and a
+ * pointer counted inside would stay so until it had crossed the panel.
+ */
+export function onDockAt(
+  panel: Rect,
+  x: number,
+  y: number,
+  viewportHeight: number,
+  stripOn: boolean,
+): boolean {
+  const bottom = stripOn ? viewportHeight : panel.y + panel.height;
+  return x >= panel.x && x < panel.x + panel.width && y >= panel.y && y < bottom;
+}
+
+/**
  * The reveal strip's height in `phase`, CSS px: `REVEAL_STRIP_PX` while
  * hidden (the only place the window takes the pointer); on screen, the
  * whole band from the window's bottom edge up to the panel's bottom edge
