@@ -63,6 +63,14 @@
 //!   refuses. Physical pixels of the virtual desktop. It is read whenever
 //!   the window is queried, not on every move: the events thread hooks
 //!   location changes for the foreground window only (`windows::fullscreen`).
+//! - `on_current_desktop` is the shell's answer to
+//!   `IVirtualDesktopManager::IsWindowOnCurrentVirtualDesktop`
+//!   (`windows::virtual_desktop`), asked for every eligible window through
+//!   the calling thread's manager: the events thread has one; a thread
+//!   without one, or a window the shell refuses, gives `None`, and the
+//!   engine falls back to the cloak state. A full enumeration renews the
+//!   manager; a single query reuses it. Eligibility itself does not look
+//!   at it: a shell-cloaked window stays listed, `is_cloaked = true`.
 
 use std::path::PathBuf;
 use std::sync::{Mutex, PoisonError};
@@ -91,7 +99,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{BOOL, PWSTR};
 
-use super::{monitors, util};
+use super::{monitors, util, virtual_desktop};
 use crate::rules::eligibility::{self, Owner, WindowFacts};
 use crate::rules::identity::hwnd_icon_key;
 use crate::rules::process_access::DeniedProcesses;
@@ -128,7 +136,7 @@ pub fn enumerate_taskbar_windows() -> PlatformResult<Vec<RawWindow>> {
     // which outlives the (synchronous) enumeration.
     unsafe { EnumWindows(Some(collect_window), lparam) }?;
 
-    let ctx = QueryContext::new();
+    let ctx = QueryContext::renewed();
     let mut out = Vec::new();
     for hwnd in &handles {
         if let Some(raw) = ctx.query(*hwnd) {
@@ -136,9 +144,14 @@ pub fn enumerate_taskbar_windows() -> PlatformResult<Vec<RawWindow>> {
         }
     }
     log::debug!(
-        "enumerated {} taskbar windows out of {} top-level windows",
+        "enumerated {} taskbar windows out of {} top-level windows; virtual desktop facts {}",
         out.len(),
-        handles.len()
+        handles.len(),
+        if ctx.desktops.is_available() {
+            "asked"
+        } else {
+            "unavailable on this thread"
+        }
     );
     Ok(out)
 }
@@ -175,19 +188,35 @@ unsafe extern "system" fn collect_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
     BOOL(1)
 }
 
-/// Per-call context: our own pid and a COM apartment for the property-store
-/// read, initialised once per enumeration instead of once per window.
+/// Per-call context: our own pid, a COM apartment for the property-store
+/// read, and the thread's virtual desktop manager, initialised once
+/// per enumeration instead of once per window. Field order is drop order:
+/// the manager reference goes before the apartment.
 struct QueryContext {
     own_pid: u32,
+    desktops: virtual_desktop::DesktopQuery,
     _com: util::ComApartment,
 }
 
 impl QueryContext {
+    /// For one window: the thread's manager as it is.
     fn new() -> Self {
+        Self::with(virtual_desktop::DesktopQuery::for_this_thread)
+    }
+
+    /// For a full enumeration: a fresh manager on a thread that has one.
+    fn renewed() -> Self {
+        Self::with(virtual_desktop::DesktopQuery::renewed)
+    }
+
+    fn with(desktops: fn() -> virtual_desktop::DesktopQuery) -> Self {
+        // The apartment first: the manager is created inside it.
+        let com = util::ComApartment::sta();
         Self {
             // SAFETY: GetCurrentProcessId has no preconditions.
             own_pid: unsafe { GetCurrentProcessId() },
-            _com: util::ComApartment::sta(),
+            desktops: desktops(),
+            _com: com,
         }
     }
 
@@ -232,7 +261,7 @@ impl QueryContext {
             is_visible: probe.facts.is_visible,
             is_minimized: probe.is_minimized,
             is_cloaked,
-            on_current_desktop: None,
+            on_current_desktop: self.desktops.is_window_on_current_desktop(hwnd),
             monitor: monitors::monitor_for_window(hwnd),
             rect: window_frame(hwnd),
             icon_key: Some(hwnd_icon_key(id.0, probe.facts.process_id)),

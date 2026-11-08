@@ -16,7 +16,7 @@
 //! | WinEvent   | `EVENT_OBJECT_CREATE`, `EVENT_OBJECT_SHOW`                | `Added`        | `WindowAdded` when `query_window_checked` says eligible (`WindowUpdated` if already known); re-checks when it is only not ready yet |
 //! | WinEvent   | `EVENT_OBJECT_DESTROY`, `EVENT_OBJECT_HIDE`               | `Removed`      | `WindowRemoved` when the window was known; a destroy also drops its pending re-checks |
 //! | WinEvent   | `EVENT_OBJECT_NAMECHANGE`                                 | `TitleChanged` | `WindowUpdated` after the [`TitleDebouncer`] window (≤ 50 ms) |
-//! | WinEvent   | `EVENT_SYSTEM_MINIMIZESTART`, `EVENT_SYSTEM_MINIMIZEEND`, `EVENT_OBJECT_CLOAKED`, `EVENT_OBJECT_UNCLOAKED` | `Updated` | `WindowUpdated` (or `WindowRemoved` when no longer eligible) |
+//! | WinEvent   | `EVENT_SYSTEM_MINIMIZESTART`, `EVENT_SYSTEM_MINIMIZEEND`, `EVENT_OBJECT_CLOAKED`, `EVENT_OBJECT_UNCLOAKED` | `Updated` | `WindowUpdated` (or `WindowRemoved` when no longer eligible); the two cloak events are also counted by the [`DesktopSwitchDetector`] |
 //! | WinEvent   | `EVENT_SYSTEM_FOREGROUND`                                 | `Foreground`   | `ForegroundChanged` |
 //! | Shell hook | `HSHELL_WINDOWCREATED`                                    | `Added`        | as for `EVENT_OBJECT_SHOW` |
 //! | Shell hook | `HSHELL_WINDOWACTIVATED`, `HSHELL_RUDEAPPACTIVATED`       | `Foreground`   | `ForegroundChanged` |
@@ -34,7 +34,7 @@
 //! The constants mirror `winuser.h`; `windows/events.rs` asserts at compile
 //! time that they equal the SDK values from the `windows` crate.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const EVENT_SYSTEM_FOREGROUND: u32 = 0x0003;
 pub const EVENT_SYSTEM_MINIMIZESTART: u32 = 0x0016;
@@ -263,6 +263,121 @@ impl TitleDebouncer {
 
     pub fn is_empty(&self) -> bool {
         self.pending.is_empty()
+    }
+}
+
+/// Tells a virtual-desktop switch from the cloak events it causes.
+///
+/// There is no WinEvent for the switch itself. What arrives is the shell
+/// cloaking every window of the desktop left and uncloaking every window
+/// of the desktop entered, within a few milliseconds; each of those events
+/// already re-queries its own window. A burst of them is the moment to
+/// re-enumerate once, [`SNAPSHOT_DELAY_MS`](Self::SNAPSHOT_DELAY_MS) later
+/// when the shell is done, so that a window whose event was missed, or
+/// whose answer was taken mid-switch, is put right.
+///
+/// Policy: the [`BURST_COUNT`](Self::BURST_COUNT)th cloak or uncloak event
+/// within [`BURST_WINDOW_MS`](Self::BURST_WINDOW_MS) of the first arms the
+/// snapshot (one `true` from [`observe`](Self::observe)); further events
+/// until the snapshot change nothing; the snapshot
+/// [`reset`](Self::reset)s the detector. A lone cloak event (a window
+/// moved to another desktop, a Store app suspending, the Start menu) arms
+/// nothing: its own `WindowUpdated` is enough. Time is an opaque
+/// millisecond counter supplied by the caller, as for [`TitleDebouncer`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DesktopSwitchDetector {
+    /// When the current burst started and how many events it holds.
+    burst: Option<(u64, u32)>,
+    armed: bool,
+}
+
+impl DesktopSwitchDetector {
+    /// Two cloak events this close together are a burst.
+    pub const BURST_WINDOW_MS: u64 = 100;
+    /// How many cloak events make a burst.
+    pub const BURST_COUNT: u32 = 2;
+    /// How long after the burst was detected the snapshot is taken.
+    pub const SNAPSHOT_DELAY_MS: u64 = 400;
+
+    /// A cloak or uncloak event about a top-level window at `now_ms`.
+    /// `true` once per burst: the caller arms a one-shot timer for
+    /// [`SNAPSHOT_DELAY_MS`](Self::SNAPSHOT_DELAY_MS) and, when it fires,
+    /// takes a snapshot and calls [`reset`](Self::reset).
+    pub fn observe(&mut self, now_ms: u64) -> bool {
+        if self.armed {
+            return false;
+        }
+        let (start, count) = match self.burst {
+            Some((start, count)) if now_ms.saturating_sub(start) <= Self::BURST_WINDOW_MS => {
+                (start, count + 1)
+            }
+            _ => (now_ms, 1),
+        };
+        self.burst = Some((start, count));
+        if count >= Self::BURST_COUNT {
+            self.armed = true;
+            return true;
+        }
+        false
+    }
+
+    /// A snapshot was taken, whatever triggered it: start over.
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// A snapshot is pending.
+    pub fn is_armed(&self) -> bool {
+        self.armed
+    }
+}
+
+/// Windows whose `IsWindowOnCurrentVirtualDesktop` refusal has been logged,
+/// the way `rules::process_access::DeniedProcesses` remembers
+/// processes: the shell is still asked on every query (an `HWND` is reused
+/// once its window is destroyed, and a refusal can be transient), the line
+/// is written once per window. Bounded by [`CAPACITY`](Self::CAPACITY);
+/// full, the set starts over, so at worst a line repeats once per
+/// `CAPACITY` further refusals.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DesktopQueryFailures {
+    logged: BTreeSet<u64>,
+}
+
+impl DesktopQueryFailures {
+    /// Most window ids remembered at once.
+    pub const CAPACITY: usize = 256;
+
+    pub const fn new() -> Self {
+        Self {
+            logged: BTreeSet::new(),
+        }
+    }
+
+    /// Window `id` refused the question. `true` when the refusal is new
+    /// (log it); `false` when it was logged before.
+    pub fn note(&mut self, id: u64) -> bool {
+        if self.logged.contains(&id) {
+            return false;
+        }
+        if self.logged.len() >= Self::CAPACITY {
+            self.logged.clear();
+        }
+        self.logged.insert(id)
+    }
+
+    /// Window `id` answered: forget any refusal, so a refusal by the window
+    /// that gets this handle next is logged again.
+    pub fn clear(&mut self, id: u64) {
+        self.logged.remove(&id);
+    }
+
+    pub fn len(&self) -> usize {
+        self.logged.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.logged.is_empty()
     }
 }
 
@@ -568,5 +683,77 @@ mod tests {
         assert_eq!(d.take_due(1000), Vec::<u64>::new());
         // Forgetting an unknown id is a no-op.
         d.forget(6);
+    }
+
+    #[test]
+    fn two_cloak_events_within_100ms_arm_one_snapshot_until_reset() {
+        let mut d = DesktopSwitchDetector::default();
+        assert!(!d.is_armed());
+        // Win+Ctrl+Right: the shell cloaks the windows of one desktop and
+        // uncloaks those of the other, a few ms apart.
+        assert!(!d.observe(1_000));
+        assert!(d.observe(1_003));
+        assert!(d.is_armed());
+        // The rest of the burst, and anything until the snapshot, changes nothing.
+        assert!(!d.observe(1_005));
+        assert!(!d.observe(1_200));
+        assert!(!d.observe(1_399));
+        assert!(d.is_armed());
+        // The snapshot at ~1 400 ms resets; the next switch arms again.
+        d.reset();
+        assert!(!d.is_armed());
+        assert!(!d.observe(5_000));
+        assert!(d.observe(5_010));
+        assert_eq!(DesktopSwitchDetector::SNAPSHOT_DELAY_MS, 400);
+    }
+
+    #[test]
+    fn a_lone_cloak_event_arms_nothing_and_the_window_is_measured_from_the_first() {
+        let mut d = DesktopSwitchDetector::default();
+        // A window moved to another desktop, a Store app suspending, the
+        // Start menu opening and closing: one event each, seconds apart.
+        for now in [0, 2_000, 9_000, 20_000] {
+            assert!(!d.observe(now), "{now}");
+            assert!(!d.is_armed());
+        }
+        // Exactly the window counts; one more ms starts a new burst.
+        let mut d = DesktopSwitchDetector::default();
+        assert!(!d.observe(100));
+        assert!(d.observe(200));
+        let mut d = DesktopSwitchDetector::default();
+        assert!(!d.observe(100));
+        assert!(!d.observe(201));
+        // ...which the next event completes.
+        assert!(d.observe(250));
+        // Three events spread 60 ms apart: the first two are more than the
+        // window apart from the third only if measured from the first.
+        let mut d = DesktopSwitchDetector::default();
+        assert!(!d.observe(0));
+        assert!(d.observe(60));
+    }
+
+    #[test]
+    fn desktop_query_failures_are_logged_once_per_window_and_bounded() {
+        let mut failures = DesktopQueryFailures::new();
+        assert!(failures.is_empty());
+        assert!(failures.note(0x1_0203));
+        assert!(!failures.note(0x1_0203));
+        assert!(failures.note(0x1_0204));
+        assert_eq!(failures.len(), 2);
+        // A later success forgets the refusal: the handle, reused by another
+        // window that refuses, is logged again.
+        failures.clear(0x1_0203);
+        assert!(failures.note(0x1_0203));
+        failures.clear(99);
+        assert_eq!(failures.len(), 2);
+        // Full, the set starts over rather than growing.
+        let mut failures = DesktopQueryFailures::new();
+        for id in 0..DesktopQueryFailures::CAPACITY as u64 {
+            assert!(failures.note(id), "{id}");
+        }
+        assert!(!failures.note(0));
+        assert!(failures.note(DesktopQueryFailures::CAPACITY as u64));
+        assert_eq!(failures.len(), 1);
+        assert!(failures.note(0));
     }
 }

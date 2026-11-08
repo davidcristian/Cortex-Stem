@@ -30,6 +30,12 @@
 //! inheritance ([`CLOAKED_INHERITED`]) are not shown by the taskbar either,
 //! with one exception: UWP frame hosts (`ApplicationFrameWindow`) stay
 //! cloaked while the app is suspended and the taskbar still lists them.
+//! *Where* a cloaked window is, is not an eligibility question: the shell
+//! also cloaks during a desktop-switch animation and the frame a closed
+//! Store app can leave behind, so `windows/virtual_desktop.rs` asks the
+//! shell for every eligible window and reports the answer as
+//! `RawWindow::on_current_desktop`, which the engine prefers to the
+//! cloak state when it is known.
 //!
 //! The constants mirror `dwmapi.h`; `windows/enumerate.rs` asserts at
 //! compile time that they equal the SDK values.

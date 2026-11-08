@@ -73,7 +73,8 @@ without failures.
 - A change of display scale applies without a restart.
 - Clicks outside the panel and the magnified icons reach the desktop and the
   windows behind the dock (`behavior.clickThrough`).
-- A fullscreen app in front hides the dock.
+- `behavior.showOnlyCurrentDesktop` lists only the windows on the current
+  virtual desktop. A fullscreen app in front hides the dock.
 - Each dock item has `role="button"` and an `aria-label`.
 - Bursts of window events are coalesced: title and location changes per
   window, and the service sends at most one state update per 16 ms.

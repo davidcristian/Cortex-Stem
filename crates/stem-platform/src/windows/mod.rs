@@ -22,6 +22,7 @@
 //! - `taskbar`     the stock taskbar's auto-hide state
 //! - `fullscreen`  does the foreground window own the screen
 //! - `dialog`      native message boxes (the crash report)
+//! - `virtual_desktop` which virtual desktop a window is on
 
 pub mod actions;
 pub mod appbar;
@@ -40,6 +41,7 @@ pub mod shell;
 pub mod taskbar;
 pub mod theme;
 pub mod util;
+pub mod virtual_desktop;
 
 use parking_lot::Mutex;
 use stem_core::{

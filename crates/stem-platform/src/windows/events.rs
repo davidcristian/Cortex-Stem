@@ -52,6 +52,20 @@
 //!   in a browser fires dozens of location changes) costs one evaluation,
 //!   against the live `GetForegroundWindow`. `info` on each change
 //!   (`fullscreen on: <class> <title>` / `fullscreen off`).
+//! - Virtual desktops: every query fills
+//!   `RawWindow::on_current_desktop` from the shell's
+//!   `IVirtualDesktopManager` (`windows::virtual_desktop`), whose
+//!   per-thread instance this thread enables in `setup`, inside its COM
+//!   apartment, and releases before it. A desktop switch has no event of
+//!   its own: its signature is the shell cloaking and uncloaking top-level
+//!   windows in a burst, and each of those events already re-queries its
+//!   window. When two of them arrive within 100 ms
+//!   (`rules::events::DesktopSwitchDetector`) the thread arms one
+//!   [`DESKTOP_SWITCH_SETTLE`] timer (400 ms) and, when it fires, emits
+//!   one `WindowsSnapshot` (a re-enumeration, with a fresh manager), so a
+//!   window whose event was missed or whose answer was taken mid-switch is
+//!   put right; any snapshot resets the detector. Debug line: `desktop
+//!   switch settled; re-enumerating`.
 //! - A second thread (`dock-recycle-bin`, [`RecycleBinPoller`]) polls
 //!   `recycle_bin::query` every [`RECYCLE_BIN_POLL`] and emits
 //!   `RecycleBinChanged` on change. `SHQueryRecycleBinW(NULL)` walks every
@@ -203,8 +217,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WNDCLASSEXW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
 };
 
-use super::{actions, enumerate, fullscreen, monitors, recycle_bin, theme, util};
-use crate::rules::events::{self as rules, Intent, TitleDebouncer, TopLevel};
+use super::{actions, enumerate, fullscreen, monitors, recycle_bin, theme, util, virtual_desktop};
+use crate::rules::events::{
+    self as rules, DesktopSwitchDetector, Intent, TitleDebouncer, TopLevel,
+};
 use crate::rules::recheck::{self, Check, RecheckSchedule, Scheduled};
 use crate::{EventSink, PlatformError, PlatformResult};
 
@@ -268,6 +284,11 @@ pub const FULLSCREEN_SETTLE: Duration = Duration::from_millis(150);
 /// are re-queried: a window being dragged is reported to the engine
 /// at most once per this interval.
 pub const LOCATION_SETTLE: Duration = Duration::from_millis(150);
+/// How long after a burst of cloak events (a virtual-desktop switch)
+/// the windows are enumerated again: once the shell has finished cloaking
+/// and uncloaking, one `WindowsSnapshot` puts every window right.
+pub const DESKTOP_SWITCH_SETTLE: Duration =
+    Duration::from_millis(DesktopSwitchDetector::SNAPSHOT_DELAY_MS);
 const START_TIMEOUT: Duration = Duration::from_secs(5);
 const STOP_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -657,7 +678,8 @@ enum Report {
 }
 
 /// Everything the loop owns. Field order is drop order: the timers, then
-/// hooks, then the window, then the COM apartment last.
+/// hooks, then the window, then the virtual desktop manager, then the COM
+/// apartment last.
 struct ThreadState {
     sink: EventSink,
     thread_id: u32,
@@ -684,15 +706,25 @@ struct ThreadState {
     fullscreen: Option<bool>,
     /// The [`FULLSCREEN_SETTLE`] timer, while an evaluation is pending.
     fullscreen_timer: Option<ThreadTimer>,
+    /// Cloak events counted towards a virtual-desktop switch.
+    switch: DesktopSwitchDetector,
+    /// The [`DESKTOP_SWITCH_SETTLE`] timer, while a snapshot is pending.
+    switch_timer: Option<ThreadTimer>,
     last_theme: Option<ThemeInfo>,
     _hooks: Vec<WinEventHook>,
     _window: EventWindow,
+    /// This thread's `IVirtualDesktopManager` slot: released here,
+    /// before the apartment it was created in.
+    _desktops: virtual_desktop::ThreadManager,
     _com: util::ComApartment,
 }
 
 impl ThreadState {
     fn setup(sink: EventSink) -> PlatformResult<Self> {
         let com = util::ComApartment::sta();
+        // Inside the apartment, released before it (field order below); the
+        // manager itself is created by the first query.
+        let desktops = virtual_desktop::ThreadManager::enable();
         let window = EventWindow::create()?;
         let mut hooks = Vec::with_capacity(rules::HOOK_RANGES.len() + 1);
         for &(min, max) in rules::HOOK_RANGES {
@@ -721,9 +753,12 @@ impl ThreadState {
             recheck_timer: None,
             fullscreen: None,
             fullscreen_timer: None,
+            switch: DesktopSwitchDetector::default(),
+            switch_timer: None,
             last_theme: None,
             _hooks: hooks,
             _window: window,
+            _desktops: desktops,
             _com: com,
         })
     }
@@ -810,6 +845,9 @@ impl ThreadState {
         match rules::event_intent(event) {
             Intent::Added => self.on_window_shown(hwnd, cause),
             Intent::Updated => {
+                if event == EVENT_OBJECT_CLOAKED || event == EVENT_OBJECT_UNCLOAKED {
+                    self.on_cloak_event();
+                }
                 self.refresh_window(hwnd, cause);
             }
             Intent::Removed => {
@@ -882,6 +920,39 @@ impl ThreadState {
         {
             self.flush_moved();
         }
+        if self
+            .switch_timer
+            .as_ref()
+            .is_some_and(|t| t.id() == timer_id)
+        {
+            self.on_desktop_switch_settled();
+        }
+    }
+
+    /// An `EVENT_OBJECT_CLOAKED` or `EVENT_OBJECT_UNCLOAKED` about a
+    /// top-level window: the second within 100 ms is a virtual
+    /// desktop switch in progress, so one snapshot is taken
+    /// [`DESKTOP_SWITCH_SETTLE`] from now; when no timer can be had it is
+    /// taken at once rather than never.
+    fn on_cloak_event(&mut self) {
+        let now = self.now_ms();
+        if !self.switch.observe(now) {
+            return;
+        }
+        log::trace!("cloak burst: a desktop switch; snapshot in {DESKTOP_SWITCH_SETTLE:?}");
+        match ThreadTimer::start(DESKTOP_SWITCH_SETTLE) {
+            Some(timer) => self.switch_timer = Some(timer),
+            None => self.on_desktop_switch_settled(),
+        }
+    }
+
+    /// The switch timer fired: enumerate everything again, so the windows
+    /// of both desktops are reported as the shell sees them now.
+    fn on_desktop_switch_settled(&mut self) {
+        // Thread timers repeat; this one is one-shot.
+        self.switch_timer = None;
+        log::debug!("desktop switch settled; re-enumerating");
+        self.emit_snapshot();
     }
 
     /// A top-level window moved or resized: a tracked one is
@@ -1198,6 +1269,10 @@ impl ThreadState {
     }
 
     fn emit_snapshot(&mut self) {
+        // Whatever triggered this snapshot, it is the one a cloak burst was
+        // waiting for.
+        self.switch.reset();
+        self.switch_timer = None;
         match enumerate::enumerate_taskbar_windows() {
             Ok(windows) => {
                 self.known = windows.iter().map(|w| (w.id, w.clone())).collect();
