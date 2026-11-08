@@ -57,7 +57,8 @@ work area.
 
 - The reveal zone is the work area's bottom edge. That is the screen's
   edge only when the stock taskbar is hidden or auto-hidden; with a visible
-  stock taskbar, the strip sits just above it.
+  stock taskbar, the strip sits just above it. Fullscreen alone is
+  the exception: then there is no strip (see "Fullscreen").
 - While the dock is hidden, a click within 2 px of the work area's bottom
   edge goes to the dock (the strip is hit-testable while the pointer is
   inside it). macOS has the same reveal zone.
