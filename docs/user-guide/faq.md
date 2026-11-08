@@ -41,9 +41,10 @@ window.
 
 ## Does the dock replace the system tray?
 
-No. Replacing the notification area is not a goal. The tray icons, the clock
-and the input indicators stay on the stock taskbar, which stays reachable
-with [_Hide the Windows taskbar_](hiding-the-windows-taskbar.md) on.
+No. Replacing the notification area is not a goal, for the reasons in the
+[notification area research](../research/notification-area/index.md). The
+tray icons, the clock and the input indicators stay on the stock taskbar,
+which stays reachable with [_Hide the Windows taskbar_](hiding-the-windows-taskbar.md) on.
 
 ## Which keyboard shortcuts can I use?
 

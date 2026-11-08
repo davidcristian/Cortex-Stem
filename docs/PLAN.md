@@ -169,6 +169,8 @@ folders, widgets (clock, battery, volume), and theming.
 - Replacing the notification area (system tray). The stock taskbar stays
   available for the tray, the input indicators and the clock, auto-hidden
   while _Hide the Windows taskbar_ is on.
+  [`docs/research/notification-area/`](research/notification-area/index.md)
+  explains why and names the smallest useful step.
 - Supporting Windows 10 (DWM backdrop APIs and some WinEvents differ).
 - macOS or Linux builds.
 

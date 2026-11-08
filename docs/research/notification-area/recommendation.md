@@ -20,7 +20,7 @@ without touching the tray.
 Revisit if Microsoft documents a way to host notification icons, if the
 stock taskbar can no longer auto-hide, or if users ask for tray icons in
 the dock. The only route then worth a prototype is D, forwarding and
-log-only first ([work item 5](work-items.md)).
+log-only first ([work item 4](work-items.md)).
 
 ## Consequences
 
@@ -29,4 +29,4 @@ log-only first ([work item 5](work-items.md)).
   input indicator. *Hide the Windows taskbar* stays the way to hide it.
 - Stem's own tray icon stays an ordinary notify icon in Explorer's tray.
 - The non-goals in `docs/PLAN.md` and the user guide's
-  [FAQ](../../user-guide/faq.md) can link to this study.
+  [FAQ](../../user-guide/faq.md) link to this study.

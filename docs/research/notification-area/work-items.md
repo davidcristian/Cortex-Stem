@@ -12,9 +12,7 @@ the study proposes. The other pages refer to them by number.
 3. **An ADR (the next free number): the notification area stays
    Explorer's.** Record the decision in [Recommendation](recommendation.md)
    and its revisit conditions.
-4. **Point the non-goal here.** Link this study from the non-goals in
-   `docs/PLAN.md` and from the user guide's FAQ.
-5. **Tray spy prototype.** Only if the decision is revisited: a forwarding
+4. **Tray spy prototype.** Only if the decision is revisited: a forwarding
    `Shell_TrayWnd` on its own platform thread, behind a developer-only
    switch, that logs icons and does nothing else, to measure completeness,
    Explorer restarts and elevated apps on Windows.
