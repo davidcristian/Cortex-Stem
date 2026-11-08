@@ -12,13 +12,16 @@ settings window opening.
 - `show_item_menu` with a separator key shows nothing and resolves; an unknown key rejects
   (`unknown dock item: <key>`).
 - Contents by item kind (`DockItem.kind`):
-  - `app`: one entry per running window. The entry is the window's title, trimmed and cut to 60
-    characters with `…` appended when it is longer, and it activates the window. Then come a
-    separator if there were any windows; *New window* (`launch_app`, only when the app can be
-    launched: pinned, or an `exe:` or `aumid:` id); *Pin to Stem* or *Unpin from Stem*
-    (`pin_app` / `unpin_app`; *Pin to Stem* is disabled for apps without a launch target, that
-    is `class:` ids); and *Close all windows* when the app has windows (`window_action(Close)`
-    for each).
+  - `app`: one entry per window that the calling dock lists. The entry is the window's title,
+    trimmed and cut to 60 characters with `…` appended when it is longer, and it activates the
+    window. The windows are every running window, or, with a dock per monitor and
+    `showOnlyCurrentMonitor`, the ones on that dock's monitor (see
+    [Dock windows per monitor](windows.md#dock-windows-per-monitor)). Then come a separator if
+    there were any windows; *New window* (`launch_app`, only when the app can be launched:
+    pinned, or an `exe:` or `aumid:` id); *Pin to Stem* or *Unpin from Stem* (`pin_app` /
+    `unpin_app`; *Pin to Stem* is disabled for apps without a launch target, that is `class:`
+    ids); and *Close all windows* when the dock lists windows (it closes each window that the
+    dock lists when the entry is chosen).
   - `launcher`: *Open Start menu*; `taskView`: *Open Task View*; `showDesktop`: *Show desktop*;
     `recycleBin`: *Open*, *Empty Recycle Bin…* (all through `shell_action`).
   - Every item menu ends with a separator, *Stem settings…* (`open_settings`) and *Quit Stem*

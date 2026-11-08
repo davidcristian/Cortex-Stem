@@ -3,6 +3,16 @@
 This file lists every version of the [IPC contract](index.md), newest first. A section name links
 to the file that covers that section now.
 
+- **v1.15 (clicks per dock):** `primary_click` and `show_item_menu` act on the calling dock's own
+  view of the windows. With `Settings.monitors = all` and
+  `Settings.behavior.showOnlyCurrentMonitor` on, a click activates, minimises or cycles among the
+  windows on that dock's monitor only (a pinned app with none there is launched), and the item's
+  menu lists, and *Close all windows* closes, only those windows. With `monitors = primary`, the
+  setting off or the dock's monitor not yet known, nothing changes. New bullet "Clicks and menus
+  use the dock's own view" in [Dock windows per monitor](windows.md#dock-windows-per-monitor);
+  [Context menus](context-menus.md) says which windows. The mock's `primaryClick` narrows the
+  same way for its page. No command or event changed its arguments or payload (`primary_click`
+  reads the calling window, which Tauri injects).
 - **v1.14 (attention per window):** `WindowInfo.needsAttention` added: the window asked for
   attention (taskbar flash) and was not activated since; it is never set on the foreground
   window. The engine fills it from its per-window flag, and `DockItem.needsAttention` stays "any

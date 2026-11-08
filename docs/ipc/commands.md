@@ -10,7 +10,7 @@ arguments are named and how a failed command rejects.
 | `update_settings`       | `{ settings: Settings }`                    | `Settings`         | validates and persists the settings; emits `dock://settings`, and `dock://state` if the items change |
 | `get_theme`             | none                                        | `ThemeInfo`        | |
 | `get_monitors`          | none                                        | `MonitorInfo[]`    | |
-| `primary_click`         | `{ itemKey: string }`                       | `void`             | the engine chooses the action (launch, activate, minimise, cycle windows or a shell action) |
+| `primary_click`         | `{ itemKey: string }`                       | `void`             | the engine chooses the action (launch, activate, minimise, cycle windows or a shell action) among the windows the calling dock window lists (see [Dock windows per monitor](windows.md#dock-windows-per-monitor)) |
 | `window_action`         | `{ windowId: WindowId, action: WindowAction }` | `void`          | a direct action on one window (the window list in a menu, a middle click, and so on) |
 | `launch_app`            | `{ appId: AppId }`                          | `void`             | starts a new instance; emits `dock://item-bounce` |
 | `pin_app`               | `{ appId: AppId }`                          | `void`             | pins a running app (the app needs a known launch target) |

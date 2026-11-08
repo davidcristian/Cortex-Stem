@@ -49,12 +49,23 @@ Each window of the app has a label and loads one page:
   - separators that would then lead, trail or double up are dropped.
 
   The page decides nothing else: the order, the grouping and what a click does stay in Rust.
-  `primary_click` on a secondary dock considers every window of the app, so a pinned app whose
-  only window is on another monitor is activated, not launched again. With the setting off,
-  every dock lists everything.
+  With the setting off, every dock lists everything.
+- **Clicks and menus use the dock's own view** (v1.15). `primary_click` and `show_item_menu`
+  identify the calling window by its label. With `Settings.monitors = all` and
+  `Settings.behavior.showOnlyCurrentMonitor` on, Rust narrows the item's windows to that dock's
+  monitor exactly as the page does, in one place (`DockEngine::windows_on_dock`), before it
+  chooses the action. The dock's monitor is the one the app layer registered for the label with
+  `set_dock_panel_rect`. A click then activates, minimises (`clickActiveMinimizes`) or cycles
+  among the windows on this monitor only, and a pinned app with no window on this monitor is
+  launched, because the dock shows no window for it. The item's menu lists only those windows,
+  and its *Close all windows* closes only them. With `monitors = primary`, with the setting off,
+  or for a dock whose monitor Rust has not registered yet (before the page's first
+  `set_dock_panel_rect`), every window of the app counts. With `monitors = primary` the one
+  dock's page still narrows its list when the setting is on.
 - **Mock.** `MockBackend` takes the page's monitor (`?monitor=`, read by `createBackend`;
   `MockOptions.monitor`) and a `twoMonitors` scenario (`?scenario=twoMonitors`): the demo plus
   `\\.\DISPLAY3`, 1920×1080 to the right of the primary at scale 1.5, with a Notepad window (a
   pinned app) and a Paint window (not pinned) on it. `setFullscreen(active, monitor?)` takes the
   monitor of the fullscreen report (`null`: the primary's dock). `moveWindow` works as with one
-  monitor.
+  monitor. `primaryClick` narrows like Rust for the page's own dock window (`pageLabel`), once
+  its `setDockPanelRect` has registered it.
