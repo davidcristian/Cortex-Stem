@@ -40,10 +40,17 @@ interface DemoWindow {
     pushAttention: (id: number, flashing: boolean) => void;
     /** `FullscreenChanged` as the platform reports it. */
     setFullscreen: (active: boolean) => void;
+    /** A window moved or resized: its new frame in screen px. */
+    moveWindow: (id: number, rect: Rect | null) => void;
+    /** Where the engine believes the dock's panel rests (screen px). */
+    dockPanel: () => Rect | null;
     /** `dock://theme`: what Windows reports for accent, mode, contrast and transparency. */
     setTheme: (theme: ThemeInfo) => void;
   };
 }
+
+/** The mock monitor's work area (`demoMonitor` in src/lib/ipc/mock.ts). */
+const WORK_AREA: Rect = { x: 0, y: 0, width: 2560, height: 1392 };
 
 /** The mock's demo theme facts (`DEFAULT_THEME` in src/lib/ipc/mock.ts). */
 const OS_THEME: ThemeInfo = {
@@ -113,6 +120,21 @@ function fullscreen(page: Page, active: boolean): Promise<void> {
   return page.evaluate((a) => {
     (window as unknown as DemoWindow).__dockMock?.setFullscreen(a);
   }, active);
+}
+
+/** Window `id` was moved or resized to `rect` (screen px of the mock monitor), as the platform reports it. */
+function moveWindow(page: Page, id: number, rect: Rect | null): Promise<void> {
+  return page.evaluate(
+    ([i, r]) => {
+      (window as unknown as DemoWindow).__dockMock?.moveWindow(i, r);
+    },
+    [id, rect] as const,
+  );
+}
+
+/** Where the mock's engine believes the dock's panel rests (screen px), or `null`. */
+function dockPanel(page: Page): Promise<Rect | null> {
+  return page.evaluate(() => (window as unknown as DemoWindow).__dockMock?.dockPanel() ?? null);
 }
 
 /** One computed style property of the first element `locator` matches, or of its pseudo-element. */
@@ -1843,7 +1865,7 @@ test.describe('auto-hide', () => {
     await expect.poll(() => lastRegion(page)).toEqual(stripRegion(atRest, viewport.height));
   });
 
-  test('reduced motion fades instead of sliding; "when overlapped" acts as off for now', async ({
+  test('reduced motion fades instead of sliding; the window shown on request brings it back', async ({
     page,
   }) => {
     await page.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' });
@@ -1880,14 +1902,105 @@ test.describe('auto-hide', () => {
     await page.waitForTimeout(SLIDE_MS * 2);
     await expect(panel).toHaveAttribute('data-autohide', 'shown');
 
-    // "When a window overlaps" needs window geometry the platform does not
-    // report yet (ADR-0008): it reveals the dock and never hides it.
+    // Switching to "when a window overlaps" with nothing over the dock
+    // reveals it and leaves it up, with the plain region.
     await setAutoHide(page, 'whenOverlapped', 0);
     await expect(panel).not.toHaveAttribute('data-autohide');
     await expect(panel).toBeVisible();
     await expect.poll(() => lastRegion(page)).toEqual(atRest);
     await page.waitForTimeout(SLIDE_MS * 2);
     await expect(panel).toBeVisible();
+  });
+
+  test('"when a window overlaps" hides the dock under a window after the delay and shows it when the window is gone', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openDock(page);
+    const viewport = page.viewportSize()!;
+    await expect.poll(() => hitRegions(page)).toHaveLength(1);
+    const atRest = (await hitRegions(page))[0]!;
+    const panel = page.locator(PANEL);
+
+    // The UI reported where the panel rests, whatever the mode: on the
+    // mock monitor the dock window sits on the work area's bottom edge, so
+    // the viewport's y maps to the screen's bottom 240 px
+    // (docs/ipc/dock-panel.md).
+    const onScreen = {
+      ...atRest.panel,
+      y: WORK_AREA.y + WORK_AREA.height - viewport.height + atRest.panel.y,
+    };
+    await expect.poll(() => dockPanel(page)).toEqual(onScreen);
+    expect(onScreen.y).toBeGreaterThan(WORK_AREA.height - 250);
+
+    // The mode goes on with no window near the dock: nothing changes.
+    await setAutoHide(page, 'whenOverlapped');
+    await page.waitForTimeout(DELAY + SLIDE_MS);
+    await expect(panel).not.toHaveAttribute('data-autohide');
+    await expect(panel).toBeVisible();
+    await expect(page.locator(STRIP)).toHaveCount(0);
+    expect(await lastRegion(page)).toEqual(atRest);
+
+    // Code's window is dragged down over the dock: the countdown runs with
+    // the dock still there, then it slides out and the strip is the hit region.
+    const over = { x: onScreen.x - 100, y: onScreen.y - 300, width: 900, height: 400 };
+    await moveWindow(page, CODE_WINDOW_ID, over);
+    await expect(panel).toHaveAttribute('data-autohide', 'pending');
+    await expect(panel).toBeVisible();
+    await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+    await expect(panel).toBeHidden();
+    const strip = stripRegion(atRest, viewport.height);
+    await expect.poll(() => lastRegion(page)).toEqual(strip);
+    expect(await page.locator(STRIP).boundingBox()).toEqual(strip.panel);
+    await page.screenshot({ path: `${OUT}/dock-overlapped-hidden.png` });
+
+    // The bottom edge brings it back over the window; it stays while the
+    // pointer is on it and hides again after the delay once the pointer leaves.
+    await page.mouse.move(strip.panel.x + strip.panel.width / 2, viewport.height - 1);
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+    await expect(panel).toBeVisible();
+    await expect.poll(() => lastRegion(page)).toEqual(shownRegion(atRest, viewport.height));
+    await page.locator(APP_SLOT).nth(2).hover();
+    await page.waitForTimeout(DELAY + SLIDE_MS);
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+    await page.screenshot({ path: `${OUT}/dock-overlapped-revealed.png` });
+    await page.mouse.move(640, 10);
+    await expect(panel).toHaveAttribute('data-autohide', 'pending');
+    await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+
+    // The window is moved away: the dock comes back at once and stays, with
+    // the plain region and no strip.
+    await moveWindow(page, CODE_WINDOW_ID, { x: 200, y: 40, width: 1600, height: 1000 });
+    await expect(panel).not.toHaveAttribute('data-autohide');
+    await expect(panel).toBeVisible();
+    await expect(page.locator(STRIP)).toHaveCount(0);
+    await expect.poll(() => lastRegion(page)).toEqual(atRest);
+    await page.waitForTimeout(DELAY + SLIDE_MS);
+    await expect(panel).toBeVisible();
+    await expect(panel).not.toHaveAttribute('data-autohide');
+
+    // A minimised window (Spotify) moved over the dock changes nothing.
+    const SPOTIFY_WINDOW_ID = 6;
+    await moveWindow(page, SPOTIFY_WINDOW_ID, over);
+    await page.waitForTimeout(DELAY + SLIDE_MS);
+    await expect(panel).not.toHaveAttribute('data-autohide');
+    await expect(panel).toBeVisible();
+
+    // Over it again, then a window passing by during the countdown: it stays.
+    await moveWindow(page, CODE_WINDOW_ID, over);
+    await expect(panel).toHaveAttribute('data-autohide', 'pending');
+    await moveWindow(page, CODE_WINDOW_ID, { x: 200, y: 40, width: 1600, height: 1000 });
+    await expect(panel).not.toHaveAttribute('data-autohide');
+    await page.waitForTimeout(DELAY + SLIDE_MS);
+    await expect(panel).toBeVisible();
+
+    // With the mode off the same move does nothing.
+    await setAutoHide(page, 'off');
+    await moveWindow(page, CODE_WINDOW_ID, over);
+    await page.waitForTimeout(DELAY + SLIDE_MS);
+    await expect(panel).not.toHaveAttribute('data-autohide');
+    await expect(panel).toBeVisible();
+    expect(await lastRegion(page)).toEqual(atRest);
   });
 
   test('a fullscreen app hides it at once with auto-hide off; the strip brings it back; the end of fullscreen shows it', async ({
@@ -2085,14 +2198,15 @@ test.describe('settings window', () => {
     await expect(page.locator('.status')).toHaveText('Saved');
     expect((await page.evaluate(SETTINGS_MOCK))?.system.hideWindowsTaskbar).toBe(true);
 
-    // Disabled, not-yet-available options stay disabled.
+    // Disabled, not-yet-available options stay disabled; "when a window
+    // overlaps" is available.
     await expect(page.locator('#current-monitor')).toBeDisabled();
     await expect(page.locator('#position option[value="left"]')).toBeDisabled();
-    await expect(page.locator('#auto-hide option[value="whenOverlapped"]')).toBeDisabled();
+    await expect(page.locator('#auto-hide option[value="whenOverlapped"]')).toBeEnabled();
     await expect(page.locator('#reserve-space')).toBeDisabled();
   });
 
-  test('auto-hide can be turned on; "when overlapped" is not there yet and the notes say so', async ({
+  test('auto-hide offers always and "when a window overlaps", and the notes say what each does', async ({
     page,
   }) => {
     await page.emulateMedia({ colorScheme: 'dark' });
@@ -2103,16 +2217,24 @@ test.describe('settings window', () => {
     await expect(mode).toHaveValue('off');
     await expect(page.locator('#auto-hide option[value="always"]')).toBeEnabled();
     const overlapped = page.locator('#auto-hide option[value="whenOverlapped"]');
-    await expect(overlapped).toBeDisabled();
-    await expect(overlapped).toHaveText(/acts as Off/);
-    await expect(page.locator('#auto-hide-description')).toContainText('bottom edge below it');
-    await expect(page.locator('#auto-hide-description')).toContainText('click-through on');
+    await expect(overlapped).toBeEnabled();
+    await expect(overlapped).toHaveText('When a window overlaps');
+    await expect(overlapped).not.toHaveText(/not yet|acts as Off/);
+    const description = page.locator('#auto-hide-description');
+    await expect(description).toContainText('When a window overlaps: only while a window covers');
+    await expect(description).toContainText('bottom edge below it');
+    await expect(description).toContainText('click-through on');
+    await expect(description).not.toContainText(/not yet/);
+    await expect(page.locator('#auto-hide-delay-description')).toContainText(
+      'after a window starts to overlap',
+    );
 
     await mode.selectOption('always');
     await expect.poll(async () => (await saved())?.mode).toBe('always');
     await expect(page.locator('.status')).toHaveText('Saved');
 
-    // The delay is in milliseconds, 50 at a time from the keyboard.
+    // The delay is in milliseconds, 50 at a time from the keyboard; it
+    // applies to both modes.
     const delay = page.locator('#auto-hide-delay');
     await expect(page.locator('output[for="auto-hide-delay"]')).toHaveText('250 ms');
     await delay.focus();
@@ -2120,6 +2242,12 @@ test.describe('settings window', () => {
     await expect(page.locator('output[for="auto-hide-delay"]')).toHaveText('300 ms');
     await expect.poll(async () => (await saved())?.delayMs).toBe(300);
     await expect(page.locator('.status')).toHaveText('Saved');
+
+    await mode.selectOption('whenOverlapped');
+    await expect.poll(async () => (await saved())?.mode).toBe('whenOverlapped');
+    await expect(mode).toHaveValue('whenOverlapped');
+    await expect(page.locator('.status')).toHaveText('Saved');
+    expect((await saved())?.delayMs).toBe(300);
 
     await page.locator('#auto-hide').scrollIntoViewIfNeeded();
     await page.screenshot({ path: `${OUT}/settings-autohide.png` });

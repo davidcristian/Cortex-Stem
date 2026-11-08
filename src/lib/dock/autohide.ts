@@ -13,9 +13,10 @@
  *     └──────────strip touched, or an item needs attention──────┘
  * ```
  *
- * Only `autoHide.mode = always` hides. `off` never does, and neither does
- * `whenOverlapped` until the platform can report window geometry (ADR-0008);
- * switching away from `always` reveals at once. A hold (an icon lifted for
+ * `autoHide.mode = always` hides whenever the pointer is away; `off` never
+ * does; `whenOverlapped` hides only while `DockState.overlapped`
+ * says a window covers the resting panel (see below). Switching to a mode
+ * that does not hide right now reveals at once. A hold (an icon lifted for
  * a drag, a native context menu open, an item bouncing for a launch the dock
  * started, a file from the shell being dragged over the dock) keeps the dock
  * up while it lasts but never reveals a hidden one.
@@ -39,6 +40,22 @@
  * that is hidden stays hidden. `enabled` keeps meaning "the mode is
  * `always`"; `autoHideActive` is what the UI reads for the strip and the
  * hit region.
+ *
+ * When overlapped: with the mode `whenOverlapped` (`dodges`), the
+ * `overlapped` event carries `DockState.overlapped`, the engine's verdict
+ * that a window of another process covers the resting panel. While it is
+ * set the machine is active exactly as with `always`: the dock hides after
+ * `delayMs` once the pointer is away (never at once, so a window dragged
+ * past does not make it jump), the strip, `show` and the holds work as
+ * usual. When it clears the dock comes back at once (a countdown is
+ * dropped), unless `always` or fullscreen keeps the machine active.
+ * `fullscreen` and `overlapped` are independent facts; `autoHideActive` is
+ * "the mode is `always`, or fullscreen, or the mode is `whenOverlapped` and
+ * a window overlaps".
+ *
+ * A countdown of 0 ms also goes through `pending` and a 0 ms timer, so two
+ * events of one dispatch (a strip-leave followed by a panel-enter) can
+ * never hide the dock between them, whatever the mode.
  */
 
 import type { AutoHideMode } from '$lib/ipc/generated/AutoHideMode';
@@ -79,10 +96,14 @@ export const REVEALING_HOLDS: ReadonlySet<AutoHideHold> = new Set<AutoHideHold>(
 export interface AutoHideState {
   /** `autoHide.mode` is `always`. */
   readonly enabled: boolean;
+  /** `autoHide.mode` is `whenOverlapped`: the dock hides while `overlapped`. */
+  readonly dodges: boolean;
   /** `autoHide.delayMs`, clamped to 0..=5000 and whole. */
   readonly delayMs: number;
   /** `DockState.fullscreen`: a fullscreen app owns the screen; the dock hides with no delay. */
   readonly fullscreen: boolean;
+  /** `DockState.overlapped`: a window covers the resting panel. Only `dodges` acts on it. */
+  readonly overlapped: boolean;
   readonly phase: AutoHidePhase;
   /** The last pointer event put the pointer over the panel or the reveal strip. */
   readonly pointerInside: boolean;
@@ -106,6 +127,8 @@ export type AutoHideEvent =
   | { readonly type: 'hold'; readonly hold: AutoHideHold; readonly active: boolean }
   /** `DockState.fullscreen` changed. Idempotent. */
   | { readonly type: 'fullscreen'; readonly active: boolean }
+  /** `DockState.overlapped` changed. Idempotent. */
+  | { readonly type: 'overlapped'; readonly active: boolean }
   /** The timer armed on entering `pending` fired. */
   | { readonly type: 'timeout' };
 
@@ -123,25 +146,33 @@ export interface AutoHideStep {
 /** Auto-hide off, the dock on screen, the pointer assumed away until an event says otherwise. */
 export const INITIAL_AUTO_HIDE: AutoHideState = {
   enabled: false,
+  dodges: false,
   delayMs: 0,
   fullscreen: false,
+  overlapped: false,
   phase: 'shown',
   pointerInside: false,
   holds: { drag: false, menu: false, bounce: false, fileDrag: false, attention: false },
 };
 
-/** Auto-hide applies to this mode now (ADR-0008: `whenOverlapped` waits for window geometry). */
+/** The mode hides whenever the pointer is away. */
 export function autoHideEnabled(mode: AutoHideMode): boolean {
   return mode === 'always';
 }
 
+/** The mode hides only while a window overlaps the dock. */
+export function autoHideDodges(mode: AutoHideMode): boolean {
+  return mode === 'whenOverlapped';
+}
+
 /**
  * The dock hides in `state`: the mode is `always`, or a fullscreen app owns
- * the screen. What decides whether the reveal strip is in the DOM
- * and the hit region follows the phase.
+ * the screen, or the mode is `whenOverlapped` and a window covers
+ * the dock. What decides whether the reveal strip is in the DOM and
+ * the hit region follows the phase.
  */
 export function autoHideActive(state: AutoHideState): boolean {
-  return state.enabled || state.fullscreen;
+  return state.enabled || state.fullscreen || (state.dodges && state.overlapped);
 }
 
 /** How long the timer an `arm` asks for runs: no delay at all while fullscreen. */
@@ -170,11 +201,10 @@ function wantsHide(state: AutoHideState): boolean {
  * should be in. `hidden` is sticky while auto-hide is active: only `strip`,
  * `show` and a revealing hold leave it, by setting the phase to `shown`
  * before calling this. `restart` re-arms a running countdown (the delay
- * changed). A countdown of 0 ms hides at once, except while fullscreen,
- * where it goes through `pending` and a 0 ms timer: the pointer leaving
- * the strip for the panel must not hide the dock between two events of
- * one dispatch (the `fullscreen` event itself hides at once, see
- * `autoHideStep`).
+ * changed). A countdown always goes through `pending` and a timer, a 0 ms
+ * one included: the pointer leaving the strip for the panel must not hide
+ * the dock between two events of one dispatch (only the `fullscreen` event
+ * itself hides at once, see `autoHideStep`).
  */
 function settle(next: AutoHideState, restart = false): AutoHideStep {
   const wasPending = next.phase === 'pending';
@@ -190,9 +220,6 @@ function settle(next: AutoHideState, restart = false): AutoHideStep {
   if (wasPending && !restart) {
     return { state: next, timer: 'none' };
   }
-  if (!next.fullscreen && next.delayMs === 0) {
-    return { state: { ...next, phase: 'hidden' }, timer: wasPending ? 'clear' : 'none' };
-  }
   return { state: { ...next, phase: 'pending' }, timer: 'arm' };
 }
 
@@ -201,9 +228,11 @@ export function autoHideStep(state: AutoHideState, event: AutoHideEvent): AutoHi
   switch (event.type) {
     case 'configure': {
       const enabled = autoHideEnabled(event.mode);
+      const dodges = autoHideDodges(event.mode);
       const delayMs = clampDelay(event.delayMs);
-      const restart = enabled !== state.enabled || delayMs !== state.delayMs;
-      return settle({ ...state, enabled, delayMs }, restart);
+      const restart =
+        enabled !== state.enabled || dodges !== state.dodges || delayMs !== state.delayMs;
+      return settle({ ...state, enabled, dodges, delayMs }, restart);
     }
     case 'pointer':
       return settle({ ...state, pointerInside: event.inside });
@@ -248,8 +277,21 @@ export function autoHideStep(state: AutoHideState, event: AutoHideEvent): AutoHi
       // Begun with the pointer over the dock (or a hold on): it stays until
       // the pointer leaves. Over: the mode decides again, a running 0 ms
       // countdown restarted with the real delay; a hidden dock stays hidden
-      // with the mode `always`, and comes back with any other.
+      // while `always` or an overlap keeps the machine active, and comes
+      // back otherwise.
       return settle(next, !event.active);
+    }
+    case 'overlapped': {
+      if (event.active === state.overlapped) {
+        return { state, timer: 'none' };
+      }
+      // A window came over the dock: with the mode `whenOverlapped` the
+      // normal countdown starts (never an instant hide: a window dragged
+      // past must not make the dock jump), unless the pointer is over it or
+      // a hold is on. It left: the dock comes back at once, a running
+      // countdown dropped, unless `always` or fullscreen still applies. With
+      // any other mode the fact is kept and changes nothing.
+      return settle({ ...state, overlapped: event.active });
     }
     case 'timeout':
       if (state.phase !== 'pending') {

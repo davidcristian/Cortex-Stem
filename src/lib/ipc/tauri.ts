@@ -164,6 +164,10 @@ export class TauriBackend implements Backend {
     });
   }
 
+  setDockPanelRect(rect: Rect): Promise<void> {
+    return invoke<void>('set_dock_panel_rect', { rect: integerRect(rect) });
+  }
+
   shellAction(action: ShellAction): Promise<void> {
     return invoke<void>('shell_action', { action });
   }

@@ -1,5 +1,5 @@
 /**
- * The frontend's only door to the Rust side (docs/ipc/, contract v1.9).
+ * The frontend's only door to the Rust side (docs/ipc/, contract v1.10).
  *
  * One method per command and one `on` subscription per event (plus
  * `onFileDrag` for Tauri's own file drag events). Components
@@ -64,7 +64,7 @@ export type FileDragEvent =
 export type FileDragHandler = (event: FileDragEvent) => void;
 
 /**
- * Commands and events of docs/ipc/ v1.9. Method names are the command
+ * Commands and events of docs/ipc/ v1.10. Method names are the command
  * names in camelCase; argument order follows the command's argument list.
  *
  * Failed commands reject with a `string` (the Rust error message).
@@ -97,6 +97,13 @@ export interface Backend {
    * it stays clickable until the pointer leaves `envelope`.
    */
   setDockHitRegion(panel: Rect, envelope: Rect): Promise<void>;
+  /**
+   * Where the calling dock window's panel rests (docs/ipc/dock-panel.md):
+   * integer CSS px relative to the viewport, whatever the auto-hide
+   * phase. Rust converts it to screen pixels and the engine reports
+   * `DockState.overlapped` against it.
+   */
+  setDockPanelRect(rect: Rect): Promise<void>;
   /** Run a shell action directly (menus, Recycle Bin "Empty"). */
   shellAction(action: ShellAction): Promise<void>;
   /**

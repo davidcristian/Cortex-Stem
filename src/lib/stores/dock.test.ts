@@ -20,6 +20,7 @@ const snapshot = (revision: number): DockState => ({
   items: [],
   foreground: null,
   fullscreen: false,
+  overlapped: false,
 });
 
 const THEME: ThemeInfo = { accent: '#0078D4', dark: true, highContrast: false, transparency: true };
@@ -92,6 +93,7 @@ class FakeBackend implements Backend {
 
   async setDockContentSize(): Promise<void> {}
   async setDockHitRegion(): Promise<void> {}
+  async setDockPanelRect(): Promise<void> {}
   async shellAction(): Promise<void> {}
   async deleteToRecycleBin(): Promise<void> {}
   async openSettings(): Promise<void> {}

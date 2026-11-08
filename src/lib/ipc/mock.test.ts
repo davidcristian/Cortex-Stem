@@ -4,6 +4,9 @@ import type { DockState } from '$lib/ipc/generated/DockState';
 import type { Settings } from '$lib/ipc/generated/Settings';
 
 import type { BouncePayload, FileDragEvent } from './backend';
+import type { RawWindow } from '$lib/ipc/generated/RawWindow';
+import type { Rect } from '$lib/ipc/generated/Rect';
+
 import {
   appIdForExe,
   colorFor,
@@ -11,6 +14,9 @@ import {
   fileStem,
   MockBackend,
   nothingToRecycle,
+  overlapped,
+  panelOnScreen,
+  rectsIntersect,
   recyclePlan,
   validateSettings,
   type MockOptions,
@@ -529,6 +535,183 @@ describe('revisions and events', () => {
     expect(states).toHaveLength(2);
     expect(states[1]!.fullscreen).toBe(false);
     expect(states[1]!.revision).toBe(before.revision + 2);
+  });
+});
+
+describe('a window over the dock (mirror of crates/stem-core/src/overlap.rs)', () => {
+  /** A 560 × 72 panel at the bottom of the mock monitor's 2560 × 1392 work area. */
+  const PANEL: Rect = { x: 1000, y: 1320, width: 560, height: 72 };
+  /** A frame covering the panel's left half. */
+  const OVER: Rect = { x: 600, y: 900, width: 700, height: 480 };
+  /** A frame in the top-left corner, clear of the panel. */
+  const CLEAR: Rect = { x: 0, y: 0, width: 800, height: 600 };
+
+  function framed(id: number, rect: Rect | null, extra: Partial<RawWindow> = {}): RawWindow {
+    return {
+      id,
+      title: `W${id}`,
+      className: 'Window',
+      processId: 1000 + id,
+      exePath: 'C:\\a.exe',
+      appUserModelId: null,
+      isVisible: true,
+      isMinimized: false,
+      isCloaked: false,
+      monitor: null,
+      rect,
+      iconKey: null,
+      ...extra,
+    };
+  }
+
+  it('rectsIntersect needs a positive shared area; touching edges do not count', () => {
+    const a = { x: 0, y: 0, width: 10, height: 10 };
+    expect(rectsIntersect(a, { x: 5, y: 5, width: 10, height: 10 })).toBe(true);
+    expect(rectsIntersect(a, { x: 2, y: 2, width: 2, height: 2 })).toBe(true);
+    expect(rectsIntersect(a, { x: 10, y: 0, width: 10, height: 10 })).toBe(false);
+    expect(rectsIntersect(a, { x: 0, y: 10, width: 10, height: 10 })).toBe(false);
+    expect(rectsIntersect(a, { x: 10, y: 10, width: 10, height: 10 })).toBe(false);
+    expect(rectsIntersect(a, { x: 5, y: 5, width: 0, height: 10 })).toBe(false);
+    expect(rectsIntersect(a, { x: 5, y: 5, width: 10, height: -1 })).toBe(false);
+  });
+
+  it('overlapped: a shown window of another process whose frame intersects the panel', () => {
+    const over = framed(1, OVER);
+    const beside = framed(2, { x: 0, y: 0, width: 900, height: 1392 });
+    const above = framed(3, { x: 0, y: 0, width: 2560, height: 1320 });
+    expect(overlapped(PANEL, [beside, above, over], null)).toBe(true);
+    expect(overlapped(PANEL, [beside, above], null)).toBe(false);
+    expect(overlapped(PANEL, [], null)).toBe(false);
+    expect(overlapped(null, [over], null)).toBe(false);
+    expect(overlapped({ ...PANEL, width: 0 }, [over], null)).toBe(false);
+    // One pixel is enough; an edge is not.
+    expect(
+      overlapped(PANEL, [framed(4, { x: 1559, y: 1391, width: 100, height: 100 })], null),
+    ).toBe(true);
+    expect(
+      overlapped(PANEL, [framed(5, { x: 1560, y: 1320, width: 100, height: 100 })], null),
+    ).toBe(false);
+    // Not on screen, or no frame: never.
+    const frame = { x: 0, y: 0, width: 2560, height: 1392 };
+    expect(overlapped(PANEL, [framed(6, frame, { isMinimized: true })], null)).toBe(false);
+    expect(overlapped(PANEL, [framed(7, frame, { isCloaked: true })], null)).toBe(false);
+    expect(overlapped(PANEL, [framed(8, frame, { isVisible: false })], null)).toBe(false);
+    expect(overlapped(PANEL, [framed(9, null)], null)).toBe(false);
+    // Our own windows never count.
+    expect(overlapped(PANEL, [framed(10, frame)], 1010)).toBe(false);
+    expect(overlapped(PANEL, [framed(10, frame)], 1011)).toBe(true);
+  });
+
+  it('panelOnScreen anchors the viewport to the bottom-left of the work area', () => {
+    const workArea = { x: 0, y: 0, width: 2560, height: 1392 };
+    // Playwright's 1280 × 240 viewport: the panel at y 168 rests 72 px above the screen's bottom.
+    expect(panelOnScreen({ x: 360, y: 168, width: 561, height: 64 }, workArea, 240)).toEqual({
+      x: 360,
+      y: 1320,
+      width: 561,
+      height: 64,
+    });
+    // The window grew for a drag (viewport 960 high; the UI reports y + 720): the same spot.
+    expect(panelOnScreen({ x: 360, y: 888, width: 561, height: 64 }, workArea, 960)).toEqual({
+      x: 360,
+      y: 1320,
+      width: 561,
+      height: 64,
+    });
+    // A work area that does not start at the origin.
+    expect(
+      panelOnScreen(
+        { x: 10, y: 20, width: 30, height: 40 },
+        { x: -1920, y: 100, width: 1920, height: 900 },
+        100,
+      ),
+    ).toEqual({ x: -1910, y: 920, width: 30, height: 40 });
+  });
+
+  it('the demo windows have frames on the mock monitor, none over a panel at its bottom', async () => {
+    const b = fast();
+    const panel = (await b.getDockState()).items; // identities resolved; windows are in the engine
+    expect(panel.length).toBeGreaterThan(0);
+    const windows = [...b['engine'].windows.values()].map((t) => t.raw);
+    expect(windows).toHaveLength(6);
+    for (const w of windows) {
+      expect(w.rect).not.toBeNull();
+      expect(w.rect!.x).toBeGreaterThanOrEqual(0);
+      expect(w.rect!.y).toBeGreaterThanOrEqual(0);
+      expect(w.rect!.x + w.rect!.width).toBeLessThanOrEqual(2560);
+      expect(w.rect!.y + w.rect!.height).toBeLessThanOrEqual(1392 - 250);
+    }
+    expect(overlapped({ x: 0, y: 1392 - 250, width: 2560, height: 250 }, windows, null)).toBe(
+      false,
+    );
+    // Twenty apps, nineteen windows (Chrome has three; eight pinned apps have none).
+    const many = fast({ scenario: 'many' });
+    const manyWindows = [...many['engine'].windows.values()].map((t) => t.raw);
+    expect(manyWindows).toHaveLength(19);
+    expect(overlapped({ x: 0, y: 1392 - 250, width: 2560, height: 250 }, manyWindows, null)).toBe(
+      false,
+    );
+  });
+
+  it('setDockPanelRect and moveWindow drive DockState.overlapped; only flips emit a state', async () => {
+    // No `window` in node: viewport px are screen px (see MockOptions.viewportHeight).
+    const b = fast();
+    const states = recordStates(b);
+    const before = await b.getDockState();
+    expect(before.overlapped).toBe(false);
+    expect(b.dockPanel()).toBeNull();
+
+    await b.setDockPanelRect(PANEL);
+    expect(b.calls).toEqual([{ type: 'setDockPanelRect', rect: PANEL }]);
+    expect(b.dockPanel()).toEqual(PANEL);
+    // Every demo window is clear of it: nothing emitted.
+    expect(states).toHaveLength(0);
+
+    // Code's window is dragged over the dock: a rect-only update, one state.
+    b.moveWindow(4, OVER);
+    expect(states).toHaveLength(1);
+    expect(states[0]!.overlapped).toBe(true);
+    expect(states[0]!.revision).toBe(before.revision + 1);
+    expect(keys(states[0]!)).toEqual(keys(before));
+    expect(states[0]!.foreground).toBe(before.foreground);
+    // A nudge that keeps it over the dock: stored, nothing emitted.
+    b.moveWindow(4, { ...OVER, x: OVER.x + 20 });
+    expect(states).toHaveLength(1);
+    expect(b['engine'].windows.get(4)!.raw.rect).toEqual({ ...OVER, x: OVER.x + 20 });
+    // Away again: cleared.
+    b.moveWindow(4, CLEAR);
+    expect(states).toHaveLength(2);
+    expect(states[1]!.overlapped).toBe(false);
+
+    // A minimised window over the dock does not count; restoring it does.
+    b.moveWindow(6, OVER);
+    expect(states).toHaveLength(2);
+    await b.windowAction(6, 'restore');
+    expect(states.at(-1)!.overlapped).toBe(true);
+    // An unreadable frame says nothing.
+    b.moveWindow(6, null);
+    expect(states.at(-1)!.overlapped).toBe(false);
+    // Unknown windows are ignored.
+    const count = states.length;
+    b.moveWindow(99, OVER);
+    expect(states).toHaveLength(count);
+
+    // The panel moves (a wider dock) but stays clear: nothing emitted; onto
+    // a window: set.
+    await b.setDockPanelRect({ ...PANEL, x: 900, width: 760 });
+    expect(states).toHaveLength(count);
+    await b.setDockPanelRect({ x: 200, y: 40, width: 100, height: 100 });
+    expect(states.at(-1)!.overlapped).toBe(true);
+    expect((await b.getDockState()).overlapped).toBe(true);
+  });
+
+  it('a viewport height places the reported panel like the app layer does', async () => {
+    const b = fast({ viewportHeight: 240 });
+    await b.setDockPanelRect({ x: 360, y: 168, width: 561, height: 64 });
+    expect(b.dockPanel()).toEqual({ x: 360, y: 1320, width: 561, height: 64 });
+    expect((await b.getDockState()).overlapped).toBe(false);
+    b.moveWindow(1, { x: 0, y: 1200, width: 2560, height: 192 });
+    expect((await b.getDockState()).overlapped).toBe(true);
   });
 });
 

@@ -39,7 +39,8 @@ has no auto-hide mechanism of its own.
 While `DockState.fullscreen` is
 set, the same machine behaves as if the mode were `always` with no delay,
 whatever the mode is. `autoHideActive`, which the strip and the hit region
-follow, is true when the mode is `always` or during fullscreen.
+follow, is true when the mode is `always`, during fullscreen, or when the
+mode is `whenOverlapped` and a window overlaps the panel.
 
 With the pointer away the dock slides out at once. With the pointer over
 it the dock stays, and it hides the moment the pointer leaves, through

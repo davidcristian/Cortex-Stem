@@ -40,6 +40,7 @@
     magnifiedRise,
     rectContainsPoint,
     sameHitRegion,
+    sameRect,
     sameSnap,
     snapOffsets,
     type HitRegion,
@@ -832,6 +833,8 @@
   let snapMargins: SnapMargins = { marginLeft: 0, marginBottom: BOTTOM_MARGIN };
   let reported = { width: 0, height: 0 };
   let reportedHit: HitRegion | null = null;
+  /** The resting panel of the latest `set_dock_panel_rect`. */
+  let reportedPanel: Rect | null = null;
   let measureFrame = 0;
 
   /** Measure on the next frame, at most once per frame. */
@@ -968,6 +971,7 @@
   }
 
   function reportHitRegion(): void {
+    reportDockPanel();
     const region = currentHitRegion();
     if (region === null || (reportedHit !== null && sameHitRegion(reportedHit, region))) {
       return;
@@ -976,6 +980,27 @@
     void backend
       .setDockHitRegion(region.panel, region.envelope)
       .catch(report('set_dock_hit_region', false));
+  }
+
+  /**
+   * Where the panel rests (docs/ipc/dock-panel.md): the measured
+   * rest box in the current viewport, whatever the auto-hide phase (the
+   * hidden dock's hit region is the strip, which nothing could overlap, so
+   * the overlap reference is reported on its own). The window grows for a
+   * drag with its bottom edge fixed, so the panel's y shifts by the growth,
+   * like the hit region's. Sent only when it changed.
+   */
+  function reportDockPanel(): void {
+    if (measured === null || measured.width === 0) {
+      return;
+    }
+    const delta = window.innerHeight - measuredViewportHeight;
+    const panel = integerRect({ ...measured, y: measured.y + delta });
+    if (reportedPanel !== null && sameRect(reportedPanel, panel)) {
+      return;
+    }
+    reportedPanel = panel;
+    void backend.setDockPanelRect(panel).catch(report('set_dock_panel_rect', false));
   }
 
   // Settings can change the headroom and the envelope without changing the panel box.
@@ -1010,7 +1035,8 @@
   let autoHideTimer: ReturnType<typeof setTimeout> | null = null;
   /**
    * Auto-hide applies (`autoHideActive`: the mode is `always`, or a
-   * fullscreen app is in front): the reveal strip is in the DOM.
+   * fullscreen app is in front, or the mode is `whenOverlapped` and
+   * a window covers the dock): the reveal strip is in the DOM.
    */
   let autoHideOn = $state(false);
   /** The machine's phase, for the template (`data-autohide`). */
@@ -1164,6 +1190,16 @@
   $effect(() => {
     const active = fullscreen;
     untrack(() => autoHideSend({ type: 'fullscreen', active }));
+  });
+
+  // A window of another process covers the resting panel (the engine
+  // decides from the frames the platform reports and the panel rect sent by
+  // `reportDockPanel`): with the mode `whenOverlapped` the dock hides after
+  // the delay and comes back when the window is gone.
+  const overlapped = $derived(store.state?.overlapped ?? false);
+  $effect(() => {
+    const active = overlapped;
+    untrack(() => autoHideSend({ type: 'overlapped', active }));
   });
 
   // --- Drop files to pin ------------------------------------------------------------

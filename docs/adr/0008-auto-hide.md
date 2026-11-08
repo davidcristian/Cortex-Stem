@@ -47,10 +47,8 @@ work area.
   fades instead. The dock window keeps its size and place, so no
   `SetWindowPos` happens on hide or reveal.
 - **Settings:** `autoHide.mode` is `off` (the default), `always` or
-  `whenOverlapped`. `autoHide.delayMs` is 250 ms by default and at most
-  5000 ms. `whenOverlapped` (hide only while a window overlaps the dock's
-  rectangle) needs window geometry from the platform and comes later; until
-  then it behaves like `off`, and the settings page says so.
+  `whenOverlapped` (hide while a window overlaps the dock). `autoHide.delayMs` is
+  250 ms by default and at most 5000 ms.
 - With click-through off, the whole dock window takes clicks even while
   the panel is hidden; the settings page says that auto-hide works best
   with click-through on. Neither setting changes the other.

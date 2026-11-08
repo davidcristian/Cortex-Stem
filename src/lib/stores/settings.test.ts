@@ -124,7 +124,7 @@ class FakeBackend implements Backend {
   }
 
   async getDockState() {
-    return { revision: 0, items: [], foreground: null, fullscreen: false };
+    return { revision: 0, items: [], foreground: null, fullscreen: false, overlapped: false };
   }
   async getMonitors() {
     return [];
@@ -141,6 +141,7 @@ class FakeBackend implements Backend {
   }
   async setDockContentSize(): Promise<void> {}
   async setDockHitRegion(): Promise<void> {}
+  async setDockPanelRect(): Promise<void> {}
   async shellAction(): Promise<void> {}
   async deleteToRecycleBin(): Promise<void> {}
   async openSettings(): Promise<void> {}

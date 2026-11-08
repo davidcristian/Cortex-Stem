@@ -370,13 +370,12 @@
                 })}
             />
           </SettingRow>
-          <!-- ADR-0008: `whenOverlapped` needs window geometry from the
-               platform and acts like Off without it; the hidden dock leaves
-               its window behind, which takes clicks unless click-through is on. -->
+          <!-- ADR-0008: the hidden dock leaves its window
+               behind, which takes clicks unless click-through is on. -->
           <SettingRow
             id="auto-hide"
             label="Auto-hide"
-            description="Slides the dock away when the pointer leaves it; touch the bottom edge below it to bring it back. Works best with click-through on: with it off, the space the hidden dock leaves still takes clicks."
+            description="Always: slides the dock away whenever the pointer leaves it. When a window overlaps: only while a window covers the dock, and back as soon as none does. Touch the bottom edge below it to bring it back. Works best with click-through on: with it off, the space the hidden dock leaves still takes clicks."
           >
             <Select
               id="auto-hide"
@@ -384,11 +383,7 @@
               options={[
                 { value: 'off', label: 'Off' },
                 { value: 'always', label: 'Always' },
-                {
-                  value: 'whenOverlapped',
-                  label: 'When a window overlaps (not yet: acts as Off)',
-                  disabled: true,
-                },
+                { value: 'whenOverlapped', label: 'When a window overlaps' },
               ]}
               onchange={(v) =>
                 edit((s) => {
@@ -399,7 +394,7 @@
           <SettingRow
             id="auto-hide-delay"
             label="Auto-hide delay"
-            description="Wait this long after the pointer leaves before hiding"
+            description="Wait this long after the pointer leaves, or after a window starts to overlap the dock, before hiding"
           >
             <Slider
               id="auto-hide-delay"

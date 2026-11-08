@@ -68,7 +68,9 @@ describe('autoHideStep', () => {
     expect(isAutoHidden(INITIAL_AUTO_HIDE)).toBe(false);
   });
 
-  it('never hides with auto-hide off or (for now) when overlapped', () => {
+  it('never hides with auto-hide off, nor when overlapped while no window overlaps', () => {
+    // (`whenOverlapped` hides only on the `overlapped` event, see the
+    // `when overlapped` block below.)
     for (const mode of ['off', 'whenOverlapped'] as const) {
       const h = new Harness()
         .send({ type: 'configure', mode, delayMs: 250 })
@@ -77,6 +79,8 @@ describe('autoHideStep', () => {
         .advance(10_000);
       expect(h.phase).toBe('shown');
       expect(h.state.enabled).toBe(false);
+      expect(h.state.dodges).toBe(mode === 'whenOverlapped');
+      expect(autoHideActive(h.state)).toBe(false);
       expect(h.timers.every((t) => t === 'none')).toBe(true);
     }
   });
@@ -336,15 +340,31 @@ describe('autoHideStep', () => {
     expect(pending.phase).toBe('shown');
   });
 
-  it('hides at once with delayMs 0', () => {
+  it('with delayMs 0 it still hides through a 0 ms countdown, never between two events', () => {
+    // Hiding at once would let a strip-leave followed by a panel-enter in one
+    // dispatch leave the dock hidden.
     const h = always(0);
+    expect(h.phase).toBe('pending');
+    expect(h.timers).toEqual(['arm']);
+    expect(hideDelayMs(h.state)).toBe(0);
+    h.advance(0);
     expect(h.phase).toBe('hidden');
-    expect(h.timers).toEqual(['none']);
     h.send({ type: 'strip' });
     expect(h.phase).toBe('shown');
+    // From the strip straight into the panel: still up.
     h.send({ type: 'pointer', inside: false });
+    expect(h.phase).toBe('pending');
+    h.send({ type: 'pointer', inside: true });
+    expect(h.phase).toBe('shown');
+    expect(h.timers.at(-1)).toBe('clear');
+    h.advance(10_000);
+    expect(h.phase).toBe('shown');
+    // Away: hidden as soon as the timer fires.
+    h.send({ type: 'pointer', inside: false });
+    expect(h.phase).toBe('pending');
+    expect(h.timers.at(-1)).toBe('arm');
+    h.advance(0);
     expect(h.phase).toBe('hidden');
-    expect(h.timers.at(-1)).toBe('none');
   });
 
   it('a delay change restarts a running countdown; other settings changes do not', () => {
@@ -363,11 +383,14 @@ describe('autoHideStep', () => {
     expect(g.phase).toBe('hidden');
   });
 
-  it('a delay change to 0 during the countdown hides at once', () => {
+  it('a delay change to 0 during the countdown restarts it as a 0 ms one', () => {
     const h = always(1000).advance(10);
     h.send({ type: 'configure', mode: 'always', delayMs: 0 });
+    expect(h.phase).toBe('pending');
+    expect(h.timers.at(-1)).toBe('arm');
+    expect(hideDelayMs(h.state)).toBe(0);
+    h.advance(0);
     expect(h.phase).toBe('hidden');
-    expect(h.timers.at(-1)).toBe('clear');
   });
 
   it('settings changes while hidden keep it hidden', () => {
@@ -663,6 +686,257 @@ describe('fullscreen', () => {
     const hiddenCopy = structuredClone(hidden);
     autoHideStep(hidden, { type: 'strip' });
     autoHideStep(hidden, { type: 'fullscreen', active: false });
+    expect(hidden).toEqual(hiddenCopy);
+  });
+});
+
+describe('when overlapped', () => {
+  function dodging(delayMs = 250): Harness {
+    return new Harness().send({ type: 'configure', mode: 'whenOverlapped', delayMs });
+  }
+
+  it('starts with no overlap and is active only with the mode whenOverlapped', () => {
+    expect(INITIAL_AUTO_HIDE.overlapped).toBe(false);
+    expect(INITIAL_AUTO_HIDE.dodges).toBe(false);
+    const h = dodging();
+    expect(h.state.dodges).toBe(true);
+    expect(h.state.enabled).toBe(false);
+    expect(autoHideActive(h.state)).toBe(false);
+    expect(hideDelayMs(h.state)).toBe(250);
+    // The fact is kept whatever the mode; only `whenOverlapped` acts on it.
+    for (const mode of ['off', 'always'] as const) {
+      const g = new Harness().send({ type: 'configure', mode, delayMs: 250 });
+      const before = g.phase;
+      g.send({ type: 'overlapped', active: true });
+      expect(g.state.overlapped).toBe(true);
+      expect(g.phase).toBe(before);
+      expect(g.timers.at(-1)).toBe('none');
+      expect(autoHideActive(g.state)).toBe(mode === 'always');
+    }
+  });
+
+  it('a window over the dock hides it after the delay, never at once; away again shows it', () => {
+    const h = dodging(250);
+    h.send({ type: 'overlapped', active: true });
+    expect(h.phase).toBe('pending');
+    expect(h.timers.at(-1)).toBe('arm');
+    expect(autoHideActive(h.state)).toBe(true);
+    expect(hideDelayMs(h.state)).toBe(250);
+    h.advance(249);
+    expect(h.phase).toBe('pending');
+    h.advance(1);
+    expect(h.phase).toBe('hidden');
+    expect(isAutoHidden(h.state)).toBe(true);
+    h.advance(10_000);
+    expect(h.phase).toBe('hidden');
+
+    // The window moved away: back at once, no strip needed.
+    h.send({ type: 'overlapped', active: false });
+    expect(h.phase).toBe('shown');
+    expect(h.timers.at(-1)).toBe('none');
+    expect(autoHideActive(h.state)).toBe(false);
+    h.send({ type: 'pointer', inside: true }).send({ type: 'pointer', inside: false });
+    h.advance(10_000);
+    expect(h.phase).toBe('shown');
+  });
+
+  it('a window passing by during the delay leaves the dock up', () => {
+    const h = dodging(250).send({ type: 'overlapped', active: true }).advance(100);
+    expect(h.phase).toBe('pending');
+    h.send({ type: 'overlapped', active: false });
+    expect(h.phase).toBe('shown');
+    expect(h.timers.at(-1)).toBe('clear');
+    h.advance(10_000);
+    expect(h.phase).toBe('shown');
+  });
+
+  it('even with delayMs 0 it goes through a 0 ms countdown', () => {
+    const h = dodging(0).send({ type: 'overlapped', active: true });
+    expect(h.phase).toBe('pending');
+    expect(h.timers.at(-1)).toBe('arm');
+    expect(hideDelayMs(h.state)).toBe(0);
+    h.advance(0);
+    expect(h.phase).toBe('hidden');
+  });
+
+  it('with the pointer over the dock it stays until the pointer leaves, then counts down', () => {
+    const h = dodging(250).send({ type: 'pointer', inside: true });
+    h.send({ type: 'overlapped', active: true });
+    expect(h.phase).toBe('shown');
+    expect(h.timers.at(-1)).toBe('none');
+    h.advance(10_000);
+    expect(h.phase).toBe('shown');
+    h.send({ type: 'pointer', inside: false });
+    expect(h.phase).toBe('pending');
+    h.advance(250);
+    expect(h.phase).toBe('hidden');
+    // Pointer events elsewhere change nothing while hidden.
+    h.send({ type: 'pointer', inside: true }).send({ type: 'pointer', inside: false });
+    expect(h.phase).toBe('hidden');
+  });
+
+  it('the strip reveals a dock hidden under a window; leaving it hides again after the delay', () => {
+    const h = dodging(250).send({ type: 'overlapped', active: true }).advance(250);
+    expect(h.phase).toBe('hidden');
+    h.send({ type: 'strip' });
+    expect(h.phase).toBe('shown');
+    expect(h.state.pointerInside).toBe(true);
+    h.advance(10_000);
+    expect(h.phase).toBe('shown');
+    // From the strip straight into the panel: still up.
+    h.send({ type: 'pointer', inside: false });
+    expect(h.phase).toBe('pending');
+    h.send({ type: 'pointer', inside: true });
+    expect(h.phase).toBe('shown');
+    expect(h.timers.at(-1)).toBe('clear');
+    // Away: the normal countdown, the window still being there.
+    h.send({ type: 'pointer', inside: false });
+    expect(h.phase).toBe('pending');
+    h.advance(249);
+    expect(h.phase).toBe('pending');
+    h.advance(1);
+    expect(h.phase).toBe('hidden');
+  });
+
+  it('the window shown on request reveals, as with auto-hide on', () => {
+    const h = dodging(250).send({ type: 'overlapped', active: true }).advance(250);
+    h.send({ type: 'show' });
+    expect(h.phase).toBe('shown');
+    h.advance(10_000);
+    expect(h.phase).toBe('shown');
+    h.send({ type: 'pointer', inside: true }).send({ type: 'pointer', inside: false }).advance(250);
+    expect(h.phase).toBe('hidden');
+  });
+
+  it.each(['drag', 'menu', 'bounce', 'fileDrag', 'attention'] as const)(
+    'a %s hold keeps the dock up over an overlapping window; its end with the pointer away starts the countdown',
+    (hold) => {
+      const h = dodging(250)
+        .send({ type: 'pointer', inside: true })
+        .send({ type: 'hold', hold, active: true })
+        .send({ type: 'pointer', inside: false });
+      h.send({ type: 'overlapped', active: true });
+      expect(h.phase).toBe('shown');
+      h.advance(10_000);
+      expect(h.phase).toBe('shown');
+      h.send({ type: 'hold', hold, active: false });
+      expect(h.phase).toBe('pending');
+      h.advance(250);
+      expect(h.phase).toBe('hidden');
+    },
+  );
+
+  it('an item that needs attention brings the dock back over the window and keeps it up', () => {
+    const h = dodging(250).send({ type: 'overlapped', active: true }).advance(250);
+    expect(h.phase).toBe('hidden');
+    h.send({ type: 'hold', hold: 'attention', active: true });
+    expect(h.phase).toBe('shown');
+    h.advance(10_000);
+    expect(h.phase).toBe('shown');
+    h.send({ type: 'hold', hold: 'attention', active: false });
+    expect(h.phase).toBe('pending');
+    h.advance(250);
+    expect(h.phase).toBe('hidden');
+    // A bounce for a launch from elsewhere still reveals nothing.
+    h.send({ type: 'hold', hold: 'bounce', active: true });
+    expect(h.phase).toBe('hidden');
+  });
+
+  it('switching the mode while a window overlaps: off shows, always keeps hiding, whenOverlapped starts the countdown', () => {
+    // The fact arrived before the mode: hidden the moment the mode asks for it (after the delay).
+    const late = new Harness()
+      .send({ type: 'configure', mode: 'off', delayMs: 250 })
+      .send({ type: 'overlapped', active: true });
+    expect(late.phase).toBe('shown');
+    late.send({ type: 'configure', mode: 'whenOverlapped', delayMs: 250 });
+    expect(late.phase).toBe('pending');
+    late.advance(250);
+    expect(late.phase).toBe('hidden');
+
+    // Off reveals at once.
+    late.send({ type: 'configure', mode: 'off', delayMs: 250 });
+    expect(late.phase).toBe('shown');
+    expect(late.state.overlapped).toBe(true);
+    expect(autoHideActive(late.state)).toBe(false);
+
+    // Always keeps a hidden dock hidden; the overlap ending then changes nothing.
+    const hidden = dodging(250).send({ type: 'overlapped', active: true }).advance(250);
+    hidden.send({ type: 'configure', mode: 'always', delayMs: 250 });
+    expect(hidden.phase).toBe('hidden');
+    hidden.send({ type: 'overlapped', active: false });
+    expect(hidden.phase).toBe('hidden');
+    expect(hidden.timers.at(-1)).toBe('none');
+    hidden.send({ type: 'strip' });
+    expect(hidden.phase).toBe('shown');
+  });
+
+  it('a delay change restarts a running overlap countdown', () => {
+    const h = dodging(1000).send({ type: 'overlapped', active: true }).advance(600);
+    h.send({ type: 'configure', mode: 'whenOverlapped', delayMs: 500 });
+    expect(h.timers.at(-1)).toBe('arm');
+    h.advance(499);
+    expect(h.phase).toBe('pending');
+    h.advance(1);
+    expect(h.phase).toBe('hidden');
+  });
+
+  it('fullscreen and overlap are independent: whichever still applies keeps the dock hidden', () => {
+    // Hidden by the overlap; a fullscreen app comes and goes: still hidden.
+    const h = dodging(250).send({ type: 'overlapped', active: true }).advance(250);
+    h.send({ type: 'fullscreen', active: true });
+    expect(h.phase).toBe('hidden');
+    h.send({ type: 'fullscreen', active: false });
+    expect(h.phase).toBe('hidden');
+    expect(autoHideActive(h.state)).toBe(true);
+    h.send({ type: 'overlapped', active: false });
+    expect(h.phase).toBe('shown');
+
+    // Hidden by fullscreen; the overlap comes and goes: still hidden, and
+    // the end of fullscreen reveals only once the window is away too.
+    const g = dodging(250).send({ type: 'fullscreen', active: true });
+    expect(g.phase).toBe('hidden');
+    g.send({ type: 'overlapped', active: true }).send({ type: 'overlapped', active: false });
+    expect(g.phase).toBe('hidden');
+    g.send({ type: 'overlapped', active: true }).send({ type: 'fullscreen', active: false });
+    expect(g.phase).toBe('hidden');
+    g.send({ type: 'overlapped', active: false });
+    expect(g.phase).toBe('shown');
+
+    // Revealed from the strip with both on, the pointer away: fullscreen's
+    // 0 ms countdown; fullscreen ending restarts it with the real delay.
+    const both = dodging(250)
+      .send({ type: 'overlapped', active: true })
+      .send({ type: 'fullscreen', active: true })
+      .send({ type: 'strip' })
+      .send({ type: 'pointer', inside: false });
+    expect(both.phase).toBe('pending');
+    expect(hideDelayMs(both.state)).toBe(0);
+    both.send({ type: 'fullscreen', active: false });
+    expect(both.phase).toBe('pending');
+    expect(both.timers.at(-1)).toBe('arm');
+    expect(hideDelayMs(both.state)).toBe(250);
+    both.advance(250);
+    expect(both.phase).toBe('hidden');
+  });
+
+  it('repeats are harmless and the state is never mutated', () => {
+    const h = dodging(250).send({ type: 'overlapped', active: true });
+    h.send({ type: 'overlapped', active: true });
+    expect(h.timers.at(-1)).toBe('none');
+    expect(h.phase).toBe('pending');
+    const settled = h.send({ type: 'overlapped', active: false }).state;
+    expect(autoHideStep(settled, { type: 'overlapped', active: false })).toEqual({
+      state: settled,
+      timer: 'none',
+    });
+    const copy = structuredClone(settled);
+    autoHideStep(settled, { type: 'overlapped', active: true });
+    autoHideStep(settled, { type: 'configure', mode: 'off', delayMs: 0 });
+    expect(settled).toEqual(copy);
+    const hidden = dodging(250).send({ type: 'overlapped', active: true }).advance(250).state;
+    const hiddenCopy = structuredClone(hidden);
+    autoHideStep(hidden, { type: 'overlapped', active: false });
+    autoHideStep(hidden, { type: 'strip' });
     expect(hidden).toEqual(hiddenCopy);
   });
 });

@@ -1,15 +1,17 @@
 /**
- * `MockBackend`: the whole IPC contract (docs/ipc/ v1.9) without Rust, for
+ * `MockBackend`: the whole IPC contract (docs/ipc/ v1.10) without Rust, for
  * browser runs and Playwright screenshots.
  *
  * It mirrors, deliberately in this one file so the two sides can be compared,
  * the Rust pieces the UI would otherwise be talking to:
  *
- * 1. the demo scenario of `crates/stem-platform/src/mock.rs` (windows,
- *    monitor, recycle bin, deterministic icon colours);
- * 2. the ordering and click rules of `crates/stem-core/src/engine.rs`;
+ * 1. the demo scenario of `crates/stem-platform/src/mock.rs` (windows with
+ *    their frames, monitor, recycle bin, deterministic icon colours);
+ * 2. the ordering and click rules of `crates/stem-core/src/engine.rs`, and
+ *    the overlap rule of `crates/stem-core/src/overlap.rs`;
  * 3. the command semantics and lazy identity resolution of
- *    `crates/stem-service/src/lib.rs`;
+ *    `crates/stem-service/src/lib.rs`, and the app layer's conversion of the
+ *    dock panel to screen coordinates (`src-tauri/src/windows.rs`);
  * 4. which dropped paths go to the Recycle Bin
  *    (`crates/stem-platform/src/rules/recycle.rs`).
  *
@@ -63,6 +65,16 @@ export interface MockOptions {
   seed?: number;
   /** Report side effects (launches, shell actions, window sizing) with `console.info`. */
   log?: boolean;
+  /**
+   * Height of the dock window's viewport in CSS px, for placing the resting
+   * panel the UI reports (`setDockPanelRect`) on the mock monitor: like the
+   * real window's, the viewport's bottom edge is the work area's bottom edge
+   * (`panelOnScreen`). Default: `window.innerHeight` in a browser, read per
+   * call (a window that grows for a drag stays right); the work area's
+   * height, i.e. viewport px = screen px, where there is no `window` (unit
+   * tests).
+   */
+  viewportHeight?: number;
 }
 
 /**
@@ -80,6 +92,7 @@ export type MockCall =
   | { type: 'shell'; action: ShellAction }
   | { type: 'setDockContentSize'; width: number; height: number }
   | { type: 'setDockHitRegion'; panel: Rect; envelope: Rect }
+  | { type: 'setDockPanelRect'; rect: Rect }
   | { type: 'showItemMenu'; itemKey: string; x: number; y: number }
   | { type: 'showDockMenu'; x: number; y: number }
   | { type: 'openSettings' }
@@ -189,6 +202,62 @@ export function validateSettings(input: Settings): Settings {
     return true;
   });
   return s;
+}
+
+// ---------------------------------------------------------------------------
+// 0a. The overlap rule (mirror of crates/stem-core/src/overlap.rs)
+// ---------------------------------------------------------------------------
+
+/** `overlap::intersects`: a shared region of positive area; touching edges do not count. */
+export function rectsIntersect(a: Rect, b: Rect): boolean {
+  if (a.width <= 0 || a.height <= 0 || b.width <= 0 || b.height <= 0) {
+    return false;
+  }
+  return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+}
+
+/**
+ * `overlap::overlapped`: `DockState.overlapped` for a panel resting at
+ * `panel` (screen px, `null` while unknown) among `windows`: one of them is
+ * visible, not minimised, not cloaked, not ours (`ownProcessId`), has a
+ * frame, and that frame intersects the panel with a positive area.
+ */
+export function overlapped(
+  panel: Rect | null,
+  windows: Iterable<RawWindow>,
+  ownProcessId: number | null,
+): boolean {
+  if (panel === null || panel.width <= 0 || panel.height <= 0) {
+    return false;
+  }
+  for (const w of windows) {
+    if (!w.isVisible || w.isMinimized || w.isCloaked || w.rect === null) {
+      continue;
+    }
+    if (ownProcessId !== null && w.processId === ownProcessId) {
+      continue;
+    }
+    if (rectsIntersect(panel, w.rect)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * The app layer's conversion of the UI's resting panel (CSS px of the dock
+ * window's viewport) to screen pixels (`windows::panel_on_screen` with the
+ * dock window where `windows::layout` puts it: flush with the bottom of the
+ * work area, from its left edge, scale 1): the viewport's bottom-left corner
+ * is the work area's bottom-left corner.
+ */
+export function panelOnScreen(rect: Rect, workArea: Rect, viewportHeight: number): Rect {
+  return {
+    x: workArea.x + rect.x,
+    y: workArea.y + workArea.height - viewportHeight + rect.y,
+    width: rect.width,
+    height: rect.height,
+  };
 }
 
 /** `Settings::reorder_pinned`: listed ids first, the rest keep their order. */
@@ -346,7 +415,20 @@ function demoMonitor(): MonitorInfo {
   };
 }
 
-function demoWindow(id: number, exe: string, title: string, minimized: boolean): RawWindow {
+/**
+ * A demo window with a frame on the demo monitor. Every demo frame
+ * ends above the bottom 250 px of the work area, where the dock's panel
+ * rests, so nothing overlaps it until a test moves one (`moveWindow`); a
+ * minimised window keeps the frame it would be restored to (the overlap rule
+ * ignores it while minimised). Same frames as the Rust demo.
+ */
+function demoWindow(
+  id: number,
+  exe: string,
+  title: string,
+  minimized: boolean,
+  rect: Rect,
+): RawWindow {
   return {
     id,
     title,
@@ -358,8 +440,7 @@ function demoWindow(id: number, exe: string, title: string, minimized: boolean):
     isMinimized: minimized,
     isCloaked: false,
     monitor: DEMO_MONITOR_ID,
-    // The demo has no geometry, like the Rust demo (`rect: None`).
-    rect: null,
+    rect,
     iconKey: null,
   };
 }
@@ -375,12 +456,27 @@ const EXE = {
 
 function demoWindows(): RawWindow[] {
   return [
-    demoWindow(1, EXE.explorer, 'Downloads', false),
-    demoWindow(2, EXE.firefox, 'Stem — Mozilla Firefox', false),
-    demoWindow(3, EXE.firefox, 'GitHub — Mozilla Firefox', true),
-    demoWindow(4, EXE.code, 'lib.rs — Stem', false),
-    demoWindow(5, EXE.terminal, 'PowerShell', false),
-    demoWindow(6, EXE.spotify, 'Spotify Premium', true),
+    demoWindow(1, EXE.explorer, 'Downloads', false, { x: 120, y: 90, width: 1100, height: 700 }),
+    demoWindow(2, EXE.firefox, 'Stem — Mozilla Firefox', false, {
+      x: 640,
+      y: 60,
+      width: 1500,
+      height: 1000,
+    }),
+    demoWindow(3, EXE.firefox, 'GitHub — Mozilla Firefox', true, {
+      x: 700,
+      y: 120,
+      width: 1400,
+      height: 900,
+    }),
+    demoWindow(4, EXE.code, 'lib.rs — Stem', false, { x: 200, y: 40, width: 1600, height: 1000 }),
+    demoWindow(5, EXE.terminal, 'PowerShell', false, { x: 1300, y: 500, width: 1000, height: 600 }),
+    demoWindow(6, EXE.spotify, 'Spotify Premium', true, {
+      x: 400,
+      y: 200,
+      width: 1200,
+      height: 800,
+    }),
   ];
 }
 
@@ -454,7 +550,17 @@ function manyScenario(): Scenario {
 
   const windows: RawWindow[] = [];
   const open = (name: string, title: string, minimized = false): void => {
-    windows.push(demoWindow(windows.length + 1, exeOf(name), title, minimized));
+    // A cascade from the top-left corner, every frame clear of the bottom
+    // 250 px of the work area (the 20th ends at y = 40 + 19 × 20 + 640).
+    const n = windows.length;
+    windows.push(
+      demoWindow(n + 1, exeOf(name), title, minimized, {
+        x: 80 + 50 * n,
+        y: 40 + 20 * n,
+        width: 1100,
+        height: 640,
+      }),
+    );
   };
   // Pinned apps that are running.
   open('Slack', 'general — Stem Team');
@@ -562,6 +668,12 @@ class Engine {
   foreground: WindowId | null = null;
   /** The platform's fullscreen verdict, stored as is. */
   fullscreen = false;
+  /** Where the dock's panel rests, in the windows' coordinate space; `null` while unknown. */
+  panel: Rect | null = null;
+  /** `DockState.overlapped`, recomputed after every input that can change it. */
+  overlapped = false;
+  /** The mock has no process of its own; every window counts (`overlapped`). */
+  readonly ownProcessId: number | null = null;
   monitors: MonitorInfo[] = [];
   theme: ThemeInfo;
   recycleBin: RecycleBinState = { itemCount: 0, sizeBytes: 0 };
@@ -598,19 +710,24 @@ class Engine {
     for (const [id, t] of next) {
       this.windows.set(id, t);
     }
-    return this.apply(JSON.stringify([...this.windows.values()]) !== before);
+    const changed = JSON.stringify([...this.windows.values()]) !== before;
+    return this.apply(this.recomputeOverlap() || changed);
   }
 
+  /**
+   * `WindowAdded` / `WindowUpdated`. A change of the frame alone is stored
+   * without bumping the revision (nothing renders it), unless it flips
+   * `overlapped`, exactly like `DockEngine::upsert`.
+   */
   upsertWindow(raw: RawWindow): boolean {
     const t = this.windows.get(raw.id);
     if (t) {
-      if (sameWindow(t.raw, raw)) {
-        return this.apply(false);
-      }
+      const rendered = !sameWindow(t.raw, raw);
       t.raw = raw;
-      return this.apply(true);
+      return this.apply(this.recomputeOverlap() || rendered);
     }
     this.windows.set(raw.id, { raw, seq: this.allocSeq(), attention: false });
+    this.recomputeOverlap();
     return this.apply(true);
   }
 
@@ -619,7 +736,28 @@ class Engine {
     if (this.foreground === id) {
       this.foreground = null;
     }
+    if (removed) {
+      this.recomputeOverlap();
+    }
     return this.apply(removed);
+  }
+
+  /** `EngineInput::DockPanelChanged`: only a flip of `overlapped` bumps the revision. */
+  setDockPanel(panel: Rect | null): boolean {
+    this.panel = panel === null ? null : { ...panel };
+    return this.apply(this.recomputeOverlap());
+  }
+
+  /** `overlap::overlapped` over the tracked windows; whether the flag flipped. */
+  private recomputeOverlap(): boolean {
+    const next = overlapped(
+      this.panel,
+      [...this.windows.values()].map((t) => t.raw),
+      this.ownProcessId,
+    );
+    const flipped = next !== this.overlapped;
+    this.overlapped = next;
+    return flipped;
   }
 
   setForeground(id: WindowId | null): boolean {
@@ -783,6 +921,7 @@ class Engine {
       items,
       foreground: this.foreground,
       fullscreen: this.fullscreen,
+      overlapped: this.overlapped,
     };
   }
 
@@ -887,8 +1026,9 @@ class Engine {
   }
 }
 
+/** Equal in everything the snapshot renders: the frame is not part of it. */
 function sameWindow(a: RawWindow, b: RawWindow): boolean {
-  return JSON.stringify(a) === JSON.stringify(b);
+  return JSON.stringify({ ...a, rect: null }) === JSON.stringify({ ...b, rect: null });
 }
 
 /** `fallback_display_name` in stem-service. */
@@ -933,6 +1073,7 @@ export class MockBackend implements Backend {
   private readonly latency: readonly [number, number];
   private readonly identityDelayMs: number;
   private readonly logging: boolean;
+  private readonly viewportHeight: number | undefined;
   private readonly timers = new Set<ReturnType<typeof setTimeout>>();
   private identityTimer: ReturnType<typeof setTimeout> | null = null;
   private failNext: string | null = null;
@@ -953,6 +1094,7 @@ export class MockBackend implements Backend {
     this.latency = options.latencyMs ?? [20, 80];
     this.identityDelayMs = options.identityDelayMs ?? 300;
     this.logging = options.log ?? true;
+    this.viewportHeight = options.viewportHeight;
     this.random = mulberry32(options.seed ?? 0x5eed);
 
     // In a browser the OS theme is the browser's colour scheme, so Playwright's
@@ -1123,6 +1265,33 @@ export class MockBackend implements Backend {
     });
   }
 
+  /**
+   * `set_dock_panel_rect`: recorded, converted to the mock monitor's
+   * screen coordinates the way the app layer converts it for the real
+   * window (`panelOnScreen`; see `MockOptions.viewportHeight`), and handed
+   * to the engine, which emits a state only when `overlapped` flips.
+   */
+  setDockPanelRect(rect: Rect): Promise<void> {
+    return this.command(() => {
+      this.record({ type: 'setDockPanelRect', rect: { ...rect } });
+      const workArea = (this.engine.monitors.find((m) => m.isPrimary) ?? this.engine.monitors[0])
+        ?.workArea ?? { x: 0, y: 0, width: 0, height: 0 };
+      const viewportHeight =
+        this.viewportHeight ??
+        (typeof window !== 'undefined' && window.innerHeight > 0
+          ? window.innerHeight
+          : workArea.height);
+      const screen = panelOnScreen(rect, workArea, viewportHeight);
+      this.log(
+        `set_dock_panel_rect(${rect.width}×${rect.height} at ${rect.x},${rect.y}) -> ` +
+          `${screen.x},${screen.y} on screen`,
+      );
+      if (this.engine.setDockPanel(screen)) {
+        this.emitState();
+      }
+    });
+  }
+
   shellAction(action: ShellAction): Promise<void> {
     return this.command(() => this.doShellAction(action));
   }
@@ -1257,6 +1426,31 @@ export class MockBackend implements Backend {
     if (this.engine.removeWindow(id)) {
       this.emitState();
     }
+  }
+
+  /**
+   * A window moved or resized (`MockPlatform::move_window`): its new
+   * frame in screen px (`null` for one the platform could not read), reported
+   * the way the events thread does after a move, with one `WindowUpdated`.
+   * A state goes out only when `overlapped` flips. Unknown ids are ignored,
+   * like a move of a window the thread does not track.
+   */
+  moveWindow(id: WindowId, rect: Rect | null): void {
+    const tracked = this.engine.windows.get(id);
+    if (!tracked) {
+      return;
+    }
+    this.log(
+      `window ${id} moved to ${rect === null ? 'an unreadable frame' : JSON.stringify(rect)}`,
+    );
+    if (this.engine.upsertWindow({ ...tracked.raw, rect: rect === null ? null : { ...rect } })) {
+      this.emitState();
+    }
+  }
+
+  /** Where the engine believes the dock's panel rests (screen px), or `null` before the first report. */
+  dockPanel(): Rect | null {
+    return this.engine.panel === null ? null : { ...this.engine.panel };
   }
 
   pushForeground(id: WindowId | null): void {
