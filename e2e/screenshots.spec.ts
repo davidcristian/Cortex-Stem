@@ -2584,6 +2584,53 @@ test.describe('auto-hide', () => {
     await expect(panel).toHaveAttribute('data-autohide', 'hidden');
   });
 
+  test('a file dropped below the panel counts as on the dock only where the strip is', async ({
+    page,
+  }) => {
+    const TXT = 'C:\\Users\\me\\Documents\\notes.txt';
+    const panel = page.locator(PANEL);
+    /** Shown on request in fullscreen, a file dragged onto the panel and dropped in the band under it. */
+    async function dropBelowThePanel(): Promise<void> {
+      const viewport = page.viewportSize()!;
+      await page.mouse.move(640, 10);
+      await fullscreen(page, true);
+      await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+      await page.evaluate(() => {
+        (window as unknown as DemoWindow).__dockMock?.requestShow();
+      });
+      await expect(panel).toHaveAttribute('data-autohide', 'shown');
+      await expect.poll(async () => (await panelStyle(page)).transform).toBe('none');
+      const box = (await panel.boundingBox())!;
+      const centre = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+      const bottom = box.y + box.height;
+      expect(bottom).toBeLessThan(viewport.height - 1);
+      // An OLE drag produces no pointer events: only the drag says where it is.
+      await fileDrag(page, { type: 'enter', paths: [TXT], position: centre });
+      await fileDrag(page, {
+        type: 'drop',
+        paths: [TXT],
+        position: { x: centre.x, y: (bottom + viewport.height) / 2 },
+      });
+    }
+
+    // Above a visible taskbar there is no strip to report the pointer
+    // leaving the band: the drop there is off the dock, and the 0 ms
+    // countdown of fullscreen hides it at once.
+    await openDock(page);
+    await dropBelowThePanel();
+    await expect(page.locator(STRIP)).toHaveCount(0);
+    await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+
+    // With the taskbar auto-hidden the band is the strip, whose
+    // `pointerleave` will say when the pointer goes: the drop is on the dock.
+    await withTaskbarAutoHidden(page);
+    await openDock(page);
+    await dropBelowThePanel();
+    await expect(page.locator(STRIP)).toHaveCount(1);
+    await page.waitForTimeout(SLIDE_MS * 2);
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+  });
+
   test('under reduced motion the toasts do not slide with the panel either', async ({ page }) => {
     await page.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' });
     await openDock(page);
