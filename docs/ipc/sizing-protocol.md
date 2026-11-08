@@ -1,10 +1,10 @@
 # Sizing protocol
 
-This file describes how Rust sizes and places the dock window, and how the page lays the dock out
+This file describes how Rust sizes and places each dock window, and how the page lays the dock out
 in it.
 
-1. Rust creates the dock window hidden, then shows it at the bottom of the primary monitor's work
-   area, **spanning the work area's full width**.
+1. Rust creates each dock window hidden, then shows it at the bottom of its monitor's work area
+   (the primary monitor's for `dock`), **spanning that work area's full width**.
 2. The UI measures the bounding box of its panel (`ResizeObserver`), adds the headroom for
    magnification and tooltips, and calls `set_dock_content_size(width, height)` at most once per
    animation frame, and never while the pointer is magnifying the dock.

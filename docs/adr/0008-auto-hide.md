@@ -79,8 +79,8 @@ shell's `SHQueryUserNotificationState` returns `QUNS_BUSY`,
 frame covers its monitor's full bounds and it is not minimised, not
 maximised, not a shell surface and not one of Stem's windows. The thread
 emits `PlatformEvent::FullscreenChanged` when the result changes. The
-engine stores it per dock, as `DockFacts.fullscreen` in `DockState.docks`;
-there is no separate `dock://visibility`
+engine stores it per dock, as `DockFacts.fullscreen` in `DockState.docks`
+(see "One dock per monitor"); there is no separate `dock://visibility`
 event. A maximised window is excluded on purpose: with the stock taskbar
 auto-hidden, the work area is the whole monitor, and every maximised
 window would otherwise count.
@@ -148,6 +148,22 @@ the resting panel.
   strip-leave and a panel-enter in one dispatch can never hide the dock.
 - The settings page offers *When a window overlaps* next to *Always*; the
   delay applies to both.
+
+## One dock per monitor
+
+With `monitors = all` the two facts are per dock: `DockState.docks` lists,
+for each monitor that has a dock window, `{ monitor, fullscreen,
+overlapped }` (`DockFacts`). The app layer registers each dock window's
+panel with its label and monitor (`set_dock_panel(label, monitor, rect)`),
+and the engine runs the overlap rule once per panel. The fullscreen result
+includes the fullscreen window's monitor (`MonitorFromWindow`), so a video
+in fullscreen on one monitor hides only that monitor's dock. A result with
+no monitor (the shell's state alone, a NULL foreground) goes to the primary
+monitor's dock. Each page picks its own entry by the monitor its URL names
+(the primary's page by the primary of the monitor list) and sends the same
+two machine events; the machine has no input about monitors. A dock whose
+monitor the app layer has not given the engine yet has no entry and takes
+both facts as `false`.
 
 ## Toggle while hidden
 

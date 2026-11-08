@@ -1,6 +1,7 @@
 # Dock window placement
 
-This file describes where the dock window is placed, and again after a DPI change.
+This file describes where each dock window is placed: on which monitor, and again after a DPI
+change. In this file, `windows::` names the module `src-tauri/src/windows.rs`.
 
 ## Position and size
 
@@ -14,8 +15,34 @@ The UI centres the panel along the window and reports its content height
 
 ## One window per monitor
 
-There is one dock window, `dock`. One window per monitor, labelled
-`dock-<monitorId>`, is milestone M3 of the [plan](../PLAN.md).
+With `settings.monitors = all` the app layer keeps one dock window per
+monitor: `dock` on the primary monitor, and `dock-<id>` on each other one.
+`<id>` is the monitor id with every character outside `[A-Za-z0-9_-]`
+dropped, and that window's page is `dock.html?monitor=<id>` (with the full
+id, percent-encoded). With `primary`, the default, there is only `dock`.
+
+`windows::plan_docks` (pure) returns which windows should exist for a mode
+over a monitor list. `reconcile_docks` applies it at startup, on every
+monitor change and when the setting changes. It creates the missing
+windows, destroys the ones whose monitor is gone (never the primary's), and
+lays out the rest on their own monitor's work area at its
+scale.
+
+All per-window state is kept by label: the content size, the hit region,
+the panel rect, the scale and the monitor. Every UI report is routed by the calling
+window's label, and the engine gets the label and monitor with each panel
+rect. So `DockState.docks` contains one `{ monitor, fullscreen, overlapped }`
+per dock. The fullscreen result names its window's monitor; a result
+without one goes to the primary's dock.
+
+Each page finds its monitor in its URL (the primary's page uses the primary
+of `get_monitors`) and reads its own facts. With
+`behavior.showOnlyCurrentMonitor` it narrows the snapshot's items to the
+windows on its monitor (`src/lib/dock/monitor.ts`, pure). Pinned and fixed
+items stay on every dock, and separators are collapsed; the order and the
+click semantics stay Rust's. The toggle (the tray icon, or the toggle
+shortcut, `Ctrl+Alt+D` by default) decides from the primary's window and
+applies to all dock windows.
 
 ## DPI changes
 

@@ -5,7 +5,7 @@ how a page listens.
 
 | Event                | Payload                         | When                                                         |
 |----------------------|---------------------------------|--------------------------------------------------------------|
-| `dock://state`       | `DockState`                     | the items, the foreground, `fullscreen` or `overlapped` changed, an identity was resolved, or settings were applied. [The state snapshot](state-snapshot.md) describes `fullscreen` and `overlapped`. |
+| `dock://state`       | `DockState`                     | the items, the foreground or a dock's facts (`docks`) changed, an identity was resolved, or settings were applied. [The state snapshot](state-snapshot.md) describes the per-dock facts. |
 | `dock://settings`    | `Settings`                      | settings were validated and persisted, whatever their source  |
 | `dock://theme`       | `ThemeInfo`                     | at start, and when the OS theme or accent colour changes      |
 | `dock://monitors`    | `MonitorInfo[]`                 | at start, and when the display topology changes               |
@@ -17,5 +17,7 @@ window) are not part of this contract; see [File drags](file-drags.md).
 
 ## Startup sequence (UI side)
 
-A page subscribes to the events first, then calls `get_dock_state`, `get_settings` and
-`get_theme`. The page ignores a snapshot whose revision is lower than the one it already rendered.
+A page subscribes to the events first, then calls `get_dock_state`, `get_settings`, `get_theme`
+and `get_monitors`. A dock page needs the monitors to find the monitor it is on, and the start-up
+`dock://monitors` may have been sent before the page subscribed. The page ignores a snapshot
+whose revision is lower than the one it already rendered.

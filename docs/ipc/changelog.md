@@ -3,6 +3,17 @@
 This file lists every version of the [IPC contract](index.md), newest first. A section name links
 to the file that covers that section now.
 
+- **v1.13 (one dock per monitor):** `DockState.fullscreen` and `DockState.overlapped` are
+  replaced by `DockState.docks: DockFacts[]` (`{ monitor, fullscreen, overlapped }`, one entry per
+  monitor with a dock window). `dock://state` fires when an entry's facts change or entries are
+  added or removed. `dock-<monitorId>` windows (`dock.html?monitor=<id>`) exist with
+  `Settings.monitors = all`. `set_dock_panel_rect` registers the calling window's panel per
+  window, with its monitor. The [startup sequence](events.md#startup-sequence-ui-side) fetches
+  `get_monitors`. New section [Dock windows per monitor](windows.md#dock-windows-per-monitor),
+  and the per-dock reading of [Dock panel](dock-panel.md). `Settings.monitors = all` and
+  `Settings.behavior.showOnlyCurrentMonitor` take effect in the settings window. The mock gains
+  the `twoMonitors` scenario, `MockOptions.monitor`, `setFullscreen(active, monitor?)` and
+  `dockPanel(label?)`. New payload type `DockFacts`. No command changed its arguments.
 - **v1.12 (about):** `get_app_info` → `AppInfo` and `open_app_folder { folder: AppFolder }`
   added (`Backend.getAppInfo`, `Backend.openAppFolder`). The settings page's About section shows
   the version, the settings file and the log file, and opens their folders in Explorer; new
