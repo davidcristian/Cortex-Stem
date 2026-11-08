@@ -21,6 +21,7 @@ arguments are named and how a failed command rejects.
 | `set_dock_content_size` | `{ width: number, height: number }` (CSS px)| `void`             | the UI's content size; Rust sizes the calling window (see [Sizing protocol](sizing-protocol.md)) |
 | `set_dock_hit_region`   | `{ panel: Rect, envelope: Rect }` (CSS px, window-local) | `void` | where the calling dock window accepts clicks (see [Hit region](hit-region.md)) |
 | `set_dock_panel_rect`   | `{ rect: Rect }` (CSS px, window-local)     | `void`             | where the calling dock window's panel rests, whatever the auto-hide phase (see [Dock panel](dock-panel.md)) |
+| `set_dock_auto_hidden`  | `{ hidden: boolean }`                       | `void`             | auto-hide slid the calling dock window's panel out (`true`) or brought it back (`false`); dock windows only (see [Toggle while hidden](toggle-while-hidden.md)) |
 | `shell_action`          | `{ action: ShellAction }`                   | `void`             | runs a shell action directly (menus, the Recycle Bin's "Empty") |
 | `delete_to_recycle_bin` | `{ paths: string[] }`                       | `void`             | moves files and folders to the Recycle Bin, for a file drop on its item (see [File drags](file-drags.md)); dock windows only; resolves when the shell has finished |
 | `open_settings`         | none                                        | `void`             | opens the settings window, or focuses it if it is already open |

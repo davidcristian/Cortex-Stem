@@ -3,6 +3,12 @@
 This file lists every version of the [IPC contract](index.md), newest first. A section name links
 to the file that covers that section now.
 
+- **v1.11 (toggle while hidden):** `set_dock_auto_hidden { hidden }` added
+  (`Backend.setDockAutoHidden`): the dock UI reports when auto-hide slides its panel out and
+  back. `dock://show` event added (payload `null`, to one dock window): `toggle_dock` asks the UI
+  for the panel instead of hiding a window whose panel is slid out. New section
+  [Toggle while hidden](toggle-while-hidden.md). The mock records the call, and `requestShow()`
+  emits the event. No other command or event changed.
 - **v1.10 (when overlapped):** `set_dock_panel_rect { rect }` added (`Backend.setDockPanelRect`):
   the dock window's resting panel in CSS px, whatever the auto-hide phase; new section
   [Dock panel](dock-panel.md). `DockState.overlapped: boolean` added: the engine's result, `true`

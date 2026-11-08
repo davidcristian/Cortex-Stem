@@ -147,3 +147,36 @@ the resting panel.
   strip-leave and a panel-enter in one dispatch can never hide the dock.
 - The settings page offers *When a window overlaps* next to *Always*; the
   delay applies to both.
+
+## Toggle while hidden
+
+The tray's left click and the toggle shortcut hide and show the dock
+*window*. With auto-hide the window is usually visible with its panel slid
+out. A toggle that only hid and showed the window would then hide an empty
+window on the first press, so nothing visible would happen, and only the
+second press (the window shown again, the page's `visibilitychange`) would
+bring the panel back.
+
+- **One press brings the dock back, whatever hid it.** The decision stays
+  in Rust (`windows::toggle_dock`), which needs one fact from the UI: the
+  dock reports `set_dock_auto_hidden { hidden }` on every change of "the
+  panel is slid out" (the machine's phase `hidden`), from the place that
+  applies the phase, without repeats. The app keeps it per dock window
+  (`windows::DockAutoHidden`); it is `false` until the UI reports and
+  whenever the window is created. Window hidden: show it. Window visible
+  with its panel slid out: emit `dock://show` (no payload) to that window
+  and leave the window alone. Window visible with its panel shown: hide
+  the window. The UI handles `dock://show` with
+  the same `show` event as the `visibilitychange` path, which stays for the
+  case where the window was hidden. The machine has no extra state for
+  this.
+- **The race is accepted.** The UI reports after the fact, so a press that
+  comes while the panel is sliding out can still hide the window; the next
+  press shows it, and `visibilitychange` brings the panel back. That costs
+  at most one extra press, and no round trip is added to prevent it.
+- **Toasts follow the panel.** A failure notice that stayed in place while
+  the panel is slid out would float above an empty slot. So while the phase
+  is `hidden`, the notices' container moves down by the panel box and its
+  bottom margin (`transform: translateY`, the same 200 ms as the slide,
+  none under reduced motion). The notices then sit 6 px above the bottom
+  edge and move back up with the panel. Toasts are never suppressed.
