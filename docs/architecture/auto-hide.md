@@ -12,8 +12,8 @@ With `autoHide.mode = always` the panel hides `delayMs` after the pointer
 left it. It never hides while an icon is lifted for a drag, a native menu
 from the dock is open (the span of the `show_*_menu` promise) or an item
 bounces for a launch the dock started. With `whenOverlapped` the same
-happens only while `DockState.overlapped`
-is set, that is while a window covers its resting
+happens only while the dock's `overlapped` fact (its own entry in
+`DockState.docks`) is set, that is while a window covers its resting
 panel. The dock comes back as soon as no window does. For that, the UI
 reports the resting panel through `set_dock_panel_rect` in every phase
 ([Data flow](data-flow.md)).
@@ -44,7 +44,7 @@ has no auto-hide mechanism of its own.
 
 ## Fullscreen
 
-While `DockState.fullscreen` is
+While the dock's `fullscreen` fact (its own entry in `DockState.docks`) is
 set, the same machine behaves as if the mode were `always` with no delay,
 whatever the mode is. `autoHideActive`, which the strip and the hit region
 follow, is true when the mode is `always`, during fullscreen, or when the

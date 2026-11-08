@@ -16,13 +16,13 @@ transparent parts. The UI tells Rust where the visible dock is:
   progress, the UI reports the whole viewport as `envelope` and restores the real one afterwards.
   While a file is dragged over the window ([File drags](file-drags.md)), the `envelope` is one
   slot wider, for the gap that opens in the panel.
-- Auto-hide is active when `autoHide.mode = always` (ADR-0008), when
-  [`DockState.fullscreen`](state-snapshot.md#dockstatedocks) is set, or when
-  `autoHide.mode = whenOverlapped` and
-  [`DockState.overlapped`](state-snapshot.md#dockstatedocks) is set. While auto-hide is
-  active and the dock is hidden, the UI reports the reveal strip as both `panel` and `envelope`.
-  The strip is the bottom 2 CSS px of the window, as long as the resting panel. While the dock is
-  shown, the UI reports an `envelope` grown out to the window's bottom edge to include the strip.
+- Auto-hide is active when `autoHide.mode = always` (ADR-0008), when the dock's `fullscreen`
+  fact is set, or when `autoHide.mode = whenOverlapped` and the dock's `overlapped` fact is set
+  (both facts from the dock's own entry in
+  [`DockState.docks`](state-snapshot.md#dockstatedocks)). While auto-hide is active and the dock
+  is hidden, the UI reports the reveal strip as both `panel` and `envelope`. The strip is the
+  bottom 2 CSS px of the window, as long as the resting panel. While the dock is shown, the UI
+  reports an `envelope` grown out to the window's bottom edge to include the strip.
 
   Hiding and revealing change only these reports; the window keeps its size and place.
 - Only dock windows may call it. Rust rejects non-dock windows and negative sizes. On a platform
