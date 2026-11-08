@@ -112,7 +112,7 @@ impl MockPlatform {
                 PlatformEvent::MonitorsChanged(m) => s.monitors = m.clone(),
                 PlatformEvent::ThemeChanged(t) => s.theme = t.clone(),
                 PlatformEvent::RecycleBinChanged(r) => s.recycle_bin = *r,
-                PlatformEvent::WindowAttention { .. } => {}
+                PlatformEvent::WindowAttention { .. } | PlatformEvent::FullscreenChanged(_) => {}
             }
             s.sink.clone()
         };
@@ -468,6 +468,8 @@ fn demo_window(id: u64, exe: &str, title: &str, minimized: bool) -> RawWindow {
         is_minimized: minimized,
         is_cloaked: false,
         monitor: Some(MonitorId("mock-primary".into())),
+        // The demo has no geometry; the TS mirror leaves it `null` too.
+        rect: None,
         icon_key: None,
     }
 }

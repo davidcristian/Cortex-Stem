@@ -1,6 +1,6 @@
 # IPC contract: Rust ⇄ frontend
 
-**Contract version: 1.8 (Recycle Bin drops).**
+**Contract version: 1.9 (fullscreen).**
 The files in this folder are the contract between the Rust app (`src-tauri`) and the pages in
 `src/`. A change to the contract follows the contract change rules in `AGENTS.md` ("IPC contract
 change control") and is logged in the [changelog](changelog.md).
@@ -28,6 +28,7 @@ change control") and is logged in the [changelog](changelog.md).
 | --- | --- |
 | [windows.md](windows.md) | The app's windows and their pages |
 | [events.md](events.md) | The events that Rust sends to the pages, and the startup sequence |
+| [state-snapshot.md](state-snapshot.md) | `DockState`: the fullscreen fact |
 | [commands.md](commands.md) | The commands that the pages call |
 | [sizing-protocol.md](sizing-protocol.md) | How Rust sizes a dock window |
 | [hit-region.md](hit-region.md) | Where a dock window takes clicks, and the reveal strip of auto-hide |

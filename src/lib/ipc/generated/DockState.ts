@@ -15,4 +15,13 @@ revision: number, items: Array<DockItem>,
  * window no item shows (e.g. on another virtual desktop); use
  * `DockItem.isActive` / `WindowInfo.isActive` for highlighting.
  */
-foreground: WindowId | null, };
+foreground: WindowId | null, 
+/**
+ * The foreground window of the dock's monitor owns the whole screen: a
+ * game, a browser after F11, a video in fullscreen, a slideshow.
+ * The platform decides (`PlatformEvent::FullscreenChanged`), the engine
+ * stores it, and the UI gets the dock out of the way while it is set,
+ * whatever `autoHide.mode` says. With a single dock, "the dock's
+ * monitor" is the foreground window's own monitor.
+ */
+fullscreen: boolean, };

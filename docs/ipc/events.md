@@ -5,7 +5,7 @@ how a page listens.
 
 | Event                | Payload                         | When                                                         |
 |----------------------|---------------------------------|--------------------------------------------------------------|
-| `dock://state`       | `DockState`                     | the items or the foreground changed, an identity was resolved, or settings were applied |
+| `dock://state`       | `DockState`                     | the items, the foreground or `fullscreen` changed, an identity was resolved, or settings were applied. [The state snapshot](state-snapshot.md) describes `fullscreen`. |
 | `dock://settings`    | `Settings`                      | settings were validated and persisted, whatever their source  |
 | `dock://theme`       | `ThemeInfo`                     | at start, and when the OS theme or accent colour changes      |
 | `dock://monitors`    | `MonitorInfo[]`                 | at start, and when the display topology changes               |

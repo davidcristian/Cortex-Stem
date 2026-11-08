@@ -155,6 +155,13 @@ pub struct RawWindow {
     /// Store app. Cloaked windows are normally not shown.
     pub is_cloaked: bool,
     pub monitor: Option<MonitorId>,
+    /// The window's frame on screen, in physical pixels of the virtual
+    /// desktop (the DWM extended frame bounds, else `GetWindowRect`), when
+    /// the platform could read it. Refreshed whenever the window is queried,
+    /// not on every move. Nothing renders it: the platform's fullscreen
+    /// detection reads it, and the overlap rule will.
+    #[serde(default)]
+    pub rect: Option<Rect>,
     /// Icon of this specific window (may differ from the app icon).
     pub icon_key: Option<IconKey>,
 }
@@ -262,6 +269,13 @@ pub struct DockState {
     /// window no item shows (e.g. on another virtual desktop); use
     /// `DockItem.isActive` / `WindowInfo.isActive` for highlighting.
     pub foreground: Option<WindowId>,
+    /// The foreground window of the dock's monitor owns the whole screen: a
+    /// game, a browser after F11, a video in fullscreen, a slideshow.
+    /// The platform decides (`PlatformEvent::FullscreenChanged`), the engine
+    /// stores it, and the UI gets the dock out of the way while it is set,
+    /// whatever `autoHide.mode` says. With a single dock, "the dock's
+    /// monitor" is the foreground window's own monitor.
+    pub fullscreen: bool,
 }
 
 /// Current OS theme facts, emitted as `dock://theme`.
@@ -352,6 +366,24 @@ mod tests {
         );
         let back: LaunchTarget = serde_json::from_str(&json).unwrap();
         assert_eq!(back, t);
+    }
+
+    #[test]
+    fn raw_window_without_a_rect_still_deserialises() {
+        // `rect` arrived with fullscreen detection; documents and mocks
+        // written before it leave it out.
+        let json = r#"{"id":7,"title":"T","className":"C","processId":1,"exePath":null,
+            "appUserModelId":null,"isVisible":true,"isMinimized":false,"isCloaked":false,
+            "monitor":null,"iconKey":null}"#;
+        let raw: RawWindow = serde_json::from_str(json).unwrap();
+        assert_eq!(raw.rect, None);
+        let with_rect: RawWindow = serde_json::from_str(&json.replacen(
+            r#""monitor":null"#,
+            r#""monitor":null,"rect":{"x":1,"y":2,"width":3,"height":4}"#,
+            1,
+        ))
+        .unwrap();
+        assert_eq!(with_rect.rect, Some(Rect::new(1, 2, 3, 4)));
     }
 
     #[test]

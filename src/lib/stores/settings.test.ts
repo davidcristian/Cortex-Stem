@@ -124,7 +124,7 @@ class FakeBackend implements Backend {
   }
 
   async getDockState() {
-    return { revision: 0, items: [], foreground: null };
+    return { revision: 0, items: [], foreground: null, fullscreen: false };
   }
   async getMonitors() {
     return [];

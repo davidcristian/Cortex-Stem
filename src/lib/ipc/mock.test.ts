@@ -501,6 +501,35 @@ describe('revisions and events', () => {
     await b.openSettings();
     expect(b.calls).toEqual([{ type: 'openSettings' }]);
   });
+
+  it('setFullscreen mirrors FullscreenChanged: in the snapshot, one state event per change', async () => {
+    const b = fast();
+    const states = recordStates(b);
+    const before = await b.getDockState();
+    expect(before.fullscreen).toBe(false);
+    // The demo windows carry no geometry, like the Rust demo.
+    expect(item(before, app(FIREFOX)).windows).toHaveLength(2);
+
+    // The first verdict is usually `false`: no change, no event.
+    b.setFullscreen(false);
+    expect(states).toHaveLength(0);
+
+    b.setFullscreen(true);
+    expect(states).toHaveLength(1);
+    expect(states[0]!.fullscreen).toBe(true);
+    expect(states[0]!.revision).toBe(before.revision + 1);
+    // Items and the foreground are untouched by it.
+    expect(keys(states[0]!)).toEqual(keys(before));
+    expect(states[0]!.foreground).toBe(before.foreground);
+    expect((await b.getDockState()).fullscreen).toBe(true);
+
+    b.setFullscreen(true);
+    expect(states).toHaveLength(1);
+    b.setFullscreen(false);
+    expect(states).toHaveLength(2);
+    expect(states[1]!.fullscreen).toBe(false);
+    expect(states[1]!.revision).toBe(before.revision + 2);
+  });
 });
 
 describe('context menus (docs/ipc/context-menus.md, v1.2; native in Rust, recorded here)', () => {

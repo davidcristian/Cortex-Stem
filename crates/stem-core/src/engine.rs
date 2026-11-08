@@ -24,6 +24,9 @@
 //!   may point at a window no item shows (cloaked, invisible); nothing is
 //!   marked active then, and the item lights up as soon as the window is shown
 //!   again without needing another `ForegroundChanged`.
+//! - `fullscreen` is the platform's verdict, stored as is: the engine
+//!   never derives it from window rects (`RawWindow::rect` is kept but not
+//!   rendered, so a rect change alone never bumps the revision).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -93,6 +96,8 @@ pub struct DockEngine {
     /// First-seen order of apps that currently have windows.
     running_order: Vec<AppId>,
     foreground: Option<WindowId>,
+    /// The platform's fullscreen verdict; see `DockState::fullscreen`.
+    fullscreen: bool,
     monitors: Vec<MonitorInfo>,
     theme: ThemeInfo,
     recycle_bin: RecycleBinState,
@@ -109,6 +114,7 @@ impl DockEngine {
             identity_requested: HashSet::new(),
             running_order: Vec::new(),
             foreground: None,
+            fullscreen: false,
             monitors: Vec::new(),
             theme: ThemeInfo::default(),
             recycle_bin: RecycleBinState::default(),
@@ -137,6 +143,11 @@ impl DockEngine {
     /// that no item shows (cloaked or invisible).
     pub fn foreground(&self) -> Option<WindowId> {
         self.foreground
+    }
+
+    /// The platform's latest fullscreen verdict.
+    pub fn fullscreen(&self) -> bool {
+        self.fullscreen
     }
 
     pub fn window(&self, id: WindowId) -> Option<&RawWindow> {
@@ -251,6 +262,9 @@ impl DockEngine {
             PlatformEvent::MonitorsChanged(monitors) => self.monitors = monitors,
             PlatformEvent::ThemeChanged(theme) => self.theme = theme,
             PlatformEvent::RecycleBinChanged(state) => self.recycle_bin = state,
+            // Part of the snapshot, so `apply` bumps the revision only when
+            // the value differs from the stored one.
+            PlatformEvent::FullscreenChanged(fullscreen) => self.fullscreen = fullscreen,
         }
     }
 
@@ -426,6 +440,7 @@ impl DockEngine {
             revision: self.revision,
             items,
             foreground: self.foreground,
+            fullscreen: self.fullscreen,
         }
     }
 
@@ -557,6 +572,7 @@ mod tests {
             is_minimized: false,
             is_cloaked: false,
             monitor: None,
+            rect: None,
             icon_key: None,
         }
     }
@@ -624,6 +640,81 @@ mod tests {
             flashing,
         }
         .into()
+    }
+
+    fn fullscreen(active: bool) -> EngineInput {
+        PlatformEvent::FullscreenChanged(active).into()
+    }
+
+    #[test]
+    fn fullscreen_is_stored_and_bumps_only_on_a_change() {
+        let mut engine = DockEngine::new(minimal_settings());
+        engine.apply(added(win(1, r"C:\a.exe", "A")));
+        let r = engine.snapshot().revision;
+        assert!(!engine.snapshot().fullscreen);
+        assert!(!engine.fullscreen());
+
+        // The platform's first verdict is usually `false`: nothing to emit.
+        assert!(!engine.apply(fullscreen(false)).changed);
+        assert_eq!(engine.snapshot().revision, r);
+
+        let out = engine.apply(fullscreen(true));
+        assert!(out.changed);
+        assert!(out.unresolved_apps.is_empty());
+        let state = engine.snapshot();
+        assert!(state.fullscreen);
+        assert!(engine.fullscreen());
+        assert_eq!(state.revision, r + 1);
+        // Items and foreground are untouched by it.
+        assert_eq!(keys(&state), vec!["app:exe:c:/a.exe"]);
+
+        // Repeats change nothing; the end of fullscreen is one more bump.
+        assert!(!engine.apply(fullscreen(true)).changed);
+        assert_eq!(engine.snapshot().revision, r + 1);
+        assert!(engine.apply(fullscreen(false)).changed);
+        assert!(!engine.snapshot().fullscreen);
+        assert_eq!(engine.snapshot().revision, r + 2);
+    }
+
+    #[test]
+    fn fullscreen_survives_a_resync_and_is_independent_of_the_foreground() {
+        let mut engine = DockEngine::new(minimal_settings());
+        engine.apply(added(win(1, r"C:\a.exe", "A")));
+        engine.apply(fullscreen(true));
+        engine.apply(foreground(Some(1)));
+        engine.apply(PlatformEvent::WindowsSnapshot(vec![win(1, r"C:\a.exe", "A")]).into());
+        engine.apply(foreground(None));
+        engine.apply(removed(1));
+        // Only the platform says when it is over.
+        assert!(engine.snapshot().fullscreen);
+    }
+
+    #[test]
+    fn a_rect_change_alone_is_stored_without_bumping_the_revision() {
+        let mut engine = DockEngine::new(minimal_settings());
+        let mut raw = win(1, r"C:\a.exe", "A");
+        raw.rect = Some(Rect::new(0, 0, 800, 600));
+        engine.apply(added(raw.clone()));
+        let r = engine.snapshot().revision;
+        assert_eq!(
+            engine.window(WindowId(1)).and_then(|w| w.rect),
+            Some(Rect::new(0, 0, 800, 600))
+        );
+
+        // The window moved (the next query of it carried the new frame).
+        raw.rect = Some(Rect::new(100, 50, 800, 600));
+        assert!(!engine.apply(updated(raw.clone())).changed);
+        assert_eq!(engine.snapshot().revision, r);
+        assert_eq!(
+            engine.window(WindowId(1)).and_then(|w| w.rect),
+            Some(Rect::new(100, 50, 800, 600))
+        );
+
+        // A platform that cannot read the frame reports `None`; still no bump.
+        raw.rect = None;
+        assert!(!engine.apply(updated(raw)).changed);
+        assert_eq!(engine.window(WindowId(1)).and_then(|w| w.rect), None);
+        assert_eq!(engine.snapshot().revision, r);
     }
 
     #[test]

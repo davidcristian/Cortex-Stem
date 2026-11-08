@@ -1,5 +1,5 @@
 /**
- * `MockBackend`: the whole IPC contract (docs/ipc/ v1.8) without Rust, for
+ * `MockBackend`: the whole IPC contract (docs/ipc/ v1.9) without Rust, for
  * browser runs and Playwright screenshots.
  *
  * It mirrors, deliberately in this one file so the two sides can be compared,
@@ -358,6 +358,8 @@ function demoWindow(id: number, exe: string, title: string, minimized: boolean):
     isMinimized: minimized,
     isCloaked: false,
     monitor: DEMO_MONITOR_ID,
+    // The demo has no geometry, like the Rust demo (`rect: None`).
+    rect: null,
     iconKey: null,
   };
 }
@@ -558,6 +560,8 @@ class Engine {
   readonly identities = new Map<AppId, AppIdentity>();
   private runningOrder: AppId[] = [];
   foreground: WindowId | null = null;
+  /** The platform's fullscreen verdict, stored as is. */
+  fullscreen = false;
   monitors: MonitorInfo[] = [];
   theme: ThemeInfo;
   recycleBin: RecycleBinState = { itemCount: 0, sizeBytes: 0 };
@@ -638,6 +642,13 @@ class Engine {
     }
     const changed = t.attention !== flashing;
     t.attention = flashing;
+    return this.apply(changed);
+  }
+
+  /** `PlatformEvent::FullscreenChanged`: part of the snapshot, so a repeat changes nothing. */
+  setFullscreen(active: boolean): boolean {
+    const changed = this.fullscreen !== active;
+    this.fullscreen = active;
     return this.apply(changed);
   }
 
@@ -767,7 +778,12 @@ class Engine {
       items.push(fixedItem('recycleBin', 'fixed:recycle-bin', 'Recycle Bin', `shell:${icon}`));
     }
 
-    return { revision: this.revision, items, foreground: this.foreground };
+    return {
+      revision: this.revision,
+      items,
+      foreground: this.foreground,
+      fullscreen: this.fullscreen,
+    };
   }
 
   /** `DockEngine::primary_action`. */
@@ -1251,6 +1267,18 @@ export class MockBackend implements Backend {
 
   pushAttention(id: WindowId, flashing: boolean): void {
     if (this.engine.setAttention(id, flashing)) {
+      this.emitState();
+    }
+  }
+
+  /**
+   * The platform's fullscreen verdict changed (`FullscreenChanged`):
+   * a game, a browser after F11, a video or a slideshow took the screen, or
+   * gave it back. One `dock://state` when the value differs.
+   */
+  setFullscreen(active: boolean): void {
+    if (this.engine.setFullscreen(active)) {
+      this.log(`fullscreen ${active ? 'on' : 'off'}`);
       this.emitState();
     }
   }

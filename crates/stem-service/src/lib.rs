@@ -1728,6 +1728,35 @@ mod tests {
         service.shutdown();
     }
 
+    // ----- the platform's fullscreen verdict -----------------------------------
+
+    #[test]
+    fn fullscreen_verdicts_reach_the_snapshot_and_repeats_emit_nothing() {
+        let relay = Arc::new(Relay::demo());
+        let (service, rx) = start_relay(relay.clone());
+        wait_state(&rx, resolved);
+        while rx.try_recv().is_ok() {}
+        assert!(!service.state().fullscreen);
+
+        // The first verdict after the start snapshot is usually `false`:
+        // nothing changes, nothing is emitted.
+        relay.emit(PlatformEvent::FullscreenChanged(false));
+        assert!(rx.recv_timeout(Duration::from_millis(150)).is_err());
+
+        relay.emit(PlatformEvent::FullscreenChanged(true));
+        let state = wait_state(&rx, |s| s.fullscreen);
+        // The items are untouched by it.
+        assert_eq!(app_items(&state).len(), 5);
+        assert!(service.state().fullscreen);
+
+        relay.emit(PlatformEvent::FullscreenChanged(true));
+        assert!(rx.recv_timeout(Duration::from_millis(150)).is_err());
+
+        relay.emit(PlatformEvent::FullscreenChanged(false));
+        wait_state(&rx, |s| !s.fullscreen);
+        service.shutdown();
+    }
+
     // ----- stale `exe:` pins of packaged apps ---------------------------------
 
     const TERMINAL_EXE: &str = r"C:\Program Files\WindowsApps\Microsoft.WindowsTerminal_1.24.12741.0_x64__8wekyb3d8bbwe\WindowsTerminal.exe";
@@ -1782,6 +1811,7 @@ mod tests {
             is_minimized: false,
             is_cloaked: false,
             monitor: Some(stem_core::MonitorId("mock-primary".into())),
+            rect: None,
             icon_key: None,
         }
     }

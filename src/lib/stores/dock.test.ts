@@ -15,7 +15,12 @@ import { defaultSettings } from '$lib/ipc/mock';
 import { acceptsRevision, DockStore } from './dock.svelte';
 import { iconId } from './icon-cache';
 
-const snapshot = (revision: number): DockState => ({ revision, items: [], foreground: null });
+const snapshot = (revision: number): DockState => ({
+  revision,
+  items: [],
+  foreground: null,
+  fullscreen: false,
+});
 
 const THEME: ThemeInfo = { accent: '#0078D4', dark: true, highContrast: false, transparency: true };
 

@@ -29,6 +29,13 @@ pub enum PlatformEvent {
     MonitorsChanged(Vec<MonitorInfo>),
     ThemeChanged(ThemeInfo),
     RecycleBinChanged(RecycleBinState),
+    /// The foreground window started (`true`) or stopped (`false`) owning
+    /// the whole screen: the platform's verdict from the shell's
+    /// notification state and the window's frame against its monitor,
+    /// re-evaluated on foreground changes and on moves of the foreground
+    /// window, and sent only when it changes (plus once after the start
+    /// snapshot). Stored as `DockState::fullscreen`.
+    FullscreenChanged(bool),
 }
 
 /// Everything the engine can be fed.

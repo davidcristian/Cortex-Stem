@@ -3,6 +3,11 @@
 This file lists every version of the [IPC contract](index.md), newest first. A section name links
 to the file that covers that section now.
 
+- **v1.9 (fullscreen):** `DockState.fullscreen: boolean` added: the platform's result, `true`
+  while a fullscreen app covers the screen. It is sent in `dock://state`, which now also fires
+  when it changes; the UI hides the dock while it is set, whatever `autoHide.mode` says.
+  `RawWindow.rect: Rect | null` added (the window's frame in physical screen pixels; `null` when
+  unknown, and in the mocks' demo windows). No command or event changed.
 - **v1.8 (Recycle Bin drops):** `delete_to_recycle_bin { paths }` added
   (`Backend.deleteToRecycleBin`): a file drop on the Recycle Bin item highlights it instead of
   opening the pin gap, and moves every dropped path to the bin; [File drags](file-drags.md)
