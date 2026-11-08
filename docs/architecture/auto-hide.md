@@ -54,7 +54,11 @@ With the pointer away the dock slides out at once. With the pointer over
 it the dock stays, and it hides the moment the pointer leaves, through
 `pending` and a 0 ms timer, so a strip-leave and a panel-enter in one
 dispatch cannot hide it. The strip, the holds and `attention` work as
-above.
+above, with one exception. While only fullscreen makes auto-hide active
+and the work area stops short of the monitor on the dock's edge (a visible
+stock taskbar or another AppBar on that edge), there is no strip and the
+hidden dock takes no pointer at all. The tray, the toggle shortcut and
+`attention` still bring it back.
 
 When fullscreen ends, a mode other than `always` shows the dock again.
 `always` resumes its normal delay, and a hidden dock stays hidden. The

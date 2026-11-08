@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { expect, test, type Locator, type Page } from '@playwright/test';
 
 import type { AppInfo } from '../src/lib/ipc/generated/AppInfo';
+import type { MonitorInfo } from '../src/lib/ipc/generated/MonitorInfo';
 import type { RawWindow } from '../src/lib/ipc/generated/RawWindow';
 import type { Rect } from '../src/lib/ipc/generated/Rect';
 import type { Settings } from '../src/lib/ipc/generated/Settings';
@@ -220,6 +221,36 @@ function fullscreen(page: Page, active: boolean, monitor: string | null = null):
     },
     [active, monitor] as const,
   );
+}
+
+/**
+ * The stock taskbar is auto-hidden (by Windows' own setting, or by Stem):
+ * every monitor's work area reaches its bottom edge, as `get_monitors` then
+ * reports it, so the dock window's bottom edge is the screen's. (The mock's
+ * monitors keep a visible taskbar's 48 px, like a default desktop.)
+ * Installed before the page loads: the mock is wrapped the moment the page
+ * exposes it (src/lib/ipc/demo.ts, before mounting), before the store asks.
+ */
+async function withTaskbarAutoHidden(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    interface Monitors {
+      getMonitors: () => Promise<MonitorInfo[]>;
+    }
+    let mock: Monitors | undefined;
+    Object.defineProperty(window, '__dockMock', {
+      configurable: true,
+      get: () => mock,
+      set: (value: Monitors) => {
+        const original = value.getMonitors.bind(value);
+        value.getMonitors = async () =>
+          (await original()).map((m) => ({
+            ...m,
+            workArea: { ...m.workArea, height: m.bounds.y + m.bounds.height - m.workArea.y },
+          }));
+        mock = value;
+      },
+    });
+  });
 }
 
 /** Window `id` was moved or resized to `rect` (screen px of the mock monitor), as the platform reports it. */
@@ -2288,10 +2319,12 @@ test.describe('auto-hide', () => {
     expect(await lastRegion(page)).toEqual(atRest);
   });
 
-  test('a fullscreen app hides it at once with auto-hide off; the strip brings it back; the end of fullscreen shows it', async ({
+  test('a fullscreen app hides it at once with auto-hide off; with the taskbar auto-hidden the strip brings it back; the end of fullscreen shows it', async ({
     page,
   }) => {
     await page.emulateMedia({ colorScheme: 'dark' });
+    // The dock window's bottom edge is the screen's: the strip is there.
+    await withTaskbarAutoHidden(page);
     await openDock(page);
     const viewport = page.viewportSize()!;
     await expect.poll(() => hitRegions(page)).toHaveLength(1);
@@ -2317,9 +2350,26 @@ test.describe('auto-hide', () => {
     await expect(panel).toBeVisible();
     await expect.poll(() => lastRegion(page)).toEqual(shownRegion(atRest, viewport.height));
     await expect.poll(async () => (await panelStyle(page)).transform).toBe('none');
+    // Shown, the strip fills the margin under the panel, so going up from
+    // the edge is going into the panel: a pixel at a time through the
+    // margin, no 0 ms countdown fires on the way.
+    const band = (await page.locator(STRIP).boundingBox())!;
+    expect(band.y + band.height).toBe(viewport.height);
+    expect(Math.abs(band.y - (atRest.panel.y + atRest.panel.height))).toBeLessThanOrEqual(1);
+    const x = strip.panel.x + strip.panel.width / 2;
+    for (let y = viewport.height - 1; y >= band.y + 1; y -= 1) {
+      await page.mouse.move(x, y);
+    }
+    await page.waitForTimeout(SLIDE_MS);
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+    for (let y = band.y; y >= band.y - 6; y -= 1) {
+      await page.mouse.move(x, y);
+    }
     // Up into the panel: it stays, with its icons usable.
-    await page.locator(APP_SLOT).nth(2).hover();
     await page.waitForTimeout(DELAY + SLIDE_MS);
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+    await page.locator(APP_SLOT).nth(2).hover();
+    await page.waitForTimeout(SLIDE_MS);
     await expect(panel).toHaveAttribute('data-autohide', 'shown');
     await page.screenshot({ path: `${OUT}/dock-fullscreen-revealed.png` });
 
@@ -2381,6 +2431,154 @@ test.describe('auto-hide', () => {
     await expect(panel).toHaveAttribute('data-autohide', 'shown');
     await page.mouse.move(640, 10);
     await expect(panel).toHaveAttribute('data-autohide', 'pending');
+    await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+  });
+
+  test('with auto-hide always and no delay, going up slowly from the bottom edge into the panel keeps it up', async ({
+    page,
+  }) => {
+    await openDock(page);
+    const viewport = page.viewportSize()!;
+    await expect.poll(() => hitRegions(page)).toHaveLength(1);
+    const atRest = (await hitRegions(page))[0]!;
+    const panel = page.locator(PANEL);
+    await setAutoHide(page, 'always', 0);
+    await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+    const strip = stripRegion(atRest, viewport.height).panel;
+    const x = strip.x + strip.width / 2;
+    await page.mouse.move(x, viewport.height - 1);
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+    // A pixel at a time through the margin under the panel and into it.
+    const panelBottom = atRest.panel.y + atRest.panel.height;
+    for (let y = viewport.height - 2; y >= panelBottom - 6; y -= 1) {
+      await page.mouse.move(x, y);
+      if (y === panelBottom + 2) {
+        await page.waitForTimeout(SLIDE_MS);
+        await expect(panel).toHaveAttribute('data-autohide', 'shown');
+      }
+    }
+    await page.waitForTimeout(SLIDE_MS);
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+    // Down the same way to the edge: still up; then away: out at once.
+    for (let y = panelBottom - 6; y < viewport.height; y += 1) {
+      await page.mouse.move(x, y);
+    }
+    await page.waitForTimeout(SLIDE_MS);
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+    await page.mouse.move(640, 10);
+    await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+    await expect.poll(() => lastRegion(page)).toEqual(stripRegion(atRest, viewport.height));
+  });
+
+  test('in fullscreen above a visible stock taskbar there is no strip: the hidden dock takes no pointer and the tray or the shortcut brings it back', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    // The mock's monitor keeps the taskbar's 48 px: the dock window ends
+    // above the screen's edge, inside the fullscreen picture.
+    await openDock(page);
+    const viewport = page.viewportSize()!;
+    await expect.poll(() => hitRegions(page)).toHaveLength(1);
+    const atRest = (await hitRegions(page))[0]!;
+    const panel = page.locator(PANEL);
+    const none = { x: 0, y: 0, width: 0, height: 0 };
+    const noRegion = { panel: none, envelope: { ...none } };
+
+    await page.mouse.move(640, 10);
+    await fullscreen(page, true);
+    await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+    await expect(panel).toBeHidden();
+    await expect(page.locator(STRIP)).toHaveCount(0);
+    await expect.poll(() => lastRegion(page)).toEqual(noRegion);
+    // The pointer crossing the window's bottom edge does nothing.
+    await page.mouse.move(atRest.panel.x + atRest.panel.width / 2, viewport.height - 1);
+    await page.waitForTimeout(SLIDE_MS * 2);
+    await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+    await page.mouse.move(640, 10);
+
+    // The tray or the shortcut: back, with the plain region (no strip to take in).
+    await page.evaluate(() => {
+      (window as unknown as DemoWindow).__dockMock?.requestShow();
+    });
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+    await expect(panel).toBeVisible();
+    await expect.poll(() => lastRegion(page)).toEqual(atRest);
+    await expect(page.locator(STRIP)).toHaveCount(0);
+    // Over it and away: out at once, and no region again.
+    await page.locator(APP_SLOT).nth(2).hover();
+    await page.mouse.move(640, 10);
+    await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+    await expect.poll(() => lastRegion(page)).toEqual(noRegion);
+
+    // The mode `always` has its strip, fullscreen or not; back to off, none.
+    await setAutoHide(page, 'always');
+    await expect(page.locator(STRIP)).toHaveCount(1);
+    await expect.poll(() => lastRegion(page)).toEqual(stripRegion(atRest, viewport.height));
+    await setAutoHide(page, 'off');
+    await expect(page.locator(STRIP)).toHaveCount(0);
+    await expect.poll(() => lastRegion(page)).toEqual(noRegion);
+    await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+
+    // Fullscreen ends: back, with the plain region.
+    await fullscreen(page, false);
+    await expect(panel).not.toHaveAttribute('data-autohide');
+    await expect(panel).toBeVisible();
+    await expect.poll(() => lastRegion(page)).toEqual(atRest);
+  });
+
+  test('the dock shown on request, or revealed from the strip, still hides at the next fullscreen once the pointer is elsewhere', async ({
+    page,
+  }) => {
+    await openDock(page);
+    const panel = page.locator(PANEL);
+    await page.mouse.move(640, 10);
+    await fullscreen(page, true);
+    await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+    // Shown on request: it stays until the pointer has been over it and left.
+    await page.evaluate(() => {
+      (window as unknown as DemoWindow).__dockMock?.requestShow();
+    });
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+    // Fullscreen ends before the pointer came; the next one hides it at once.
+    await fullscreen(page, false);
+    await expect(panel).not.toHaveAttribute('data-autohide');
+    await fullscreen(page, true);
+    await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+    await fullscreen(page, false);
+
+    // Revealed from the strip, which goes away under the pointer when
+    // fullscreen ends (no `pointerleave` comes from a removed element).
+    await withTaskbarAutoHidden(page);
+    await openDock(page);
+    const viewport = page.viewportSize()!;
+    await page.mouse.move(640, 10);
+    await fullscreen(page, true);
+    await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+    const strip = (await page.locator(STRIP).boundingBox())!;
+    await page.mouse.move(strip.x + strip.width / 2, viewport.height - 1);
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+    await fullscreen(page, false);
+    await expect(page.locator(STRIP)).toHaveCount(0);
+    await page.mouse.move(640, 10);
+    await fullscreen(page, true);
+    await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+  });
+
+  test('a pointer resting on the dock keeps it up when fullscreen comes back', async ({ page }) => {
+    await openDock(page);
+    const panel = page.locator(PANEL);
+    await page.locator(APP_SLOT).nth(3).hover();
+    await fullscreen(page, true);
+    await page.waitForTimeout(SLIDE_MS * 2);
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+    await fullscreen(page, false);
+    await expect(panel).not.toHaveAttribute('data-autohide');
+    // The pointer has not moved: it is still over the dock when the next
+    // fullscreen begins, and the dock stays until it leaves.
+    await fullscreen(page, true);
+    await page.waitForTimeout(SLIDE_MS * 2);
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+    await page.mouse.move(640, 10);
     await expect(panel).toHaveAttribute('data-autohide', 'hidden');
   });
 });

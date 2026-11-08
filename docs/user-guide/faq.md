@@ -61,7 +61,8 @@ already registered.
 - Press the [toggle shortcut](keyboard-shortcuts.md#the-toggle-shortcut)
   (`Ctrl+Alt+D` by default), or left-click Stem's tray icon.
 - A fullscreen app hides the dock on its monitor until it leaves fullscreen.
-  The bottom edge still brings the dock back over it.
+  [Auto-hide](auto-hide.md) says when the screen edge still brings the dock
+  back over it.
 - Start Stem again from the Start menu: a running Stem shows its dock, and a
   Stem that is not running starts.
 

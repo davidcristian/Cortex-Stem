@@ -32,7 +32,9 @@ on screen until you switch to that app.
 A fullscreen app (a game, a video in fullscreen, a browser after F11, a
 slideshow) hides the dock on its monitor in every mode. The dock hides at
 once, or, with the pointer on the dock, as soon as the pointer leaves. The
-reveal strip still works over a fullscreen app. A maximised window is not
+reveal strip still works over a fullscreen app, unless the stock taskbar is
+on the dock's edge and is not set to auto-hide. In that case the toggle
+shortcut or the tray brings the dock back. A maximised window is not
 fullscreen.
 
 Auto-hide works best with _Click through outside the dock_ on. With it off,

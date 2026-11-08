@@ -42,6 +42,18 @@
  * `always`"; `autoHideActive` is what the UI reads for the strip and the
  * hit region.
  *
+ * Fullscreen above a visible stock taskbar: the dock window sits on
+ * the work area's bottom edge (ADR-0008), which is then about 48 px above
+ * the screen's, so a strip there would be a line across the fullscreen
+ * picture that flashes the dock over it whenever the pointer crosses it.
+ * While only fullscreen makes the machine active (`onlyFullscreenHides`)
+ * and the work area does not reach the monitor's bottom
+ * (`workAreaReachesBottom`), there is no strip (`revealStripOn`) and the
+ * hidden dock takes no pointer at all (`autoHideHitRegion`): the tray, the
+ * toggle shortcut (`show`) and `attention` still bring it back. With the
+ * taskbar auto-hidden (Windows' own setting, or Stem's) the work area
+ * reaches the edge and the strip works as above.
+ *
  * When overlapped: with the mode `whenOverlapped` (`dodges`), the
  * `overlapped` event carries `DockState.overlapped`, the engine's verdict
  * that a window of another process covers the resting panel. While it is
@@ -56,10 +68,23 @@
  *
  * A countdown of 0 ms also goes through `pending` and a 0 ms timer, so two
  * events of one dispatch (a strip-leave followed by a panel-enter) can
- * never hide the dock between them, whatever the mode.
+ * never hide the dock between them, whatever the mode. For that to hold
+ * when the pointer goes up from the strip slowly, the strip on screen fills
+ * the whole margin under the panel (`revealStripHeight`): there is no gap
+ * between the two where the pointer would count as away.
+ *
+ * The machine forgets the pointer (`pointerInside` back to `false`) when
+ * auto-hide stops applying (the mode, the end of fullscreen or of an
+ * overlap): `strip` and `show` set it without the pointer being over the
+ * panel, and the strip can go from under the pointer with no `pointerleave`
+ * (none comes from a removed element), so a stale `true` would leave the
+ * next fullscreen or overlap unable to hide the dock. `Dock.svelte` tells
+ * it where the pointer is again: the next move over the panel does, and so
+ * does the panel's `:hover` when auto-hide comes on again.
  */
 
 import type { AutoHideMode } from '$lib/ipc/generated/AutoHideMode';
+import type { MonitorInfo } from '$lib/ipc/generated/MonitorInfo';
 import type { Rect } from '$lib/ipc/generated/Rect';
 
 import type { HitRegion } from './geometry';
@@ -109,7 +134,10 @@ export interface AutoHideState {
   /** `DockState.overlapped`: a window covers the resting panel. Only `dodges` acts on it. */
   readonly overlapped: boolean;
   readonly phase: AutoHidePhase;
-  /** The last pointer event put the pointer over the panel or the reveal strip. */
+  /**
+   * The last pointer event put the pointer over the panel or the reveal
+   * strip. Cleared when auto-hide stops applying (see the module comment).
+   */
   readonly pointerInside: boolean;
   readonly holds: Readonly<Record<AutoHideHold, boolean>>;
 }
@@ -186,6 +214,53 @@ export function autoHideActive(state: AutoHideState): boolean {
   return state.enabled || state.fullscreen || (state.dodges && state.overlapped);
 }
 
+/**
+ * Only a fullscreen app makes the machine active: the mode is not
+ * `always`, and no window overlaps with the mode `whenOverlapped`.
+ */
+export function onlyFullscreenHides(state: AutoHideState): boolean {
+  return state.fullscreen && !state.enabled && !(state.dodges && state.overlapped);
+}
+
+/**
+ * The dock window's bottom edge is the screen's: the window sits on
+ * the bottom of `monitor`'s work area (ADR-0008), which reaches the bottom
+ * of the monitor unless a visible stock taskbar (or another app bar) holds
+ * the space below. True with the taskbar auto-hidden or on another edge,
+ * and for a monitor not known yet (the strip as it always was).
+ */
+export function workAreaReachesBottom(monitor: MonitorInfo | null | undefined): boolean {
+  if (monitor === null || monitor === undefined) {
+    return true;
+  }
+  const { bounds, workArea } = monitor;
+  return workArea.y + workArea.height >= bounds.y + bounds.height;
+}
+
+/**
+ * The reveal strip is in place in `state`: auto-hide applies, and either
+ * the strip is at the screen's edge (`atScreenEdge`, `workAreaReachesBottom`)
+ * or something other than fullscreen hides the dock (the mode `always`, or
+ * an overlap with `whenOverlapped`), whose strip sits on the work area's
+ * edge as it always has (ADR-0008 "Consequences").
+ */
+export function revealStripOn(state: AutoHideState, atScreenEdge: boolean): boolean {
+  return autoHideActive(state) && (atScreenEdge || !onlyFullscreenHides(state));
+}
+
+/**
+ * The reveal strip's height in `phase`, CSS px: `REVEAL_STRIP_PX` while
+ * hidden (the only place the window takes the pointer); on screen, the
+ * whole band from the window's bottom edge up to the panel's bottom edge
+ * (`gap`, the margin under the panel), so the pointer going up from the
+ * strip is over the panel the moment it leaves the strip. With a 0 ms
+ * countdown (fullscreen, or a delay of 0) a gap between the two
+ * would hide the dock on the way up. Never less than the strip.
+ */
+export function revealStripHeight(phase: AutoHidePhase, gap: number): number {
+  return phase === 'hidden' ? REVEAL_STRIP_PX : Math.max(REVEAL_STRIP_PX, gap);
+}
+
 /** How long the timer an `arm` asks for runs: no delay at all while fullscreen. */
 export function hideDelayMs(state: AutoHideState): number {
   return state.fullscreen ? 0 : state.delayMs;
@@ -236,8 +311,20 @@ function settle(next: AutoHideState, restart = false): AutoHideStep {
   return { state: { ...next, phase: 'pending' }, timer: 'arm' };
 }
 
-/** One transition. Never mutates `state`. */
+/**
+ * One transition. Never mutates `state`. When it ends auto-hide (the mode,
+ * the end of fullscreen or of an overlap), the pointer is forgotten: see
+ * the module comment.
+ */
 export function autoHideStep(state: AutoHideState, event: AutoHideEvent): AutoHideStep {
+  const next = transition(state, event);
+  if (next.state.pointerInside && autoHideActive(state) && !autoHideActive(next.state)) {
+    return { state: { ...next.state, pointerInside: false }, timer: next.timer };
+  }
+  return next;
+}
+
+function transition(state: AutoHideState, event: AutoHideEvent): AutoHideStep {
   switch (event.type) {
     case 'configure': {
       const enabled = autoHideEnabled(event.mode);
@@ -337,6 +424,45 @@ export function revealStrip(panel: Rect, viewportHeight: number): Rect {
 export function hiddenHitRegion(panel: Rect, viewportHeight: number): HitRegion {
   const strip = revealStrip(panel, viewportHeight);
   return { panel: strip, envelope: { ...strip } };
+}
+
+/**
+ * No clickable area at all: 0 × 0 at the viewport's origin, which contains
+ * no point, as both rectangles (docs/ipc/hit-region.md takes any
+ * non-negative size; the envelope contains the panel).
+ */
+export const NO_HIT_REGION: Readonly<HitRegion> = Object.freeze({
+  panel: Object.freeze({ x: 0, y: 0, width: 0, height: 0 }),
+  envelope: Object.freeze({ x: 0, y: 0, width: 0, height: 0 }),
+});
+
+/**
+ * What the dock reports for `region` (the panel at rest and its envelope)
+ * in `state`: `region` itself while auto-hide does not apply; with
+ * the reveal strip (`revealStripOn`), the strip while hidden
+ * (`hiddenHitRegion`) and the envelope grown down to the bottom edge while
+ * shown (`shownHitRegion`); with none (fullscreen above a visible taskbar),
+ * `NO_HIT_REGION` while hidden, so the window is click-through
+ * everywhere, and `region` while shown.
+ */
+export function autoHideHitRegion(
+  state: AutoHideState,
+  region: HitRegion,
+  viewportHeight: number,
+  atScreenEdge: boolean,
+): HitRegion {
+  if (!autoHideActive(state)) {
+    return region;
+  }
+  const hidden = isAutoHidden(state);
+  if (!revealStripOn(state, atScreenEdge)) {
+    return hidden
+      ? { panel: { ...NO_HIT_REGION.panel }, envelope: { ...NO_HIT_REGION.envelope } }
+      : region;
+  }
+  return hidden
+    ? hiddenHitRegion(region.panel, viewportHeight)
+    : shownHitRegion(region, viewportHeight);
 }
 
 /** The smallest rect containing both. */

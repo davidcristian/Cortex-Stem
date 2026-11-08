@@ -5,16 +5,16 @@
   import {
     AUTO_HIDE_SLIDE_MS,
     autoHideActive,
+    autoHideHitRegion,
     autoHideStep,
-    hiddenHitRegion,
     hideDelayMs,
     INITIAL_AUTO_HIDE,
     isAutoHidden,
-    REVEAL_STRIP_PX,
     revealStrip,
-    shownHitRegion,
+    revealStripHeight,
+    revealStripOn,
+    workAreaReachesBottom,
     type AutoHideEvent,
-    type AutoHidePhase,
     type AutoHideState,
   } from '$lib/dock/autohide';
   import { watchDevicePixelRatio } from '$lib/dock/dpr';
@@ -131,6 +131,13 @@
   const showOnlyMine = $derived(settings?.behavior.showOnlyCurrentMonitor ?? false);
   const visibleItems = $derived(itemsForMonitor(store.state?.items ?? [], myMonitor, showOnlyMine));
   const facts = $derived(dockFactsFor(store.state?.docks ?? [], myMonitor));
+  /**
+   * This dock window's bottom edge is the screen's: its monitor's
+   * work area reaches the bottom, no visible stock taskbar below it.
+   */
+  const atScreenEdge = $derived(
+    workAreaReachesBottom(store.monitors.find((m) => m.id === myMonitor)),
+  );
   /**
    * The item list a file drop keeps on screen while its pins land:
    * the snapshots in between would show each new item at the end of the
@@ -945,8 +952,14 @@
     measured = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
     measuredViewportHeight = window.innerHeight;
     const resting = integerRect(measured);
-    if (stripBox === null || stripBox.x !== resting.x || stripBox.width !== resting.width) {
-      stripBox = { x: resting.x, width: resting.width };
+    const gap = snapMargins.marginBottom;
+    if (
+      stripBox === null ||
+      stripBox.x !== resting.x ||
+      stripBox.width !== resting.width ||
+      stripBox.gap !== gap
+    ) {
+      stripBox = { x: resting.x, width: resting.width, gap };
     }
     reportSize();
   }
@@ -994,7 +1007,9 @@
    *
    * With auto-hide active (or a fullscreen app in front) a
    * hidden dock reports the reveal strip as both rectangles, and a shown one
-   * an envelope that takes in the strip.
+   * an envelope that takes in the strip; with no strip (fullscreen above a
+   * visible taskbar) a hidden one reports no region at all
+   * (`autoHideHitRegion`).
    */
   function currentHitRegion(): HitRegion | null {
     if (measured === null || measured.width === 0) {
@@ -1016,12 +1031,7 @@
       // top edge, and the slot sits PANEL_PADDING below the panel's top edge.
       magnifiedRise(iconSize, magnify.maxScale, HIT_SLACK - PANEL_PADDING),
     );
-    if (!autoHideActive(autoHide)) {
-      return region;
-    }
-    return isAutoHidden(autoHide)
-      ? hiddenHitRegion(region.panel, window.innerHeight)
-      : shownHitRegion(region, window.innerHeight);
+    return autoHideHitRegion(autoHide, region, window.innerHeight, atScreenEdge);
   }
 
   function reportHitRegion(): void {
@@ -1087,6 +1097,14 @@
     reportSize();
   });
 
+  // The work area reached the screen's edge or left it (the stock taskbar
+  // auto-hidden or shown): the strip, and the region with it, may
+  // come or go.
+  $effect(() => {
+    void atScreenEdge;
+    untrack(reportHitRegion);
+  });
+
   $effect(() => {
     const panel = panelEl;
     if (!panel) {
@@ -1110,24 +1128,45 @@
   // panel's class. CSS does the slide. Nothing runs while nothing changes.
   let autoHide: AutoHideState = INITIAL_AUTO_HIDE;
   let autoHideTimer: ReturnType<typeof setTimeout> | null = null;
+  /** `autoHide` for the template: set at the end of every `autoHideSend`. */
+  let autoHideView = $state.raw<AutoHideState>(INITIAL_AUTO_HIDE);
   /**
    * Auto-hide applies (`autoHideActive`: the mode is `always`, or a
    * fullscreen app is in front, or the mode is `whenOverlapped` and
-   * a window covers the dock): the reveal strip is in the DOM.
+   * a window covers the dock): `data-autohide` is set.
    */
-  let autoHideOn = $state(false);
+  const autoHideOn = $derived(autoHideActive(autoHideView));
   /** The machine's phase, for the template (`data-autohide`). */
-  let autoHidePhase = $state<AutoHidePhase>('shown');
+  const autoHidePhase = $derived(autoHideView.phase);
   /** Slid out, or sliding out. */
   const autoHidden = $derived(autoHidePhase === 'hidden');
-  /** The resting panel's whole-pixel x and width, which the reveal strip shares. */
-  let stripBox = $state<{ x: number; width: number } | null>(null);
+  /**
+   * The reveal strip is in the DOM (`revealStripOn`): whenever auto-hide
+   * applies, except in fullscreen above a visible taskbar.
+   */
+  const stripOn = $derived(revealStripOn(autoHideView, atScreenEdge));
+  /**
+   * The resting panel's whole-pixel x and width, which the reveal strip
+   * shares, and the margin under it, which the strip fills while the dock
+   * is on screen (`revealStripHeight`).
+   */
+  let stripBox = $state<{ x: number; width: number; gap: number } | null>(null);
   /** Native menus from this dock that have not closed yet (`show_*_menu` pending). */
   let menusOpen = 0;
   let bounceHoldTimer: ReturnType<typeof setTimeout> | null = null;
   let bounceSeen = 0;
 
   function autoHideSend(event: AutoHideEvent): void {
+    if (!autoHideActive(autoHide) && autoHideActive(autoHideStep(autoHide, event).state)) {
+      // Auto-hide comes on (the mode, a fullscreen app, an overlap). The
+      // machine forgot the pointer when it last went off, and a pointer
+      // resting on the panel since then has said nothing: the panel's
+      // `:hover` says where it is, so the dock does not hide from under it.
+      const inside = panelEl?.matches(':hover') ?? false;
+      if (inside !== autoHide.pointerInside) {
+        autoHideSend({ type: 'pointer', inside });
+      }
+    }
     const before = autoHide;
     const { state, timer } = autoHideStep(before, event);
     autoHide = state;
@@ -1154,7 +1193,10 @@
       // below changes the DOM after this returns), so the panel never slides
       // in over a click-through window.
       reportHitRegion();
-    } else if (autoHideActive(state) !== autoHideActive(before)) {
+    } else if (
+      autoHideActive(state) !== autoHideActive(before) ||
+      revealStripOn(state, atScreenEdge) !== revealStripOn(before, atScreenEdge)
+    ) {
       reportHitRegion();
     }
     if (hidden !== wasHidden) {
@@ -1163,8 +1205,7 @@
       // of hiding the window. Housekeeping: a failure only logs.
       void backend.setDockAutoHidden(hidden).catch(report('set_dock_auto_hidden', false));
     }
-    autoHidePhase = state.phase;
-    autoHideOn = autoHideActive(state);
+    autoHideView = state;
   }
 
   /** The panel's own slide or fade ended (not a slot's transition bubbling up). */
@@ -1399,12 +1440,15 @@
     dropTargetKey = action.kind === 'recycle' ? action.key : null;
   }
 
-  /** Over the reveal strip (ADR-0008), where a hidden dock takes the pointer. */
+  /** Over the reveal strip (ADR-0008), where a hidden dock takes the pointer; never without one. */
   function inRevealStrip(x: number, y: number): boolean {
-    if (stripBox === null) {
+    if (stripBox === null || !revealStripOn(autoHide, atScreenEdge)) {
       return false;
     }
-    const strip = revealStrip({ ...stripBox, y: 0, height: 0 }, window.innerHeight);
+    const strip = revealStrip(
+      { x: stripBox.x, y: 0, width: stripBox.width, height: 0 },
+      window.innerHeight,
+    );
     return rectContainsPoint(strip, x, y);
   }
 
@@ -1803,7 +1847,6 @@
   style:--bottom-margin="{BOTTOM_MARGIN}px"
   style:--shadow-room="{SIDE_SLACK}px"
   style:--slide="{AUTO_HIDE_SLIDE_MS}ms"
-  style:--strip="{REVEAL_STRIP_PX}px"
 >
   {#if store.state !== null && settings !== null}
     <div
@@ -1878,15 +1921,18 @@
         {@render gap()}
       {/if}
     </div>
-    {#if autoHideOn && stripBox !== null}
+    {#if stripOn && stripBox !== null}
       <!-- The reveal strip (ADR-0008): the bottom edge under the resting
-           panel. Hidden, the window takes the pointer only here; shown, it
-           counts as part of the dock. Invisible. -->
+           panel. Hidden, the window takes the pointer only in its bottom
+           2 px; shown, it fills the margin under the panel and counts as
+           part of the dock, so leaving it upwards is entering the panel.
+           None in fullscreen above a visible taskbar. Invisible. -->
       <div
         class="reveal-strip"
         aria-hidden="true"
         style:left="{stripBox.x}px"
         style:width="{stripBox.width}px"
+        style:height="{revealStripHeight(autoHidePhase, stripBox.gap)}px"
         onpointerenter={onstripenter}
         onpointerleave={onstripleave}
       ></div>
@@ -2049,10 +2095,10 @@
     }
   }
 
+  /* Its height is set inline (`revealStripHeight`). */
   .reveal-strip {
     position: absolute;
     bottom: 0;
-    height: var(--strip);
   }
 
   .dock-panel.high-contrast {

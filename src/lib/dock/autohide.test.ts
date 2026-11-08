@@ -1,22 +1,30 @@
 import { describe, expect, it } from 'vitest';
 
+import type { MonitorInfo } from '$lib/ipc/generated/MonitorInfo';
+
 import {
   AUTO_HIDE_SLIDE_MS,
   autoHideActive,
+  autoHideHitRegion,
   autoHideStep,
   hiddenHitRegion,
   hideDelayMs,
   INITIAL_AUTO_HIDE,
   isAutoHidden,
+  NO_HIT_REGION,
+  onlyFullscreenHides,
   REVEAL_STRIP_PX,
   revealStrip,
+  revealStripHeight,
+  revealStripOn,
   REVEALING_HOLDS,
   shownHitRegion,
+  workAreaReachesBottom,
   type AutoHideEvent,
   type AutoHideState,
   type TimerCommand,
 } from './autohide';
-import type { HitRegion } from './geometry';
+import { rectContainsPoint, type HitRegion } from './geometry';
 
 /**
  * Drives the machine like `Dock.svelte` does: one timer, armed and cleared
@@ -1041,5 +1049,220 @@ describe('hit regions while auto-hide is on', () => {
   it('an envelope that already reaches the bottom (a drag) is unchanged', () => {
     const whole: HitRegion = { panel, envelope: { x: 0, y: 0, width: 1280, height: 240 } };
     expect(shownHitRegion(whole, 240)).toEqual(whole);
+  });
+
+  it('follows the phase, and reports nothing while hidden without a strip', () => {
+    const strip = { x: 360, y: 238, width: 561, height: 2 };
+    const at = (h: Harness, edge: boolean): HitRegion =>
+      autoHideHitRegion(h.state, region, 240, edge);
+    // Off: the plain region, wherever the window is.
+    expect(at(new Harness(), true)).toEqual(region);
+    expect(at(new Harness(), false)).toEqual(region);
+    // `always`: the strip while hidden, the grown envelope while shown,
+    // whether or not the work area reaches the screen's edge.
+    for (const edge of [true, false]) {
+      expect(at(always(250).advance(250), edge)).toEqual({ panel: strip, envelope: strip });
+      expect(at(always(250).send({ type: 'pointer', inside: true }), edge)).toEqual(
+        shownHitRegion(region, 240),
+      );
+    }
+    // Fullscreen alone at the screen's edge: the same.
+    const off = (): Harness => new Harness().send({ type: 'configure', mode: 'off', delayMs: 0 });
+    const hidden = off().send({ type: 'fullscreen', active: true });
+    expect(at(hidden, true)).toEqual({ panel: strip, envelope: strip });
+    // Above a visible taskbar: no region while hidden, the plain one shown.
+    const none = at(hidden, false);
+    expect(none).toEqual({
+      panel: { x: 0, y: 0, width: 0, height: 0 },
+      envelope: { x: 0, y: 0, width: 0, height: 0 },
+    });
+    expect(none).toEqual(NO_HIT_REGION);
+    expect(none).not.toBe(NO_HIT_REGION);
+    for (let x = -1; x <= 1; x += 1) {
+      for (let y = -1; y <= 1; y += 1) {
+        expect(rectContainsPoint(none.panel, x, y)).toBe(false);
+      }
+    }
+    const shown = off().send({ type: 'fullscreen', active: true }).send({ type: 'show' });
+    expect(at(shown, false)).toEqual(region);
+  });
+});
+
+describe('the reveal strip', () => {
+  /** The mock's demo monitor: 2560 × 1440, the stock taskbar's 48 px at the bottom. */
+  function monitor(
+    workArea: MonitorInfo['workArea'],
+    bounds = { x: 0, y: 0, width: 2560, height: 1440 },
+  ): MonitorInfo {
+    return { id: 'm', name: 'm', bounds, workArea, scaleFactor: 1, isPrimary: true };
+  }
+  const off = (): Harness => new Harness().send({ type: 'configure', mode: 'off', delayMs: 250 });
+
+  it('the work area reaches the bottom unless a visible taskbar holds the space below it', () => {
+    expect(workAreaReachesBottom(monitor({ x: 0, y: 0, width: 2560, height: 1392 }))).toBe(false);
+    // Auto-hidden (Windows' own setting, or Stem's): the whole monitor.
+    expect(workAreaReachesBottom(monitor({ x: 0, y: 0, width: 2560, height: 1440 }))).toBe(true);
+    // The taskbar at the top or on a side.
+    expect(workAreaReachesBottom(monitor({ x: 0, y: 48, width: 2560, height: 1392 }))).toBe(true);
+    expect(workAreaReachesBottom(monitor({ x: 62, y: 0, width: 2498, height: 1440 }))).toBe(true);
+    // A monitor above the primary, in negative coordinates.
+    const above = { x: 0, y: -1080, width: 1920, height: 1080 };
+    expect(
+      workAreaReachesBottom(monitor({ x: 0, y: -1080, width: 1920, height: 1032 }, above)),
+    ).toBe(false);
+    expect(workAreaReachesBottom(monitor({ ...above }, above))).toBe(true);
+    // Not known yet: the strip as it always was.
+    expect(workAreaReachesBottom(undefined)).toBe(true);
+    expect(workAreaReachesBottom(null)).toBe(true);
+  });
+
+  it('only fullscreen hides when neither the mode nor an overlap would', () => {
+    expect(onlyFullscreenHides(INITIAL_AUTO_HIDE)).toBe(false);
+    expect(onlyFullscreenHides(off().send({ type: 'fullscreen', active: true }).state)).toBe(true);
+    expect(onlyFullscreenHides(always().send({ type: 'fullscreen', active: true }).state)).toBe(
+      false,
+    );
+    const dodging = new Harness()
+      .send({ type: 'configure', mode: 'whenOverlapped', delayMs: 250 })
+      .send({ type: 'fullscreen', active: true });
+    expect(onlyFullscreenHides(dodging.state)).toBe(true);
+    dodging.send({ type: 'overlapped', active: true });
+    expect(onlyFullscreenHides(dodging.state)).toBe(false);
+    // An overlap with another mode does not count.
+    const overlappedOff = off()
+      .send({ type: 'overlapped', active: true })
+      .send({ type: 'fullscreen', active: true });
+    expect(onlyFullscreenHides(overlappedOff.state)).toBe(true);
+  });
+
+  it('is there whenever auto-hide applies, except for fullscreen alone above a visible taskbar', () => {
+    for (const edge of [true, false]) {
+      expect(revealStripOn(INITIAL_AUTO_HIDE, edge)).toBe(false);
+      expect(revealStripOn(always().state, edge)).toBe(true);
+      expect(revealStripOn(always().send({ type: 'fullscreen', active: true }).state, edge)).toBe(
+        true,
+      );
+      const overlapped = new Harness()
+        .send({ type: 'configure', mode: 'whenOverlapped', delayMs: 250 })
+        .send({ type: 'overlapped', active: true })
+        .send({ type: 'fullscreen', active: true });
+      expect(revealStripOn(overlapped.state, edge)).toBe(true);
+    }
+    const fullscreen = off().send({ type: 'fullscreen', active: true }).state;
+    expect(revealStripOn(fullscreen, true)).toBe(true);
+    expect(revealStripOn(fullscreen, false)).toBe(false);
+  });
+
+  it('is the bottom 2 px while hidden and fills the margin under the panel on screen', () => {
+    expect(revealStripHeight('hidden', 8)).toBe(REVEAL_STRIP_PX);
+    expect(revealStripHeight('shown', 8)).toBe(8);
+    expect(revealStripHeight('pending', 7.5)).toBe(7.5);
+    // Never thinner than the strip itself.
+    expect(revealStripHeight('shown', 0)).toBe(REVEAL_STRIP_PX);
+  });
+
+  it('above a visible taskbar the hidden dock comes back only on request or for attention', () => {
+    const h = off().send({ type: 'fullscreen', active: true });
+    expect(h.phase).toBe('hidden');
+    expect(revealStripOn(h.state, false)).toBe(false);
+    h.send({ type: 'show' });
+    expect(h.phase).toBe('shown');
+    h.send({ type: 'pointer', inside: true }).send({ type: 'pointer', inside: false }).advance(0);
+    expect(h.phase).toBe('hidden');
+    h.send({ type: 'hold', hold: 'attention', active: true });
+    expect(h.phase).toBe('shown');
+  });
+});
+
+describe('the pointer is forgotten when auto-hide stops applying', () => {
+  const off = (): Harness => new Harness().send({ type: 'configure', mode: 'off', delayMs: 250 });
+
+  it('shown on request during fullscreen, the next fullscreen still hides it at once', () => {
+    const h = off().send({ type: 'fullscreen', active: true });
+    expect(h.phase).toBe('hidden');
+    h.send({ type: 'show' });
+    expect(h.phase).toBe('shown');
+    expect(h.state.pointerInside).toBe(true);
+    // Fullscreen ends before the pointer ever came.
+    h.send({ type: 'fullscreen', active: false });
+    expect(autoHideActive(h.state)).toBe(false);
+    expect(h.state.pointerInside).toBe(false);
+    h.send({ type: 'fullscreen', active: true });
+    expect(h.phase).toBe('hidden');
+    expect(h.timers.at(-1)).toBe('none');
+  });
+
+  it('revealed from the strip, which goes when fullscreen ends, the next fullscreen still hides it', () => {
+    const h = off().send({ type: 'fullscreen', active: true }).send({ type: 'strip' });
+    expect(h.state.pointerInside).toBe(true);
+    // The strip leaves the DOM under the pointer: no `pointerleave` comes.
+    h.send({ type: 'fullscreen', active: false });
+    expect(h.state.pointerInside).toBe(false);
+    h.send({ type: 'fullscreen', active: true });
+    expect(h.phase).toBe('hidden');
+  });
+
+  it('the mode switched off and an overlap ending forget it too', () => {
+    const configured = always().send({ type: 'strip' });
+    configured.send({ type: 'configure', mode: 'off', delayMs: 250 });
+    expect(configured.state.pointerInside).toBe(false);
+    expect(configured.phase).toBe('shown');
+
+    const overlapped = new Harness()
+      .send({ type: 'configure', mode: 'whenOverlapped', delayMs: 250 })
+      .send({ type: 'overlapped', active: true })
+      .advance(250);
+    expect(overlapped.phase).toBe('hidden');
+    overlapped.send({ type: 'show' });
+    expect(overlapped.state.pointerInside).toBe(true);
+    overlapped.send({ type: 'overlapped', active: false });
+    expect(overlapped.state.pointerInside).toBe(false);
+    overlapped.send({ type: 'overlapped', active: true });
+    expect(overlapped.phase).toBe('pending');
+    overlapped.advance(250);
+    expect(overlapped.phase).toBe('hidden');
+  });
+
+  it('is kept while auto-hide still applies', () => {
+    // `always` outlives fullscreen: the pointer on the strip stays inside.
+    const h = always(250).advance(250).send({ type: 'fullscreen', active: true });
+    h.send({ type: 'strip' }).send({ type: 'fullscreen', active: false });
+    expect(autoHideActive(h.state)).toBe(true);
+    expect(h.state.pointerInside).toBe(true);
+    expect(h.phase).toBe('shown');
+    // An overlap that ends during fullscreen.
+    const g = new Harness()
+      .send({ type: 'configure', mode: 'whenOverlapped', delayMs: 250 })
+      .send({ type: 'overlapped', active: true })
+      .send({ type: 'fullscreen', active: true })
+      .send({ type: 'strip' })
+      .send({ type: 'overlapped', active: false });
+    expect(g.state.pointerInside).toBe(true);
+  });
+
+  it('a pointer reported over the panel again counts, and keeps the next fullscreen from hiding it', () => {
+    // What `Dock.svelte` sends from the panel's `:hover` (or its next
+    // `pointermove`) once the machine has forgotten the pointer.
+    const h = off()
+      .send({ type: 'pointer', inside: true })
+      .send({ type: 'fullscreen', active: true });
+    expect(h.phase).toBe('shown');
+    h.send({ type: 'fullscreen', active: false });
+    expect(h.state.pointerInside).toBe(false);
+    h.send({ type: 'pointer', inside: true });
+    expect(h.state.pointerInside).toBe(true);
+    h.send({ type: 'fullscreen', active: true });
+    expect(h.phase).toBe('shown');
+    h.send({ type: 'pointer', inside: false }).advance(0);
+    expect(h.phase).toBe('hidden');
+  });
+
+  it('leaves a state with the pointer away as it is', () => {
+    const h = off().send({ type: 'fullscreen', active: true });
+    const hidden = h.state;
+    const step = autoHideStep(hidden, { type: 'fullscreen', active: false });
+    expect(step.state.pointerInside).toBe(false);
+    expect(step.state.phase).toBe('shown');
+    expect(hidden.phase).toBe('hidden');
   });
 });
