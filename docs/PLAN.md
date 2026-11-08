@@ -70,7 +70,9 @@ without failures.
 
 **Status.**
 
-- A change of display scale applies without a restart.
+- With `monitors` set to `all`, every monitor has its own dock, and the docks
+  follow monitors as they are plugged in and out. A change of display scale
+  applies without a restart.
 - Clicks outside the panel and the magnified icons reach the desktop and the
   windows behind the dock (`behavior.clickThrough`).
 - `behavior.showOnlyCurrentDesktop` lists only the windows on the current

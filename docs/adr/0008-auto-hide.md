@@ -152,7 +152,7 @@ the resting panel.
 ## Toggle while hidden
 
 The tray's left click and the toggle shortcut hide and show the dock
-*window*. With auto-hide the window is usually visible with its panel slid
+*windows*. With auto-hide a window is usually visible with its panel slid
 out. A toggle that only hid and showed the window would then hide an empty
 window on the first press, so nothing visible would happen, and only the
 second press (the window shown again, the page's `visibilitychange`) would
@@ -164,10 +164,12 @@ bring the panel back.
   panel is slid out" (the machine's phase `hidden`), from the place that
   applies the phase, without repeats. The app keeps it per dock window
   (`windows::DockAutoHidden`); it is `false` until the UI reports and
-  whenever the window is created. Window hidden: show it. Window visible
-  with its panel slid out: emit `dock://show` (no payload) to that window
-  and leave the window alone. Window visible with its panel shown: hide
-  the window. The UI handles `dock://show` with
+  whenever the window is created. The primary dock window's state decides
+  the action for every dock window. Primary window hidden: show every dock
+  window. Primary window visible with its panel slid out: emit
+  `dock://show` (no payload) to every visible dock window and leave those
+  windows alone (a hidden one is shown). Primary window visible with its
+  panel shown: hide every dock window. The UI handles `dock://show` with
   the same `show` event as the `visibilitychange` path, which stays for the
   case where the window was hidden. The machine has no extra state for
   this.

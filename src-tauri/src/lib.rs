@@ -1,6 +1,7 @@
 //! The Tauri shell. Thin by design: every decision lives in `stem-service`
 //! and below. This crate only
-//! - creates and positions the dock window(s) and the settings window,
+//! - creates and positions the dock window(s) (one per monitor with
+//!   `monitors = all`) and the settings window,
 //! - exposes `stem-service` through Tauri commands (`commands`),
 //! - forwards `ServiceEvent`s as Tauri events (`docs/ipc/events.md`),
 //! - wires plugins (single-instance, logging, autostart, global shortcut)

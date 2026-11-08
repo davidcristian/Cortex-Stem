@@ -1,53 +1,72 @@
 //! Window lifecycle: the dock window(s) and the settings window.
 //!
-//! One dock window per monitor (label `dock` for the primary, `dock-<id>`
-//! for others; M3). The window is transparent, undecorated, always on top,
-//! hidden from Alt+Tab and the stock taskbar, and does not take focus when
-//! clicked: `focusable(false)` makes tao itself keep `WS_EX_NOACTIVATE`
-//! across its style rewrites, and `Platform::prepare_dock_window` (called on
-//! the main thread, right after creation) adds the rest. It never
-//! closes: close requests are refused (this is a tray app; see `lib.rs`).
+//! One dock window per monitor: the label `dock` for the primary
+//! monitor's window and `dock-<id>` for every other monitor's
+//! while `settings.monitors` is `All` ([`dock_label`]: the monitor id with
+//! every character outside `[A-Za-z0-9_-]` dropped; the page gets the id in
+//! its URL, `dock.html?monitor=<id>`, while the primary's page has no query
+//! string). [`plan_docks`] (pure) says which windows should exist for a mode
+//! over a monitor list; [`reconcile_docks`] creates the missing ones, closes
+//! the ones whose monitor is gone (never the primary's) and lays the rest
+//! out again on their own monitor, at startup, on every `dock://monitors`
+//! (hot-plug, resolution or work-area change, a new primary) and when the
+//! `monitors` setting changes. One `info` line per window created or
+//! closed. With `monitors = primary` (the default) exactly one window
+//! exists and nothing of this is visible.
 //!
-//! Sizing (`docs/ipc/sizing-protocol.md`, v1.3): the window always spans the **full
-//! width of the work area** and sits on its bottom edge, so the UI can
-//! centre the panel and animate items in and out without any window resize.
-//! The frontend reports its content size in CSS pixels through
-//! `set_dock_content_size`; this module scales the *height* by the window's
-//! scale factor and clamps it to the work area ([`plan_dock_rect`], pure and
-//! unit-tested); the width is informational (logged; a lower bound only on
-//! hosts without a monitor list). The last reported size is remembered
-//! ([`DockGeometry`]) so the layout can be redone when the service reports a
-//! monitor change. Clicks outside the panel fall through to the desktop via
-//! the hit region ([`apply_hit_region`]), which `behavior.clickThrough`
-//! switches off and on without a restart ([`on_settings_changed`]):
-//! the UI's latest report is remembered while the setting is off and
-//! replayed when it is turned on again.
+//! Each window is transparent, undecorated, always on top, hidden from
+//! Alt+Tab and the stock taskbar, and does not take focus when clicked:
+//! `focusable(false)` makes tao itself keep `WS_EX_NOACTIVATE` across its
+//! style rewrites, and `Platform::prepare_dock_window` (called on the main
+//! thread, right after creation) adds the rest. A dock window is
+//! never closed by the user: close requests are refused (this is a tray
+//! app; see `lib.rs`); only a monitor that goes away, or the setting, closes
+//! a secondary one (`destroy`, which skips the refusal).
 //!
-//! DPI changes: when the dock window's scale factor changes (Windows
+//! Sizing (`docs/ipc/sizing-protocol.md`, v1.3): a dock window always spans the
+//! **full width of its monitor's work area** and sits on its bottom edge, so
+//! the UI can centre the panel and animate items in and out without any
+//! window resize. The frontend reports its content size in CSS pixels
+//! through `set_dock_content_size`; this module scales the *height* by the
+//! window's scale factor and clamps it to the work area ([`plan_dock_rect`],
+//! pure and unit-tested); the width is informational (logged; a lower bound
+//! only on hosts without a monitor list). What each window's UI reported
+//! last is remembered per label ([`DockGeometry`]) so the layout can be
+//! redone when the service reports a monitor change. Clicks outside the
+//! panel fall through to the desktop via the hit region
+//! ([`apply_hit_region`]), which `behavior.clickThrough` switches off
+//! and on without a restart ([`on_settings_changed`]): the UI's latest
+//! report is remembered while the setting is off and replayed when it is
+//! turned on again.
+//!
+//! DPI changes: when a dock window's scale factor changes (Windows
 //! Settings → Display → Scale, or the window landing on a monitor with
 //! another scale) tao resizes the window to keep its logical size, which is
-//! not our layout: [`on_scale_factor_changed`] plans the window again from
-//! the remembered content size and converts the remembered hit region and
+//! not our layout: [`on_scale_factor_changed`] plans that window again from
+//! its remembered content size and converts its remembered hit region and
 //! panel rect again, at the next turn of the event loop (inside the event
 //! callback tao has not applied the new size yet). The UI learns the ratio
 //! from the browser on its own, re-requests its icons and reports its
 //! geometry again; no event is sent to it.
 //!
-//! Auto-hide and the toggle: the UI reports when auto-hide slides
-//! its panel out and back (`set_dock_auto_hidden`, kept in
+//! Auto-hide and the toggle: each UI reports when auto-hide slides
+//! its panel out and back (`set_dock_auto_hidden`, kept per label in
 //! [`DockAutoHidden`]), so that [`toggle_dock`] (tray click, Ctrl+Alt+D)
 //! brings a slid-out panel back with one press (the `dock://show` event)
-//! instead of hiding the window first.
+//! instead of hiding the window first. One press acts on the whole set: the
+//! primary's state decides, and every dock follows.
 //!
-//! The dock panel: the UI reports where its panel rests
-//! (`set_dock_panel_rect`, CSS px of the viewport); [`apply_dock_panel`]
+//! The dock panel: each UI reports where its panel rests
+//! (`set_dock_panel_rect`, CSS px of its viewport); [`apply_dock_panel`]
 //! remembers the rect and hands it to the service in physical pixels of the
 //! virtual desktop ([`panel_on_screen`]: scaled like the hit region and
-//! offset by the window's position), which is what the engine compares
-//! window frames against. The conversion is redone whenever this module
-//! moves the window ([`place`]: a monitor or work-area change moves it
-//! without the UI's viewport changing), and the service gets `None` while
-//! the window is hidden by the tray or the toggle shortcut ([`toggle_dock`]).
+//! offset by the window's position), with the window's label and monitor,
+//! which is what the engine compares window frames against, per dock. The
+//! conversion is redone whenever this module moves the window ([`place`]: a
+//! monitor or work-area change moves it without the UI's viewport
+//! changing), the service gets no rect while the window is hidden by the
+//! tray or the toggle shortcut ([`toggle_dock`]), and neither monitor nor
+//! rect once the window is closed.
 //!
 //! The settings window (`settings`) is an ordinary decorated window,
 //! created on demand and destroyed when closed. Its native title bar follows
@@ -55,10 +74,11 @@
 //! created and again whenever the setting changes ([`on_settings_changed`]).
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 
 use parking_lot::Mutex;
-use stem_core::settings::ThemeMode;
-use stem_core::{MonitorInfo, Rect, Settings};
+use stem_core::settings::{MonitorMode, ThemeMode};
+use stem_core::{MonitorId, MonitorInfo, Rect, Settings};
 use stem_platform::{DockWindowOptions, HitRegion, NativeWindowHandle, PlatformError};
 use stem_service::DockService;
 use tauri::{
@@ -83,26 +103,62 @@ const MAX_CONTENT: (f64, f64) = (8192.0, 4096.0);
 const SETTINGS_SIZE: (f64, f64) = (760.0, 600.0);
 const SETTINGS_MIN_SIZE: (f64, f64) = (560.0, 420.0);
 
-/// What the dock UI reported last (CSS px), kept in Tauri's managed state so
-/// a monitor change can redo the layout and a settings change can apply the
-/// hit region after the fact.
-#[derive(Debug, Default)]
-pub struct DockGeometry {
-    content_css: Mutex<Option<(f64, f64)>>,
+/// What one dock window's UI reported last (CSS px) and where this module
+/// put the window, kept per label in [`DockGeometry`].
+#[derive(Debug, Default, Clone)]
+pub struct DockWindowState {
+    /// The monitor the window was placed on last; `None` while the platform
+    /// has reported no monitors yet (the window then sits where Tauri's own
+    /// view of the primary monitor put it, and the engine gets no monitor
+    /// for it).
+    monitor: Option<MonitorId>,
+    content_css: Option<(f64, f64)>,
     /// `(panel, envelope)` of the latest `set_dock_hit_region`; applied
     /// while `behavior.clickThrough` is on and replayed when it is turned
     /// back on.
-    hit_region_css: Mutex<Option<(Rect, Rect)>>,
+    hit_region_css: Option<(Rect, Rect)>,
+    /// The resting panel of the latest `set_dock_panel_rect`,
+    /// converted again whenever the window moves or is shown.
+    panel_css: Option<Rect>,
+    /// The window's scale factor as last seen (at creation, then on every
+    /// `ScaleFactorChanged`), so the log line of a change can say what it
+    /// changed from.
+    scale: Option<f64>,
+}
+
+/// The dock windows that exist, by label, with what each one's UI reported,
+/// plus the settings this module applies, as currently in effect.
+/// Kept in Tauri's managed state so a monitor change can redo the layouts
+/// and a settings change can apply the hit regions after the fact.
+#[derive(Debug, Default)]
+pub struct DockGeometry {
+    docks: Mutex<HashMap<String, DockWindowState>>,
     /// `behavior.clickThrough` as currently in effect, so a settings event
     /// only acts on a change.
     click_through: Mutex<Option<bool>>,
-    /// The resting panel of the latest `set_dock_panel_rect`,
-    /// converted again whenever the window moves or is shown.
-    panel_css: Mutex<Option<Rect>>,
-    /// The dock window's scale factor as last seen (at creation, then on
-    /// every `ScaleFactorChanged`), so the log line of a change can say
-    /// what it changed from.
-    scale: Mutex<Option<f64>>,
+    /// `settings.monitors` as the windows were last reconciled for, so a
+    /// settings event only rebuilds the set on a change.
+    mode: Mutex<Option<MonitorMode>>,
+}
+
+impl DockGeometry {
+    /// A copy of the state of the dock window `label`, if it exists.
+    fn dock(&self, label: &str) -> Option<DockWindowState> {
+        self.docks.lock().get(label).cloned()
+    }
+
+    /// Change the state of the dock window `label`, if it exists.
+    fn update<R>(&self, label: &str, f: impl FnOnce(&mut DockWindowState) -> R) -> Option<R> {
+        self.docks.lock().get_mut(label).map(f)
+    }
+
+    /// The labels of the dock windows that exist, the primary's first, the
+    /// rest sorted.
+    fn labels(&self) -> Vec<String> {
+        let mut labels: Vec<String> = self.docks.lock().keys().cloned().collect();
+        labels.sort_by(|a, b| (a != DOCK_LABEL).cmp(&(b != DOCK_LABEL)).then(a.cmp(b)));
+        labels
+    }
 }
 
 /// `settings.theme` as the settings window's title bar last took it (or
@@ -120,11 +176,228 @@ pub struct SettingsWindowTheme(Mutex<Option<ThemeMode>>);
 pub struct DockAutoHidden(Mutex<HashMap<String, bool>>);
 
 // ---------------------------------------------------------------------------
-// dock window
+// dock windows: which ones (pure)
 // ---------------------------------------------------------------------------
 
+/// One dock window that should exist: its label and the monitor it sits on
+/// (`None` only for the primary's window while no monitor is known).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DockPlan {
+    pub label: String,
+    pub monitor: Option<MonitorInfo>,
+}
+
+/// The label of the dock window on monitor `id` other than the primary's:
+/// `dock-` and the id with every character outside `[A-Za-z0-9_-]` dropped
+/// (`\\.\DISPLAY3` → `dock-DISPLAY3`; Tauri labels allow `a-zA-Z0-9-/:_`).
+/// Pure.
+pub fn dock_label(id: &MonitorId) -> String {
+    let mut label = String::with_capacity(DOCK_LABEL.len() + 1 + id.0.len());
+    label.push_str(DOCK_LABEL);
+    label.push('-');
+    label.extend(
+        id.0.chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-'),
+    );
+    label
+}
+
+/// `value` percent-encoded for a URL query (every byte outside the
+/// unreserved set `A-Za-z0-9-_.~`), so `URLSearchParams.get('monitor')`
+/// gives the page the monitor id back exactly (`\\.\DISPLAY3` →
+/// `%5C%5C.%5CDISPLAY3`). Pure.
+pub fn query_value(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            out.push(char::from(byte));
+        } else {
+            // Writing to a String cannot fail.
+            let _ = write!(out, "%{byte:02X}");
+        }
+    }
+    out
+}
+
+/// The page a dock window loads: the primary's has no query string, the
+/// others carry their monitor id (`docs/ipc/windows.md`). Pure.
+pub fn dock_page(label: &str, monitor: Option<&MonitorId>) -> String {
+    match monitor {
+        Some(id) if label != DOCK_LABEL => format!("dock.html?monitor={}", query_value(&id.0)),
+        _ => "dock.html".to_owned(),
+    }
+}
+
+/// Which dock windows should exist for `mode` over `monitors`: the
+/// primary's window (`dock`) on [`primary_monitor`] always, even with no
+/// monitor known; with `All`, one more per other monitor, labelled by
+/// [`dock_label`]. A monitor whose label collides with an earlier one's is
+/// left out (the caller logs it). Pure.
+pub fn plan_docks(mode: MonitorMode, monitors: &[MonitorInfo]) -> Vec<DockPlan> {
+    let primary = primary_monitor(monitors);
+    let mut plan = vec![DockPlan {
+        label: DOCK_LABEL.to_owned(),
+        monitor: primary.clone(),
+    }];
+    if mode == MonitorMode::Primary {
+        return plan;
+    }
+    let primary_id = primary.map(|m| m.id);
+    for monitor in monitors {
+        if primary_id.as_ref() == Some(&monitor.id) {
+            continue;
+        }
+        let label = dock_label(&monitor.id);
+        if plan.iter().any(|p| p.label == label) {
+            continue;
+        }
+        plan.push(DockPlan {
+            label,
+            monitor: Some(monitor.clone()),
+        });
+    }
+    plan
+}
+
+fn primary_monitor(monitors: &[MonitorInfo]) -> Option<MonitorInfo> {
+    monitors
+        .iter()
+        .find(|m| m.is_primary)
+        .or_else(|| monitors.first())
+        .cloned()
+}
+
+/// `monitor` for a log line.
+fn describe_monitor(monitor: Option<&MonitorInfo>) -> String {
+    match monitor {
+        Some(m) => format!(
+            "{} ({}x{} at {},{}, scale {}{})",
+            m.id.0,
+            m.bounds.width,
+            m.bounds.height,
+            m.bounds.x,
+            m.bounds.y,
+            m.scale_factor,
+            if m.is_primary { ", primary" } else { "" }
+        ),
+        None => "no known monitor (Tauri's view of the primary)".to_owned(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// dock windows: creation, closing, reconciliation
+// ---------------------------------------------------------------------------
+
+/// Create the dock window(s) for the current settings and monitor list, at
+/// startup (inside `setup`, on the main thread). With no monitor reported
+/// yet only the primary's window exists; the first `dock://monitors`
+/// creates the others when the mode asks for them.
 pub fn create_dock_windows(app: &AppHandle, service: &DockService) -> tauri::Result<()> {
-    let window = WebviewWindowBuilder::new(app, DOCK_LABEL, WebviewUrl::App("dock.html".into()))
+    let settings = service.settings();
+    let click_through = settings.behavior.click_through;
+    if let Some(geometry) = app.try_state::<DockGeometry>() {
+        *geometry.click_through.lock() = Some(click_through);
+        *geometry.mode.lock() = Some(settings.monitors);
+    }
+    log::info!(
+        "click-through outside the panel: {}",
+        describe_click_through(click_through)
+    );
+    let monitors = service.monitors();
+    log::info!(
+        "dock windows: {:?} over {} known monitor(s)",
+        settings.monitors,
+        monitors.len()
+    );
+    reconcile_docks(app, service, settings.monitors, &monitors)
+}
+
+/// Make the set of dock windows match [`plan_docks`] for `mode` over
+/// `monitors`: close the windows whose monitor is gone (never the
+/// primary's), create the missing ones, and lay every remaining one out on
+/// its own monitor (which the panel conversion then reports to the engine
+/// with the monitor id). A secondary window that cannot be created is
+/// logged and skipped; the primary's failure is returned. Main thread.
+fn reconcile_docks(
+    app: &AppHandle,
+    service: &DockService,
+    mode: MonitorMode,
+    monitors: &[MonitorInfo],
+) -> tauri::Result<()> {
+    let plan = plan_docks(mode, monitors);
+    if mode == MonitorMode::All {
+        for monitor in monitors {
+            if !plan.iter().any(|p| p.monitor.as_ref() == Some(monitor)) {
+                log::warn!(
+                    "monitor {} gets no dock: its label {:?} is already taken",
+                    monitor.id.0,
+                    dock_label(&monitor.id)
+                );
+            }
+        }
+    }
+
+    let existing = app
+        .try_state::<DockGeometry>()
+        .map(|geometry| geometry.labels())
+        .unwrap_or_default();
+    for label in existing {
+        if label != DOCK_LABEL && !plan.iter().any(|p| p.label == label) {
+            close_dock_window(app, service, &label);
+        }
+    }
+
+    for entry in plan {
+        match app.get_webview_window(&entry.label) {
+            Some(window) => {
+                let monitor_id = entry.monitor.as_ref().map(|m| m.id.clone());
+                let previous = app.try_state::<DockGeometry>().and_then(|geometry| {
+                    geometry.update(&entry.label, |dock| {
+                        std::mem::replace(&mut dock.monitor, monitor_id.clone())
+                    })
+                });
+                if previous.as_ref() != Some(&monitor_id) {
+                    log::info!(
+                        "dock window {:?} now on {}",
+                        entry.label,
+                        describe_monitor(entry.monitor.as_ref())
+                    );
+                }
+                if let Err(e) = relayout_dock(app, &window, monitors) {
+                    log::warn!(
+                        "re-positioning dock window {:?} after a monitor change failed: {e}",
+                        entry.label
+                    );
+                }
+            }
+            None => {
+                let result = create_dock_window(app, service, &entry.label, entry.monitor.as_ref());
+                match result {
+                    Ok(()) => {}
+                    Err(e) if entry.label == DOCK_LABEL => return Err(e),
+                    Err(e) => log::warn!(
+                        "dock window {:?} for monitor {} could not be created: {e}",
+                        entry.label,
+                        entry.monitor.as_ref().map_or("?", |m| m.id.0.as_str())
+                    ),
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Create one dock window on `monitor` and show it. Main thread (the
+/// platform subclasses the window right after creation, which is only
+/// allowed from the thread that created it).
+fn create_dock_window(
+    app: &AppHandle,
+    service: &DockService,
+    label: &str,
+    monitor: Option<&MonitorInfo>,
+) -> tauri::Result<()> {
+    let page = dock_page(label, monitor.map(|m| &m.id));
+    let window = WebviewWindowBuilder::new(app, label, WebviewUrl::App(page.into()))
         .title("Stem")
         .decorations(false)
         .transparent(true)
@@ -145,38 +418,69 @@ pub fn create_dock_windows(app: &AppHandle, service: &DockService) -> tauri::Res
     // The dock is never closed by the user (Quit lives in the tray), and a
     // DPI change lays it out again.
     let handle = app.clone();
+    let owned = label.to_owned();
     window.on_window_event(move |event| match event {
         WindowEvent::CloseRequested { api, .. } => {
-            log::debug!("dock window close request ignored");
+            log::debug!("dock window {owned:?}: close request ignored");
             api.prevent_close();
         }
         WindowEvent::ScaleFactorChanged {
             scale_factor,
             new_inner_size,
             ..
-        } => on_scale_factor_changed(&handle, DOCK_LABEL, *scale_factor, *new_inner_size),
+        } => on_scale_factor_changed(&handle, &owned, *scale_factor, *new_inner_size),
         _ => {}
     });
 
-    // On the main thread (inside `setup`), which created the window: the
-    // platform subclasses it and that is only allowed from its own thread.
     apply_native_styles(service, &window);
-    let click_through = service.settings().behavior.click_through;
     if let Some(geometry) = app.try_state::<DockGeometry>() {
-        *geometry.click_through.lock() = Some(click_through);
-        *geometry.scale.lock() = window.scale_factor().ok();
+        geometry.docks.lock().insert(
+            label.to_owned(),
+            DockWindowState {
+                monitor: monitor.map(|m| m.id.clone()),
+                scale: window.scale_factor().ok(),
+                ..DockWindowState::default()
+            },
+        );
     }
     // A fresh page starts with its panel shown.
     if let Some(flags) = app.try_state::<DockAutoHidden>() {
-        flags.0.lock().insert(DOCK_LABEL.to_owned(), false);
+        flags.0.lock().insert(label.to_owned(), false);
     }
-    log::info!(
-        "click-through outside the panel: {}",
-        describe_click_through(click_through)
-    );
-    position_window(&window, primary_monitor(&service.monitors()).as_ref())?;
+    position_window(&window, monitor)?;
     window.show()?;
+    log::info!(
+        "dock window created {label:?} on {}",
+        describe_monitor(monitor)
+    );
     Ok(())
+}
+
+/// Close the secondary dock window `label` (its monitor went away, or the
+/// mode went back to the primary only): destroy it (a plain close would be
+/// refused like a user's), forget its state, and tell the engine the dock
+/// is gone. Main thread.
+fn close_dock_window(app: &AppHandle, service: &DockService, label: &str) {
+    let monitor = app
+        .try_state::<DockGeometry>()
+        .and_then(|geometry| geometry.docks.lock().remove(label))
+        .and_then(|dock| dock.monitor);
+    if let Some(flags) = app.try_state::<DockAutoHidden>() {
+        flags.0.lock().remove(label);
+    }
+    match app.get_webview_window(label) {
+        Some(window) => {
+            if let Err(e) = window.destroy() {
+                log::warn!("dock window {label:?} could not be closed: {e}");
+            }
+        }
+        None => log::debug!("dock window {label:?} was already gone"),
+    }
+    service.set_dock_panel(label, None, None);
+    log::info!(
+        "dock window closed {label:?} (monitor {})",
+        monitor.as_ref().map_or("unknown", |m| m.0.as_str())
+    );
 }
 
 fn describe_click_through(enabled: bool) -> &'static str {
@@ -234,17 +538,44 @@ fn apply_native_styles(service: &DockService, window: &WebviewWindow) {
     }
 }
 
-fn primary_monitor(monitors: &[MonitorInfo]) -> Option<MonitorInfo> {
-    monitors
-        .iter()
-        .find(|m| m.is_primary)
-        .or_else(|| monitors.first())
-        .cloned()
+/// The monitor the dock window `label` was placed on, as the state says
+/// and the list `monitors` knows it; `None` before the first monitor list,
+/// or while the monitor is gone from the list (a hot-plug the reconcile
+/// has not caught up with yet).
+fn monitor_of(app: &AppHandle, label: &str, monitors: &[MonitorInfo]) -> Option<MonitorInfo> {
+    let id = app
+        .try_state::<DockGeometry>()
+        .and_then(|geometry| geometry.dock(label))
+        .and_then(|dock| dock.monitor)?;
+    monitors.iter().find(|m| m.id == id).cloned()
 }
 
-/// Resize to the reported content size (CSS px) and re-centre on the primary
-/// monitor's work area. Called from the `set_dock_content_size` command, on
-/// the main thread.
+/// The monitor id the dock window `label` was placed on, for the engine.
+fn monitor_id_of(app: &AppHandle, label: &str) -> Option<MonitorId> {
+    app.try_state::<DockGeometry>()
+        .and_then(|geometry| geometry.dock(label))
+        .and_then(|dock| dock.monitor)
+}
+
+/// The dock windows that exist, the primary's first.
+fn dock_windows(app: &AppHandle) -> Vec<WebviewWindow> {
+    let labels = app
+        .try_state::<DockGeometry>()
+        .map(|geometry| geometry.labels())
+        .unwrap_or_default();
+    labels
+        .iter()
+        .filter_map(|label| app.get_webview_window(label))
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// dock windows: the UI's reports
+// ---------------------------------------------------------------------------
+
+/// Resize to the reported content size (CSS px) and re-centre on the
+/// window's own monitor's work area. Called from the `set_dock_content_size`
+/// command, on the main thread.
 pub fn apply_content_size(
     app: &AppHandle,
     window: &WebviewWindow,
@@ -253,15 +584,23 @@ pub fn apply_content_size(
 ) -> tauri::Result<()> {
     let width = width.clamp(MIN_CONTENT.0, MAX_CONTENT.0);
     let height = height.clamp(MIN_CONTENT.1, MAX_CONTENT.1);
-    match app.try_state::<DockGeometry>() {
-        Some(geometry) => *geometry.content_css.lock() = Some((width, height)),
-        None => log::warn!("DockGeometry state missing; monitor changes will not re-layout"),
+    let remembered = app.try_state::<DockGeometry>().and_then(|geometry| {
+        geometry.update(window.label(), |dock| {
+            dock.content_css = Some((width, height))
+        })
+    });
+    if remembered.is_none() {
+        log::warn!(
+            "no state for dock window {:?}; monitor changes will not re-layout it",
+            window.label()
+        );
     }
     let monitors = match app.try_state::<crate::AppService>() {
         Some(service) => service.0.monitors(),
         None => Vec::new(),
     };
-    layout(window, &monitors, width, height)
+    let monitor = monitor_of(app, window.label(), &monitors);
+    layout(window, monitor.as_ref(), width, height)
 }
 
 /// Argument check for `set_dock_hit_region` (`docs/ipc/hit-region.md`):
@@ -301,7 +640,9 @@ pub fn apply_hit_region(
         .try_state::<crate::AppService>()
         .ok_or_else(|| "service not available".to_owned())?;
     if let Some(geometry) = app.try_state::<DockGeometry>() {
-        *geometry.hit_region_css.lock() = Some((panel, envelope));
+        geometry.update(window.label(), |dock| {
+            dock.hit_region_css = Some((panel, envelope));
+        });
     }
     if !service.0.settings().behavior.click_through {
         log::trace!(
@@ -357,35 +698,43 @@ pub fn validate_panel_rect(rect: Rect) -> Result<(), String> {
 }
 
 /// Remember the UI's resting panel (CSS px, viewport-relative) and hand it
-/// to the service in physical screen pixels; `None` goes instead
-/// while the window is hidden. Runs on the main thread.
+/// to the service in physical screen pixels, with the window's
+/// label and monitor; no rect goes instead while the window is
+/// hidden. Runs on the main thread.
 pub fn apply_dock_panel(app: &AppHandle, window: &WebviewWindow, rect: Rect) -> Result<(), String> {
     let service = app
         .try_state::<crate::AppService>()
         .ok_or_else(|| "service not available".to_owned())?;
     if let Some(geometry) = app.try_state::<DockGeometry>() {
-        *geometry.panel_css.lock() = Some(rect);
+        geometry.update(window.label(), |dock| dock.panel_css = Some(rect));
     }
-    push_dock_panel(&service.0, window, rect)
+    push_dock_panel(app, &service.0, window, rect)
 }
 
 /// The service call behind [`apply_dock_panel`]: CSS px → physical screen
 /// px from the window's position and scale factor, then
-/// `DockService::set_dock_panel`; a hidden window reports no panel. Main
-/// thread (the getters are window calls).
-fn push_dock_panel(service: &DockService, window: &WebviewWindow, css: Rect) -> Result<(), String> {
+/// `DockService::set_dock_panel` for the window's label and monitor; a
+/// hidden window reports no rect. Main thread (the getters are window
+/// calls).
+fn push_dock_panel(
+    app: &AppHandle,
+    service: &DockService,
+    window: &WebviewWindow,
+    css: Rect,
+) -> Result<(), String> {
+    let label = window.label();
+    let monitor = monitor_id_of(app, label);
     if !window.is_visible().map_err(|e| e.to_string())? {
-        service.set_dock_panel(None);
+        service.set_dock_panel(label, monitor, None);
         return Ok(());
     }
     let origin = window.outer_position().map_err(|e| e.to_string())?;
     let scale = window.scale_factor().map_err(|e| e.to_string())?;
     let panel = panel_on_screen((origin.x, origin.y), css, scale);
     log::trace!(
-        "dock panel of {:?}: {css:?} css at {scale}x from {origin:?} -> {panel:?}",
-        window.label()
+        "dock panel of {label:?}: {css:?} css at {scale}x from {origin:?} -> {panel:?} on {monitor:?}"
     );
-    service.set_dock_panel(Some(panel));
+    service.set_dock_panel(label, monitor, Some(panel));
     Ok(())
 }
 
@@ -402,23 +751,31 @@ fn sync_dock_panel(window: &WebviewWindow, origin: Option<(i32, i32)>) {
     ) else {
         return;
     };
-    let Some(css) = *geometry.panel_css.lock() else {
+    let Some(dock) = geometry.dock(window.label()) else {
+        return;
+    };
+    let Some(css) = dock.panel_css else {
         return;
     };
     let result = match origin {
         Some(origin) if window.is_visible().unwrap_or(false) => match window.scale_factor() {
             Ok(scale) => {
-                service
-                    .0
-                    .set_dock_panel(Some(panel_on_screen(origin, css, scale)));
+                service.0.set_dock_panel(
+                    window.label(),
+                    dock.monitor,
+                    Some(panel_on_screen(origin, css, scale)),
+                );
                 Ok(())
             }
             Err(e) => Err(e.to_string()),
         },
-        _ => push_dock_panel(&service.0, window, css),
+        _ => push_dock_panel(app, &service.0, window, css),
     };
     if let Err(e) = result {
-        log::debug!("the dock panel could not be converted after a move: {e}");
+        log::debug!(
+            "the dock panel of {:?} could not be converted after a move: {e}",
+            window.label()
+        );
     }
 }
 
@@ -435,13 +792,19 @@ pub fn panel_on_screen(origin: (i32, i32), css: Rect, scale: f64) -> Rect {
     )
 }
 
+// ---------------------------------------------------------------------------
+// settings and monitor changes
+// ---------------------------------------------------------------------------
+
 /// The settings changed (settings window, tray, a command): apply
-/// `behavior.clickThrough` and `theme` where they differ
-/// from what is in effect. Runs on the service worker thread; the window
-/// work hops to the main thread, where the window getters are direct calls.
+/// `behavior.clickThrough`, `theme` and `monitors`
+/// where they differ from what is in effect. Runs on the service worker
+/// thread; the window work hops to the main thread, where the window
+/// getters are direct calls.
 pub fn on_settings_changed(app: &AppHandle, settings: &Settings) {
     on_click_through_setting(app, settings.behavior.click_through);
     on_theme_setting(app, settings.theme);
+    on_monitor_mode_setting(app, settings.monitors);
 }
 
 fn on_click_through_setting(app: &AppHandle, enabled: bool) {
@@ -461,46 +824,66 @@ fn on_click_through_setting(app: &AppHandle, enabled: bool) {
     }
 }
 
-/// Turn click-through on (replay the UI's latest hit region) or off (the
-/// whole dock window takes clicks again). Main thread.
+/// Turn click-through on (replay each UI's latest hit region) or off (the
+/// whole dock windows take clicks again), for every dock window. Main
+/// thread.
 fn apply_click_through(app: &AppHandle, enabled: bool) {
-    let Some(window) = app.get_webview_window(DOCK_LABEL) else {
-        log::debug!("click-through changed before the dock window exists");
-        return;
-    };
     let Some(service) = app.try_state::<crate::AppService>() else {
         return;
     };
+    let windows = dock_windows(app);
+    if windows.is_empty() {
+        log::debug!("click-through changed before any dock window exists");
+        return;
+    }
     if enabled {
-        let region = app
-            .try_state::<DockGeometry>()
-            .and_then(|geometry| *geometry.hit_region_css.lock());
-        match region {
-            Some((panel, envelope)) => {
-                match push_hit_region(&service.0, &window, panel, envelope) {
-                    Ok(()) => log::info!(
-                        "click-through outside the panel: {}",
-                        describe_click_through(true)
-                    ),
-                    Err(e) => log::warn!("click-through could not be turned on: {e}"),
+        let mut waiting = 0;
+        for window in &windows {
+            let region = app
+                .try_state::<DockGeometry>()
+                .and_then(|geometry| geometry.dock(window.label()))
+                .and_then(|dock| dock.hit_region_css);
+            match region {
+                Some((panel, envelope)) => {
+                    if let Err(e) = push_hit_region(&service.0, window, panel, envelope) {
+                        log::warn!(
+                            "click-through could not be turned on for {:?}: {e}",
+                            window.label()
+                        );
+                    }
                 }
+                None => waiting += 1,
             }
-            None => {
-                log::info!("click-through outside the panel: on (waiting for the UI's hit region)")
-            }
+        }
+        if waiting > 0 {
+            log::info!(
+                "click-through outside the panel: on (waiting for the hit region of {waiting} dock window(s))"
+            );
+        } else {
+            log::info!(
+                "click-through outside the panel: {}",
+                describe_click_through(true)
+            );
         }
         return;
     }
-    let Some(handle) = native_handle(&window) else {
-        return;
-    };
-    match service.0.platform().set_dock_hit_region(handle, None) {
-        Ok(()) | Err(PlatformError::Unsupported(_)) => log::info!(
-            "click-through outside the panel: {}",
-            describe_click_through(false)
-        ),
-        Err(e) => log::warn!("click-through could not be turned off: {e}"),
+    for window in &windows {
+        let Some(handle) = native_handle(window) else {
+            continue;
+        };
+        if let Err(e) = service.0.platform().set_dock_hit_region(handle, None)
+            && !matches!(e, PlatformError::Unsupported(_))
+        {
+            log::warn!(
+                "click-through could not be turned off for {:?}: {e}",
+                window.label()
+            );
+        }
     }
+    log::info!(
+        "click-through outside the panel: {}",
+        describe_click_through(false)
+    );
 }
 
 /// `settings.theme` changed: the settings window's title bar follows it (the
@@ -545,6 +928,39 @@ pub fn native_theme(mode: ThemeMode) -> Option<tauri::Theme> {
     }
 }
 
+/// `settings.monitors` changed: create the secondary dock windows
+/// (`All`) or close them (`Primary`); the primary's window is never touched.
+/// Any thread; the window work hops to the main thread.
+fn on_monitor_mode_setting(app: &AppHandle, mode: MonitorMode) {
+    let Some(geometry) = app.try_state::<DockGeometry>() else {
+        return;
+    };
+    {
+        let mut current = geometry.mode.lock();
+        if *current == Some(mode) {
+            return;
+        }
+        *current = Some(mode);
+    }
+    let handle = app.clone();
+    let scheduled = app.run_on_main_thread(move || {
+        let Some(service) = handle.try_state::<crate::AppService>() else {
+            return;
+        };
+        let monitors = service.0.monitors();
+        log::info!(
+            "dock windows: {mode:?} over {} known monitor(s)",
+            monitors.len()
+        );
+        if let Err(e) = reconcile_docks(&handle, &service.0, mode, &monitors) {
+            log::warn!("the dock windows could not be rebuilt for {mode:?}: {e}");
+        }
+    });
+    if let Err(e) = scheduled {
+        log::warn!("could not schedule the dock window rebuild: {e}");
+    }
+}
+
 /// CSS px → physical px, rounded outwards (left/top down, right/bottom up)
 /// so a region never loses an edge pixel to rounding. Pure.
 pub fn scale_rect(rect: Rect, scale: f64) -> Rect {
@@ -567,17 +983,23 @@ pub fn scale_rect(rect: Rect, scale: f64) -> Rect {
 }
 
 /// The service reported a new monitor list (startup, hot-plug, resolution
-/// or taskbar change). Runs on the service worker thread; the window work
-/// hops to the main thread so the blocking getters run there directly.
+/// or taskbar change, a new primary): reconcile the dock windows with it
+/// and lay each out on its monitor. Runs on the service worker
+/// thread; the window work hops to the main thread so the blocking getters
+/// run there directly.
 pub fn on_monitors_changed(app: &AppHandle, monitors: Vec<MonitorInfo>) {
     let handle = app.clone();
     let scheduled = app.run_on_main_thread(move || {
-        let Some(window) = handle.get_webview_window(DOCK_LABEL) else {
-            log::debug!("monitors changed before the dock window exists");
+        let Some(service) = handle.try_state::<crate::AppService>() else {
             return;
         };
-        if let Err(e) = relayout_dock(&handle, &window, &monitors) {
-            log::warn!("re-positioning the dock after a monitor change failed: {e}");
+        if handle.get_webview_window(DOCK_LABEL).is_none() {
+            log::debug!("monitors changed before the dock window exists");
+            return;
+        }
+        let mode = service.0.settings().monitors;
+        if let Err(e) = reconcile_docks(&handle, &service.0, mode, &monitors) {
+            log::warn!("re-positioning the docks after a monitor change failed: {e}");
         }
     });
     if let Err(e) = scheduled {
@@ -585,7 +1007,7 @@ pub fn on_monitors_changed(app: &AppHandle, monitors: Vec<MonitorInfo>) {
     }
 }
 
-/// The dock window's scale factor changed (`WindowEvent::ScaleFactorChanged`):
+/// A dock window's scale factor changed (`WindowEvent::ScaleFactorChanged`):
 /// the display scale was changed, or the window landed on a monitor
 /// with another DPI. Runs on the main thread, inside tao's handling of
 /// `WM_DPICHANGED`, which resizes the window to keep its logical size once
@@ -604,7 +1026,8 @@ fn on_scale_factor_changed(
 ) {
     let previous = app
         .try_state::<DockGeometry>()
-        .and_then(|geometry| geometry.scale.lock().replace(scale));
+        .and_then(|geometry| geometry.update(label, |dock| dock.scale.replace(scale)))
+        .flatten();
     log::info!(
         "dock window {label:?}: scale factor {} -> {scale} (inner size now {}x{} px); laying it out again",
         previous.map_or_else(|| "?".to_owned(), |s| s.to_string()),
@@ -622,10 +1045,12 @@ fn on_scale_factor_changed(
             .try_state::<crate::AppService>()
             .map_or_else(Vec::new, |service| service.0.monitors());
         if let Err(e) = relayout_dock(&handle, &window, &monitors) {
-            log::warn!("laying out the dock again after a scale change failed: {e}");
+            log::warn!("laying out dock window {label:?} again after a scale change failed: {e}");
         }
         if let Err(e) = replay_hit_region(&handle, &window) {
-            log::warn!("the hit region could not be converted after a scale change: {e}");
+            log::warn!(
+                "the hit region of {label:?} could not be converted after a scale change: {e}"
+            );
         }
     });
 }
@@ -645,9 +1070,10 @@ fn post_to_main_thread(app: &AppHandle, f: impl FnOnce() + Send + 'static) {
     }));
 }
 
-/// Size and place the dock window from the UI's latest content size, or at
-/// its current height before the first report; [`place`] then converts the
-/// latest panel rect for the window's new place. Main thread.
+/// Size and place a dock window from its UI's latest content size, or at
+/// its current height before the first report, on its own monitor;
+/// [`place`] then converts the latest panel rect for the window's new place.
+/// Main thread.
 fn relayout_dock(
     app: &AppHandle,
     window: &WebviewWindow,
@@ -655,15 +1081,17 @@ fn relayout_dock(
 ) -> tauri::Result<()> {
     let content = app
         .try_state::<DockGeometry>()
-        .and_then(|geometry| *geometry.content_css.lock());
+        .and_then(|geometry| geometry.dock(window.label()))
+        .and_then(|dock| dock.content_css);
+    let monitor = monitor_of(app, window.label(), monitors);
     match content {
-        Some((width, height)) => layout(window, monitors, width, height),
-        None => position_window(window, primary_monitor(monitors).as_ref()),
+        Some((width, height)) => layout(window, monitor.as_ref(), width, height),
+        None => position_window(window, monitor.as_ref()),
     }
 }
 
-/// Hand the UI's latest hit region to the platform again, converted at the
-/// window's current scale factor (a DPI change), while
+/// Hand a dock window's latest hit region to the platform again, converted
+/// at the window's current scale factor (a DPI change), while
 /// `behavior.clickThrough` is on. Nothing to do before the UI's first report
 /// or while the setting is off. Main thread.
 fn replay_hit_region(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> {
@@ -676,23 +1104,24 @@ fn replay_hit_region(app: &AppHandle, window: &WebviewWindow) -> Result<(), Stri
     if !service.0.settings().behavior.click_through {
         return Ok(());
     }
-    let region = *geometry.hit_region_css.lock();
+    let region = geometry
+        .dock(window.label())
+        .and_then(|dock| dock.hit_region_css);
     match region {
         Some((panel, envelope)) => push_hit_region(&service.0, window, panel, envelope),
         None => Ok(()),
     }
 }
 
-/// Size and place the window for a content size in CSS px: the work area's
-/// full width, the content height.
+/// Size and place the window for a content size in CSS px: its monitor's
+/// work area's full width, the content height.
 fn layout(
     window: &WebviewWindow,
-    monitors: &[MonitorInfo],
+    monitor: Option<&MonitorInfo>,
     width: f64,
     height: f64,
 ) -> tauri::Result<()> {
-    let monitor = primary_monitor(monitors);
-    let mut work_area = match &monitor {
+    let mut work_area = match monitor {
         Some(m) => m.work_area,
         None => fallback_work_area(window)?,
     };
@@ -700,11 +1129,11 @@ fn layout(
         Ok(s) if s.is_finite() && s > 0.0 => s,
         Ok(s) => {
             log::warn!("window scale factor {s} is unusable; using the monitor's");
-            monitor.as_ref().map_or(1.0, |m| m.scale_factor)
+            monitor.map_or(1.0, |m| m.scale_factor)
         }
         Err(e) => {
             log::warn!("window scale factor unavailable ({e}); using the monitor's");
-            monitor.as_ref().map_or(1.0, |m| m.scale_factor)
+            monitor.map_or(1.0, |m| m.scale_factor)
         }
     };
     if monitor.is_none() {
@@ -714,7 +1143,8 @@ fn layout(
     }
     let rect = plan_dock_rect(work_area, scale, height);
     log::debug!(
-        "dock window: {width}x{height} css at {scale}x -> {rect:?} in {work_area:?} (full width)"
+        "dock window {:?}: {width}x{height} css at {scale}x -> {rect:?} in {work_area:?} (full width)",
+        window.label()
     );
     place(window, rect)
 }
@@ -731,8 +1161,8 @@ fn position_window(window: &WebviewWindow, monitor: Option<&MonitorInfo>) -> tau
     place(window, full_width_rect(work_area, height))
 }
 
-/// Size and position the dock window, then redo the panel conversion for
-/// its new place.
+/// Size and position a dock window, then redo the panel conversion for its
+/// new place.
 fn place(window: &WebviewWindow, rect: Rect) -> tauri::Result<()> {
     window.set_size(PhysicalSize::new(
         rect.width.unsigned_abs(),
@@ -851,56 +1281,92 @@ fn is_auto_hidden(app: &AppHandle, label: &str) -> bool {
         .is_some_and(|flags| flags.0.lock().get(label).copied().unwrap_or(false))
 }
 
+/// What one press of the toggle does to the whole set of dock windows,
+/// decided from the primary's state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Toggle {
+    /// The primary window is visible with its panel shown: hide every window.
+    Hide,
+    /// The primary window is hidden: show every window.
+    Show,
+    /// The primary window is visible with its panel slid out by auto-hide:
+    /// ask every page for its panel (and show a window that is hidden).
+    Reveal,
+}
+
 /// Tray left click and the global toggle shortcut: one press brings
-/// the dock back whatever hid it, the next hides it.
-/// - Window hidden: show it; the engine gets its panel back.
-/// - Window visible but its panel slid out by auto-hide
-///   ([`DockAutoHidden`]): ask the UI to bring the panel back
-///   (`dock://show`); the window stays as it is.
-/// - Window visible and its panel shown: hide the window; the engine has no
-///   panel on screen meanwhile.
+/// the dock back whatever hid it, the next hides it. With one dock
+/// per monitor the primary's window decides and every dock window
+/// follows, so one press acts on the whole set:
+/// - primary hidden: show every window; the engine gets their panels back.
+/// - primary visible but its panel slid out by auto-hide
+///   ([`DockAutoHidden`]): ask every page to bring its panel back
+///   (`dock://show`; a page whose panel is up ignores it); a secondary
+///   window that happens to be hidden is shown instead.
+/// - primary visible and its panel shown: hide every window; the engine has
+///   none of their panels on screen meanwhile.
 ///
 /// The UI reports its phase after the fact, so a press that lands while the
-/// panel is sliding out may still hide the window; the next press shows it
-/// (and the page, visible again, brings the panel back).
+/// panel is sliding out may still hide the windows; the next press shows
+/// them (and the pages, visible again, bring their panels back).
 pub fn toggle_dock(app: &AppHandle) {
-    let Some(window) = app.get_webview_window(DOCK_LABEL) else {
+    let Some(primary) = app.get_webview_window(DOCK_LABEL) else {
         log::warn!("toggle_dock: no dock window");
         return;
     };
-    let result = match window.is_visible() {
-        Ok(true) if is_auto_hidden(app, window.label()) => {
-            log::debug!("dock reveal requested");
-            app.emit_to(window.label(), crate::events::SHOW, ())
+    let action = match primary.is_visible() {
+        Ok(true) if is_auto_hidden(app, DOCK_LABEL) => Toggle::Reveal,
+        Ok(true) => Toggle::Hide,
+        Ok(false) => Toggle::Show,
+        Err(e) => {
+            log::warn!("toggle_dock failed: {e}");
+            return;
         }
-        Ok(true) => window.hide().inspect(|()| {
-            log::debug!("dock window hidden");
-            if let Some(service) = app.try_state::<crate::AppService>() {
-                service.0.set_dock_panel(None);
-            }
-        }),
-        Ok(false) => window.show().inspect(|()| {
-            log::debug!("dock window shown");
-            sync_dock_panel(&window, None);
-        }),
-        Err(e) => Err(e),
     };
-    if let Err(e) = result {
-        log::warn!("toggle_dock failed: {e}");
+    log::debug!("toggle_dock: {action:?}");
+    for window in dock_windows(app) {
+        let label = window.label().to_owned();
+        let result = match action {
+            Toggle::Hide => window.hide().inspect(|()| {
+                log::debug!("dock window {label:?} hidden");
+                if let Some(service) = app.try_state::<crate::AppService>() {
+                    service
+                        .0
+                        .set_dock_panel(&label, monitor_id_of(app, &label), None);
+                }
+            }),
+            Toggle::Show => show_dock_window(&window),
+            Toggle::Reveal if window.is_visible().unwrap_or(true) => {
+                log::debug!("dock reveal requested for {label:?}");
+                app.emit_to(&label, crate::events::SHOW, ())
+            }
+            Toggle::Reveal => show_dock_window(&window),
+        };
+        if let Err(e) = result {
+            log::warn!("toggle_dock on {label:?} failed: {e}");
+        }
     }
 }
 
-/// Show and focus every window we have (the dock, and the settings window
-/// when it is open). Used when a second instance is started. A dock window
-/// that is on screen with its panel slid out by auto-hide is asked to bring
-/// the panel back instead (`dock://show`, as [`toggle_dock`] does).
+/// Show a hidden dock window and give the engine its panel back.
+fn show_dock_window(window: &WebviewWindow) -> tauri::Result<()> {
+    window.show().inspect(|()| {
+        log::debug!("dock window {:?} shown", window.label());
+        sync_dock_panel(window, None);
+    })
+}
+
+/// Show and focus every window we have (the dock windows, and the settings
+/// window when it is open). Used when a second instance is started. A dock
+/// window that is on screen with its panel slid out by auto-hide is asked
+/// to bring the panel back instead (`dock://show`, as [`toggle_dock`] does).
 pub fn reveal_all(app: &AppHandle) {
     for (label, window) in app.webview_windows() {
         if label.starts_with(DOCK_LABEL)
             && window.is_visible().unwrap_or(false)
             && is_auto_hidden(app, &label)
         {
-            log::debug!("dock reveal requested by a second instance");
+            log::debug!("dock reveal requested by a second instance for {label:?}");
             if let Err(e) = app.emit_to(&label, crate::events::SHOW, ()) {
                 log::warn!("reveal {label}: {e}");
             }
@@ -917,6 +1383,146 @@ pub fn reveal_all(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn monitor(id: &str, primary: bool, x: i32, scale: f64) -> MonitorInfo {
+        MonitorInfo {
+            id: MonitorId(id.into()),
+            name: id.trim_start_matches(r"\\.\").to_owned(),
+            bounds: Rect::new(x, 0, 2560, 1440),
+            work_area: Rect::new(x, 0, 2560, 1392),
+            scale_factor: scale,
+            is_primary: primary,
+        }
+    }
+
+    #[test]
+    fn dock_labels_keep_only_safe_characters_and_pages_carry_the_encoded_id() {
+        let display3 = MonitorId(r"\\.\DISPLAY3".into());
+        assert_eq!(dock_label(&display3), "dock-DISPLAY3");
+        assert_eq!(
+            dock_label(&MonitorId("mock-primary".into())),
+            "dock-mock-primary"
+        );
+        assert_eq!(dock_label(&MonitorId("a b/c:d_e".into())), "dock-abcd_e");
+        assert_eq!(dock_label(&MonitorId(String::new())), "dock-");
+        assert_eq!(query_value(r"\\.\DISPLAY3"), "%5C%5C.%5CDISPLAY3");
+        assert_eq!(query_value("mock-primary_1.~"), "mock-primary_1.~");
+        assert_eq!(query_value("a b&c=d"), "a%20b%26c%3Dd");
+        assert_eq!(query_value("é"), "%C3%A9");
+        // The primary's page has no query string, whatever its monitor.
+        assert_eq!(dock_page(DOCK_LABEL, Some(&display3)), "dock.html");
+        assert_eq!(dock_page(DOCK_LABEL, None), "dock.html");
+        assert_eq!(
+            dock_page("dock-DISPLAY3", Some(&display3)),
+            "dock.html?monitor=%5C%5C.%5CDISPLAY3"
+        );
+        assert_eq!(dock_page("dock-DISPLAY3", None), "dock.html");
+    }
+
+    #[test]
+    fn plan_docks_gives_the_primary_one_window_and_all_one_per_monitor() {
+        let primary = monitor(r"\\.\DISPLAY2", true, 0, 1.0);
+        let left = monitor(r"\\.\DISPLAY1", false, -1920, 1.5);
+        let right = monitor(r"\\.\DISPLAY3", false, 2560, 1.0);
+        let monitors = vec![left.clone(), primary.clone(), right.clone()];
+
+        // The default: exactly today's one window, on the primary.
+        assert_eq!(
+            plan_docks(MonitorMode::Primary, &monitors),
+            vec![DockPlan {
+                label: "dock".into(),
+                monitor: Some(primary.clone()),
+            }]
+        );
+        // No monitor known yet: still the one window, unplaced.
+        assert_eq!(
+            plan_docks(MonitorMode::Primary, &[]),
+            vec![DockPlan {
+                label: "dock".into(),
+                monitor: None,
+            }]
+        );
+        assert_eq!(
+            plan_docks(MonitorMode::All, &[]),
+            vec![DockPlan {
+                label: "dock".into(),
+                monitor: None,
+            }]
+        );
+
+        // All: the primary keeps `dock`; the others follow in list order.
+        assert_eq!(
+            plan_docks(MonitorMode::All, &monitors),
+            vec![
+                DockPlan {
+                    label: "dock".into(),
+                    monitor: Some(primary.clone()),
+                },
+                DockPlan {
+                    label: "dock-DISPLAY1".into(),
+                    monitor: Some(left.clone()),
+                },
+                DockPlan {
+                    label: "dock-DISPLAY3".into(),
+                    monitor: Some(right.clone()),
+                },
+            ]
+        );
+        // One monitor only: `All` is the same as `Primary`.
+        assert_eq!(
+            plan_docks(MonitorMode::All, std::slice::from_ref(&primary)),
+            plan_docks(MonitorMode::Primary, std::slice::from_ref(&primary))
+        );
+    }
+
+    #[test]
+    fn plan_docks_falls_back_to_the_first_monitor_and_skips_label_collisions() {
+        // Nothing flagged primary: the first monitor is the primary's.
+        let a = monitor(r"\\.\DISPLAY1", false, 0, 1.0);
+        let b = monitor(r"\\.\DISPLAY2", false, 2560, 1.0);
+        let plan = plan_docks(MonitorMode::All, &[a.clone(), b.clone()]);
+        assert_eq!(plan[0].label, "dock");
+        assert_eq!(plan[0].monitor, Some(a));
+        assert_eq!(plan[1].label, "dock-DISPLAY2");
+        assert_eq!(plan[1].monitor, Some(b));
+
+        // Two ids that sanitise to the same label: the second is left out.
+        let primary = monitor(r"\\.\DISPLAY1", true, 0, 1.0);
+        let x = monitor(r"\\.\DISPLAY2", false, 2560, 1.0);
+        let twin = monitor("DISPLAY2", false, 5120, 1.0);
+        let plan = plan_docks(MonitorMode::All, &[primary, x.clone(), twin]);
+        assert_eq!(plan.len(), 2);
+        assert_eq!(plan[1].monitor, Some(x));
+    }
+
+    #[test]
+    fn dock_geometry_lists_the_primary_first() {
+        let geometry = DockGeometry::default();
+        for label in ["dock-DISPLAY3", "dock", "dock-DISPLAY1"] {
+            geometry
+                .docks
+                .lock()
+                .insert(label.to_owned(), DockWindowState::default());
+        }
+        assert_eq!(
+            geometry.labels(),
+            vec!["dock", "dock-DISPLAY1", "dock-DISPLAY3"]
+        );
+        assert!(geometry.dock("dock-DISPLAY3").is_some());
+        assert!(geometry.dock("settings").is_none());
+        assert_eq!(
+            geometry.update("dock", |dock| {
+                dock.content_css = Some((640.0, 96.0));
+                1
+            }),
+            Some(1)
+        );
+        assert_eq!(geometry.update("nope", |_| 1), None);
+        assert_eq!(
+            geometry.dock("dock").unwrap().content_css,
+            Some((640.0, 96.0))
+        );
+    }
 
     #[test]
     fn full_width_rect_spans_the_work_area_on_its_bottom_edge() {
@@ -945,6 +1551,12 @@ mod tests {
         assert_eq!(plan_dock_rect(wa, 1.25, 97.0).height, 121);
         assert_eq!(physical_px(641.0, 1.25), 801);
         assert_eq!(physical_px(-3.0, 1.0), 0);
+        // A secondary monitor to the right, at 150 %: its own work area.
+        let right = Rect::new(2560, 0, 1920, 1032);
+        assert_eq!(
+            plan_dock_rect(right, 1.5, 96.0),
+            Rect::new(2560, 888, 1920, 144)
+        );
     }
 
     #[test]

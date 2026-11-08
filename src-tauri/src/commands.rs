@@ -1,4 +1,4 @@
-//! Tauri commands, one per entry in `docs/ipc/commands.md` (v1.12). They
+//! Tauri commands, one per entry in `docs/ipc/commands.md` (v1.13). They
 //! validate and clamp their arguments, then translate and delegate to
 //! `stem-service` (semantics live there).
 //!
@@ -245,10 +245,12 @@ fn set_dock_hit_region(
 
 /// The dock UI reports where its panel rests (CSS px relative to the
 /// viewport, whatever the auto-hide phase; see `docs/ipc/dock-panel.md`),
-/// so the engine can tell when a window overlaps it. Only a dock
-/// window may call it; the rect must have non-negative sizes. Synchronous:
-/// it reads the window's position and scale factor on the main thread, and
-/// the service call only queues the converted rect for its worker.
+/// so the engine can tell when a window overlaps it; the app layer
+/// hands it on with the calling window's label and monitor, so each dock
+/// has its own fact. Only a dock window may call it; the rect must
+/// have non-negative sizes. Synchronous: it reads the window's position and
+/// scale factor on the main thread, and the service call only queues the
+/// converted rect for its worker.
 #[tauri::command]
 fn set_dock_panel_rect(app: AppHandle, window: tauri::WebviewWindow, rect: Rect) -> CmdResult<()> {
     let args = (window.label().to_owned(), rect);
