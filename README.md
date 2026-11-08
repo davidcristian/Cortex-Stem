@@ -104,6 +104,7 @@ Most of the code (everything except the final binary) can be developed and teste
 
 | Where | What |
 | ----- | ---- |
+| [docs/user-guide/](docs/user-guide/index.md) | Every part of the settings window and how the dock behaves |
 | [docs/architecture/](docs/architecture/index.md) | Layers, data flow, threads, app identity, icons, the dock window, settings, error handling, performance budgets and security |
 | [docs/ipc/](docs/ipc/index.md) | The contract between Rust and the page: every command and event |
 | [docs/PLAN.md](docs/PLAN.md) | The milestones and the non-goals |
