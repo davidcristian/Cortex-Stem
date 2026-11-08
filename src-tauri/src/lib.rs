@@ -6,7 +6,8 @@
 //! - wires plugins (single-instance, logging, autostart, global shortcut)
 //!   and the tray icon, and applies the settings that belong to the shell
 //!   (`autostart`, `taskbar`, `shortcut`, click-through in `windows`, the
-//!   tray's check mark).
+//!   tray's check mark),
+//! - reports a crash of the previous run at the next start (`crash`).
 //!
 //! Lifecycle: this is a tray application. The dock window ignores close
 //! requests, closing the settings window only destroys that window, and an
@@ -16,6 +17,7 @@
 
 mod autostart;
 mod commands;
+mod crash;
 mod menus;
 mod shortcut;
 mod taskbar;
@@ -81,6 +83,9 @@ pub fn run() {
             let platform = create_platform();
             let store = settings_store(app.handle(), platform.as_ref());
             init_logging(app.handle(), store.as_ref());
+            // Before the test panic, so that it leaves a crash marker like a
+            // real one.
+            crash::init(app.handle(), platform.as_ref());
             panic_test();
             log::info!("platform: {}", platform.name());
 
@@ -119,6 +124,8 @@ pub fn run() {
                 log::info!("exiting");
                 // Before the service goes: the restore talks to the platform.
                 taskbar::on_exit(app);
+                // After the restore: a clean exit is one that got this far.
+                crash::on_exit();
                 if let Some(service) = app.try_state::<AppService>() {
                     service.0.shutdown();
                 }
@@ -293,10 +300,13 @@ pub(crate) fn on_off(flag: bool) -> &'static str {
     if flag { "on" } else { "off" }
 }
 
-/// Log every panic (message, location, backtrace) before the default hook
-/// prints it. With `panic = "abort"` in release builds this is the only
-/// record of a crash, so it goes through `log` (file + stdout; the file
-/// target flushes per record).
+/// Write the crash marker (`crash::record_panic`, so the next start can
+/// report the crash) and log every panic (message, location,
+/// backtrace) before the default hook prints it. With `panic = "abort"` in
+/// release builds these are the only record of a crash, so the log line
+/// goes through `log` (file + stdout; the file target flushes per record).
+/// The marker comes first: it is one small write, and the next start shows
+/// it even if the log line never makes it out.
 fn install_panic_hook() {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -310,6 +320,7 @@ fn install_panic_hook() {
             .location()
             .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
             .unwrap_or_else(|| "<unknown location>".to_owned());
+        crash::record_panic(message, &location);
         let backtrace = std::backtrace::Backtrace::force_capture();
         log::error!("panic at {location}: {message}\nbacktrace:\n{backtrace}");
         default_hook(info);
@@ -317,7 +328,7 @@ fn install_panic_hook() {
 }
 
 /// Debug builds only: `STEM_PANIC_TEST=1` panics once logging is up, so the
-/// panic hook can be exercised.
+/// panic hook can be exercised and the next start's crash report with it.
 fn panic_test() {
     if cfg!(debug_assertions) && std::env::var("STEM_PANIC_TEST").is_ok_and(|v| v == "1") {
         panic!("STEM_PANIC_TEST=1: intentional panic to exercise the panic hook");
