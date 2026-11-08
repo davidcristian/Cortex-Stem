@@ -54,7 +54,10 @@
 //! [`DockAutoHidden`]), so that [`toggle_dock`] (tray click, Ctrl+Alt+D)
 //! brings a slid-out panel back with one press (the `dock://show` event)
 //! instead of hiding the window first. One press acts on the whole set: the
-//! primary's state decides, and every dock follows.
+//! primary's state decides, and every dock follows, including one
+//! created while the set is hidden (hot-plug, *All monitors*): it starts
+//! hidden like the others ([`show_new_dock_window`]) and the next press
+//! shows it with them.
 //!
 //! The dock panel: each UI reports where its panel rests
 //! (`set_dock_panel_rect`, CSS px of its viewport); [`apply_dock_panel`]
@@ -387,9 +390,10 @@ fn reconcile_docks(
     Ok(())
 }
 
-/// Create one dock window on `monitor` and show it. Main thread (the
-/// platform subclasses the window right after creation, which is only
-/// allowed from the thread that created it).
+/// Create one dock window on `monitor` and show it, unless the set is
+/// hidden ([`show_new_dock_window`]). Main thread (the platform subclasses
+/// the window right after creation, which is only allowed from the thread
+/// that created it).
 fn create_dock_window(
     app: &AppHandle,
     service: &DockService,
@@ -448,12 +452,51 @@ fn create_dock_window(
         flags.0.lock().insert(label.to_owned(), false);
     }
     position_window(&window, monitor)?;
-    window.show()?;
-    log::info!(
-        "dock window created {label:?} on {}",
-        describe_monitor(monitor)
-    );
+    let primary_visible = if label == DOCK_LABEL {
+        None
+    } else {
+        primary_visibility(app)
+    };
+    if show_new_dock_window(label, primary_visible) {
+        window.show()?;
+        log::info!(
+            "dock window created {label:?} on {}",
+            describe_monitor(monitor)
+        );
+    } else {
+        // Hidden, it reports no panel to the engine (`push_dock_panel`);
+        // the next Show of the set (`toggle_dock`, which acts on every dock
+        // window) shows it and hands its panel over.
+        log::info!(
+            "dock window created {label:?} on {}, hidden like the rest of the set",
+            describe_monitor(monitor)
+        );
+    }
     Ok(())
+}
+
+/// Whether a dock window that was just created is shown at once.
+/// The primary's window (`dock`) always is. Any other follows the set,
+/// whose state is the primary's (as for [`toggle_dock`]): it is shown only
+/// when `primary_visible` is `Some(true)`; a hidden primary means the toggle
+/// hid the set, and a window shown then would be the one dock on screen,
+/// turning the next press into a Show. `None` (the primary's state could
+/// not be read) leaves it hidden too. Pure.
+pub fn show_new_dock_window(label: &str, primary_visible: Option<bool>) -> bool {
+    label == DOCK_LABEL || primary_visible == Some(true)
+}
+
+/// Whether the primary's dock window is visible; `None` when there is none,
+/// or (after a warning) when its state cannot be read. Main thread.
+fn primary_visibility(app: &AppHandle) -> Option<bool> {
+    let primary = app.get_webview_window(DOCK_LABEL)?;
+    match primary.is_visible() {
+        Ok(visible) => Some(visible),
+        Err(e) => {
+            log::warn!("could not read whether the primary dock window is visible: {e}");
+            None
+        }
+    }
 }
 
 /// Close the secondary dock window `label` (its monitor went away, or the
@@ -1623,6 +1666,18 @@ mod tests {
         assert_eq!(native_theme(ThemeMode::System), None);
         assert_eq!(native_theme(ThemeMode::Light), Some(tauri::Theme::Light));
         assert_eq!(native_theme(ThemeMode::Dark), Some(tauri::Theme::Dark));
+    }
+
+    #[test]
+    fn a_new_secondary_dock_window_follows_the_primary_and_the_primary_always_shows() {
+        // The primary's window is shown whatever is passed.
+        for primary_visible in [None, Some(false), Some(true)] {
+            assert!(show_new_dock_window(DOCK_LABEL, primary_visible));
+        }
+        // A secondary one only while the set is on screen.
+        assert!(show_new_dock_window("dock-DISPLAY3", Some(true)));
+        assert!(!show_new_dock_window("dock-DISPLAY3", Some(false)));
+        assert!(!show_new_dock_window("dock-DISPLAY3", None));
     }
 
     #[test]
