@@ -596,6 +596,65 @@ describe('revisions and events', () => {
   });
 });
 
+describe('virtual desktops (mirror of DockEngine::is_shown)', () => {
+  const PAINT = 'C:\\Windows\\System32\\mspaint.exe';
+  const CALC = 'C:\\Program Files\\WindowsApps\\Calculator\\CalculatorApp.exe';
+  const WORDPAD = 'C:\\Program Files\\Windows NT\\Accessories\\wordpad.exe';
+
+  function raw(id: number, exe: string, extra: Partial<RawWindow> = {}): RawWindow {
+    return {
+      id,
+      title: `W${id}`,
+      className: 'Window',
+      processId: 1000 + id,
+      exePath: exe,
+      appUserModelId: null,
+      isVisible: true,
+      isMinimized: false,
+      isCloaked: false,
+      onCurrentDesktop: null,
+      monitor: null,
+      rect: null,
+      iconKey: null,
+      ...extra,
+    };
+  }
+
+  it('onCurrentDesktop decides while showOnlyCurrentDesktop is on; the cloak state only when unknown', async () => {
+    const b = fast();
+    // Parked on another desktop (the shell cloaks it too).
+    b.pushWindow(raw(90, PAINT, { isCloaked: true, onCurrentDesktop: false }));
+    // Cloaked on this desktop: a suspended Store app, or the switch animation.
+    b.pushWindow(raw(91, CALC, { isCloaked: true, onCurrentDesktop: true }));
+    // Unknown: cloaked counts as away.
+    b.pushWindow(raw(92, WORDPAD, { isCloaked: true }));
+    let state = await b.getDockState();
+    expect(keys(state)).not.toContain(app(appIdForExe(PAINT)));
+    expect(keys(state)).toContain(app(appIdForExe(CALC)));
+    expect(keys(state)).not.toContain(app(appIdForExe(WORDPAD)));
+
+    // With the setting off every window is listed whatever the desktop.
+    const settings = await b.getSettings();
+    settings.behavior.showOnlyCurrentDesktop = false;
+    await b.updateSettings(settings);
+    state = await b.getDockState();
+    for (const exe of [PAINT, CALC, WORDPAD]) {
+      expect(keys(state)).toContain(app(appIdForExe(exe)));
+    }
+
+    // A desktop switch, as the events thread reports it: one update per
+    // window, then a snapshot with the same facts (absorbed).
+    settings.behavior.showOnlyCurrentDesktop = true;
+    await b.updateSettings(settings);
+    b.pushWindow(raw(90, PAINT, { onCurrentDesktop: true }));
+    b.pushWindow(raw(91, CALC, { isCloaked: true, onCurrentDesktop: false }));
+    state = await b.getDockState();
+    expect(keys(state)).toContain(app(appIdForExe(PAINT)));
+    expect(keys(state)).not.toContain(app(appIdForExe(CALC)));
+    expect(keys(state)).not.toContain(app(appIdForExe(WORDPAD)));
+  });
+});
+
 describe('a window over the dock (mirror of crates/stem-core/src/overlap.rs)', () => {
   /** A 560 × 72 panel at the bottom of the mock monitor's 2560 × 1392 work area. */
   const PANEL: Rect = { x: 1000, y: 1320, width: 560, height: 72 };
@@ -615,6 +674,7 @@ describe('a window over the dock (mirror of crates/stem-core/src/overlap.rs)', (
       isVisible: true,
       isMinimized: false,
       isCloaked: false,
+      onCurrentDesktop: true,
       monitor: null,
       rect,
       iconKey: null,

@@ -444,6 +444,7 @@ function demoWindow(
     isVisible: true,
     isMinimized: minimized,
     isCloaked: false,
+    onCurrentDesktop: true,
     monitor: DEMO_MONITOR_ID,
     rect,
     iconKey: null,
@@ -974,8 +975,20 @@ class Engine {
     return this.nextSeq++;
   }
 
+  /**
+   * Mirror of `DockEngine::is_shown`: visible, and, while
+   * `showOnlyCurrentDesktop` is on, on the current virtual desktop, which
+   * the platform's `onCurrentDesktop` decides when known and the
+   * cloak state otherwise.
+   */
   private isShown(raw: RawWindow): boolean {
-    return raw.isVisible && !(raw.isCloaked && this.settings.behavior.showOnlyCurrentDesktop);
+    if (!raw.isVisible) {
+      return false;
+    }
+    if (!this.settings.behavior.showOnlyCurrentDesktop) {
+      return true;
+    }
+    return raw.onCurrentDesktop ?? !raw.isCloaked;
   }
 
   /** Windows that should appear in the dock, in first-seen order. */

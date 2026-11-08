@@ -1918,6 +1918,7 @@ mod tests {
             is_visible: true,
             is_minimized: false,
             is_cloaked: false,
+            on_current_desktop: Some(true),
             monitor: Some(stem_core::MonitorId("mock-primary".into())),
             rect: None,
             icon_key: None,

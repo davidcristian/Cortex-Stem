@@ -232,6 +232,7 @@ impl QueryContext {
             is_visible: probe.facts.is_visible,
             is_minimized: probe.is_minimized,
             is_cloaked,
+            on_current_desktop: None,
             monitor: monitors::monitor_for_window(hwnd),
             rect: window_frame(hwnd),
             icon_key: Some(hwnd_icon_key(id.0, probe.facts.process_id)),

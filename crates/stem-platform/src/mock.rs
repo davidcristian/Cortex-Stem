@@ -511,6 +511,7 @@ fn demo_window(id: u64, exe: &str, title: &str, minimized: bool, rect: Rect) -> 
         is_visible: true,
         is_minimized: minimized,
         is_cloaked: false,
+        on_current_desktop: Some(true),
         monitor: Some(MonitorId("mock-primary".into())),
         rect: Some(rect),
         icon_key: None,

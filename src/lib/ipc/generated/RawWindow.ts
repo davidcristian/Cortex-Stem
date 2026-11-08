@@ -18,10 +18,23 @@ exePath: string | null,
  */
 appUserModelId: string | null, isVisible: boolean, isMinimized: boolean, 
 /**
- * Cloaked by the compositor: on another virtual desktop, or a suspended
- * Store app. Cloaked windows are normally not shown.
+ * Cloaked by the compositor: on another virtual desktop, a suspended
+ * Store app, a window in a desktop-switch animation. Without
+ * `on_current_desktop` the engine hides cloaked windows while
+ * `behavior.showOnlyCurrentDesktop` is on.
  */
-isCloaked: boolean, monitor: MonitorId | null, 
+isCloaked: boolean, 
+/**
+ * Whether the window is on the current virtual desktop (the
+ * shell's `IVirtualDesktopManager::IsWindowOnCurrentVirtualDesktop`):
+ * `Some(false)` = parked on another desktop, `Some(true)` = on this
+ * one (cloaked or not), `None` = unknown (the platform could not ask,
+ * or the window belongs to another session or a protected process).
+ * While `behavior.showOnlyCurrentDesktop` is on the engine hides a
+ * `Some(false)` window and shows a `Some(true)` one whatever its cloak
+ * state; for `None` it falls back to `is_cloaked`.
+ */
+onCurrentDesktop: boolean | null, monitor: MonitorId | null, 
 /**
  * The window's frame on screen, in physical pixels of the virtual
  * desktop (the DWM extended frame bounds, else `GetWindowRect`), when

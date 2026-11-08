@@ -151,9 +151,21 @@ pub struct RawWindow {
     pub app_user_model_id: Option<String>,
     pub is_visible: bool,
     pub is_minimized: bool,
-    /// Cloaked by the compositor: on another virtual desktop, or a suspended
-    /// Store app. Cloaked windows are normally not shown.
+    /// Cloaked by the compositor: on another virtual desktop, a suspended
+    /// Store app, a window in a desktop-switch animation. Without
+    /// `on_current_desktop` the engine hides cloaked windows while
+    /// `behavior.showOnlyCurrentDesktop` is on.
     pub is_cloaked: bool,
+    /// Whether the window is on the current virtual desktop (the
+    /// shell's `IVirtualDesktopManager::IsWindowOnCurrentVirtualDesktop`):
+    /// `Some(false)` = parked on another desktop, `Some(true)` = on this
+    /// one (cloaked or not), `None` = unknown (the platform could not ask,
+    /// or the window belongs to another session or a protected process).
+    /// While `behavior.showOnlyCurrentDesktop` is on the engine hides a
+    /// `Some(false)` window and shows a `Some(true)` one whatever its cloak
+    /// state; for `None` it falls back to `is_cloaked`.
+    #[serde(default)]
+    pub on_current_desktop: Option<bool>,
     pub monitor: Option<MonitorId>,
     /// The window's frame on screen, in physical pixels of the virtual
     /// desktop (the DWM extended frame bounds, else `GetWindowRect`), when
@@ -380,14 +392,16 @@ mod tests {
     }
 
     #[test]
-    fn raw_window_without_a_rect_still_deserialises() {
-        // `rect` arrived with fullscreen detection; documents and mocks
-        // written before it leave it out.
+    fn raw_window_without_a_rect_or_desktop_still_deserialises() {
+        // `rect` arrived with fullscreen detection and `onCurrentDesktop`
+        // with virtual-desktop support; documents and mocks written before
+        // them leave them out.
         let json = r#"{"id":7,"title":"T","className":"C","processId":1,"exePath":null,
             "appUserModelId":null,"isVisible":true,"isMinimized":false,"isCloaked":false,
             "monitor":null,"iconKey":null}"#;
         let raw: RawWindow = serde_json::from_str(json).unwrap();
         assert_eq!(raw.rect, None);
+        assert_eq!(raw.on_current_desktop, None);
         let with_rect: RawWindow = serde_json::from_str(&json.replacen(
             r#""monitor":null"#,
             r#""monitor":null,"rect":{"x":1,"y":2,"width":3,"height":4}"#,
@@ -395,6 +409,15 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(with_rect.rect, Some(Rect::new(1, 2, 3, 4)));
+        for (value, expected) in [("true", Some(true)), ("false", Some(false)), ("null", None)] {
+            let with_desktop: RawWindow = serde_json::from_str(&json.replacen(
+                r#""monitor":null"#,
+                &format!(r#""monitor":null,"onCurrentDesktop":{value}"#),
+                1,
+            ))
+            .unwrap();
+            assert_eq!(with_desktop.on_current_desktop, expected, "{value}");
+        }
     }
 
     #[test]

@@ -367,8 +367,20 @@ impl DockEngine {
         seq
     }
 
+    /// Whether the dock lists `raw`: visible, and, while
+    /// `behavior.showOnlyCurrentDesktop` is on, on the current virtual
+    /// desktop. The platform's `on_current_desktop` decides that when it is
+    /// known, whatever the cloak state: a suspended Store app or a
+    /// window in a desktop-switch animation is cloaked on this desktop and
+    /// stays listed. Without it a cloaked window counts as away.
     fn is_shown(&self, raw: &RawWindow) -> bool {
-        raw.is_visible && !(raw.is_cloaked && self.settings.behavior.show_only_current_desktop)
+        if !raw.is_visible {
+            return false;
+        }
+        if !self.settings.behavior.show_only_current_desktop {
+            return true;
+        }
+        raw.on_current_desktop.unwrap_or(!raw.is_cloaked)
     }
 
     /// Windows that should appear in the dock, in first-seen order.
@@ -659,6 +671,7 @@ mod tests {
             is_visible: true,
             is_minimized: false,
             is_cloaked: false,
+            on_current_desktop: None,
             monitor: None,
             rect: None,
             icon_key: None,
@@ -667,6 +680,13 @@ mod tests {
 
     fn cloaked(mut raw: RawWindow) -> RawWindow {
         raw.is_cloaked = true;
+        raw
+    }
+
+    /// The platform could ask the shell: the window is (not) on the
+    /// current virtual desktop.
+    fn on_desktop(mut raw: RawWindow, on_current: bool) -> RawWindow {
+        raw.on_current_desktop = Some(on_current);
         raw
     }
 
@@ -1410,6 +1430,100 @@ mod tests {
         let out = engine.apply(EngineInput::SettingsChanged(settings));
         assert!(out.changed);
         assert_eq!(keys(&engine.snapshot()), vec!["app:exe:c:/a.exe"]);
+    }
+
+    #[test]
+    fn on_current_desktop_decides_instead_of_the_cloak_state_when_known() {
+        let mut settings = minimal_settings();
+        settings.behavior.show_only_current_desktop = true;
+        let mut engine = DockEngine::new(settings.clone());
+        // Parked on another desktop: away, cloaked or not.
+        engine.apply(added(on_desktop(win(1, r"C:\a.exe", "A"), false)));
+        engine.apply(added(on_desktop(cloaked(win(2, r"C:\b.exe", "B")), false)));
+        // On this desktop but cloaked: a suspended Store app, or a window in
+        // the switch animation. Listed.
+        engine.apply(added(on_desktop(cloaked(win(3, r"C:\c.exe", "C")), true)));
+        // Unknown: the cloak state decides.
+        engine.apply(added(cloaked(win(4, r"C:\d.exe", "D"))));
+        engine.apply(added(win(5, r"C:\e.exe", "E")));
+        assert_eq!(
+            keys(&engine.snapshot()),
+            vec!["app:exe:c:/c.exe", "app:exe:c:/e.exe"]
+        );
+        assert!(engine.windows_of(&exe_id(r"C:\a.exe")).is_empty());
+        assert_eq!(engine.windows_of(&exe_id(r"C:\c.exe")), vec![WindowId(3)]);
+        assert_eq!(engine.primary_action("app:exe:c:/a.exe"), ItemAction::None);
+        assert_eq!(
+            engine.primary_action("app:exe:c:/c.exe"),
+            ItemAction::ActivateWindow(WindowId(3))
+        );
+
+        // With the setting off every window is listed whatever the desktop:
+        // the apps already listed keep their order, the others follow.
+        settings.behavior.show_only_current_desktop = false;
+        let out = engine.apply(EngineInput::SettingsChanged(settings));
+        assert!(out.changed);
+        assert_eq!(
+            keys(&engine.snapshot()),
+            vec![
+                "app:exe:c:/c.exe",
+                "app:exe:c:/e.exe",
+                "app:exe:c:/a.exe",
+                "app:exe:c:/b.exe",
+                "app:exe:c:/d.exe",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_desktop_switch_arrives_as_updates_and_then_as_a_snapshot() {
+        let mut engine = DockEngine::new(minimal_settings());
+        let here = |id, exe, title| on_desktop(win(id, exe, title), true);
+        let away = |id, exe, title| on_desktop(cloaked(win(id, exe, title)), false);
+        let snapshot =
+            |list: Vec<RawWindow>| EngineInput::from(PlatformEvent::WindowsSnapshot(list));
+        engine.apply(snapshot(vec![
+            here(1, r"C:\a.exe", "A"),
+            away(2, r"C:\b.exe", "B"),
+        ]));
+        engine.apply(foreground(Some(1)));
+        let state = engine.snapshot();
+        assert_eq!(keys(&state), vec!["app:exe:c:/a.exe"]);
+        assert!(state.items[0].is_active);
+
+        // Win+Ctrl+Right: the shell cloaks A and uncloaks B, one event each,
+        // and B takes the foreground.
+        let out = engine.apply(updated(away(1, r"C:\a.exe", "A")));
+        assert!(out.changed);
+        assert!(engine.snapshot().items.is_empty());
+        let out = engine.apply(updated(here(2, r"C:\b.exe", "B")));
+        assert!(out.changed);
+        engine.apply(foreground(Some(2)));
+        let state = engine.snapshot();
+        assert_eq!(keys(&state), vec!["app:exe:c:/b.exe"]);
+        assert!(state.items[0].is_active);
+
+        // The platform's snapshot 400 ms later lists the same facts: a no-op.
+        let revision = state.revision;
+        let out = engine.apply(snapshot(vec![
+            away(1, r"C:\a.exe", "A"),
+            here(2, r"C:\b.exe", "B"),
+        ]));
+        assert!(!out.changed);
+        assert_eq!(engine.snapshot().revision, revision);
+
+        // A snapshot that reveals a window the events missed (C uncloaked on
+        // this desktop) adds it, after B, which was seen first.
+        let out = engine.apply(snapshot(vec![
+            away(1, r"C:\a.exe", "A"),
+            here(2, r"C:\b.exe", "B"),
+            here(3, r"C:\c.exe", "C"),
+        ]));
+        assert!(out.changed);
+        assert_eq!(
+            keys(&engine.snapshot()),
+            vec!["app:exe:c:/b.exe", "app:exe:c:/c.exe"]
+        );
     }
 
     #[test]

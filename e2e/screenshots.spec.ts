@@ -293,6 +293,7 @@ const PAINT_WINDOW: RawWindow = {
   isVisible: true,
   isMinimized: false,
   isCloaked: false,
+  onCurrentDesktop: true,
   rect: null,
   monitor: 'mock-primary',
   iconKey: null,
