@@ -128,7 +128,12 @@
   // the items (order, grouping, what a click does) is Rust's.
   const urlMonitor = monitorFromSearch(window.location.search);
   const myMonitor = $derived(dockMonitor(urlMonitor, store.monitors));
-  const showOnlyMine = $derived(settings?.behavior.showOnlyCurrentMonitor ?? false);
+  // The filter applies only with a dock on every monitor: with the
+  // primary's dock alone, the windows on the other monitors would be on no
+  // dock at all.
+  const showOnlyMine = $derived(
+    (settings?.behavior.showOnlyCurrentMonitor ?? false) && settings?.monitors === 'all',
+  );
   const visibleItems = $derived(itemsForMonitor(store.state?.items ?? [], myMonitor, showOnlyMine));
   const facts = $derived(dockFactsFor(store.state?.docks ?? [], myMonitor));
   /**

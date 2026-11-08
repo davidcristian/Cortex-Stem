@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { expect, test, type Locator, type Page } from '@playwright/test';
 
 import type { AppInfo } from '../src/lib/ipc/generated/AppInfo';
+import type { DockState } from '../src/lib/ipc/generated/DockState';
 import type { MonitorInfo } from '../src/lib/ipc/generated/MonitorInfo';
 import type { RawWindow } from '../src/lib/ipc/generated/RawWindow';
 import type { Rect } from '../src/lib/ipc/generated/Rect';
@@ -34,6 +35,7 @@ interface DemoWindow {
     /** `RecycleBinChanged` as the platform's poll reports it. */
     pushRecycleBin: (state: { itemCount: number; sizeBytes: number }) => void;
     getSettings: () => Promise<Settings>;
+    getDockState: () => Promise<DockState>;
     updateSettings: (settings: Settings) => Promise<Settings>;
     pushWindow: (raw: RawWindow) => void;
     pushWindowRemoved: (id: number) => void;
@@ -2716,15 +2718,20 @@ test.describe('settings window', () => {
     await expect(page.locator('#reserve-space')).toBeDisabled();
 
     // One dock per monitor: *All monitors* can be chosen and the
-    // per-monitor filter is a live switch (no M3 tags left).
+    // per-monitor filter is a live switch (no M3 tags left), which applies
+    // only with a dock per monitor: greyed out with the primary's only.
     const monitors = page.locator('#monitors');
+    const currentMonitor = page.locator('#current-monitor');
     await expect(monitors).toHaveValue('primary');
+    await expect(currentMonitor).toBeDisabled();
+    await expect(page.locator('#current-monitor-description')).toContainText(
+      'one dock per monitor',
+    );
     await expect(page.locator('#monitors option[value="all"]')).toBeEnabled();
     await expect(page.locator('#monitors option[value="all"]')).toHaveText('All monitors');
     await monitors.selectOption('all');
     await expect(page.locator('.status')).toHaveText('Saved');
     expect((await page.evaluate(SETTINGS_MOCK))?.monitors).toBe('all');
-    const currentMonitor = page.locator('#current-monitor');
     await expect(currentMonitor).toBeEnabled();
     await expect(currentMonitor).not.toBeChecked();
     await expect(page.locator('label[for="current-monitor"] .tag')).toHaveCount(0);
@@ -3134,8 +3141,11 @@ test.describe('one dock per monitor', () => {
   const appKeys = (page: Page): Promise<string[]> =>
     page.$$eval(APP_SLOT, (els) => els.map((el) => (el as HTMLElement).dataset.key ?? ''));
   const dots = (page: Page, selector: string): Locator => page.locator(selector).locator('.dots i');
+  /** The setting, with a dock on every monitor (`monitors = all`), the only case it applies to. */
   const showOnlyCurrentMonitor = (page: Page, on: boolean): Promise<void> =>
-    patchSettings(page, { behavior: { showOnlyCurrentMonitor: on } });
+    patchSettings(page, { monitors: 'all', behavior: { showOnlyCurrentMonitor: on } });
+  const SETTINGS = (): Promise<Settings> | undefined =>
+    (window as unknown as DemoWindow).__dockMock?.getSettings();
   const pageLabel = (page: Page): Promise<string | undefined> =>
     page.evaluate(() => (window as unknown as DemoWindow).__dockMock?.pageLabel);
   /** Paint's window reported again on `monitor` (a `WindowUpdated` after a move between monitors). */
@@ -3261,6 +3271,32 @@ test.describe('one dock per monitor', () => {
       { windowId: 7, action: 'minimize' },
     ]);
     await expect(slot).not.toHaveAttribute('data-active', 'true');
+  });
+
+  test('with the dock on the primary monitor only the setting narrows nothing: every window has its app on the dock', async ({
+    page,
+  }) => {
+    await openDock(page, PRIMARY_PAGE);
+    await patchSettings(page, { monitors: 'primary', behavior: { showOnlyCurrentMonitor: true } });
+    await expect
+      .poll(async () => (await page.evaluate(SETTINGS))?.behavior.showOnlyCurrentMonitor)
+      .toBe(true);
+    await page.waitForTimeout(SLIDE_MS);
+    // Paint and Notepad's window live on the second monitor, which has no dock.
+    const everyApp = await page.evaluate(async () =>
+      ((await (window as unknown as DemoWindow).__dockMock?.getDockState())?.items ?? [])
+        .filter((i) => i.kind === 'app')
+        .map((i) => i.key),
+    );
+    expect(everyApp).toContain('app:exe:c:/windows/system32/mspaint.exe');
+    expect(await appKeys(page)).toEqual(everyApp);
+    await expect(page.locator(PAINT_SLOT)).toHaveCount(1);
+    await expect(dots(page, NOTEPAD_SLOT)).toHaveCount(1);
+
+    // A dock per monitor: now it narrows.
+    await patchSettings(page, { monitors: 'all' });
+    await expect(page.locator(PAINT_SLOT)).toHaveCount(0);
+    await expect(dots(page, NOTEPAD_SLOT)).toHaveCount(0);
   });
 
   test('a fullscreen app hides only the dock of its monitor', async ({ page }) => {

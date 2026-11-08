@@ -362,11 +362,13 @@
           <SettingRow
             id="current-monitor"
             label="Show only windows on the dock's monitor"
-            description="Each monitor's dock lists the windows on that monitor; pinned apps stay on all"
+            description="Applies with one dock per monitor (Monitors: All monitors): each dock lists the windows on its monitor; pinned apps stay on all"
+            disabled={settings.monitors !== 'all'}
           >
             <Toggle
               id="current-monitor"
               checked={settings.behavior.showOnlyCurrentMonitor}
+              disabled={settings.monitors !== 'all'}
               onchange={(v) =>
                 edit((s) => {
                   s.behavior.showOnlyCurrentMonitor = v;
