@@ -155,9 +155,12 @@ pub trait Platform: Send + Sync + 'static {
 
     /// Whether Windows' own *Automatically hide the taskbar* is on right now
     /// (`SHAppBarMessage(ABM_GETSTATE)`). A message to the tray
-    /// window that waits on Explorer: never call it on the UI thread. The
-    /// decision of what to do with the answer is [`rules::taskbar`].
-    /// Optional; the default reports it unsupported.
+    /// window that waits on Explorer: never call it on the UI thread. Fails
+    /// when there is no tray, and with [`PlatformError::Timeout`] when
+    /// Explorer does not answer within about 500 ms (the Windows
+    /// implementation waits on a helper thread). The decision of what to do
+    /// with the answer is [`rules::taskbar`]. Optional; the default reports
+    /// it unsupported.
     fn taskbar_auto_hide(&self) -> PlatformResult<bool> {
         Err(PlatformError::Unsupported("taskbar auto-hide"))
     }
@@ -168,8 +171,9 @@ pub trait Platform: Send + Sync + 'static {
     /// Explorer restart), which is why the app layer remembers the previous
     /// one ([`rules::taskbar`]). Idempotent. A message to the tray window
     /// that waits on Explorer: never call it on the UI thread. Fails when
-    /// the taskbar did not take the state (no tray to talk to). Optional;
-    /// the default reports it unsupported.
+    /// the taskbar did not take the state or there is no tray, and with
+    /// [`PlatformError::Timeout`] when Explorer does not answer within
+    /// about 500 ms. Optional; the default reports it unsupported.
     fn set_taskbar_auto_hide(&self, _enabled: bool) -> PlatformResult<()> {
         Err(PlatformError::Unsupported("taskbar auto-hide"))
     }
