@@ -18,7 +18,8 @@ the records in `docs/adr/` give the reasons for the main decisions.
 - [icons.md](icons.md): how icons are loaded, sized and cached.
 - [dock-window.md](dock-window.md): the dock's native window, its flags and focus,
   click-through outside the panel and how it stays topmost.
-- [dock-placement.md](dock-placement.md): where the dock window is placed.
+- [dock-placement.md](dock-placement.md): where the dock window is placed, and DPI
+  changes.
 - [auto-hide.md](auto-hide.md): how the dock hides its panel and brings it back, and its
   behaviour over a fullscreen app.
 - [theme.md](theme.md): how the dock and the settings window follow the theme.
