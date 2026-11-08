@@ -29,11 +29,25 @@ function monitor(id: string, isPrimary: boolean): MonitorInfo {
   };
 }
 
-function win(id: number, monitor: string | null, isActive = false): WindowInfo {
-  return { id, title: `W${id}`, isMinimized: false, isActive, monitor, iconKey: null };
+function win(
+  id: number,
+  monitor: string | null,
+  isActive = false,
+  needsAttention = false,
+): WindowInfo {
+  return {
+    id,
+    title: `W${id}`,
+    isMinimized: false,
+    isActive,
+    monitor,
+    iconKey: null,
+    needsAttention,
+  };
 }
 
-function app(key: string, pinned: boolean, windows: WindowInfo[], attention = false): DockItem {
+/** An app item whose flags follow its windows, as the engine builds it. */
+function app(key: string, pinned: boolean, windows: WindowInfo[]): DockItem {
   return {
     key: `app:${key}`,
     kind: 'app',
@@ -43,7 +57,7 @@ function app(key: string, pinned: boolean, windows: WindowInfo[], attention = fa
     pinned,
     windows,
     isActive: windows.some((w) => w.isActive),
-    needsAttention: attention,
+    needsAttention: windows.some((w) => w.needsAttention),
     badge: null,
   };
 }
@@ -121,8 +135,8 @@ describe('the per-monitor item filter', () => {
   const firefox = app('firefox', true, [win(2, PRIMARY, true), win(3, SECOND)]);
   const notepad = app('notepad', true, [win(7, SECOND)]);
   const settings = app('settings', true, []);
-  const code = app('code', false, [win(4, PRIMARY)], true);
-  const paint = app('paint', false, [win(8, SECOND)], true);
+  const code = app('code', false, [win(4, PRIMARY, false, true)]);
+  const paint = app('paint', false, [win(8, SECOND, false, true)]);
   const items: DockItem[] = [
     fixed('launcher', 'fixed:launcher'),
     sep(1),
@@ -217,12 +231,35 @@ describe('the per-monitor item filter', () => {
     // Code (flashing) has no window on the second monitor and is not pinned: gone.
     expect(second.find((i) => i.key === 'app:code')).toBeUndefined();
     // A pinned, flashing app whose windows are all elsewhere keeps its slot, not its flag.
-    const pinnedFlashing = app('mail', true, [win(9, PRIMARY)], true);
+    const pinnedFlashing = app('mail', true, [win(9, PRIMARY, false, true)]);
     const [kept] = itemsForMonitor([pinnedFlashing], SECOND, true);
     expect(kept?.needsAttention).toBe(false);
     expect(kept?.windows).toEqual([]);
     // Windows without a monitor belong to no dock while the filter is on.
     const unknown = app('x', false, [win(10, null)]);
     expect(itemsForMonitor([unknown], PRIMARY, true)).toEqual([]);
+  });
+
+  it('needs attention only on the monitor of the window that flashes', () => {
+    // Teams has a window on each monitor; only the one on the second flashes.
+    const teams = app('teams', false, [win(11, PRIMARY), win(12, SECOND, false, true)]);
+    expect(teams.needsAttention).toBe(true);
+    const [onPrimary] = itemsForMonitor([teams], PRIMARY, true);
+    expect(onPrimary?.windows.map((w) => w.id)).toEqual([11]);
+    expect(onPrimary?.needsAttention).toBe(false);
+    const [onSecond] = itemsForMonitor([teams], SECOND, true);
+    expect(onSecond?.windows.map((w) => w.id)).toEqual([12]);
+    expect(onSecond?.needsAttention).toBe(true);
+
+    // The other way round, and with both flashing: each dock follows its own window.
+    const back = app('teams', false, [win(11, PRIMARY, false, true), win(12, SECOND)]);
+    expect(itemsForMonitor([back], PRIMARY, true)[0]?.needsAttention).toBe(true);
+    expect(itemsForMonitor([back], SECOND, true)[0]?.needsAttention).toBe(false);
+    const both = app('teams', false, [win(11, PRIMARY, false, true), win(12, SECOND, false, true)]);
+    expect(itemsForMonitor([both], PRIMARY, true)[0]?.needsAttention).toBe(true);
+    expect(itemsForMonitor([both], SECOND, true)[0]?.needsAttention).toBe(true);
+
+    // With the filter off every dock shows the engine's flag: any window.
+    expect(itemsForMonitor([teams], PRIMARY, false)[0]?.needsAttention).toBe(true);
   });
 });

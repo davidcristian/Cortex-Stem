@@ -73,10 +73,11 @@ export function dockFactsFor(docks: readonly DockFacts[], monitor: MonitorId | n
  * The items a dock on `monitor` shows while `behavior.showOnlyCurrentMonitor`
  * is on (`enabled`): each app item keeps only the windows on that monitor;
  * an item left with none stays only if it is pinned (or is not an app at
- * all); `isActive` follows the remaining windows and `needsAttention` is
- * kept only while some window remains (which window flashes is not in the
- * snapshot). Separators that would then lead, trail or double up are
- * dropped. Off, or with the monitor unknown, the list is returned as is.
+ * all); `isActive` and `needsAttention` follow the remaining windows (each
+ * `WindowInfo` carries both flags), so an app flashing on another
+ * monitor does not wiggle here. Separators that would then lead, trail or
+ * double up are dropped. Off, or with the monitor unknown, the list is
+ * returned as is.
  */
 export function itemsForMonitor(
   items: readonly DockItem[],
@@ -104,7 +105,7 @@ export function itemsForMonitor(
       ...item,
       windows,
       isActive: windows.some((w) => w.isActive),
-      needsAttention: item.needsAttention && windows.length > 0,
+      needsAttention: windows.some((w) => w.needsAttention),
     });
   }
   return collapseSeparators(kept);

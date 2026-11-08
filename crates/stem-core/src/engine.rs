@@ -647,6 +647,7 @@ impl DockEngine {
                 is_active: self.foreground == Some(t.raw.id),
                 monitor: t.raw.monitor.clone(),
                 icon_key: t.raw.icon_key.clone(),
+                needs_attention: t.attention,
             })
             .collect();
         DockItem {
@@ -657,7 +658,7 @@ impl DockEngine {
             icon_key,
             pinned,
             is_active: infos.iter().any(|w| w.is_active),
-            needs_attention: windows.iter().any(|t| t.attention),
+            needs_attention: infos.iter().any(|w| w.needs_attention),
             windows: infos,
             badge: None,
         }
@@ -2011,6 +2012,42 @@ mod tests {
         assert!(engine.snapshot().items[0].needs_attention);
         engine.apply(PlatformEvent::WindowsSnapshot(vec![]).into());
         assert!(!engine.snapshot().items[0].needs_attention);
+    }
+
+    #[test]
+    fn each_window_carries_its_own_attention_flag() {
+        // Two windows of one app: the item needs attention while any
+        // of them does, and the snapshot says which one.
+        let mut engine = DockEngine::new(minimal_settings());
+        engine.apply(added(win(1, r"C:\a.exe", "A one")));
+        engine.apply(added(win(2, r"C:\a.exe", "A two")));
+        let flags = |engine: &DockEngine| -> (bool, Vec<bool>) {
+            let item = engine.snapshot().items[0].clone();
+            let windows = item.windows.iter().map(|w| w.needs_attention).collect();
+            (item.needs_attention, windows)
+        };
+        assert_eq!(flags(&engine), (false, vec![false, false]));
+
+        assert!(engine.apply(attention(2, true)).changed);
+        assert_eq!(flags(&engine), (true, vec![false, true]));
+
+        // The other window flashes too; then the first one stops: the item
+        // still needs attention, but the snapshot changed (which window).
+        assert!(engine.apply(attention(1, true)).changed);
+        assert_eq!(flags(&engine), (true, vec![true, true]));
+        let revision = engine.snapshot().revision;
+        assert!(engine.apply(attention(1, false)).changed);
+        assert_eq!(flags(&engine), (true, vec![false, true]));
+        assert_eq!(engine.snapshot().revision, revision + 1);
+
+        // Activating the flashing window clears its own flag.
+        engine.apply(foreground(Some(2)));
+        assert_eq!(flags(&engine), (false, vec![false, false]));
+
+        // The foreground window is never flagged; the one behind it is.
+        assert!(!engine.apply(attention(2, true)).changed);
+        assert!(engine.apply(attention(1, true)).changed);
+        assert_eq!(flags(&engine), (true, vec![true, false]));
     }
 
     #[test]

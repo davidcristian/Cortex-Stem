@@ -1215,6 +1215,7 @@ class Engine {
       isActive: this.foreground === t.raw.id,
       monitor: t.raw.monitor,
       iconKey: t.raw.iconKey,
+      needsAttention: t.attention,
     }));
     return {
       key: `app:${id}`,
@@ -1225,7 +1226,7 @@ class Engine {
       pinned,
       windows: infos,
       isActive: infos.some((w) => w.isActive),
-      needsAttention: windows.some((t) => t.attention),
+      needsAttention: infos.some((w) => w.needsAttention),
       badge: null,
     };
   }

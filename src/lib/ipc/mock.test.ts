@@ -1019,6 +1019,34 @@ describe('two monitors', () => {
   });
 });
 
+describe('attention per window (mirror of WindowInfo::needs_attention)', () => {
+  const flags = (state: DockState, key: string): [boolean, boolean[]] => {
+    const found = item(state, key);
+    return [found.needsAttention, found.windows.map((w) => w.needsAttention)];
+  };
+
+  it('flags the flashing window, the item while any window is flagged, and clears on activation', async () => {
+    // Firefox has windows 2 (in front) and 3 in the demo.
+    const b = fast();
+    const states = recordStates(b);
+    expect(flags(await b.getDockState(), app(FIREFOX))).toEqual([false, [false, false]]);
+
+    b.pushAttention(3, true);
+    expect(flags(states.at(-1)!, app(FIREFOX))).toEqual([true, [false, true]]);
+
+    b.pushForeground(3);
+    expect(flags(states.at(-1)!, app(FIREFOX))).toEqual([false, [false, false]]);
+
+    // Window 2 is behind now and flashes; the item says which one.
+    b.pushAttention(2, true);
+    expect(flags(states.at(-1)!, app(FIREFOX))).toEqual([true, [true, false]]);
+    b.pushAttention(2, false);
+    expect(flags(states.at(-1)!, app(FIREFOX))).toEqual([false, [false, false]]);
+    // Other items never carry the flag of another app's window.
+    expect(states.at(-1)!.items.every((i) => i.windows.every((w) => !w.needsAttention))).toBe(true);
+  });
+});
+
 describe('context menus (docs/ipc/context-menus.md, v1.2; native in Rust, recorded here)', () => {
   it('records show_item_menu and show_dock_menu with the item key and the point', async () => {
     const b = fast();

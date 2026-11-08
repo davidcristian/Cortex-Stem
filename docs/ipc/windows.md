@@ -42,8 +42,10 @@ Each window of the app has a label and loads one page:
   (`src/lib/dock/monitor.ts`, pure and unit-tested):
   - each app item keeps only the windows whose `WindowInfo.monitor` is this monitor;
   - an item left with no windows stays only if it is pinned (fixed items always stay);
-  - `isActive` follows the remaining windows, and `needsAttention` is kept only while any window
-    remains (the snapshot does not say which window flashes);
+  - `isActive` and `needsAttention` follow the remaining windows' `WindowInfo.isActive` and
+    `WindowInfo.needsAttention` (v1.14: the engine flags the window that flashed, and the item
+    while any of its windows is flagged, so an app flashing on another monitor neither plays the
+    attention wiggle on this dock nor reveals it);
   - separators that would then lead, trail or double up are dropped.
 
   The page decides nothing else: the order, the grouping and what a click does stay in Rust.

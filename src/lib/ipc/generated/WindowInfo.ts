@@ -6,4 +6,10 @@ import type { WindowId } from "./WindowId";
 /**
  * A window as presented inside a dock item.
  */
-export type WindowInfo = { id: WindowId, title: string, isMinimized: boolean, isActive: boolean, monitor: MonitorId | null, iconKey: IconKey | null, };
+export type WindowInfo = { id: WindowId, title: string, isMinimized: boolean, isActive: boolean, monitor: MonitorId | null, iconKey: IconKey | null, 
+/**
+ * This window requested attention (taskbar flash) and was not
+ * activated since; never set on the foreground window. The item's
+ * `needs_attention` is this flag of any of its windows.
+ */
+needsAttention: boolean, };

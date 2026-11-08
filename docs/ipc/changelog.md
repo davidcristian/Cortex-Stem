@@ -3,6 +3,14 @@
 This file lists every version of the [IPC contract](index.md), newest first. A section name links
 to the file that covers that section now.
 
+- **v1.14 (attention per window):** `WindowInfo.needsAttention` added: the window asked for
+  attention (taskbar flash) and was not activated since; it is never set on the foreground
+  window. The engine fills it from its per-window flag, and `DockItem.needsAttention` stays "any
+  window of the item". `dock://state` now also fires when the flag moves between windows of an
+  item whose own flag does not change. The per-monitor filter
+  ([Dock windows per monitor](windows.md#dock-windows-per-monitor)) takes an item's attention
+  from the windows left on the page's monitor, instead of keeping it while any window remains.
+  The mock engine mirrors the field. No command or event changed its arguments.
 - **v1.13 (one dock per monitor):** `DockState.fullscreen` and `DockState.overlapped` are
   replaced by `DockState.docks: DockFacts[]` (`{ monitor, fullscreen, overlapped }`, one entry per
   monitor with a dock window). `dock://state` fires when an entry's facts change or entries are

@@ -26,7 +26,8 @@ windows: Array<WindowInfo>,
  */
 isActive: boolean, 
 /**
- * A window of this app requested attention (taskbar flash).
+ * A window of this app requested attention (taskbar flash): the
+ * `needs_attention` of any of `windows`.
  */
 needsAttention: boolean, 
 /**

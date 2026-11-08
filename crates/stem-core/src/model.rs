@@ -231,6 +231,10 @@ pub struct WindowInfo {
     pub is_active: bool,
     pub monitor: Option<MonitorId>,
     pub icon_key: Option<IconKey>,
+    /// This window requested attention (taskbar flash) and was not
+    /// activated since; never set on the foreground window. The item's
+    /// `needs_attention` is this flag of any of its windows.
+    pub needs_attention: bool,
 }
 
 /// Kind of a dock item. Everything that is not `App` is a fixed item.
@@ -264,7 +268,8 @@ pub struct DockItem {
     pub windows: Vec<WindowInfo>,
     /// One of this item's windows is the foreground window.
     pub is_active: bool,
-    /// A window of this app requested attention (taskbar flash).
+    /// A window of this app requested attention (taskbar flash): the
+    /// `needs_attention` of any of `windows`.
     pub needs_attention: bool,
     /// Small text badge (e.g. unread count). Reserved; currently unused.
     pub badge: Option<String>,
