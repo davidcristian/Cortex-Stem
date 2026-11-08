@@ -1,4 +1,4 @@
-//! Tauri commands, one per entry in `docs/ipc/commands.md` (v1.10). They
+//! Tauri commands, one per entry in `docs/ipc/commands.md` (v1.11). They
 //! validate and clamp their arguments, then translate and delegate to
 //! `stem-service` (semantics live there).
 //!
@@ -62,6 +62,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         set_dock_content_size,
         set_dock_hit_region,
         set_dock_panel_rect,
+        set_dock_auto_hidden,
         shell_action,
         delete_to_recycle_bin,
         open_settings,
@@ -261,6 +262,32 @@ fn set_dock_panel_rect(app: AppHandle, window: tauri::WebviewWindow, rect: Rect)
         "set_dock_panel_rect",
         &args,
         crate::windows::apply_dock_panel(&app, &window, rect),
+    )
+}
+
+/// The dock UI reports that auto-hide slid its panel out, or brought it
+/// back (`docs/ipc/toggle-while-hidden.md`), so the tray click and
+/// the toggle shortcut can bring the panel back instead of hiding the
+/// window. Only a dock window may call it. Synchronous: a flag in managed
+/// state, nothing else.
+#[tauri::command]
+fn set_dock_auto_hidden(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    hidden: bool,
+) -> CmdResult<()> {
+    let args = (window.label().to_owned(), hidden);
+    if !window.label().starts_with(crate::windows::DOCK_LABEL) {
+        return checked(
+            "set_dock_auto_hidden",
+            &args,
+            Err::<(), _>("only dock windows auto-hide"),
+        );
+    }
+    checked(
+        "set_dock_auto_hidden",
+        &args,
+        crate::windows::set_auto_hidden(&app, &window, hidden),
     )
 }
 

@@ -38,13 +38,16 @@ use tauri_plugin_log::{RotationStrategy, Target, TargetKind};
 #[derive(Debug, Clone)]
 pub struct AppService(pub Arc<DockService>);
 
-/// Event names, as documented in `docs/ipc/events.md`.
+/// Event names, as documented in `docs/ipc/events.md`. All but `SHOW` forward a
+/// `ServiceEvent`; `SHOW` comes from the shell itself (`windows::toggle_dock`).
 pub mod events {
     pub const STATE: &str = "dock://state";
     pub const SETTINGS: &str = "dock://settings";
     pub const THEME: &str = "dock://theme";
     pub const MONITORS: &str = "dock://monitors";
     pub const BOUNCE: &str = "dock://item-bounce";
+    /// To one dock window: bring the auto-hidden panel back.
+    pub const SHOW: &str = "dock://show";
 }
 
 /// File name (without extension) of the log file in the app log dir.
@@ -85,6 +88,7 @@ pub fn run() {
             forward_events(app.handle().clone(), &service);
             app.manage(AppService(Arc::clone(&service)));
             app.manage(windows::DockGeometry::default());
+            app.manage(windows::DockAutoHidden::default());
             app.manage(windows::SettingsWindowTheme::default());
             menus::init(app.handle())?;
 

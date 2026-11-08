@@ -23,6 +23,12 @@
 //! the UI's latest report is remembered while the setting is off and
 //! replayed when it is turned on again.
 //!
+//! Auto-hide and the toggle: the UI reports when auto-hide slides
+//! its panel out and back (`set_dock_auto_hidden`, kept in
+//! [`DockAutoHidden`]), so that [`toggle_dock`] (tray click, Ctrl+Alt+D)
+//! brings a slid-out panel back with one press (the `dock://show` event)
+//! instead of hiding the window first.
+//!
 //! The dock panel: the UI reports where its panel rests
 //! (`set_dock_panel_rect`, CSS px of the viewport); [`apply_dock_panel`]
 //! remembers the rect and hands it to the service in physical pixels of the
@@ -38,13 +44,15 @@
 //! the *Theme* setting (`settings.theme`): set when the window is
 //! created and again whenever the setting changes ([`on_settings_changed`]).
 
+use std::collections::HashMap;
+
 use parking_lot::Mutex;
 use stem_core::settings::ThemeMode;
 use stem_core::{MonitorInfo, Rect, Settings};
 use stem_platform::{DockWindowOptions, HitRegion, NativeWindowHandle, PlatformError};
 use stem_service::DockService;
 use tauri::{
-    AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow,
+    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow,
     WebviewWindowBuilder, WindowEvent,
 };
 
@@ -89,6 +97,14 @@ pub struct DockGeometry {
 #[derive(Debug, Default)]
 pub struct SettingsWindowTheme(Mutex<Option<ThemeMode>>);
 
+/// Whether each dock window's panel is slid out by auto-hide, as
+/// its UI last reported through `set_dock_auto_hidden`, keyed by window
+/// label. `false` for a window that never reported, and again when the
+/// window is created. Kept in Tauri's managed state so [`toggle_dock`] can
+/// tell "bring the panel back" from "hide the window".
+#[derive(Debug, Default)]
+pub struct DockAutoHidden(Mutex<HashMap<String, bool>>);
+
 // ---------------------------------------------------------------------------
 // dock window
 // ---------------------------------------------------------------------------
@@ -126,6 +142,10 @@ pub fn create_dock_windows(app: &AppHandle, service: &DockService) -> tauri::Res
     let click_through = service.settings().behavior.click_through;
     if let Some(geometry) = app.try_state::<DockGeometry>() {
         *geometry.click_through.lock() = Some(click_through);
+    }
+    // A fresh page starts with its panel shown.
+    if let Some(flags) = app.try_state::<DockAutoHidden>() {
+        flags.0.lock().insert(DOCK_LABEL.to_owned(), false);
     }
     log::info!(
         "click-through outside the panel: {}",
@@ -687,26 +707,72 @@ pub fn open_settings_window(app: &AppHandle) -> tauri::Result<()> {
 // Visibility helpers (tray, global shortcut, single instance)
 // ---------------------------------------------------------------------------
 
-/// Tray left click and the global toggle shortcut: hide the dock if
-/// it is visible, show it otherwise. A hidden dock has no panel on screen
-/// for the engine; a shown one gets its panel back.
+/// The dock UI of `window` reports that auto-hide slid its panel out
+/// (`hidden`), or brought it back (`docs/ipc/toggle-while-hidden.md`).
+/// Remembered per window label for [`toggle_dock`]; logged on a
+/// change.
+pub fn set_auto_hidden(
+    app: &AppHandle,
+    window: &WebviewWindow,
+    hidden: bool,
+) -> Result<(), String> {
+    let flags = app
+        .try_state::<DockAutoHidden>()
+        .ok_or_else(|| "auto-hide state not available".to_owned())?;
+    let previous = flags.0.lock().insert(window.label().to_owned(), hidden);
+    if previous != Some(hidden) {
+        log::debug!(
+            "dock panel of {:?} {}",
+            window.label(),
+            if hidden { "auto-hidden" } else { "shown" }
+        );
+    }
+    Ok(())
+}
+
+/// What the UI of the dock window `label` last reported through
+/// [`set_auto_hidden`]; `false` until it reports.
+fn is_auto_hidden(app: &AppHandle, label: &str) -> bool {
+    app.try_state::<DockAutoHidden>()
+        .is_some_and(|flags| flags.0.lock().get(label).copied().unwrap_or(false))
+}
+
+/// Tray left click and the global toggle shortcut: one press brings
+/// the dock back whatever hid it, the next hides it.
+/// - Window hidden: show it; the engine gets its panel back.
+/// - Window visible but its panel slid out by auto-hide
+///   ([`DockAutoHidden`]): ask the UI to bring the panel back
+///   (`dock://show`); the window stays as it is.
+/// - Window visible and its panel shown: hide the window; the engine has no
+///   panel on screen meanwhile.
+///
+/// The UI reports its phase after the fact, so a press that lands while the
+/// panel is sliding out may still hide the window; the next press shows it
+/// (and the page, visible again, brings the panel back).
 pub fn toggle_dock(app: &AppHandle) {
     let Some(window) = app.get_webview_window(DOCK_LABEL) else {
         log::warn!("toggle_dock: no dock window");
         return;
     };
     let result = match window.is_visible() {
+        Ok(true) if is_auto_hidden(app, window.label()) => {
+            log::debug!("dock reveal requested");
+            app.emit_to(window.label(), crate::events::SHOW, ())
+        }
         Ok(true) => window.hide().inspect(|()| {
+            log::debug!("dock window hidden");
             if let Some(service) = app.try_state::<crate::AppService>() {
                 service.0.set_dock_panel(None);
             }
         }),
-        Ok(false) => window.show().inspect(|()| sync_dock_panel(&window, None)),
+        Ok(false) => window.show().inspect(|()| {
+            log::debug!("dock window shown");
+            sync_dock_panel(&window, None);
+        }),
         Err(e) => Err(e),
     };
-    match result {
-        Ok(()) => log::debug!("dock visibility toggled"),
-        Err(e) => log::warn!("toggle_dock failed: {e}"),
+    if let Err(e) = result {
+        log::warn!("toggle_dock failed: {e}");
     }
 }
 
