@@ -135,8 +135,9 @@ the user did. [docs/architecture/](docs/architecture/index.md) describes every p
 
 ## Install
 
-There is no release yet. Every run of the _CI_ workflow on GitHub builds the installer. To take the
-installer from CI:
+Every run of the _CI_ workflow on GitHub builds the installer. A pushed `v<version>` tag also builds
+it and attaches it to a draft GitHub release, which is published by hand. To take the installer
+from CI:
 
 1. Open the repository's _Actions_ tab, then the _CI_ workflow, and pick the latest run on
    `master` with a green tick.

@@ -115,11 +115,18 @@ notes on code signing.
 
 **Status.**
 
+- The release workflow is done
+  ([`release.yml`](../.github/workflows/release.yml)). A pushed tag `v<version>` builds the NSIS
+  installer on `windows-latest` and attaches it to a draft GitHub release,
+  which is published by hand.
 - Crash logging is done. After a panic, the next start of Stem says so once
   in a native dialog and offers to open the log folder. An unclean exit that
   was not a panic is only logged.
 - The README has screenshots, and the user guide has an
   [FAQ](user-guide/faq.md).
+
+**Planned.** Installer improvements, the updater (`tauri-plugin-updater` and its
+signing keys), notes on code signing, and the v0.1.0 release.
 
 **Exit criterion.** v0.1.0 is published on GitHub Releases.
 

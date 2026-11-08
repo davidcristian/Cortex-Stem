@@ -27,5 +27,5 @@ Cortex-Stem/
 ├── docs/                   architecture/ (read before writing code), ipc/ (the IPC contract,
 │                           AGENTS.md §8), development/ (the detail behind AGENTS.md),
 │                           PLAN.md (milestones), adr/.
-└── .github/workflows/      CI (Linux checks, Windows build).
+└── .github/workflows/      CI (Linux checks, Windows build) and the release build.
 ```

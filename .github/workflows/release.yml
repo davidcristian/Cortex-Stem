@@ -1,0 +1,157 @@
+# Release build (docs/RELEASING.md).
+#
+# A pushed tag `v<version>` (or a manual run naming such a tag) builds the NSIS
+# installer on windows-latest and attaches it to a DRAFT GitHub release for
+# that tag. Nothing here publishes: the owner checks the draft and publishes it
+# by hand. The build is unsigned and there is no updater manifest yet
+# (tauri-plugin-updater and its signing keys).
+#
+# The setup steps and the build step are ci.yml's `windows` job, verbatim
+# (same pinned actions, toolchain, pnpm and cache); keep the two in sync. The
+# only change to them is the checkout `ref`, so a manual run builds the tag,
+# not the branch it was started from. Added: the version check after the
+# checkout and the draft release at the end (instead of ci.yml's artifacts).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and draft a release for (v<version>, e.g. v0.1.0)"
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+# `gh release create` needs to write releases; nothing else is granted.
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  windows:
+    name: release (tauri build, draft GitHub release)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      # The tag being released: the pushed tag, or the manual run's input.
+      # Used only through the environment, never pasted into a script.
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ env.TAG }}
+
+      # Fails fast, before the toolchain and the build, when the tag does not
+      # name the version the three manifests carry (docs/RELEASING.md step 1).
+      - name: Tag matches tauri.conf.json, Cargo.toml and package.json
+        shell: bash
+        run: |
+          case "$TAG" in
+            v[0-9]*) ;;
+            *) echo "::error::tag '$TAG' is not of the form v<version>"; exit 1 ;;
+          esac
+          want="${TAG#v}"
+          conf=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          pkg=$(node -p "require('./package.json').version")
+          # The first `version = "..."` line of the [workspace.package] table.
+          cargo=$(awk '
+            { sub(/\r$/, "") }
+            /^\[/ { in_pkg = ($0 == "[workspace.package]"); next }
+            in_pkg && /^version[[:space:]]*=/ {
+              v = $0
+              sub(/^version[[:space:]]*=[[:space:]]*"/, "", v)
+              sub(/".*$/, "", v)
+              print v
+              exit
+            }
+          ' Cargo.toml)
+          echo "tag $TAG -> $want; src-tauri/tauri.conf.json $conf; Cargo.toml [workspace.package] $cargo; package.json $pkg"
+          fail=0
+          check() {
+            if [ "$2" != "$want" ]; then
+              echo "::error file=$1::version '$2' in $1 differs from the tag's '$want'"
+              fail=1
+            fi
+          }
+          check src-tauri/tauri.conf.json "$conf"
+          check Cargo.toml "$cargo"
+          check package.json "$pkg"
+          if [ "$fail" -ne 0 ]; then exit 1; fi
+          echo "VERSION=$want" >> "$GITHUB_ENV"
+
+      # Host target only; rust-toolchain.toml's extra target is the host here.
+      - name: Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Resolve pnpm version
+        id: pnpm
+        shell: bash
+        run: |
+          if grep -Eq '"packageManager"[[:space:]]*:[[:space:]]*"pnpm@' package.json; then
+            echo "version=" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=10" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: pnpm/action-setup@v5
+        with:
+          version: ${{ steps.pnpm.outputs.version }}
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: pnpm install
+        run: pnpm install --frozen-lockfile
+
+      # `tauri build` runs `pnpm build` first (tauri.conf.json
+      # beforeBuildCommand), then `cargo build --release` for src-tauri and the
+      # NSIS bundler. The Tauri crate is a workspace member, so everything
+      # lands in the repository-root target/, not src-tauri/target/.
+      - name: tauri build
+        run: pnpm tauri build
+
+      # Always `--draft`: this workflow never publishes. `--verify-tag` refuses
+      # to create a missing tag. A tag that already has a release, draft or
+      # published, stops the run instead of getting a second one (delete the
+      # draft first, then run again).
+      - name: Create the draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          installer="target/release/bundle/nsis/Stem_${VERSION}_x64-setup.exe"
+          if [ ! -f "$installer" ]; then
+            echo "::error::$installer was not built"
+            ls -l target/release/bundle/nsis || true
+            exit 1
+          fi
+          # `gh release view` finds drafts too.
+          if gh release view "$TAG" --json url,isDraft > existing-release.json 2>/dev/null; then
+            echo "::error::$TAG already has a release: $(cat existing-release.json)"
+            exit 1
+          fi
+          sha=$(git rev-parse HEAD)
+          cat > release-notes.md <<EOF
+          Stem $VERSION, built by the release workflow from commit [\`${sha:0:7}\`]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/commit/$sha) (tag \`$TAG\`).
+
+          **The installer is unsigned.** Windows SmartScreen may say "Windows protected your PC": choose *More info*, then *Run anyway*. It installs for the current user, without an administrator prompt.
+
+          Asset: \`Stem_${VERSION}_x64-setup.exe\` (NSIS, x64).
+          EOF
+          gh release create "$TAG" "$installer" --draft --verify-tag --title "Stem $VERSION" --notes-file release-notes.md
