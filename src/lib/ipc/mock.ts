@@ -1118,8 +1118,26 @@ class Engine {
     };
   }
 
-  /** `DockEngine::primary_action`. */
-  primaryAction(itemKey: string): ItemAction {
+  /**
+   * `DockEngine::windows_on_dock`: the shown windows of `appId`
+   * that the dock window `dock` lists, in first-seen order. With
+   * `monitors = all` and `showOnlyCurrentMonitor` on, only those on the
+   * dock's registered monitor; otherwise, or while that is unknown, all.
+   */
+  windowsOnDock(appId: AppId, dock: string): WindowId[] {
+    const { monitors, behavior } = this.settings;
+    const monitor =
+      monitors === 'all' && behavior.showOnlyCurrentMonitor
+        ? (this.panels.get(dock)?.monitor ?? null)
+        : null;
+    return this.shownWindows()
+      .filter((t) => appIdFor(t.raw) === appId)
+      .filter((t) => monitor === null || t.raw.monitor === monitor)
+      .map((t) => t.raw.id);
+  }
+
+  /** `DockEngine::primary_action`: a click on `itemKey` in the dock window `dock`. */
+  primaryAction(itemKey: string, dock: string): ItemAction {
     switch (itemKey) {
       case 'fixed:launcher':
         return { type: 'shell', action: 'openStartMenu' };
@@ -1136,9 +1154,7 @@ class Engine {
       return { type: 'none' };
     }
     const appId = itemKey.slice('app:'.length);
-    const windows = this.shownWindows()
-      .filter((t) => appIdFor(t.raw) === appId)
-      .map((t) => t.raw.id);
+    const windows = this.windowsOnDock(appId, dock);
     if (windows.length === 0) {
       const launchable =
         this.isPinned(appId) || (this.identities.get(appId)?.launch ?? null) !== null;
@@ -1371,9 +1387,14 @@ export class MockBackend implements Backend {
 
   // --- Backend: intents
 
+  /**
+   * `primary_click`, in this page's dock window (`pageLabel`): with a dock
+   * per monitor and `showOnlyCurrentMonitor` on, only the windows on its
+   * monitor take part, once its panel has registered it there.
+   */
   primaryClick(itemKey: string): Promise<void> {
     return this.command(() => {
-      const action = this.engine.primaryAction(itemKey);
+      const action = this.engine.primaryAction(itemKey, this.pageLabel);
       switch (action.type) {
         case 'launch':
           this.doLaunch(action.appId);

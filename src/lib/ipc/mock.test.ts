@@ -1017,6 +1017,103 @@ describe('two monitors', () => {
     expect(primaryStates).toHaveLength(0);
     expect(factsOn(await primary.getDockState(), 'mock-primary')?.overlapped).toBe(false);
   });
+
+  /** A Notepad window on `monitor`, as the platform reports it. */
+  const notepadOn = (id: number, monitor: string): RawWindow => ({
+    id,
+    title: `Notepad ${id}`,
+    className: 'Notepad',
+    processId: 1000 + id,
+    exePath: 'C:\\Windows\\notepad.exe',
+    appUserModelId: null,
+    isVisible: true,
+    isMinimized: false,
+    isCloaked: false,
+    onCurrentDesktop: null,
+    monitor,
+    rect: null,
+    iconKey: null,
+  });
+
+  /**
+   * A page's backend with its panel registered, `monitors = all`, the
+   * setting as given, and Notepad with window 9 on the primary, seen
+   * first, and window 7 on the second monitor.
+   */
+  async function notepadOnBoth(
+    monitor: string | null,
+    showOnlyCurrentMonitor: boolean,
+  ): Promise<MockBackend> {
+    const b = fast({ scenario: 'twoMonitors', viewportHeight: 240, monitor });
+    await b.setDockPanelRect({ x: 360, y: 168, width: 561, height: 64 });
+    b.pushWindowRemoved(7);
+    b.pushWindow(notepadOn(9, 'mock-primary'));
+    b.pushWindow(notepadOn(7, DISPLAY3));
+    const settings = await b.getSettings();
+    settings.monitors = 'all';
+    settings.behavior.showOnlyCurrentMonitor = showOnlyCurrentMonitor;
+    await b.updateSettings(settings);
+    b.calls.length = 0;
+    return b;
+  }
+
+  it('a click acts on the windows the page\u2019s own dock lists (DockEngine::windows_on_dock)', async () => {
+    const second = await notepadOnBoth(DISPLAY3, true);
+    // Nothing of Notepad's is active: this dock's window, not the first seen.
+    await second.primaryClick(app(NOTEPAD));
+    // Now it is active and alone here: minimised, not cycled to window 9.
+    await second.primaryClick(app(NOTEPAD));
+    expect(second.calls).toEqual([
+      { type: 'windowAction', windowId: 7, action: 'activate' },
+      { type: 'windowAction', windowId: 7, action: 'minimize' },
+    ]);
+
+    // The primary's page acts on window 9 alone; once that closes, the
+    // pinned app has no window there and is launched.
+    const primary = await notepadOnBoth(null, true);
+    await primary.primaryClick(app(NOTEPAD));
+    primary.pushWindowRemoved(9);
+    await primary.primaryClick(app(NOTEPAD));
+    expect(primary.calls).toEqual([
+      { type: 'windowAction', windowId: 9, action: 'activate' },
+      {
+        type: 'launch',
+        target: { kind: 'exe', path: 'C:\\Windows\\notepad.exe', args: [], workingDir: null },
+      },
+    ]);
+  });
+
+  it('every window counts with the setting off, one dock, or the dock not yet placed', async () => {
+    // The setting off: the first-seen window, then a cycle to the other.
+    const off = await notepadOnBoth(DISPLAY3, false);
+    await off.primaryClick(app(NOTEPAD));
+    await off.primaryClick(app(NOTEPAD));
+    expect(off.calls.map((c) => c.type === 'windowAction' && c.windowId)).toEqual([9, 7]);
+
+    // On, with `monitors = primary`: the same.
+    const one = await notepadOnBoth(DISPLAY3, true);
+    const settings = await one.getSettings();
+    settings.monitors = 'primary';
+    await one.updateSettings(settings);
+    await one.primaryClick(app(NOTEPAD));
+    expect(one.calls.at(-1)).toEqual({ type: 'windowAction', windowId: 9, action: 'activate' });
+
+    // On, but the page never reported its panel: its monitor is unknown.
+    const unplaced = fast({ scenario: 'twoMonitors', monitor: DISPLAY3 });
+    unplaced.pushWindowRemoved(7);
+    unplaced.pushWindow(notepadOn(9, 'mock-primary'));
+    unplaced.pushWindow(notepadOn(7, DISPLAY3));
+    const all = await unplaced.getSettings();
+    all.monitors = 'all';
+    all.behavior.showOnlyCurrentMonitor = true;
+    await unplaced.updateSettings(all);
+    await unplaced.primaryClick(app(NOTEPAD));
+    expect(unplaced.calls.at(-1)).toEqual({
+      type: 'windowAction',
+      windowId: 9,
+      action: 'activate',
+    });
+  });
 });
 
 describe('attention per window (mirror of WindowInfo::needs_attention)', () => {

@@ -2996,6 +2996,54 @@ test.describe('one dock per monitor', () => {
     await expect(page.locator(APP_SLOT)).toHaveCount(7);
   });
 
+  test('a click on the secondary page acts on the window on its monitor, not on the app\u2019s first', async ({
+    page,
+  }) => {
+    await openDock(page, SECOND_PAGE);
+    await patchSettings(page, { monitors: 'all', behavior: { showOnlyCurrentMonitor: true } });
+    // The page has reported its panel: the engine knows this dock's monitor.
+    await expect.poll(() => dockPanel(page)).not.toBeNull();
+    // Notepad gets a window on the primary, seen before its one here (7).
+    const notepad = (id: number, monitor: string): RawWindow => ({
+      ...PAINT_WINDOW,
+      id,
+      title: `Notepad ${id}`,
+      className: 'Notepad',
+      processId: 1000 + id,
+      exePath: 'C:\\Windows\\notepad.exe',
+      monitor,
+    });
+    await page.evaluate(
+      ([onPrimary, here]) => {
+        const mock = (window as unknown as DemoWindow).__dockMock!;
+        mock.pushWindowRemoved(here.id);
+        mock.pushWindow(onPrimary);
+        mock.pushWindow(here);
+      },
+      [notepad(90, 'mock-primary'), notepad(7, DISPLAY3)] as const,
+    );
+    await expect(dots(page, NOTEPAD_SLOT)).toHaveCount(1);
+    const windowActions = (): Promise<unknown[]> =>
+      page.evaluate(() =>
+        ((window as unknown as DemoWindow).__dockMock?.calls ?? [])
+          .filter((c) => c.type === 'windowAction')
+          .map((c) => ({ windowId: c.windowId, action: c.action })),
+      );
+
+    // Nothing of Notepad's is active: the click activates the window here.
+    const slot = page.locator(NOTEPAD_SLOT);
+    await slot.click();
+    await expect.poll(windowActions).toEqual([{ windowId: 7, action: 'activate' }]);
+    await expect(slot).toHaveAttribute('data-active', 'true');
+    // Active and alone on this monitor: minimised, not cycled to window 90.
+    await slot.click();
+    await expect.poll(windowActions).toEqual([
+      { windowId: 7, action: 'activate' },
+      { windowId: 7, action: 'minimize' },
+    ]);
+    await expect(slot).not.toHaveAttribute('data-active', 'true');
+  });
+
   test('a fullscreen app hides only the dock of its monitor', async ({ page }) => {
     await openDock(page, SECOND_PAGE);
     const panel = page.locator(PANEL);
