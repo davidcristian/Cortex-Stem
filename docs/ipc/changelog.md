@@ -3,6 +3,12 @@
 This file lists every version of the [IPC contract](index.md), newest first. A section name links
 to the file that covers that section now.
 
+- **v1.12 (about):** `get_app_info` → `AppInfo` and `open_app_folder { folder: AppFolder }`
+  added (`Backend.getAppInfo`, `Backend.openAppFolder`). The settings page's About section shows
+  the version, the settings file and the log file, and opens their folders in Explorer; new
+  section [About](about.md). New payload types `AppInfo` and `AppFolder` (`logs` | `settings`).
+  The mock returns demo facts (`setAppInfo` for tests) and records the folder requests. No other
+  command or event changed.
 - **v1.11 (toggle while hidden):** `set_dock_auto_hidden { hidden }` added
   (`Backend.setDockAutoHidden`): the dock UI reports when auto-hide slides its panel out and
   back. `dock://show` event added (payload `null`, to one dock window): `toggle_dock` asks the UI

@@ -27,6 +27,8 @@ arguments are named and how a failed command rejects.
 | `open_settings`         | none                                        | `void`             | opens the settings window, or focuses it if it is already open |
 | `reset_settings`        | none                                        | `Settings`         | restores and persists the defaults; emits `dock://settings` |
 | `quit`                  | none                                        | none               | exits the application |
+| `get_app_info`          | none                                        | `AppInfo`          | the version, the settings file, the log file and the platform name, for Settings → About (see [About](about.md)) |
+| `open_app_folder`       | `{ folder: AppFolder }`                     | `void`             | opens the log folder (`logs`) or the settings file's folder (`settings`) in Explorer (see [About](about.md)); rejects when there is none |
 | `show_item_menu`        | `{ itemKey: string, x: number, y: number }` | `void`             | shows the native context menu of one item at `(x, y)` (see [Context menus](context-menus.md)); resolves when the menu has closed |
 | `show_dock_menu`        | `{ x: number, y: number }`                  | `void`             | shows the dock's own menu (on the panel background): *Stem settings…*, *Quit Stem* |
 
