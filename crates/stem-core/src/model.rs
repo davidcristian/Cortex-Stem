@@ -365,6 +365,39 @@ pub enum ShellAction {
     EmptyRecycleBin,
 }
 
+/// Facts about this installation for the settings page's *About* section:
+/// the answer to `get_app_info`. Paths are shown, never parsed, by
+/// the UI; `open_app_folder` opens the folders behind them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub struct AppInfo {
+    /// The app's package version (`0.1.0`).
+    pub version: String,
+    /// The settings file the app reads and writes, as a path; or a short
+    /// note in parentheses when nothing is saved this run (the mock
+    /// platform, a profile that could not be used).
+    pub settings_path: String,
+    /// The log file (`stem.log` in the app's log folder), or `""` while file
+    /// logging is off (`system.fileLogging` at startup).
+    pub log_path: String,
+    /// The platform implementation's name: `"windows"`, or `"mock"` in a
+    /// demo run.
+    pub platform: String,
+}
+
+/// A folder of the app's own that `open_app_folder` opens in Explorer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub enum AppFolder {
+    /// The log folder (`AppInfo::log_path`'s folder), or its parent while
+    /// none exists yet.
+    Logs,
+    /// The settings file's folder (`AppInfo::settings_path`'s folder).
+    Settings,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,6 +451,36 @@ mod tests {
             .unwrap();
             assert_eq!(with_desktop.on_current_desktop, expected, "{value}");
         }
+    }
+
+    #[test]
+    fn app_info_and_app_folder_serialise_in_camel_case() {
+        let info = AppInfo {
+            version: "0.1.0".to_owned(),
+            settings_path: r"C:\Users\me\AppData\Roaming\dev.davidcristian.stem\settings.json"
+                .to_owned(),
+            log_path: String::new(),
+            platform: "windows".to_owned(),
+        };
+        let json = serde_json::to_value(&info).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "version": "0.1.0",
+                "settingsPath": r"C:\Users\me\AppData\Roaming\dev.davidcristian.stem\settings.json",
+                "logPath": "",
+                "platform": "windows",
+            })
+        );
+        assert_eq!(serde_json::from_value::<AppInfo>(json).unwrap(), info);
+        assert_eq!(
+            serde_json::to_string(&AppFolder::Logs).unwrap(),
+            r#""logs""#
+        );
+        assert_eq!(
+            serde_json::from_str::<AppFolder>(r#""settings""#).unwrap(),
+            AppFolder::Settings
+        );
     }
 
     #[test]

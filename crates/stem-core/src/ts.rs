@@ -23,9 +23,9 @@ use std::path::{Path, PathBuf};
 use ts_rs::{Config, ExportError, TS};
 
 use crate::model::{
-    AppId, AppIdentity, DockItem, DockItemKind, DockState, IconKey, LaunchTarget, MonitorId,
-    MonitorInfo, RawWindow, Rect, RecycleBinState, ShellAction, ThemeInfo, WindowAction, WindowId,
-    WindowInfo,
+    AppFolder, AppId, AppIdentity, AppInfo, DockItem, DockItemKind, DockState, IconKey,
+    LaunchTarget, MonitorId, MonitorInfo, RawWindow, Rect, RecycleBinState, ShellAction, ThemeInfo,
+    WindowAction, WindowId, WindowInfo,
 };
 use crate::settings::{
     Appearance, AutoHide, AutoHideMode, Backdrop, Behavior, DockPosition, FixedItems,
@@ -69,8 +69,10 @@ macro_rules! exported_types {
 
 exported_types! {
     // model.rs
+    AppFolder,
     AppId,
     AppIdentity,
+    AppInfo,
     DockItem,
     DockItemKind,
     DockState,
@@ -114,6 +116,8 @@ const IPC_PAYLOAD_TYPES: &[&str] = &[
     "AppId",
     "LaunchTarget",
     "IconKey",
+    "AppInfo",
+    "AppFolder",
 ];
 
 const BARREL_FILE: &str = "index.ts";
