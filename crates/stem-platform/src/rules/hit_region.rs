@@ -139,4 +139,52 @@ mod tests {
         assert!(!next_inside(true, (7, 7), &negative));
         assert!(!next_inside(true, (0, 50), &negative));
     }
+
+    /// The UI's "no clickable area" (`NO_HIT_REGION`): 0 × 0 at the origin
+    /// as both rectangles, reported while the dock is hidden in fullscreen
+    /// above a visible taskbar, where there is no reveal strip and
+    /// the window must be click-through everywhere.
+    fn no_hit_region() -> HitRegion {
+        HitRegion {
+            panel: Rect::new(0, 0, 0, 0),
+            envelope: Rect::new(0, 0, 0, 0),
+        }
+    }
+
+    #[test]
+    fn the_empty_region_at_the_origin_never_takes_the_cursor() {
+        let region = no_hit_region();
+        let points = [
+            (0, 0),
+            (-1, -1),
+            (1, 1),
+            (0, 1),
+            (1, 0),
+            (-1, 0),
+            (0, -1),
+            (300, 70),
+            (599, 99),
+            (i32::MIN, i32::MIN),
+            (i32::MAX, i32::MAX),
+        ];
+        for point in points {
+            assert!(!next_inside(false, point, &region), "outside, at {point:?}");
+            assert!(!next_inside(true, point, &region), "inside, at {point:?}");
+        }
+    }
+
+    #[test]
+    fn the_empty_region_releases_a_window_that_was_inside() {
+        // The dock hid under the cursor while it was over the panel: the
+        // next sample, wherever it is, makes the window click-through, and
+        // it stays so.
+        let shown = region();
+        let hidden = no_hit_region();
+        let mut inside = next_inside(false, (300, 70), &shown);
+        assert!(inside);
+        for point in [(300, 70), (0, 0), (300, 10), (0, 0)] {
+            inside = next_inside(inside, point, &hidden);
+            assert!(!inside, "at {point:?}");
+        }
+    }
 }
