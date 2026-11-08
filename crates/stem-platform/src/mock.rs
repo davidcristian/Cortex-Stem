@@ -28,6 +28,8 @@ struct State {
     /// Windows' own *Automatically hide the taskbar*; off unless
     /// scripted or set.
     taskbar_auto_hide: bool,
+    /// What `ask_yes_no` answers; *No* unless scripted.
+    yes_no_answer: bool,
     sink: Option<EventSink>,
     /// Every call made, for assertions in tests.
     calls: Vec<MockCall>,
@@ -43,6 +45,7 @@ impl std::fmt::Debug for State {
             .field("recycle_bin", &self.recycle_bin)
             .field("recycle_failure", &self.recycle_failure)
             .field("taskbar_auto_hide", &self.taskbar_auto_hide)
+            .field("yes_no_answer", &self.yes_no_answer)
             .field("started", &self.sink.is_some())
             .field("calls", &self.calls)
             .finish()
@@ -64,6 +67,12 @@ pub enum MockCall {
     TaskbarAutoHide,
     /// `set_taskbar_auto_hide` with this value.
     SetTaskbarAutoHide(bool),
+    /// `ask_yes_no` with this title and text; the answer is the
+    /// scripted one.
+    AskYesNo {
+        title: String,
+        text: String,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -141,6 +150,12 @@ impl MockPlatform {
     /// had before Stem) without recording a call.
     pub fn script_taskbar_auto_hide(&self, enabled: bool) {
         self.state.lock().taskbar_auto_hide = enabled;
+    }
+
+    /// Script what the user answers to every later `ask_yes_no`;
+    /// *No* (`false`) until this is called.
+    pub fn script_yes_no_answer(&self, answer: bool) {
+        self.state.lock().yes_no_answer = answer;
     }
 
     /// A window moved or resized: give it a new frame (`None` for a
@@ -352,6 +367,15 @@ impl Platform for MockPlatform {
         self.record(MockCall::SetTaskbarAutoHide(enabled));
         self.state.lock().taskbar_auto_hide = enabled;
         Ok(())
+    }
+
+    /// Recorded; answers the scripted value at once (no box, no wait).
+    fn ask_yes_no(&self, title: &str, text: &str) -> PlatformResult<bool> {
+        self.record(MockCall::AskYesNo {
+            title: title.to_owned(),
+            text: text.to_owned(),
+        });
+        Ok(self.state.lock().yes_no_answer)
     }
 
     fn prepare_dock_window(
@@ -665,6 +689,30 @@ mod tests {
         p.script_taskbar_auto_hide(true);
         assert!(p.taskbar_auto_hide().unwrap());
         assert_eq!(p.calls(), vec![MockCall::TaskbarAutoHide]);
+    }
+
+    #[test]
+    fn ask_yes_no_answers_the_scripted_value_and_records_the_question() {
+        let p = MockPlatform::new();
+        assert!(
+            !p.ask_yes_no("Stem", "Open the log folder?").unwrap(),
+            "No by default"
+        );
+        p.script_yes_no_answer(true);
+        assert!(p.ask_yes_no("Stem", "Again?").unwrap());
+        assert_eq!(
+            p.calls(),
+            vec![
+                MockCall::AskYesNo {
+                    title: "Stem".to_owned(),
+                    text: "Open the log folder?".to_owned(),
+                },
+                MockCall::AskYesNo {
+                    title: "Stem".to_owned(),
+                    text: "Again?".to_owned(),
+                },
+            ]
+        );
     }
 
     #[test]

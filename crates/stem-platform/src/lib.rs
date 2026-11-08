@@ -174,6 +174,19 @@ pub trait Platform: Send + Sync + 'static {
         Err(PlatformError::Unsupported("taskbar auto-hide"))
     }
 
+    /// Ask the user a yes/no question in a native, topmost message box
+    /// (the next start after a crash asks whether to open the log
+    /// folder). `Ok(true)` for *Yes*, `Ok(false)` for *No* or a box closed
+    /// without an answer. The box has no owner window: the dock is
+    /// `no_activate` and must not own an activating dialog.
+    ///
+    /// **Blocks** until the user answers: never call it on the UI thread or
+    /// on a thread that must stay responsive (the app layer uses Tauri's
+    /// blocking pool). Optional; the default reports it unsupported.
+    fn ask_yes_no(&self, _title: &str, _text: &str) -> PlatformResult<bool> {
+        Err(PlatformError::Unsupported("message box"))
+    }
+
     /// Apply OS-level styles to a dock window the app layer created.
     ///
     /// Must be called **once per window, on the thread that created the

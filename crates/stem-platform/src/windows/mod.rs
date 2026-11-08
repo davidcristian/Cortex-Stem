@@ -21,9 +21,11 @@
 //! - `hit_test`    cursor-tracking thread for the hit region
 //! - `taskbar`     the stock taskbar's auto-hide state
 //! - `fullscreen`  does the foreground window own the screen
+//! - `dialog`      native message boxes (the crash report)
 
 pub mod actions;
 pub mod appbar;
+pub mod dialog;
 pub mod dock_window;
 pub mod enumerate;
 pub mod events;
@@ -147,6 +149,10 @@ impl Platform for WindowsPlatform {
 
     fn set_taskbar_auto_hide(&self, enabled: bool) -> PlatformResult<()> {
         taskbar::set_auto_hide(enabled)
+    }
+
+    fn ask_yes_no(&self, title: &str, text: &str) -> PlatformResult<bool> {
+        dialog::ask_yes_no(title, text)
     }
 
     fn prepare_dock_window(
