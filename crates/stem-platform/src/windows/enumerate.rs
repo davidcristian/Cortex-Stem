@@ -61,8 +61,12 @@
 //!   visible frame without the invisible resize borders `GetWindowRect`
 //!   includes on Windows 10+, with `GetWindowRect` as the fallback when DWM
 //!   refuses. Physical pixels of the virtual desktop. It is read whenever
-//!   the window is queried, not on every move: the events thread hooks
-//!   location changes for the foreground window only (`windows::fullscreen`).
+//!   the window is queried. The events thread hooks location
+//!   changes of every top-level window (`EVENT_OBJECT_LOCATIONCHANGE`) and
+//!   re-queries each tracked window that moved, frame included, once per
+//!   150 ms burst (`windows::events`, `LOCATION_SETTLE`), reporting it only
+//!   when its facts changed; moves of the foreground window also
+//!   re-evaluate fullscreen (`windows::fullscreen`).
 //! - `on_current_desktop` is the shell's answer to
 //!   `IVirtualDesktopManager::IsWindowOnCurrentVirtualDesktop`
 //!   (`windows::virtual_desktop`), asked for every eligible window through
