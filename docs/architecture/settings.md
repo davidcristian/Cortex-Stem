@@ -42,8 +42,12 @@ worker:
   marker found at start means the previous run crashed, and its saved state
   is still the one to restore. The decision is the pure
   `stem_platform::rules::taskbar::plan`. The syncs run like autostart's. The
-  restore at `RunEvent::Exit` runs inline because the process is ending.
-  The mock platform keeps the marker in memory.
+  restore at `RunEvent::Exit` runs inline because the process is ending,
+  and it is bounded: each `SHAppBarMessage` runs on a `stem-taskbar` helper
+  thread whose result is awaited for at most 500 ms, so the restore returns
+  within about 1 s. A live state that cannot be read (no tray, no reply)
+  never writes or deletes the marker. The mock platform keeps the marker
+  in memory.
 - `behavior.toggleShortcut` (`shortcut.rs`):
   `tauri-plugin-global-shortcut`, which registers with `RegisterHotKey` on a
   hidden main-thread window and makes callers wait for the main thread. So

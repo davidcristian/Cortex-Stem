@@ -88,8 +88,11 @@ line the platform logs about this is at `debug`.
 For every eligible window, the platform asks the shell whether the window is
 on the current virtual desktop
 (`IVirtualDesktopManager::IsWindowOnCurrentVirtualDesktop`,
-`windows::virtual_desktop`). The value is reported as
-`RawWindow::on_current_desktop`. The cloak flags alone
+`windows::virtual_desktop`). There are two exceptions. The move path reuses
+the value last reported. No call is made during the 30 s pause after a call
+that took longer than 200 ms (`rules::backoff::SlowCallBackoff`). The call
+has no timeout, so a hung Explorer still blocks the events thread once. The
+value is reported as `RawWindow::on_current_desktop`. The cloak flags alone
 do not show the desktop, because the shell also cloaks windows during a
 desktop-switch animation, suspended Store apps and the frame a closed Store
 app can leave behind.
@@ -97,7 +100,7 @@ app can leave behind.
 Eligibility does not change: a shell-cloaked window is still listed, with
 `is_cloaked = true`. The engine uses the value for
 `behavior.showOnlyCurrentDesktop` and falls back to the cloak state when it
-is `None`. The value is `None` when the querying
+is `None`. The value is `None` during the 30 s pause, when the querying
 thread has no manager, and for a window of another session or of a
 protected process, whose failed query is logged once per window
 (`rules::events::DesktopQueryFailures`).
