@@ -25,6 +25,9 @@ struct State {
     recycle_bin: RecycleBinState,
     /// When set, `delete_to_recycle_bin` fails with this message.
     recycle_failure: Option<String>,
+    /// Windows' own *Automatically hide the taskbar*; off unless
+    /// scripted or set.
+    taskbar_auto_hide: bool,
     sink: Option<EventSink>,
     /// Every call made, for assertions in tests.
     calls: Vec<MockCall>,
@@ -39,6 +42,7 @@ impl std::fmt::Debug for State {
             .field("theme", &self.theme)
             .field("recycle_bin", &self.recycle_bin)
             .field("recycle_failure", &self.recycle_failure)
+            .field("taskbar_auto_hide", &self.taskbar_auto_hide)
             .field("started", &self.sink.is_some())
             .field("calls", &self.calls)
             .finish()
@@ -55,6 +59,11 @@ pub enum MockCall {
     Shell(ShellAction),
     PrepareDockWindow(NativeWindowHandle, DockWindowOptions),
     SetDockHitRegion(NativeWindowHandle, Option<HitRegion>),
+    /// `taskbar_auto_hide` was read; recorded so tests can check
+    /// that the live state is read before it is set.
+    TaskbarAutoHide,
+    /// `set_taskbar_auto_hide` with this value.
+    SetTaskbarAutoHide(bool),
 }
 
 #[derive(Debug, Default)]
@@ -126,6 +135,12 @@ impl MockPlatform {
     /// succeed again with `None`.
     pub fn set_recycle_failure(&self, message: Option<&str>) {
         self.state.lock().recycle_failure = message.map(str::to_owned);
+    }
+
+    /// Script Windows' own *Automatically hide the taskbar* (what the user
+    /// had before Stem) without recording a call.
+    pub fn script_taskbar_auto_hide(&self, enabled: bool) {
+        self.state.lock().taskbar_auto_hide = enabled;
     }
 
     fn record(&self, call: MockCall) {
@@ -302,6 +317,20 @@ impl Platform for MockPlatform {
         if action == ShellAction::EmptyRecycleBin {
             self.push(PlatformEvent::RecycleBinChanged(RecycleBinState::default()));
         }
+        Ok(())
+    }
+
+    /// The scripted state (`false` unless [`MockPlatform::script_taskbar_auto_hide`]
+    /// or a set changed it); the read is recorded.
+    fn taskbar_auto_hide(&self) -> PlatformResult<bool> {
+        self.record(MockCall::TaskbarAutoHide);
+        Ok(self.state.lock().taskbar_auto_hide)
+    }
+
+    /// Recorded and applied to the scripted state; nothing real changes.
+    fn set_taskbar_auto_hide(&self, enabled: bool) -> PlatformResult<()> {
+        self.record(MockCall::SetTaskbarAutoHide(enabled));
+        self.state.lock().taskbar_auto_hide = enabled;
         Ok(())
     }
 
@@ -572,6 +601,32 @@ mod tests {
         p.set_recycle_failure(None);
         p.delete_to_recycle_bin(&locked).unwrap();
         assert_eq!(p.recycle_bin().unwrap().item_count, 3);
+    }
+
+    #[test]
+    fn taskbar_auto_hide_is_scripted_follows_sets_and_records_every_call() {
+        let p = MockPlatform::new();
+        assert!(!p.taskbar_auto_hide().unwrap(), "off by default");
+        p.set_taskbar_auto_hide(true).unwrap();
+        assert!(p.taskbar_auto_hide().unwrap());
+        p.set_taskbar_auto_hide(false).unwrap();
+        assert!(!p.taskbar_auto_hide().unwrap());
+        assert_eq!(
+            p.calls(),
+            vec![
+                MockCall::TaskbarAutoHide,
+                MockCall::SetTaskbarAutoHide(true),
+                MockCall::TaskbarAutoHide,
+                MockCall::SetTaskbarAutoHide(false),
+                MockCall::TaskbarAutoHide,
+            ]
+        );
+
+        // What the user had before Stem: scripted, not a call.
+        p.clear_calls();
+        p.script_taskbar_auto_hide(true);
+        assert!(p.taskbar_auto_hide().unwrap());
+        assert_eq!(p.calls(), vec![MockCall::TaskbarAutoHide]);
     }
 
     #[test]

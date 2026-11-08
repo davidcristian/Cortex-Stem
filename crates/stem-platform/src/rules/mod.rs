@@ -13,4 +13,5 @@ pub mod icons;
 pub mod identity;
 pub mod recheck;
 pub mod recycle;
+pub mod taskbar;
 pub mod theme;

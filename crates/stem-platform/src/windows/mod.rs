@@ -19,6 +19,7 @@
 //! - `shell`       Start menu, Task View, Show Desktop
 //! - `dock_window` extended styles + subclass of our own windows
 //! - `hit_test`    cursor-tracking thread for the hit region
+//! - `taskbar`     the stock taskbar's auto-hide state
 
 pub mod actions;
 pub mod appbar;
@@ -32,6 +33,7 @@ pub mod launch;
 pub mod monitors;
 pub mod recycle_bin;
 pub mod shell;
+pub mod taskbar;
 pub mod theme;
 pub mod util;
 
@@ -135,6 +137,14 @@ impl Platform for WindowsPlatform {
 
     fn shell_action(&self, action: ShellAction) -> PlatformResult<()> {
         shell::perform(action)
+    }
+
+    fn taskbar_auto_hide(&self) -> PlatformResult<bool> {
+        taskbar::auto_hide()
+    }
+
+    fn set_taskbar_auto_hide(&self, enabled: bool) -> PlatformResult<()> {
+        taskbar::set_auto_hide(enabled)
     }
 
     fn prepare_dock_window(

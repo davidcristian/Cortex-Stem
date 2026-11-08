@@ -153,6 +153,27 @@ pub trait Platform: Send + Sync + 'static {
 
     fn shell_action(&self, action: ShellAction) -> PlatformResult<()>;
 
+    /// Whether Windows' own *Automatically hide the taskbar* is on right now
+    /// (`SHAppBarMessage(ABM_GETSTATE)`). A message to the tray
+    /// window that waits on Explorer: never call it on the UI thread. The
+    /// decision of what to do with the answer is [`rules::taskbar`].
+    /// Optional; the default reports it unsupported.
+    fn taskbar_auto_hide(&self) -> PlatformResult<bool> {
+        Err(PlatformError::Unsupported("taskbar auto-hide"))
+    }
+
+    /// Turn Windows' own *Automatically hide the taskbar* on or off
+    /// (`SHAppBarMessage(ABM_SETSTATE)`). Windows persists the new
+    /// state itself (the Taskbar settings page shows it and it survives an
+    /// Explorer restart), which is why the app layer remembers the previous
+    /// one ([`rules::taskbar`]). Idempotent. A message to the tray window
+    /// that waits on Explorer: never call it on the UI thread. Fails when
+    /// the taskbar did not take the state (no tray to talk to). Optional;
+    /// the default reports it unsupported.
+    fn set_taskbar_auto_hide(&self, _enabled: bool) -> PlatformResult<()> {
+        Err(PlatformError::Unsupported("taskbar auto-hide"))
+    }
+
     /// Apply OS-level styles to a dock window the app layer created.
     ///
     /// Must be called **once per window, on the thread that created the
