@@ -59,8 +59,8 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use parking_lot::Mutex;
 use stem_core::{
     AppId, AppIdentity, DockEngine, DockState, EngineInput, IconKey, ItemAction, LaunchTarget,
-    MonitorInfo, PlatformEvent, Settings, SettingsError, ShellAction, ThemeInfo, WindowAction,
-    WindowId,
+    MonitorInfo, PlatformEvent, Rect, Settings, SettingsError, ShellAction, ThemeInfo,
+    WindowAction, WindowId,
 };
 use stem_platform::{Platform, PlatformError};
 use thiserror::Error;
@@ -184,11 +184,15 @@ impl DockService {
 
         let (worker_tx, worker_rx) = crossbeam_channel::unbounded::<WorkerMsg>();
         let (resolve_tx, resolve_rx) = crossbeam_channel::unbounded::<ResolveMsg>();
+        let mut engine = DockEngine::new(settings.clone());
+        // Our own windows (the settings window over the dock) never count as
+        // overlapping it.
+        engine.set_own_process_id(Some(std::process::id()));
         let inner = Arc::new(Inner {
             platform: Arc::clone(&platform),
             store,
-            settings: Mutex::new(settings.clone()),
-            engine: Mutex::new(DockEngine::new(settings)),
+            settings: Mutex::new(settings),
+            engine: Mutex::new(engine),
             listeners: Mutex::new(Vec::new()),
             worker_tx,
             resolve_tx,
@@ -260,6 +264,20 @@ impl DockService {
 
     pub fn monitors(&self) -> Vec<MonitorInfo> {
         self.inner.engine.lock().monitors().to_vec()
+    }
+
+    /// Where the dock's panel rests on screen, in physical pixels of
+    /// the virtual desktop (the app layer converts the UI's CSS rect), or
+    /// `None` while the dock window is hidden. Queued for the worker like a
+    /// platform event, so it is applied in order with the window updates it
+    /// is compared against; the engine recomputes `DockState::overlapped`
+    /// and a `State` follows only when the flag flips. Never blocks.
+    pub fn set_dock_panel(&self, rect: Option<Rect>) {
+        log::debug!("dock panel: {rect:?}");
+        let _ = self
+            .inner
+            .worker_tx
+            .send(WorkerMsg::Input(EngineInput::DockPanelChanged(rect)));
     }
 
     /// Validate, persist, and apply new settings. Returns the validated copy.
@@ -539,7 +557,11 @@ impl Inner {
     /// Apply a batch of inputs, hand new identity requests to the identity
     /// thread, and notify listeners of theme / monitor / settings changes
     /// (the last value of each per batch). Returns whether the snapshot
-    /// changed; the caller decides when to emit it.
+    /// changed; the caller decides when to emit it. "Changed" is the
+    /// engine's verdict per input, by snapshot comparison, so a
+    /// `WindowUpdated` that only moves a window counts exactly when the move
+    /// flips `DockState::overlapped`, and a `DockPanelChanged` the
+    /// same way.
     fn process_batch(&self, inputs: Vec<EngineInput>) -> bool {
         let mut changed = false;
         let mut settings_changed = false;
@@ -1754,6 +1776,92 @@ mod tests {
 
         relay.emit(PlatformEvent::FullscreenChanged(false));
         wait_state(&rx, |s| !s.fullscreen);
+        service.shutdown();
+    }
+
+    // ----- a window over the dock --------------------------------------------
+
+    #[test]
+    fn the_dock_panel_and_window_moves_drive_overlapped_and_only_flips_emit() {
+        let relay = Arc::new(Relay::demo());
+        let (service, rx) = start_relay(relay.clone());
+        wait_state(&rx, resolved);
+        while rx.try_recv().is_ok() {}
+        assert!(!service.state().overlapped);
+
+        // The UI's panel rests at the bottom of the demo monitor's work
+        // area, below every demo window: nothing overlaps, nothing emitted.
+        let panel = Rect::new(1000, 1320, 560, 72);
+        service.set_dock_panel(Some(panel));
+        assert!(rx.recv_timeout(Duration::from_millis(150)).is_err());
+        assert!(!service.state().overlapped);
+
+        // Code's window is dragged down over the dock: the platform reports
+        // a rect-only update, the flag flips, one state follows.
+        relay
+            .mock
+            .move_window(WindowId(4), Some(Rect::new(600, 900, 700, 480)));
+        let state = wait_state(&rx, |s| s.overlapped);
+        assert_eq!(app_items(&state).len(), 5);
+        assert!(service.state().overlapped);
+        // Another nudge that keeps it over the dock: nothing to emit.
+        relay
+            .mock
+            .move_window(WindowId(4), Some(Rect::new(620, 910, 700, 480)));
+        assert!(rx.recv_timeout(Duration::from_millis(150)).is_err());
+
+        // Dragged away again: cleared.
+        relay
+            .mock
+            .move_window(WindowId(4), Some(Rect::new(200, 40, 1600, 1000)));
+        wait_state(&rx, |s| !s.overlapped);
+
+        // A minimised window over the dock does not count; restoring it does.
+        relay
+            .mock
+            .move_window(WindowId(6), Some(Rect::new(600, 900, 700, 480)));
+        assert!(rx.recv_timeout(Duration::from_millis(150)).is_err());
+        assert!(!service.state().overlapped);
+        service
+            .window_action(WindowId(6), WindowAction::Restore)
+            .unwrap();
+        wait_state(&rx, |s| s.overlapped);
+
+        // The dock window was hidden (the tray): no panel, no overlap; shown
+        // again: back.
+        service.set_dock_panel(None);
+        wait_state(&rx, |s| !s.overlapped);
+        service.set_dock_panel(Some(panel));
+        wait_state(&rx, |s| s.overlapped);
+        // A window the platform cannot read the frame of says nothing.
+        relay.mock.move_window(WindowId(6), None);
+        wait_state(&rx, |s| !s.overlapped);
+        service.shutdown();
+    }
+
+    #[test]
+    fn our_own_process_windows_never_overlap_the_dock() {
+        let relay = Arc::new(Relay::demo());
+        let (service, rx) = start_relay(relay.clone());
+        wait_state(&rx, resolved);
+        service.set_dock_panel(Some(Rect::new(1000, 1320, 560, 72)));
+        while rx.try_recv().is_ok() {}
+
+        // A window of this very process (the settings window) over the dock.
+        let mut ours = relay.window(WindowId(4));
+        ours.id = WindowId(70);
+        ours.process_id = std::process::id();
+        ours.title = "Stem Settings".into();
+        ours.rect = Some(Rect::new(0, 0, 2560, 1392));
+        relay.emit(PlatformEvent::WindowAdded(ours.clone()));
+        let state = wait_state(&rx, |s| has_window_titled(s, "Stem Settings"));
+        assert!(!state.overlapped);
+        // The same frame on another process's window counts.
+        ours.id = WindowId(71);
+        ours.process_id = 7171;
+        ours.title = "Theirs".into();
+        relay.emit(PlatformEvent::WindowAdded(ours));
+        wait_state(&rx, |s| s.overlapped);
         service.shutdown();
     }
 
