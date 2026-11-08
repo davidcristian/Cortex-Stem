@@ -1,5 +1,5 @@
 /**
- * The frontend's only door to the Rust side (docs/ipc/, contract v1.11).
+ * The frontend's only door to the Rust side (docs/ipc/, contract v1.12).
  *
  * One method per command and one `on` subscription per event (plus
  * `onFileDrag` for Tauri's own file drag events). Components
@@ -8,7 +8,9 @@
  * browser or under Playwright.
  */
 
+import type { AppFolder } from '$lib/ipc/generated/AppFolder';
 import type { AppId } from '$lib/ipc/generated/AppId';
+import type { AppInfo } from '$lib/ipc/generated/AppInfo';
 import type { DockState } from '$lib/ipc/generated/DockState';
 import type { IconKey } from '$lib/ipc/generated/IconKey';
 import type { LaunchTarget } from '$lib/ipc/generated/LaunchTarget';
@@ -69,7 +71,7 @@ export type FileDragEvent =
 export type FileDragHandler = (event: FileDragEvent) => void;
 
 /**
- * Commands and events of docs/ipc/ v1.11. Method names are the command
+ * Commands and events of docs/ipc/ v1.12. Method names are the command
  * names in camelCase; argument order follows the command's argument list.
  *
  * Failed commands reject with a `string` (the Rust error message).
@@ -131,6 +133,19 @@ export interface Backend {
   /** Restore and persist the defaults; Rust emits `dock://settings` and returns what it kept. */
   resetSettings(): Promise<Settings>;
   quit(): Promise<void>;
+  /**
+   * Version, settings file, log file and platform name for the settings
+   * page's About section (docs/ipc/about.md). `logPath` is `''`
+   * while file logging is off.
+   */
+  getAppInfo(): Promise<AppInfo>;
+  /**
+   * Open the log folder (`logs`; its parent while none exists yet) or the
+   * settings file's folder (`settings`) in Explorer (docs/ipc/about.md).
+   * Rejects when there is no such folder in this run (a demo run
+   * saves no settings file) or the shell refused.
+   */
+  openAppFolder(folder: AppFolder): Promise<void>;
   /**
    * Native context menu of one item at `(x, y)`, CSS px relative to the
    * calling dock window's viewport. Rust builds the menu, shows it, runs the

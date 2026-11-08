@@ -682,6 +682,74 @@
           </SettingRow>
         </SettingsCard>
       </section>
+
+      <!-- Where this installation keeps its files, for when something goes
+           wrong. Rust names the files; the buttons
+           ask it to open their folders in Explorer. -->
+      <section aria-labelledby="h-about">
+        <h2 id="h-about">About</h2>
+        <SettingsCard>
+          {#if store.appInfo === null}
+            <p class="about-pending" aria-live="polite">
+              {store.aboutError === null
+                ? 'Loading…'
+                : `Couldn't read the app's details: ${store.aboutError}`}
+            </p>
+          {:else}
+            {@const info = store.appInfo}
+            <div class="about-row" data-row="version">
+              <div class="about-text">
+                <span class="about-label">Stem {info.version}</span>
+                {#if info.platform === 'mock'}
+                  <span class="about-detail">Platform: mock (demo data)</span>
+                {/if}
+              </div>
+            </div>
+            <div class="about-row" data-row="settings">
+              <div class="about-text">
+                <span class="about-label">Settings file</span>
+                <span class="about-detail"><code>{info.settingsPath}</code></span>
+              </div>
+              <div class="actions">
+                <button
+                  type="button"
+                  class="button"
+                  aria-label="Open folder of the settings file"
+                  onclick={() => void store.openAppFolder('settings')}
+                >
+                  Open folder
+                </button>
+              </div>
+            </div>
+            <div class="about-row" data-row="log">
+              <div class="about-text">
+                <span class="about-label">Log file</span>
+                <span class="about-detail">
+                  {#if info.logPath === ''}
+                    File logging is off
+                  {:else}
+                    <code>{info.logPath}</code>
+                  {/if}
+                </span>
+              </div>
+              <div class="actions">
+                <button
+                  type="button"
+                  class="button"
+                  aria-label="Open folder of the log file"
+                  disabled={info.logPath === ''}
+                  onclick={() => void store.openAppFolder('logs')}
+                >
+                  Open folder
+                </button>
+              </div>
+            </div>
+            {#if store.aboutError !== null}
+              <p class="about-error" role="alert">Couldn't open the folder: {store.aboutError}</p>
+            {/if}
+          {/if}
+        </SettingsCard>
+      </section>
     {/if}
   </main>
 
@@ -697,24 +765,19 @@
         </div>
       </div>
     {:else}
-      <div class="meta">
-        <p class="status" data-status={store.status} aria-live="polite">
-          {#if store.status === 'saving'}
-            <span class="dot"></span>Saving…
-          {:else if store.status === 'error'}
-            <span class="dot"></span>Couldn't save: {store.error}
-          {:else if store.status === 'saved'}
-            <svg class="check" viewBox="0 0 16 16" aria-hidden="true">
-              <path d="M3 8.5 6.5 12 13 4.5" />
-            </svg>Saved
-          {:else}
-            <span class="dot"></span>Loading…
-          {/if}
-        </p>
-        <p class="hint">
-          Settings are stored in <code>%APPDATA%\dev.davidcristian.stem\settings.json</code>
-        </p>
-      </div>
+      <p class="status" data-status={store.status} aria-live="polite">
+        {#if store.status === 'saving'}
+          <span class="dot"></span>Saving…
+        {:else if store.status === 'error'}
+          <span class="dot"></span>Couldn't save: {store.error}
+        {:else if store.status === 'saved'}
+          <svg class="check" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M3 8.5 6.5 12 13 4.5" />
+          </svg>Saved
+        {:else}
+          <span class="dot"></span>Loading…
+        {/if}
+      </p>
       <div class="actions">
         <button
           type="button"
@@ -763,6 +826,7 @@
     --track: rgba(255, 255, 255, 0.54);
     --thumb-bg: #454545;
     --scrollbar: rgba(255, 255, 255, 0.35);
+    --error-text: #ff99a4;
     --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2 4.5 6 8.5 10 4.5' fill='none' stroke='%23ffffff' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 
     display: flex;
@@ -790,6 +854,7 @@
     --track: rgba(0, 0, 0, 0.45);
     --thumb-bg: #ffffff;
     --scrollbar: rgba(0, 0, 0, 0.3);
+    --error-text: #c42b1c;
     --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2 4.5 6 8.5 10 4.5' fill='none' stroke='%231b1b1b' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   }
 
@@ -819,6 +884,7 @@
     --track: var(--text);
     --thumb-bg: var(--page-bg);
     --scrollbar: var(--text);
+    --error-text: var(--text);
   }
 
   .top {
@@ -963,10 +1029,51 @@
     gap: 2px;
   }
 
-  .empty {
+  .empty,
+  .about-pending {
     margin: 0;
     padding: 18px 16px;
     color: var(--text-secondary);
+  }
+
+  /* About: the rows of SettingRow, with a path instead of a control's description. */
+  .about-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 16px;
+    min-height: 64px;
+    box-sizing: border-box;
+    padding: 12px 16px;
+  }
+
+  .about-text {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .about-label {
+    font-size: 14px;
+    line-height: 20px;
+  }
+
+  /* A path is read, and copied, whole: it wraps rather than being cut. */
+  .about-detail {
+    margin-top: 2px;
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 16px;
+    overflow-wrap: anywhere;
+  }
+
+  .about-error {
+    margin: 0;
+    padding: 10px 16px;
+    color: var(--error-text);
+    font-size: 12px;
+    line-height: 16px;
+    overflow-wrap: anywhere;
   }
 
   /* Footer */
@@ -981,13 +1088,6 @@
     padding: 10px 28px;
     border-top: 1px solid var(--card-border);
     background: var(--page-bg);
-  }
-
-  .meta {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    min-width: 0;
   }
 
   .status {
@@ -1022,16 +1122,6 @@
     stroke-width: 1.8;
     stroke-linecap: round;
     stroke-linejoin: round;
-  }
-
-  .hint {
-    margin: 0;
-    overflow: hidden;
-    color: var(--text-secondary);
-    font-size: 12px;
-    line-height: 16px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
   code {

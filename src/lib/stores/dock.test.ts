@@ -102,6 +102,10 @@ class FakeBackend implements Backend {
     return this.settings;
   }
   async quit(): Promise<void> {}
+  async getAppInfo() {
+    return { version: '0.0.0', settingsPath: '', logPath: '', platform: 'fake' };
+  }
+  async openAppFolder(): Promise<void> {}
   async showItemMenu(): Promise<void> {}
   async showDockMenu(): Promise<void> {}
   onFileDrag(): Unsubscribe {

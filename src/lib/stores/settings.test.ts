@@ -7,12 +7,14 @@ import type {
   EventHandler,
   Unsubscribe,
 } from '$lib/ipc/backend';
+import type { AppFolder } from '$lib/ipc/generated/AppFolder';
 import type { AppId } from '$lib/ipc/generated/AppId';
+import type { AppInfo } from '$lib/ipc/generated/AppInfo';
 import type { DockItem } from '$lib/ipc/generated/DockItem';
 import type { DockState } from '$lib/ipc/generated/DockState';
 import type { Settings } from '$lib/ipc/generated/Settings';
 import type { ThemeInfo } from '$lib/ipc/generated/ThemeInfo';
-import { defaultSettings, validateSettings } from '$lib/ipc/mock';
+import { defaultSettings, demoAppInfo, validateSettings } from '$lib/ipc/mock';
 
 import { iconId } from './icon-cache';
 import { SettingsStore } from './settings.svelte';
@@ -56,6 +58,8 @@ class FakeBackend implements Backend {
   /** Pending `update_settings` resolvers, oldest first (resolved by the test). */
   readonly pendingUpdates: Array<(settings: Settings) => void> = [];
   failNext: string | null = null;
+  /** What `get_app_info` answers (`null` makes it fail). */
+  appInfo: AppInfo | null = demoAppInfo();
   private readonly handlers = new Map<BackendEvent, Set<(payload: unknown) => void>>();
 
   emit<E extends BackendEvent>(event: E, payload: BackendEvents[E]): void {
@@ -161,6 +165,17 @@ class FakeBackend implements Backend {
     }
     return this.state;
   }
+  async getAppInfo(): Promise<AppInfo> {
+    this.log.push('get_app_info');
+    if (this.appInfo === null) {
+      throw 'no app info';
+    }
+    return { ...this.appInfo };
+  }
+  async openAppFolder(folder: AppFolder): Promise<void> {
+    this.log.push(`open_app_folder:${folder}`);
+    this.check();
+  }
   async getIcon(iconKey: string, size: number): Promise<string | null> {
     this.iconRequests.push(iconId(iconKey, size));
     return this.iconUrls.get(iconKey) ?? null;
@@ -220,11 +235,52 @@ describe('SettingsStore', () => {
       'get_settings',
       'get_theme',
       'get_dock_state',
+      'get_app_info',
     ]);
     expect(store.settings?.pinned.map((p) => p.id)).toEqual(['a', 'b', 'c']);
     expect(store.theme).toEqual(THEME);
     expect(store.dockState).toEqual(snapshot(0));
+    expect(store.appInfo).toEqual(demoAppInfo());
+    expect(store.aboutError).toBeNull();
     expect(store.status).toBe('saved');
+  });
+
+  it('a failed get_app_info leaves the page usable and the About section with a notice', async () => {
+    const backend = new FakeBackend();
+    backend.appInfo = null;
+    const store = new SettingsStore(backend, 150);
+    await store.start();
+    expect(store.status).toBe('saved');
+    expect(store.settings?.pinned).toHaveLength(3);
+    expect(store.appInfo).toBeNull();
+    expect(store.aboutError).toBe('no app info');
+    expect(console.error).toHaveBeenCalledWith('get_app_info failed:', 'no app info');
+  });
+
+  it('openAppFolder asks Rust, touches no save state, and reports a failure in the About section', async () => {
+    const { backend, store } = await started();
+    store.edit((s) => {
+      s.iconSize = 50;
+    });
+    expect(store.status).toBe('saving');
+
+    // Not a settings command: it does not wait for the pending edit.
+    await store.openAppFolder('logs');
+    expect(backend.log.at(-1)).toBe('open_app_folder:logs');
+    expect(backend.pendingUpdates).toHaveLength(0);
+    expect(store.status).toBe('saving');
+    expect(store.aboutError).toBeNull();
+
+    backend.failNext = 'the log folder is unknown on this host';
+    await store.openAppFolder('settings');
+    expect(backend.log.at(-1)).toBe('open_app_folder:settings');
+    expect(store.aboutError).toBe('the log folder is unknown on this host');
+    expect(store.status).toBe('saving');
+    expect(store.error).toBeNull();
+
+    // The next attempt clears the notice.
+    await store.openAppFolder('settings');
+    expect(store.aboutError).toBeNull();
   });
 
   it("keeps the dock state current and finds a pin's item in it", async () => {

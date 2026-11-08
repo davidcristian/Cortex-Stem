@@ -8,7 +8,9 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { getCurrentWebview, type DragDropEvent } from '@tauri-apps/api/webview';
 
+import type { AppFolder } from '$lib/ipc/generated/AppFolder';
 import type { AppId } from '$lib/ipc/generated/AppId';
+import type { AppInfo } from '$lib/ipc/generated/AppInfo';
 import type { DockState } from '$lib/ipc/generated/DockState';
 import type { IconKey } from '$lib/ipc/generated/IconKey';
 import type { LaunchTarget } from '$lib/ipc/generated/LaunchTarget';
@@ -190,6 +192,14 @@ export class TauriBackend implements Backend {
 
   quit(): Promise<void> {
     return invoke<void>('quit');
+  }
+
+  getAppInfo(): Promise<AppInfo> {
+    return invoke<AppInfo>('get_app_info');
+  }
+
+  openAppFolder(folder: AppFolder): Promise<void> {
+    return invoke<void>('open_app_folder', { folder });
   }
 
   showItemMenu(itemKey: string, x: number, y: number): Promise<void> {

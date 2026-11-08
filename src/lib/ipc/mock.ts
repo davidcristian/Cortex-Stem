@@ -1,5 +1,5 @@
 /**
- * `MockBackend`: the whole IPC contract (docs/ipc/ v1.11) without Rust, for
+ * `MockBackend`: the whole IPC contract (docs/ipc/ v1.12) without Rust, for
  * browser runs and Playwright screenshots.
  *
  * It mirrors, deliberately in this one file so the two sides can be compared,
@@ -19,8 +19,10 @@
  * UI directly; the UI only ever sees `DockState` snapshots and `Settings`.
  */
 
+import type { AppFolder } from '$lib/ipc/generated/AppFolder';
 import type { AppId } from '$lib/ipc/generated/AppId';
 import type { AppIdentity } from '$lib/ipc/generated/AppIdentity';
+import type { AppInfo } from '$lib/ipc/generated/AppInfo';
 import type { DockItem } from '$lib/ipc/generated/DockItem';
 import type { DockItemKind } from '$lib/ipc/generated/DockItemKind';
 import type { DockState } from '$lib/ipc/generated/DockState';
@@ -101,8 +103,23 @@ export type MockCall =
   | { type: 'showItemMenu'; itemKey: string; x: number; y: number }
   | { type: 'showDockMenu'; x: number; y: number }
   | { type: 'openSettings' }
+  | { type: 'openAppFolder'; folder: AppFolder }
   | { type: 'setDockHover'; hovering: boolean }
   | { type: 'quit' };
+
+/**
+ * What `get_app_info` answers in a demo run: a mock version, the
+ * paths a real installation has for the user `me`, and the platform name.
+ * The paths are shown, never opened, in a browser.
+ */
+export function demoAppInfo(): AppInfo {
+  return {
+    version: '0.1.0-mock',
+    settingsPath: 'C:\\Users\\me\\AppData\\Roaming\\dev.davidcristian.stem\\settings.json',
+    logPath: 'C:\\Users\\me\\AppData\\Local\\dev.davidcristian.stem\\logs\\stem.log',
+    platform: 'mock',
+  };
+}
 
 // ---------------------------------------------------------------------------
 // 0. Pure helpers mirrored from stem-core (model.rs, settings.rs)
@@ -1108,6 +1125,8 @@ export class MockBackend implements Backend {
    */
   readonly calls: MockCall[] = [];
   private readonly fileDragHandlers = new Set<FileDragHandler>();
+  /** What `getAppInfo` answers; `setAppInfo` changes it. */
+  private appInfo: AppInfo = demoAppInfo();
 
   constructor(options: MockOptions = {}) {
     const scenario = SCENARIOS[options.scenario ?? 'default']();
@@ -1375,6 +1394,19 @@ export class MockBackend implements Backend {
     });
   }
 
+  /** `get_app_info`: the demo facts, unless `setAppInfo` changed them. */
+  getAppInfo(): Promise<AppInfo> {
+    return this.command(() => ({ ...this.appInfo }));
+  }
+
+  /** `open_app_folder`: a browser opens no Explorer; the request is recorded. */
+  openAppFolder(folder: AppFolder): Promise<void> {
+    return this.command(() => {
+      this.record({ type: 'openAppFolder', folder });
+      this.log(`open_app_folder(${folder})`);
+    });
+  }
+
   on<E extends BackendEvent>(event: E, handler: EventHandler<E>): Unsubscribe {
     let set = this.listeners[event] as Set<EventHandler<E>> | undefined;
     if (!set) {
@@ -1445,6 +1477,15 @@ export class MockBackend implements Backend {
   /** Make the next command reject with `message` (what a Rust error looks like across IPC). */
   failNextCommand(message: string): void {
     this.failNext = message;
+  }
+
+  /**
+   * Change what `get_app_info` answers from now on: a run with file
+   * logging off is `{ logPath: '' }`. The settings page asks once at start,
+   * so set it before the page's store starts.
+   */
+  setAppInfo(info: Partial<AppInfo>): void {
+    this.appInfo = { ...this.appInfo, ...info };
   }
 
   pushWindow(raw: RawWindow): void {

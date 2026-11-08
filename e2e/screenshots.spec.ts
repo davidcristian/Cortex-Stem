@@ -2,6 +2,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 
 import { expect, test, type Locator, type Page } from '@playwright/test';
 
+import type { AppInfo } from '../src/lib/ipc/generated/AppInfo';
 import type { RawWindow } from '../src/lib/ipc/generated/RawWindow';
 import type { Rect } from '../src/lib/ipc/generated/Rect';
 import type { Settings } from '../src/lib/ipc/generated/Settings';
@@ -48,6 +49,8 @@ interface DemoWindow {
     setTheme: (theme: ThemeInfo) => void;
     /** `dock://show`: the tray or the shortcut pressed while the panel is auto-hidden. */
     requestShow: () => void;
+    /** What `get_app_info` answers from now on. */
+    setAppInfo: (info: Partial<AppInfo>) => void;
   };
 }
 
@@ -174,6 +177,15 @@ function patchSettings(page: Page, patch: SettingsPatch): Promise<void> {
 function runningAnimations(page: Page): Promise<number> {
   return page.evaluate(
     () => document.getAnimations().filter((a) => a.playState === 'running').length,
+  );
+}
+
+/** The folders `open_app_folder` was asked for so far, in order. */
+function folderCalls(page: Page): Promise<unknown[]> {
+  return page.evaluate(() =>
+    ((window as unknown as DemoWindow).__dockMock?.calls ?? [])
+      .filter((c) => c.type === 'openAppFolder')
+      .map((c) => c.folder),
   );
 }
 
@@ -2680,6 +2692,91 @@ test.describe('settings window', () => {
     await expect(page.locator('output[for="icon-size"]')).toHaveText('48 px');
     await expect(page.locator('.empty')).toHaveText('Nothing is pinned yet.');
     await expect(page.locator('.status')).toHaveText('Saved');
+  });
+
+  test('About shows the version and the files, and each Open folder asks Rust for its folder', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openSettings(page);
+    const about = page.locator('section[aria-labelledby="h-about"]');
+    const row = (name: string): Locator => about.locator(`.about-row[data-row="${name}"]`);
+    await expect(about.locator('h2')).toHaveText('About');
+    await expect(row('version').locator('.about-label')).toHaveText('Stem 0.1.0-mock');
+    await expect(row('version').locator('.about-detail')).toHaveText('Platform: mock (demo data)');
+    await expect(row('settings').locator('.about-label')).toHaveText('Settings file');
+    await expect(row('settings').locator('code')).toHaveText(
+      'C:\\Users\\me\\AppData\\Roaming\\dev.davidcristian.stem\\settings.json',
+    );
+    await expect(row('log').locator('.about-label')).toHaveText('Log file');
+    await expect(row('log').locator('code')).toHaveText(
+      'C:\\Users\\me\\AppData\\Local\\dev.davidcristian.stem\\logs\\stem.log',
+    );
+    // The About section replaces the footer's old line about the file.
+    await expect(page.locator('footer')).not.toContainText('settings.json');
+    // The section is the last one on the page.
+    await expect(page.locator('main section').last()).toHaveAttribute('aria-labelledby', 'h-about');
+
+    const openSettingsFolder = page.getByRole('button', {
+      name: 'Open folder of the settings file',
+    });
+    const openLogFolder = page.getByRole('button', { name: 'Open folder of the log file' });
+    await expect(openSettingsFolder).toHaveText('Open folder');
+    await expect(openLogFolder).toBeEnabled();
+    await openSettingsFolder.click();
+    await expect.poll(() => folderCalls(page)).toEqual(['settings']);
+    await openLogFolder.click();
+    await expect.poll(() => folderCalls(page)).toEqual(['settings', 'logs']);
+    await expect(about.locator('[role="alert"]')).toHaveCount(0);
+    // Opening a folder saves nothing.
+    await expect(page.locator('.status')).toHaveText('Saved');
+
+    // A refusal from Rust is the section's own notice, not the save status.
+    await page.evaluate((message) => {
+      (window as unknown as DemoWindow).__dockMock?.failNextCommand(message);
+    }, 'the log folder is unknown on this host');
+    await openLogFolder.click();
+    await expect(about.locator('[role="alert"]')).toHaveText(
+      "Couldn't open the folder: the log folder is unknown on this host",
+    );
+    await expect(page.locator('.status')).toHaveText('Saved');
+    // A refused command never reached the mock's job, so nothing was recorded.
+    expect(await folderCalls(page)).toEqual(['settings', 'logs']);
+    await about.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: `${OUT}/settings-about.png` });
+
+    // The next attempt clears the notice.
+    await openLogFolder.click();
+    await expect.poll(() => folderCalls(page)).toEqual(['settings', 'logs', 'logs']);
+    await expect(about.locator('[role="alert"]')).toHaveCount(0);
+  });
+
+  test('About says when file logging is off and keeps that button disabled', async ({ page }) => {
+    // The page asks `get_app_info` once, as its store starts, so the mock's
+    // answer is changed the moment the page exposes the mock (`exposeMock`,
+    // before the store starts): a run started with *Write a log file* off.
+    await page.addInitScript(() => {
+      let backend: { setAppInfo: (info: { logPath: string }) => void } | undefined;
+      Object.defineProperty(window, '__dockMock', {
+        configurable: true,
+        get: () => backend,
+        set: (value: typeof backend) => {
+          backend = value;
+          backend?.setAppInfo({ logPath: '' });
+        },
+      });
+    });
+    await openSettings(page);
+    const row = page.locator('.about-row[data-row="log"]');
+    await expect(row.locator('.about-detail')).toHaveText('File logging is off');
+    await expect(row.locator('code')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Open folder of the log file' })).toBeDisabled();
+    await expect(
+      page.getByRole('button', { name: 'Open folder of the settings file' }),
+    ).toBeEnabled();
+    await expect(page.locator('.about-row[data-row="version"] .about-label')).toHaveText(
+      'Stem 0.1.0-mock',
+    );
   });
 
   test('each fixed item has a switch that applies at once', async ({ page }) => {

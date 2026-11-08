@@ -11,6 +11,7 @@ import {
   appIdForExe,
   colorFor,
   defaultSettings,
+  demoAppInfo,
   fileStem,
   MockBackend,
   nothingToRecycle,
@@ -536,6 +537,30 @@ describe('revisions and events', () => {
     const b = fast();
     await b.openSettings();
     expect(b.calls).toEqual([{ type: 'openSettings' }]);
+  });
+
+  it('getAppInfo answers the demo facts until setAppInfo changes them; openAppFolder is recorded', async () => {
+    const b = fast();
+    expect(await b.getAppInfo()).toEqual(demoAppInfo());
+    expect(await b.getAppInfo()).toEqual({
+      version: '0.1.0-mock',
+      settingsPath: 'C:\\Users\\me\\AppData\\Roaming\\dev.davidcristian.stem\\settings.json',
+      logPath: 'C:\\Users\\me\\AppData\\Local\\dev.davidcristian.stem\\logs\\stem.log',
+      platform: 'mock',
+    });
+    // A run with file logging off; the other facts stay.
+    b.setAppInfo({ logPath: '' });
+    expect(await b.getAppInfo()).toEqual({ ...demoAppInfo(), logPath: '' });
+
+    const states = recordStates(b);
+    await b.openAppFolder('settings');
+    await b.openAppFolder('logs');
+    expect(b.calls).toEqual([
+      { type: 'openAppFolder', folder: 'settings' },
+      { type: 'openAppFolder', folder: 'logs' },
+    ]);
+    // Nothing in the snapshot or the settings changes.
+    expect(states).toHaveLength(0);
   });
 
   it('setDockAutoHidden records each report; requestShow emits dock://show with no payload', async () => {

@@ -1,7 +1,8 @@
 /**
  * Reactive owner of the settings window: the current `Settings`,
  * the OS theme, the dock's state (for the names and icons of the pinned
- * apps), and a save pipeline that applies edits live.
+ * apps), the installation's facts for the About section,
+ * and a save pipeline that applies edits live.
  *
  * Edits are optimistic on screen and sent as one `update_settings` after a
  * short debounce; the value Rust returns (validated, clamped) replaces the
@@ -13,7 +14,9 @@
 import { SvelteMap } from 'svelte/reactivity';
 
 import { isShellIconKey, type Backend, type Unsubscribe } from '$lib/ipc/backend';
+import type { AppFolder } from '$lib/ipc/generated/AppFolder';
 import type { AppId } from '$lib/ipc/generated/AppId';
+import type { AppInfo } from '$lib/ipc/generated/AppInfo';
 import type { DockItem } from '$lib/ipc/generated/DockItem';
 import type { DockState } from '$lib/ipc/generated/DockState';
 import type { IconKey } from '$lib/ipc/generated/IconKey';
@@ -39,6 +42,18 @@ export class SettingsStore {
   status = $state<SaveStatus>('loading');
   /** Message of the last failed command, for the footer. */
   error = $state<string | null>(null);
+  /**
+   * Version, settings file, log file and platform name for the About
+   * section: `null` until `get_app_info` has answered (the facts
+   * do not change during a run, so it is asked once).
+   */
+  appInfo = $state.raw<AppInfo | null>(null);
+  /**
+   * The About section's own notice: why its facts are missing, or why the
+   * last *Open folder* failed. Cleared by the next attempt. Kept
+   * apart from `error`, which is about saving.
+   */
+  aboutError = $state<string | null>(null);
   /** Resolved icons by `iconId(key, size)`: a data URL, or `null` when there is none. */
   readonly icons = new SvelteMap<string, string | null>();
 
@@ -84,10 +99,11 @@ export class SettingsStore {
         this.applyState(s);
       }),
     ];
-    const [settings, theme, state] = await Promise.allSettled([
+    const [settings, theme, state, info] = await Promise.allSettled([
       this.backend.getSettings(),
       this.backend.getTheme(),
       this.backend.getDockState(),
+      this.backend.getAppInfo(),
     ]);
     if (settings.status === 'fulfilled') {
       if (!this.busy) {
@@ -107,6 +123,29 @@ export class SettingsStore {
     } else {
       // The page still works without it: pins show their id and a placeholder.
       console.error('get_dock_state failed:', state.reason);
+    }
+    if (info.status === 'fulfilled') {
+      this.appInfo = info.value;
+    } else {
+      // The rest of the page works; the About section says why it is empty.
+      this.aboutError = describeError(info.reason);
+      console.error('get_app_info failed:', info.reason);
+    }
+  }
+
+  /**
+   * Open the log folder or the settings file's folder in Explorer.
+   * Not a settings command: it changes no document, so it waits for nothing
+   * and leaves the save status alone; a failure is the About section's
+   * notice.
+   */
+  async openAppFolder(folder: AppFolder): Promise<void> {
+    this.aboutError = null;
+    try {
+      await this.backend.openAppFolder(folder);
+    } catch (err) {
+      this.aboutError = describeError(err);
+      console.error(`open_app_folder(${folder}) failed:`, err);
     }
   }
 
