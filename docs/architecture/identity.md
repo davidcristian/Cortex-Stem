@@ -82,3 +82,36 @@ command layer logs the error and shows it once. `Activate` skips the
 restore that would be blocked and calls `SetForegroundWindow`, which is not
 a message and normally succeeds (an elevated Task Manager activates). Every
 line the platform logs about this is at `debug`.
+
+## Virtual desktops
+
+For every eligible window, the platform asks the shell whether the window is
+on the current virtual desktop
+(`IVirtualDesktopManager::IsWindowOnCurrentVirtualDesktop`,
+`windows::virtual_desktop`). The value is reported as
+`RawWindow::on_current_desktop`. The cloak flags alone
+do not show the desktop, because the shell also cloaks windows during a
+desktop-switch animation, suspended Store apps and the frame a closed Store
+app can leave behind.
+
+Eligibility does not change: a shell-cloaked window is still listed, with
+`is_cloaked = true`. The engine uses the value for
+`behavior.showOnlyCurrentDesktop` and falls back to the cloak state when it
+is `None`. The value is `None` when the querying
+thread has no manager, and for a window of another session or of a
+protected process, whose failed query is logged once per window
+(`rules::events::DesktopQueryFailures`).
+
+The manager is a COM object, so it is kept per thread. The events thread
+enables one inside its COM apartment: the first query creates it, it is
+released before the apartment, and each full enumeration replaces it with
+a new one. Other threads report `None`.
+
+A desktop switch has no event of its own. The shell cloaks and uncloaks the
+windows of both desktops in a burst, and each of those events queries its
+window again as usual. The second cloak or uncloak event within 100 ms
+(`rules::events::DesktopSwitchDetector`) starts one 400 ms timer, after
+which the thread emits one `WindowsSnapshot`. So nothing stays wrong when
+many windows change at once or a value was read during the switch. As a
+result, a Store app's leftover frame on the current desktop is listed until
+the shell removes it.
