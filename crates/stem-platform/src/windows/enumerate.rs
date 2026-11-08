@@ -43,15 +43,22 @@
 //!   the same variant types) and is always cleared.
 //! - `icon_key` is `hwnd:<id>:<pid>` (`rules::identity::hwnd_icon_key`,
 //!   resolved by `icons`); `monitor` comes from `monitors::monitor_for_window`.
+//! - `rect` is [`window_frame`]: the DWM extended frame bounds, the
+//!   visible frame without the invisible resize borders `GetWindowRect`
+//!   includes on Windows 10+, with `GetWindowRect` as the fallback when DWM
+//!   refuses. Physical pixels of the virtual desktop. It is read whenever
+//!   the window is queried, not on every move: the events thread hooks
+//!   location changes for the foreground window only (`windows::fullscreen`).
 
 use std::path::PathBuf;
 
-use stem_core::RawWindow;
+use stem_core::{RawWindow, Rect};
 use windows::Win32::Foundation::{
-    APPMODEL_ERROR_NO_APPLICATION, ERROR_INSUFFICIENT_BUFFER, HWND, LPARAM,
+    APPMODEL_ERROR_NO_APPLICATION, ERROR_INSUFFICIENT_BUFFER, HWND, LPARAM, RECT,
 };
 use windows::Win32::Graphics::Dwm::{
-    DWM_CLOAKED_APP, DWM_CLOAKED_INHERITED, DWM_CLOAKED_SHELL, DWMWA_CLOAKED, DwmGetWindowAttribute,
+    DWM_CLOAKED_APP, DWM_CLOAKED_INHERITED, DWM_CLOAKED_SHELL, DWMWA_CLOAKED,
+    DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute,
 };
 use windows::Win32::Storage::EnhancedStorage::PKEY_AppUserModel_ID;
 use windows::Win32::Storage::Packaging::Appx::{
@@ -63,8 +70,9 @@ use windows::Win32::System::Threading::{
 use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyStore, SHGetPropertyStoreForWindow};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GA_ROOT, GW_OWNER, GWL_EXSTYLE, GetAncestor, GetClassNameW, GetWindow,
-    GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
-    IsWindow, IsWindowVisible, WINDOW_EX_STYLE, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+    GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
+    GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, WINDOW_EX_STYLE,
+    WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
 };
 use windows::core::{BOOL, PWSTR};
 
@@ -204,9 +212,42 @@ impl QueryContext {
             is_minimized: probe.is_minimized,
             is_cloaked,
             monitor: monitors::monitor_for_window(hwnd),
+            rect: window_frame(hwnd),
             icon_key: Some(hwnd_icon_key(id.0, probe.facts.process_id)),
         })
     }
+}
+
+/// The window's frame in screen coordinates (physical pixels): the DWM
+/// extended frame bounds, else `GetWindowRect` when DWM refuses (desktop
+/// composition off, some cloaked windows). `None` when both fail, which
+/// means a dead handle. Reads cached state only; nothing is sent to the
+/// window's thread.
+pub(super) fn window_frame(hwnd: HWND) -> Option<Rect> {
+    let mut rect = RECT::default();
+    let out = std::ptr::from_mut(&mut rect).cast::<core::ffi::c_void>();
+    // SAFETY: `out` addresses a RECT and the size passed is exactly that of a RECT.
+    let dwm = unsafe {
+        DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_EXTENDED_FRAME_BOUNDS,
+            out,
+            size_of::<RECT>() as u32,
+        )
+    };
+    if dwm.is_err() {
+        // SAFETY: `rect` is a live out-pointer for the duration of the call.
+        if let Err(e) = unsafe { GetWindowRect(hwnd, &mut rect) } {
+            log::trace!("no frame for window {:#x}: {e}", hwnd.0 as isize);
+            return None;
+        }
+    }
+    Some(Rect::new(
+        rect.left,
+        rect.top,
+        rect.right - rect.left,
+        rect.bottom - rect.top,
+    ))
 }
 
 /// The cheap facts (no process handle, no COM).
@@ -288,7 +329,8 @@ fn cloak_flags(hwnd: HWND) -> u32 {
     }
 }
 
-fn class_name(hwnd: HWND) -> String {
+/// `GetClassNameW`; empty for a dead handle. Shared with `fullscreen`.
+pub(super) fn class_name(hwnd: HWND) -> String {
     let mut buf = [0u16; MAX_CLASS_CHARS];
     // SAFETY: `buf` is a writable slice; the API writes at most its length
     // (including the NUL) and returns the number of characters copied.
@@ -300,8 +342,9 @@ fn class_name(hwnd: HWND) -> String {
 }
 
 /// The window caption. For windows of other processes this reads the cached
-/// text and cannot block on a hung application (see the module notes).
-fn window_title(hwnd: HWND) -> String {
+/// text and cannot block on a hung application (see the module notes); do
+/// not call it for windows of our own process. Shared with `fullscreen`.
+pub(super) fn window_title(hwnd: HWND) -> String {
     // SAFETY: GetWindowTextLengthW accepts any handle value.
     let len = unsafe { GetWindowTextLengthW(hwnd) };
     if len <= 0 {

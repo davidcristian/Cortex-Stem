@@ -42,6 +42,10 @@ pub const EVENT_OBJECT_CREATE: u32 = 0x8000;
 pub const EVENT_OBJECT_DESTROY: u32 = 0x8001;
 pub const EVENT_OBJECT_SHOW: u32 = 0x8002;
 pub const EVENT_OBJECT_HIDE: u32 = 0x8003;
+/// Hooked on its own by the fullscreen tracker, with a callback that
+/// keeps only the foreground window's moves; it is not in the translation
+/// table and never reaches [`event_intent`].
+pub const EVENT_OBJECT_LOCATIONCHANGE: u32 = 0x800B;
 pub const EVENT_OBJECT_NAMECHANGE: u32 = 0x800C;
 pub const EVENT_OBJECT_CLOAKED: u32 = 0x8017;
 pub const EVENT_OBJECT_UNCLOAKED: u32 = 0x8018;
@@ -232,9 +236,10 @@ mod tests {
         assert_eq!(event_intent(EVENT_OBJECT_CLOAKED), Intent::Updated);
         assert_eq!(event_intent(EVENT_OBJECT_UNCLOAKED), Intent::Updated);
         assert_eq!(event_intent(EVENT_SYSTEM_FOREGROUND), Intent::Foreground);
-        // EVENT_OBJECT_LOCATIONCHANGE and friends are never hooked, but a
-        // stray id must still be harmless.
-        assert_eq!(event_intent(0x800B), Intent::Ignore);
+        // EVENT_OBJECT_LOCATIONCHANGE has its own hook and callback;
+        // in the table it, like any stray id, must be harmless.
+        assert_eq!(EVENT_OBJECT_LOCATIONCHANGE, 0x800B);
+        assert_eq!(event_intent(EVENT_OBJECT_LOCATIONCHANGE), Intent::Ignore);
         assert_eq!(event_intent(0), Intent::Ignore);
     }
 
@@ -255,7 +260,8 @@ mod tests {
         for &event in &hooked {
             assert!(event_name(event).starts_with("EVENT_"), "{event:#06x}");
         }
-        assert_eq!(event_name(0x800B), "an unhooked event");
+        assert_eq!(event_name(EVENT_OBJECT_LOCATIONCHANGE), "an unhooked event");
+        assert!(!hooked.contains(&EVENT_OBJECT_LOCATIONCHANGE));
         hooked.sort_unstable();
         hooked.dedup();
         assert_eq!(

@@ -20,12 +20,14 @@
 //! - `dock_window` extended styles + subclass of our own windows
 //! - `hit_test`    cursor-tracking thread for the hit region
 //! - `taskbar`     the stock taskbar's auto-hide state
+//! - `fullscreen`  does the foreground window own the screen
 
 pub mod actions;
 pub mod appbar;
 pub mod dock_window;
 pub mod enumerate;
 pub mod events;
+pub mod fullscreen;
 pub mod hit_test;
 pub mod icons;
 pub mod identity;

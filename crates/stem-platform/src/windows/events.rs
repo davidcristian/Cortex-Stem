@@ -27,6 +27,20 @@
 //! - `WM_DISPLAYCHANGE`/`WM_DPICHANGED` -> `MonitorsChanged` + `WindowsSnapshot`.
 //! - `WM_SETTINGCHANGE` ("ImmersiveColorSet") and `WM_DWMCOLORIZATIONCOLORCHANGED`
 //!   -> `ThemeChanged` (via `theme::current_theme`).
+//! - Fullscreen: the thread keeps the platform's verdict on whether
+//!   the foreground window owns the whole screen (`fullscreen::evaluate`
+//!   over `rules::fullscreen`) and emits `FullscreenChanged` when it
+//!   changes, plus once right after the start snapshot. It is re-evaluated
+//!   on every foreground report (WinEvent or shell hook, our own windows
+//!   included), on a display change, and whenever the foreground window
+//!   moves or resizes: one more `SetWinEventHook`, for
+//!   `EVENT_OBJECT_LOCATIONCHANGE` alone, whose callback keeps only
+//!   `OBJID_WINDOW`/`CHILDID_SELF` reports about the window this thread last
+//!   saw in the foreground and posts. Each trigger arms one
+//!   [`FULLSCREEN_SETTLE`] timer (150 ms) if none is running, so a burst (F11
+//!   in a browser fires dozens of location changes) costs one evaluation,
+//!   against the live `GetForegroundWindow`. `info` on each change
+//!   (`fullscreen on: <class> <title>` / `fullscreen off`).
 //! - A second thread (`dock-recycle-bin`, [`RecycleBinPoller`]) polls
 //!   `recycle_bin::query` every [`RECYCLE_BIN_POLL`] and emits
 //!   `RecycleBinChanged` on change. `SHQueryRecycleBinW(NULL)` walks every
@@ -62,7 +76,9 @@
 //! through the thread's own queue makes that static unnecessary, so nothing
 //! here assumes a single instance (each thread has its own queue). The only
 //! process-wide value is the registered `SHELLHOOK` message id, which is a
-//! per-process constant by definition.
+//! per-process constant by definition. The location hook's filter needs the
+//! last foreground window inside its callback; that is a thread-local
+//! ([`FOREGROUND_HWND`]), written by the loop on the same thread.
 //!
 //! **Translation.** The event → intent table and the title debounce policy
 //! live in `rules::events` and are unit-tested on Linux. `WindowRemoved` is
@@ -88,6 +104,7 @@
 //! `JoinHandle`s and channel ends; raw handles (`HWND`, `HWINEVENTHOOK`,
 //! timer ids) are `!Send` and never leave the events thread.
 
+use std::cell::Cell;
 use std::collections::HashSet;
 use std::sync::{Arc, OnceLock};
 use std::thread::JoinHandle;
@@ -100,21 +117,24 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
-use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent};
+use windows::Win32::UI::Accessibility::{
+    HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent, WINEVENTPROC,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     CHILDID_SELF, CreateWindowExW, DefWindowProcW, DeregisterShellHookWindow, DestroyWindow,
     DispatchMessageW, EVENT_OBJECT_CLOAKED, EVENT_OBJECT_CREATE, EVENT_OBJECT_DESTROY,
-    EVENT_OBJECT_HIDE, EVENT_OBJECT_NAMECHANGE, EVENT_OBJECT_SHOW, EVENT_OBJECT_UNCLOAKED,
-    EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZEEND, EVENT_SYSTEM_MINIMIZESTART, GA_ROOT,
-    GetAncestor, GetMessageW, HSHELL_HIGHBIT, HSHELL_REDRAW, HSHELL_WINDOWACTIVATED,
-    HSHELL_WINDOWCREATED, KillTimer, MSG, OBJID_WINDOW, PostThreadMessageW, RegisterClassExW,
-    RegisterShellHookWindow, RegisterWindowMessageW, SPI_SETWORKAREA, SetTimer, TranslateMessage,
-    UnregisterClassW, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_APP, WM_DISPLAYCHANGE,
+    EVENT_OBJECT_HIDE, EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_NAMECHANGE, EVENT_OBJECT_SHOW,
+    EVENT_OBJECT_UNCLOAKED, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZEEND,
+    EVENT_SYSTEM_MINIMIZESTART, GA_ROOT, GetAncestor, GetForegroundWindow, GetMessageW,
+    HSHELL_HIGHBIT, HSHELL_REDRAW, HSHELL_WINDOWACTIVATED, HSHELL_WINDOWCREATED, KillTimer, MSG,
+    OBJID_WINDOW, PostThreadMessageW, RegisterClassExW, RegisterShellHookWindow,
+    RegisterWindowMessageW, SPI_SETWORKAREA, SetTimer, TranslateMessage, UnregisterClassW,
+    WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_APP, WM_DISPLAYCHANGE,
     WM_DWMCOLORIZATIONCOLORCHANGED, WM_QUIT, WM_SETTINGCHANGE, WM_THEMECHANGED, WM_TIMER,
     WNDCLASSEXW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
 };
 
-use super::{actions, enumerate, monitors, recycle_bin, theme, util};
+use super::{actions, enumerate, fullscreen, monitors, recycle_bin, theme, util};
 use crate::rules::events::{self as rules, Intent, TitleDebouncer, TopLevel};
 use crate::rules::recheck::{self, Check, RecheckSchedule, Scheduled};
 use crate::{EventSink, PlatformError, PlatformResult};
@@ -132,6 +152,7 @@ const _: () = {
     assert!(rules::EVENT_OBJECT_NAMECHANGE == EVENT_OBJECT_NAMECHANGE);
     assert!(rules::EVENT_OBJECT_CLOAKED == EVENT_OBJECT_CLOAKED);
     assert!(rules::EVENT_OBJECT_UNCLOAKED == EVENT_OBJECT_UNCLOAKED);
+    assert!(rules::EVENT_OBJECT_LOCATIONCHANGE == EVENT_OBJECT_LOCATIONCHANGE);
     assert!(rules::OBJID_WINDOW == OBJID_WINDOW.0);
     assert!(rules::CHILDID_SELF == CHILDID_SELF as i32);
     assert!(rules::HSHELL_WINDOWCREATED == HSHELL_WINDOWCREATED);
@@ -150,6 +171,8 @@ const MSG_SHELLHOOK: u32 = WM_APP + 2;
 const MSG_SETTINGCHANGE: u32 = WM_APP + 3;
 const MSG_THEMECHANGE: u32 = WM_APP + 4;
 const MSG_DISPLAYCHANGE: u32 = WM_APP + 5;
+/// The foreground window moved or resized; `lParam` = its `HWND`.
+const MSG_LOCATIONCHANGE: u32 = WM_APP + 6;
 
 const CLASS_NAME: &str = "DockPlatformEvents";
 const WINDOW_TITLE: &str = "Stem platform events";
@@ -157,11 +180,22 @@ const SHELL_HOOK_MESSAGE_NAME: &str = "SHELLHOOK";
 
 /// How often the Recycle Bin is queried (on its own thread).
 pub const RECYCLE_BIN_POLL: Duration = Duration::from_secs(5);
+/// How long after a foreground or location report the fullscreen verdict
+/// is taken: one evaluation per burst, after the geometry settled.
+pub const FULLSCREEN_SETTLE: Duration = Duration::from_millis(150);
 const START_TIMEOUT: Duration = Duration::from_secs(5);
 const STOP_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// `RegisterWindowMessageW("SHELLHOOK")`: a per-process constant.
 static SHELL_HOOK_MESSAGE: OnceLock<u32> = OnceLock::new();
+
+thread_local! {
+    /// The foreground window as the events thread last saw it (the raw
+    /// `HWND` value; 0 for none), for the location hook's callback, which
+    /// runs on this thread and has no user pointer. Written by the loop on
+    /// each foreground report and each evaluation.
+    static FOREGROUND_HWND: Cell<isize> = const { Cell::new(0) };
+}
 
 /// Handle to the running event thread and its recycle-bin poller. Dropping
 /// it without `stop` asks both threads to quit but does not wait for them;
@@ -362,7 +396,16 @@ fn thread_main(sink: EventSink, ready: &Sender<PlatformResult<u32>>, done: &Send
 struct WinEventHook(HWINEVENTHOOK);
 
 impl WinEventHook {
+    /// A hook for the translation table's events, delivered to [`win_event_proc`].
     fn install(event_min: u32, event_max: u32) -> PlatformResult<Self> {
+        Self::install_with(event_min, event_max, Some(win_event_proc))
+    }
+
+    fn install_with(
+        event_min: u32,
+        event_max: u32,
+        callback: WINEVENTPROC,
+    ) -> PlatformResult<Self> {
         // SAFETY: the callback is a static `extern "system"` function with the
         // WINEVENTPROC signature; out-of-context hooks need no module handle.
         let hook = unsafe {
@@ -370,7 +413,7 @@ impl WinEventHook {
                 event_min,
                 event_max,
                 None,
-                Some(win_event_proc),
+                callback,
                 0,
                 0,
                 WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
@@ -539,6 +582,10 @@ struct ThreadState {
     /// The timer armed for a re-check, with the due time (ms) it was armed
     /// for; never later than `rechecks.next_due()`.
     recheck_timer: Option<(ThreadTimer, u64)>,
+    /// The last fullscreen verdict emitted; `None` before the first.
+    fullscreen: Option<bool>,
+    /// The [`FULLSCREEN_SETTLE`] timer, while an evaluation is pending.
+    fullscreen_timer: Option<ThreadTimer>,
     last_theme: Option<ThemeInfo>,
     _hooks: Vec<WinEventHook>,
     _window: EventWindow,
@@ -549,10 +596,16 @@ impl ThreadState {
     fn setup(sink: EventSink) -> PlatformResult<Self> {
         let com = util::ComApartment::sta();
         let window = EventWindow::create()?;
-        let mut hooks = Vec::with_capacity(rules::HOOK_RANGES.len());
+        let mut hooks = Vec::with_capacity(rules::HOOK_RANGES.len() + 1);
         for &(min, max) in rules::HOOK_RANGES {
             hooks.push(WinEventHook::install(min, max)?);
         }
+        // The foreground window's moves, through their own callback.
+        hooks.push(WinEventHook::install_with(
+            EVENT_OBJECT_LOCATIONCHANGE,
+            EVENT_OBJECT_LOCATIONCHANGE,
+            Some(location_event_proc),
+        )?);
         // SAFETY: GetCurrentThreadId has no preconditions.
         let thread_id = unsafe { GetCurrentThreadId() };
         Ok(Self {
@@ -564,6 +617,8 @@ impl ThreadState {
             title_timer: None,
             rechecks: RecheckSchedule::default(),
             recheck_timer: None,
+            fullscreen: None,
+            fullscreen_timer: None,
             last_theme: None,
             _hooks: hooks,
             _window: window,
@@ -580,7 +635,8 @@ impl ThreadState {
     }
 
     /// Same order as the mock platform (monitors, theme, windows,
-    /// foreground), minus the recycle bin, which the poll thread emits.
+    /// foreground), minus the recycle bin, which the poll thread emits; then
+    /// the first fullscreen verdict, so the engine starts right.
     fn emit_initial(&mut self) {
         self.emit_monitors();
         self.refresh_theme(true);
@@ -588,6 +644,7 @@ impl ThreadState {
         self.emit(PlatformEvent::ForegroundChanged(
             actions::foreground_window(),
         ));
+        self.check_fullscreen();
     }
 
     fn run(&mut self) {
@@ -634,7 +691,10 @@ impl ThreadState {
             MSG_DISPLAYCHANGE => {
                 self.emit_monitors();
                 self.emit_snapshot();
+                // The monitor bounds a frame is judged against changed.
+                self.schedule_fullscreen_check();
             }
+            MSG_LOCATIONCHANGE => self.schedule_fullscreen_check(),
             WM_TIMER => self.on_timer(msg.wParam.0),
             _ => {}
         }
@@ -693,6 +753,52 @@ impl ThreadState {
         {
             self.run_rechecks();
         }
+        if self
+            .fullscreen_timer
+            .as_ref()
+            .is_some_and(|t| t.id() == timer_id)
+        {
+            self.check_fullscreen();
+        }
+    }
+
+    /// Something that can change the fullscreen verdict happened:
+    /// make sure one evaluation runs [`FULLSCREEN_SETTLE`] from now. A timer
+    /// already armed is kept, so a burst costs one evaluation; when no timer
+    /// can be had the evaluation runs at once rather than never.
+    fn schedule_fullscreen_check(&mut self) {
+        if self.fullscreen_timer.is_some() {
+            return;
+        }
+        match ThreadTimer::start(FULLSCREEN_SETTLE) {
+            Some(timer) => self.fullscreen_timer = Some(timer),
+            None => self.check_fullscreen(),
+        }
+    }
+
+    /// Judge the live foreground window and emit `FullscreenChanged`
+    /// when the verdict differs from the last one emitted, or when it is the
+    /// first.
+    fn check_fullscreen(&mut self) {
+        // Thread timers repeat; this one is one-shot.
+        self.fullscreen_timer = None;
+        // SAFETY: GetForegroundWindow has no preconditions; NULL is a valid answer.
+        let foreground = unsafe { GetForegroundWindow() };
+        FOREGROUND_HWND.with(|f| f.set(foreground.0 as isize));
+        let verdict = fullscreen::evaluate(foreground);
+        if self.fullscreen == Some(verdict.fullscreen) {
+            return;
+        }
+        let first = self.fullscreen.is_none();
+        self.fullscreen = Some(verdict.fullscreen);
+        if verdict.fullscreen {
+            log::info!("fullscreen on: {} {:?}", verdict.class_name, verdict.title);
+        } else if first {
+            log::debug!("fullscreen off at start");
+        } else {
+            log::info!("fullscreen off");
+        }
+        self.emit(PlatformEvent::FullscreenChanged(verdict.fullscreen));
     }
 
     /// Re-query a window and report it as added, updated or removed, and
@@ -844,6 +950,11 @@ impl ThreadState {
         // A foreground change is when a dock that has silently
         // dropped out of the topmost band gets covered; the check is posted.
         super::dock_window::assert_topmost_all();
+        // The location hook filters for this window from now on, and
+        // the verdict is taken once the switch has settled. Our own windows
+        // count too: the settings window in front of a game ends fullscreen.
+        FOREGROUND_HWND.with(|f| f.set(hwnd.0 as isize));
+        self.schedule_fullscreen_check();
         if !hwnd.is_invalid() && util::is_own_process_window(hwnd) {
             // The dock (or the settings window) got the foreground: not an
             // app the user switched to, so the previous foreground stays.
@@ -947,6 +1058,33 @@ unsafe extern "system" fn win_event_proc(
         WPARAM(event as usize),
         LPARAM(hwnd.0 as isize),
     );
+}
+
+/// `WINEVENTPROC` of the `EVENT_OBJECT_LOCATIONCHANGE` hook: keep
+/// only moves and resizes of the window this thread last saw in the
+/// foreground, and post. Everything else (caret and cursor moves, child
+/// controls, every other window) is dropped here, before it costs a message.
+/// Runs on the events thread.
+unsafe extern "system" fn location_event_proc(
+    _hook: HWINEVENTHOOK,
+    event: u32,
+    hwnd: HWND,
+    id_object: i32,
+    id_child: i32,
+    _event_thread: u32,
+    _event_time_ms: u32,
+) {
+    if event != EVENT_OBJECT_LOCATIONCHANGE
+        || hwnd.is_invalid()
+        || id_object != OBJID_WINDOW.0
+        || id_child != CHILDID_SELF as i32
+    {
+        return;
+    }
+    if FOREGROUND_HWND.with(Cell::get) != hwnd.0 as isize {
+        return;
+    }
+    post_to_self(MSG_LOCATIONCHANGE, WPARAM(0), LPARAM(hwnd.0 as isize));
 }
 
 /// Window procedure of the hidden window: forward the interesting messages
