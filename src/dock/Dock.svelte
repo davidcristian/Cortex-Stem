@@ -1080,6 +1080,12 @@
     } else if (autoHideActive(state) !== autoHideActive(before)) {
       reportHitRegion();
     }
+    if (hidden !== wasHidden) {
+      // The app layer keeps the fact: a tray click or the toggle
+      // shortcut then brings a slid-out panel back (`dock://show`) instead
+      // of hiding the window. Housekeeping: a failure only logs.
+      void backend.setDockAutoHidden(hidden).catch(report('set_dock_auto_hidden', false));
+    }
     autoHidePhase = state.phase;
     autoHideOn = autoHideActive(state);
   }
@@ -1516,19 +1522,26 @@
     const onMotion = (): void => {
       reducedMotion = motion.matches;
     };
-    // The tray and the toggle shortcut hide and show the dock window itself;
-    // shown again while auto-hidden, the dock comes back (ADR-0008).
+    // The tray and the toggle shortcut show a hidden dock window; shown
+    // again while auto-hidden, the dock comes back (ADR-0008). With the
+    // window visible and the panel slid out they ask for the panel instead
+    // (`dock://show`): the same reveal, without a window round trip.
     const onVisibility = (): void => {
       if (document.visibilityState === 'visible') {
         autoHideSend({ type: 'show' });
       }
     };
+    const onShowRequested = (): void => {
+      autoHideSend({ type: 'show' });
+    };
     dark.addEventListener('change', onDark);
     motion.addEventListener('change', onMotion);
     document.addEventListener('visibilitychange', onVisibility);
+    const offShow = backend.on('dock://show', onShowRequested);
     const offFileDrag = backend.onFileDrag(onfiledrag);
     void store.start();
     return () => {
+      offShow();
       offFileDrag();
       endFileDrag(false, false);
       finishLanding(false);
@@ -1673,8 +1686,10 @@
     {/if}
   {/if}
 
-  <!-- Failure notices: right-aligned just above the panel, never in the way. -->
-  <div class="toasts" aria-live="polite">
+  <!-- Failure notices: right-aligned just above the panel, never in the way;
+       while the panel is slid out they sit just above the bottom edge and
+       ride back up with it. -->
+  <div class="toasts" class:at-edge={autoHidden} aria-live="polite">
     {#each toasts.items as toast (toast.id)}
       <div class="toast" role="status">{toast.message}</div>
     {/each}
@@ -1703,6 +1718,16 @@
     align-items: flex-end;
     gap: 4px;
     pointer-events: none;
+    /* Follows the panel's slide: down by the panel box and the
+       margin under it, so the notices end 6 px above the bottom edge while
+       the panel is out, and back up with it. A transform, like the panel's
+       own slide, so nothing is laid out again. */
+    transition: transform var(--slide) ease-out;
+  }
+
+  .toasts.at-edge {
+    transform: translateY(calc(var(--bottom-margin) + var(--icon) + 2 * var(--panel-padding)));
+    transition: transform var(--slide) ease-in;
   }
 
   .toast {
@@ -1749,6 +1774,10 @@
   @media (prefers-reduced-motion: reduce) {
     .toast {
       animation: none;
+    }
+
+    .toasts {
+      transition: none;
     }
   }
 

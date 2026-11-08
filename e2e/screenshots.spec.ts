@@ -46,6 +46,8 @@ interface DemoWindow {
     dockPanel: () => Rect | null;
     /** `dock://theme`: what Windows reports for accent, mode, contrast and transparency. */
     setTheme: (theme: ThemeInfo) => void;
+    /** `dock://show`: the tray or the shortcut pressed while the panel is auto-hidden. */
+    requestShow: () => void;
   };
 }
 
@@ -172,6 +174,15 @@ function hitRegions(page: Page): Promise<HitRegionCall[]> {
     ((window as unknown as DemoWindow).__dockMock?.calls ?? [])
       .filter((c) => c.type === 'setDockHitRegion')
       .map((c) => ({ panel: c.panel, envelope: c.envelope }) as unknown as HitRegionCall),
+  );
+}
+
+/** The `hidden` flag of every `set_dock_auto_hidden` the mock recorded so far, oldest first. */
+function autoHiddenReports(page: Page): Promise<boolean[]> {
+  return page.evaluate(() =>
+    ((window as unknown as DemoWindow).__dockMock?.calls ?? [])
+      .filter((c) => c.type === 'setDockAutoHidden')
+      .map((c) => c.hidden as boolean),
   );
 }
 
@@ -1910,6 +1921,87 @@ test.describe('auto-hide', () => {
     await expect.poll(() => lastRegion(page)).toEqual(atRest);
     await page.waitForTimeout(SLIDE_MS * 2);
     await expect(panel).toBeVisible();
+  });
+
+  test('the tray or the shortcut brings a slid-out dock back with one press; a toast meanwhile sits at the bottom edge and rides up with the panel', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openDock(page);
+    const viewport = page.viewportSize()!;
+    const panel = page.locator(PANEL);
+    await expect.poll(() => hitRegions(page)).toHaveLength(1);
+    const atRest = (await hitRegions(page))[0]!;
+    // Shown from the start: nothing to report, the app's flag is false already.
+    expect(await autoHiddenReports(page)).toEqual([]);
+
+    // Out after the delay: one report that the panel is hidden.
+    await page.locator(APP_SLOT).nth(3).hover();
+    await setAutoHide(page, 'always');
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+    await page.mouse.move(640, 10);
+    await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+    await expect.poll(() => autoHiddenReports(page)).toEqual([true]);
+    expect(await callsOfType(page, 'setDockAutoHidden')).toBe(1);
+    // The slide and the measurements its end schedules are over before the
+    // next command is made to fail.
+    await page.waitForTimeout(SLIDE_MS + 100);
+
+    // A command that fails while the dock is hidden (the item is reached
+    // without the pointer: a slid-out panel takes none): its toast sits
+    // within 12 px of the bottom edge instead of above the empty slot.
+    await page.evaluate(
+      ([selector, message]) => {
+        const mock = (window as unknown as DemoWindow).__dockMock!;
+        mock.failNextCommand(message);
+        document
+          .querySelector(selector)!
+          .dispatchEvent(new PointerEvent('pointerup', { button: 0, bubbles: true }));
+      },
+      [`${APP_SLOT}[data-key="${CODE_KEY}"]`, 'window not found: 4'] as const,
+    );
+    const toast = page.getByRole('status');
+    await expect(toast).toHaveText('Code failed: window not found: 4');
+    const toastBottom = async (): Promise<number> => {
+      const box = (await toast.boundingBox())!;
+      return box.y + box.height;
+    };
+    await expect.poll(async () => viewport.height - (await toastBottom())).toBeLessThanOrEqual(12);
+    expect(viewport.height - (await toastBottom())).toBeGreaterThan(0);
+    await expect(panel).toBeHidden();
+    await page.screenshot({ path: `${OUT}/dock-autohide-hidden-toast.png` });
+
+    // The tray or the shortcut: Rust emits `dock://show` to this window
+    // instead of hiding it. The panel slides back, the shown region and the
+    // phase are reported, and the toast is above the panel again.
+    await page.evaluate(() => {
+      (window as unknown as DemoWindow).__dockMock?.requestShow();
+    });
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+    await expect(panel).toBeVisible();
+    await expect.poll(() => autoHiddenReports(page)).toEqual([true, false]);
+    await expect.poll(() => lastRegion(page)).toEqual(shownRegion(atRest, viewport.height));
+    await expect.poll(async () => (await panelStyle(page)).transform).toBe('none');
+    await expect
+      .poll(async () => (await toastBottom()) <= (await panel.boundingBox())!.y)
+      .toBe(true);
+    expect(await toastBottom()).toBeLessThanOrEqual(atRest.panel.y);
+    await page.screenshot({ path: `${OUT}/dock-autohide-revealed-toast.png` });
+
+    // Like a reveal from the strip, it stays until the pointer has been over
+    // it and left; no further report meanwhile.
+    await page.waitForTimeout(DELAY + SLIDE_MS);
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+    expect(await autoHiddenReports(page)).toEqual([true, false]);
+
+    // A request while the panel is already shown changes nothing (Rust
+    // would have hidden the window instead; the mock just emits).
+    await page.evaluate(() => {
+      (window as unknown as DemoWindow).__dockMock?.requestShow();
+    });
+    await page.waitForTimeout(SLIDE_MS);
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+    expect(await autoHiddenReports(page)).toEqual([true, false]);
   });
 
   test('"when a window overlaps" hides the dock under a window after the delay and shows it when the window is gone', async ({

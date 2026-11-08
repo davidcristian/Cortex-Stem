@@ -1,5 +1,5 @@
 /**
- * The frontend's only door to the Rust side (docs/ipc/, contract v1.10).
+ * The frontend's only door to the Rust side (docs/ipc/, contract v1.11).
  *
  * One method per command and one `on` subscription per event (plus
  * `onFileDrag` for Tauri's own file drag events). Components
@@ -32,6 +32,11 @@ export interface BackendEvents {
   'dock://theme': ThemeInfo;
   'dock://monitors': MonitorInfo[];
   'dock://item-bounce': BouncePayload;
+  /**
+   * To one dock window: the tray or the toggle shortcut asked for
+   * the dock while its panel was slid out by auto-hide; bring it back.
+   */
+  'dock://show': null;
 }
 
 export type BackendEvent = keyof BackendEvents;
@@ -64,7 +69,7 @@ export type FileDragEvent =
 export type FileDragHandler = (event: FileDragEvent) => void;
 
 /**
- * Commands and events of docs/ipc/ v1.10. Method names are the command
+ * Commands and events of docs/ipc/ v1.11. Method names are the command
  * names in camelCase; argument order follows the command's argument list.
  *
  * Failed commands reject with a `string` (the Rust error message).
@@ -104,6 +109,14 @@ export interface Backend {
    * `DockState.overlapped` against it.
    */
   setDockPanelRect(rect: Rect): Promise<void>;
+  /**
+   * Auto-hide slid the calling dock window's panel out (`true`) or brought
+   * it back (`false`) (docs/ipc/toggle-while-hidden.md). Sent on
+   * each change of that fact; Rust keeps it so the tray click and the
+   * toggle shortcut bring a slid-out panel back (`dock://show`) instead of
+   * hiding the window.
+   */
+  setDockAutoHidden(hidden: boolean): Promise<void>;
   /** Run a shell action directly (menus, Recycle Bin "Empty"). */
   shellAction(action: ShellAction): Promise<void>;
   /**

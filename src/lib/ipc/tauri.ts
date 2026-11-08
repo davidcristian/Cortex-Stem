@@ -168,6 +168,10 @@ export class TauriBackend implements Backend {
     return invoke<void>('set_dock_panel_rect', { rect: integerRect(rect) });
   }
 
+  setDockAutoHidden(hidden: boolean): Promise<void> {
+    return invoke<void>('set_dock_auto_hidden', { hidden });
+  }
+
   shellAction(action: ShellAction): Promise<void> {
     return invoke<void>('shell_action', { action });
   }

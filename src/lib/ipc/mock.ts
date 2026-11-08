@@ -1,5 +1,5 @@
 /**
- * `MockBackend`: the whole IPC contract (docs/ipc/ v1.10) without Rust, for
+ * `MockBackend`: the whole IPC contract (docs/ipc/ v1.11) without Rust, for
  * browser runs and Playwright screenshots.
  *
  * It mirrors, deliberately in this one file so the two sides can be compared,
@@ -97,6 +97,7 @@ export type MockCall =
   | { type: 'setDockContentSize'; width: number; height: number }
   | { type: 'setDockHitRegion'; panel: Rect; envelope: Rect }
   | { type: 'setDockPanelRect'; rect: Rect }
+  | { type: 'setDockAutoHidden'; hidden: boolean }
   | { type: 'showItemMenu'; itemKey: string; x: number; y: number }
   | { type: 'showDockMenu'; x: number; y: number }
   | { type: 'openSettings' }
@@ -1298,6 +1299,18 @@ export class MockBackend implements Backend {
     });
   }
 
+  /**
+   * `set_dock_auto_hidden`: the app layer only keeps the flag for
+   * its `toggle_dock`, which has no counterpart in a browser; recorded and
+   * logged, so tests can see each change the UI reported.
+   */
+  setDockAutoHidden(hidden: boolean): Promise<void> {
+    return this.command(() => {
+      this.record({ type: 'setDockAutoHidden', hidden });
+      this.log(`set_dock_auto_hidden(${hidden})`);
+    });
+  }
+
   shellAction(action: ShellAction): Promise<void> {
     return this.command(() => this.doShellAction(action));
   }
@@ -1457,6 +1470,17 @@ export class MockBackend implements Backend {
   /** Where the engine believes the dock's panel rests (screen px), or `null` before the first report. */
   dockPanel(): Rect | null {
     return this.engine.panel === null ? null : { ...this.engine.panel };
+  }
+
+  /**
+   * The tray or the toggle shortcut was pressed while the dock window was
+   * visible with its panel slid out by auto-hide: what
+   * `windows::toggle_dock` emits to that window instead of hiding it. One
+   * `dock://show` with a `null` payload, whatever the UI last reported.
+   */
+  requestShow(): void {
+    this.log('dock reveal requested');
+    this.emit('dock://show', null);
   }
 
   pushForeground(id: WindowId | null): void {

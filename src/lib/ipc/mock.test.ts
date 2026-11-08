@@ -538,6 +538,34 @@ describe('revisions and events', () => {
     expect(b.calls).toEqual([{ type: 'openSettings' }]);
   });
 
+  it('setDockAutoHidden records each report; requestShow emits dock://show with no payload', async () => {
+    const b = fast();
+    const shows: unknown[] = [];
+    const off = b.on('dock://show', (payload) => {
+      shows.push(payload);
+    });
+    const states = recordStates(b);
+
+    await b.setDockAutoHidden(true);
+    await b.setDockAutoHidden(false);
+    expect(b.calls).toEqual([
+      { type: 'setDockAutoHidden', hidden: true },
+      { type: 'setDockAutoHidden', hidden: false },
+    ]);
+    // The flag is the app layer's; nothing in the snapshot changes.
+    expect(states).toHaveLength(0);
+
+    b.requestShow();
+    expect(shows).toEqual([null]);
+    b.requestShow();
+    expect(shows).toEqual([null, null]);
+    expect(states).toHaveLength(0);
+
+    off();
+    b.requestShow();
+    expect(shows).toHaveLength(2);
+  });
+
   it('setFullscreen mirrors FullscreenChanged: in the snapshot, one state event per change', async () => {
     const b = fast();
     const states = recordStates(b);

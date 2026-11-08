@@ -30,8 +30,11 @@ the shown panel (its [envelope](dock-window.md#click-through-outside-the-panel),
 extended to include the strip, so a pointer resting on the edge stays
 tracked) is reported before the slide starts.
 
-The tray and the toggle shortcut also reveal the panel: a window that was
-hidden reveals its panel when it is shown again (`visibilitychange`).
+The tray and the toggle shortcut also reveal the panel. The UI reports its
+phase through `set_dock_auto_hidden`. When the primary window is visible
+with its panel slid out, a press sends `dock://show` to the pages instead
+of hiding the windows; a window that was hidden reveals its panel when it
+is shown again (`visibilitychange`).
 
 An item that needs attention also reveals the dock. The `attention` hold is
 the one hold that reveals when it begins. It keeps the dock up until no item
