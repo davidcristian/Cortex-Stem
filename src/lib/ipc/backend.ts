@@ -1,5 +1,5 @@
 /**
- * The frontend's only door to the Rust side (docs/ipc/, contract v1.12).
+ * The frontend's only door to the Rust side (docs/ipc/, contract v1.13).
  *
  * One method per command and one `on` subscription per event (plus
  * `onFileDrag` for Tauri's own file drag events). Components
@@ -71,7 +71,7 @@ export type FileDragEvent =
 export type FileDragHandler = (event: FileDragEvent) => void;
 
 /**
- * Commands and events of docs/ipc/ v1.12. Method names are the command
+ * Commands and events of docs/ipc/ v1.13. Method names are the command
  * names in camelCase; argument order follows the command's argument list.
  *
  * Failed commands reject with a `string` (the Rust error message).
@@ -107,8 +107,8 @@ export interface Backend {
   /**
    * Where the calling dock window's panel rests (docs/ipc/dock-panel.md):
    * integer CSS px relative to the viewport, whatever the auto-hide
-   * phase. Rust converts it to screen pixels and the engine reports
-   * `DockState.overlapped` against it.
+   * phase. Rust converts it to screen pixels and the engine reports that
+   * dock's `overlapped` against it, in its `DockState.docks` entry.
    */
   setDockPanelRect(rect: Rect): Promise<void>;
   /**

@@ -1,17 +1,22 @@
 /**
- * `MockBackend`: the whole IPC contract (docs/ipc/ v1.12) without Rust, for
+ * `MockBackend`: the whole IPC contract (docs/ipc/ v1.13) without Rust, for
  * browser runs and Playwright screenshots.
  *
  * It mirrors, deliberately in this one file so the two sides can be compared,
  * the Rust pieces the UI would otherwise be talking to:
  *
  * 1. the demo scenario of `crates/stem-platform/src/mock.rs` (windows with
- *    their frames, monitor, recycle bin, deterministic icon colours);
- * 2. the ordering and click rules of `crates/stem-core/src/engine.rs`, and
- *    the overlap rule of `crates/stem-core/src/overlap.rs`;
+ *    their frames, monitor, recycle bin, deterministic icon colours), plus a
+ *    second monitor with two windows (`twoMonitors`);
+ * 2. the ordering and click rules of `crates/stem-core/src/engine.rs`, the
+ *    overlap rule of `crates/stem-core/src/overlap.rs`, and the
+ *    per-dock facts of `DockState.docks`;
  * 3. the command semantics and lazy identity resolution of
  *    `crates/stem-service/src/lib.rs`, and the app layer's conversion of the
- *    dock panel to screen coordinates (`src-tauri/src/windows.rs`);
+ *    dock panel to screen coordinates and its registration under the dock
+ *    window's label and monitor (`src-tauri/src/windows.rs`); one backend
+ *    serves one page, so it knows which dock window it stands for
+ *    (`MockOptions.monitor`);
  * 4. which dropped paths go to the Recycle Bin
  *    (`crates/stem-platform/src/rules/recycle.rs`).
  *
@@ -23,11 +28,13 @@ import type { AppFolder } from '$lib/ipc/generated/AppFolder';
 import type { AppId } from '$lib/ipc/generated/AppId';
 import type { AppIdentity } from '$lib/ipc/generated/AppIdentity';
 import type { AppInfo } from '$lib/ipc/generated/AppInfo';
+import type { DockFacts } from '$lib/ipc/generated/DockFacts';
 import type { DockItem } from '$lib/ipc/generated/DockItem';
 import type { DockItemKind } from '$lib/ipc/generated/DockItemKind';
 import type { DockState } from '$lib/ipc/generated/DockState';
 import type { IconKey } from '$lib/ipc/generated/IconKey';
 import type { LaunchTarget } from '$lib/ipc/generated/LaunchTarget';
+import type { MonitorId } from '$lib/ipc/generated/MonitorId';
 import type { MonitorInfo } from '$lib/ipc/generated/MonitorInfo';
 import type { PinnedApp } from '$lib/ipc/generated/PinnedApp';
 import type { RawWindow } from '$lib/ipc/generated/RawWindow';
@@ -55,10 +62,25 @@ import {
 // Options and public helper types
 // ---------------------------------------------------------------------------
 
-export type MockScenario = 'default' | 'many';
+export type MockScenario = 'default' | 'many' | 'twoMonitors';
+
+export const MOCK_SCENARIOS: readonly MockScenario[] = ['default', 'many', 'twoMonitors'];
+
+export function isMockScenario(value: string | null): value is MockScenario {
+  return value !== null && (MOCK_SCENARIOS as readonly string[]).includes(value);
+}
 
 export interface MockOptions {
   scenario?: MockScenario;
+  /**
+   * The monitor of the dock page this backend serves (`dock.html?monitor=
+   * <id>`), as the app layer knows it for the window: the page's
+   * panel (`setDockPanelRect`) is placed on that monitor's work area at
+   * its scale and registered under that dock window's label (`dockLabel`),
+   * and `dockPanel()` answers for it. `null` or absent: the primary
+   * monitor's page, the `dock` window.
+   */
+  monitor?: MonitorId | null;
   /**
    * Simulated command latency range in ms. `[0, 0]` settles in a microtask.
    * Commands run in the order they were issued whatever each one draws,
@@ -273,7 +295,23 @@ export function overlapped(
  * work area, from its left edge, scale 1): the viewport's bottom-left corner
  * is the work area's bottom-left corner.
  */
-export function panelOnScreen(rect: Rect, workArea: Rect, viewportHeight: number): Rect {
+export function panelOnScreen(rect: Rect, workArea: Rect, viewportHeight: number, scale = 1): Rect {
+  const s = Number.isFinite(scale) && scale > 0 ? scale : 1;
+  if (s !== 1) {
+    // The app layer scales the CSS rect (rounded outwards, like a hit
+    // region) and the viewport before placing them on the physical work
+    // area (`scale_rect`, `panel_on_screen` in src-tauri/src/windows.rs).
+    const left = Math.floor(rect.x * s);
+    const top = Math.floor(rect.y * s);
+    const right = Math.ceil((rect.x + rect.width) * s);
+    const bottom = Math.ceil((rect.y + rect.height) * s);
+    return {
+      x: workArea.x + left,
+      y: workArea.y + workArea.height - Math.round(viewportHeight * s) + top,
+      width: right - left,
+      height: bottom - top,
+    };
+  }
   return {
     x: workArea.x + rect.x,
     y: workArea.y + workArea.height - viewportHeight + rect.y,
@@ -425,6 +463,13 @@ export function nothingToRecycle(plan: RecyclePlan): string {
 // ---------------------------------------------------------------------------
 
 const DEMO_MONITOR_ID = 'mock-primary';
+/**
+ * The second monitor of the `twoMonitors` scenario: a 1920 × 1080
+ * display to the right of the primary, scaled 150 %, with the stock
+ * taskbar's 48 px taken off its work area. Named like a real Windows
+ * device, so the URL and label rules get a `\\.\` to chew on.
+ */
+export const SECOND_MONITOR_ID = '\\\\.\\DISPLAY3';
 
 function demoMonitor(): MonitorInfo {
   return {
@@ -437,9 +482,32 @@ function demoMonitor(): MonitorInfo {
   };
 }
 
+function secondMonitor(): MonitorInfo {
+  return {
+    id: SECOND_MONITOR_ID,
+    name: 'DISPLAY3',
+    bounds: { x: 2560, y: 0, width: 1920, height: 1080 },
+    workArea: { x: 2560, y: 0, width: 1920, height: 1032 },
+    scaleFactor: 1.5,
+    isPrimary: false,
+  };
+}
+
 /**
- * A demo window with a frame on the demo monitor. Every demo frame
- * ends above the bottom 250 px of the work area, where the dock's panel
+ * The label of the dock window on `monitor` (`dock_label` in
+ * src-tauri/src/windows.rs): `dock` for the primary monitor's, else `dock-`
+ * and the id with every character outside `[A-Za-z0-9_-]` dropped.
+ */
+export function dockLabel(monitor: MonitorId | null, primary: MonitorId | null): string {
+  if (monitor === null || monitor === primary) {
+    return 'dock';
+  }
+  return `dock-${monitor.replace(/[^A-Za-z0-9_-]/g, '')}`;
+}
+
+/**
+ * A demo window with a frame on a demo monitor. Every demo frame
+ * ends above the bottom 250 px of its work area, where the dock's panel
  * rests, so nothing overlaps it until a test moves one (`moveWindow`); a
  * minimised window keeps the frame it would be restored to (the overlap rule
  * ignores it while minimised). Same frames as the Rust demo.
@@ -450,6 +518,7 @@ function demoWindow(
   title: string,
   minimized: boolean,
   rect: Rect,
+  monitor: MonitorId = DEMO_MONITOR_ID,
 ): RawWindow {
   return {
     id,
@@ -462,7 +531,7 @@ function demoWindow(
     isMinimized: minimized,
     isCloaked: false,
     onCurrentDesktop: true,
-    monitor: DEMO_MONITOR_ID,
+    monitor,
     rect,
     iconKey: null,
   };
@@ -475,6 +544,7 @@ const EXE = {
   terminal: 'C:\\Program Files\\WindowsApps\\Terminal\\WindowsTerminal.exe',
   spotify: 'C:\\Program Files\\Spotify\\Spotify.exe',
   notepad: 'C:\\Windows\\notepad.exe',
+  paint: 'C:\\Windows\\System32\\mspaint.exe',
 } as const;
 
 function demoWindows(): RawWindow[] {
@@ -512,6 +582,7 @@ function pinExe(path: string, label: string | null = null): PinnedApp {
 }
 
 interface Scenario {
+  monitors: MonitorInfo[];
   windows: RawWindow[];
   foreground: WindowId | null;
   recycleBin: RecycleBinState;
@@ -536,11 +607,44 @@ function demoScenario(): Scenario {
     { id: 'uri:ms-settings:', label: 'Settings', launch: { kind: 'uri', uri: 'ms-settings:' } },
   ];
   return {
+    monitors: [demoMonitor()],
     windows: demoWindows(),
     foreground: 2,
     recycleBin: { itemCount: 3, sizeBytes: 1_234_567 },
     settings,
   };
+}
+
+/**
+ * The demo plus a second monitor to the right with two windows on
+ * it: one of Notepad (pinned, no window on the primary) and one of Paint
+ * (not pinned, nowhere else), both clear of the bottom 250 px of that work
+ * area. With `behavior.showOnlyCurrentMonitor` on, the second monitor's
+ * dock shows the pinned apps plus Paint, with Notepad's one window, and the
+ * primary's shows everything but Paint, with no window for Notepad.
+ */
+function twoMonitorsScenario(): Scenario {
+  const scenario = demoScenario();
+  scenario.monitors.push(secondMonitor());
+  scenario.windows.push(
+    demoWindow(
+      7,
+      EXE.notepad,
+      'notes.txt - Notepad',
+      false,
+      { x: 2700, y: 100, width: 900, height: 600 },
+      SECOND_MONITOR_ID,
+    ),
+    demoWindow(
+      8,
+      EXE.paint,
+      'Untitled - Paint',
+      false,
+      { x: 3200, y: 60, width: 1100, height: 700 },
+      SECOND_MONITOR_ID,
+    ),
+  );
+  return scenario;
 }
 
 /** Twenty apps (eight pinned, twelve running unpinned) for layout stress. */
@@ -601,6 +705,7 @@ function manyScenario(): Scenario {
   }
   const chrome = windows.find((w) => w.title === 'Stem — Chrome');
   return {
+    monitors: [demoMonitor()],
     windows,
     foreground: chrome?.id ?? null,
     recycleBin: { itemCount: 0, sizeBytes: 0 },
@@ -611,6 +716,7 @@ function manyScenario(): Scenario {
 const SCENARIOS: Record<MockScenario, () => Scenario> = {
   default: demoScenario,
   many: manyScenario,
+  twoMonitors: twoMonitorsScenario,
 };
 
 /** `identity_for` in mock.rs: display name from the exe stem, launch by exe. */
@@ -655,6 +761,16 @@ interface Tracked {
   attention: boolean;
 }
 
+/** One dock window as the app layer registered it (`DockPanel` in the Rust engine). */
+interface DockPanel {
+  /** The monitor the window sits on; `null` while unknown (no entry in `DockState.docks` then). */
+  monitor: MonitorId | null;
+  /** Where its panel rests, in screen px; `null` before the page's first report and while hidden. */
+  rect: Rect | null;
+  /** `DockFacts.overlapped` for this panel. */
+  overlapped: boolean;
+}
+
 /** `ItemAction`: what a primary click should do. */
 export type ItemAction =
   | { type: 'launch'; appId: AppId }
@@ -689,12 +805,10 @@ class Engine {
   readonly identities = new Map<AppId, AppIdentity>();
   private runningOrder: AppId[] = [];
   foreground: WindowId | null = null;
-  /** The platform's fullscreen verdict, stored as is. */
-  fullscreen = false;
-  /** Where the dock's panel rests, in the windows' coordinate space; `null` while unknown. */
-  panel: Rect | null = null;
-  /** `DockState.overlapped`, recomputed after every input that can change it. */
-  overlapped = false;
+  /** The platform's fullscreen verdict, stored as is, with the monitor it names. */
+  fullscreen: { active: boolean; monitor: MonitorId | null } = { active: false, monitor: null };
+  /** The dock windows the app layer registered, by label. */
+  readonly panels = new Map<string, DockPanel>();
   /** The mock has no process of its own; every window counts (`overlapped`). */
   readonly ownProcessId: number | null = null;
   monitors: MonitorInfo[] = [];
@@ -765,22 +879,73 @@ class Engine {
     return this.apply(removed);
   }
 
-  /** `EngineInput::DockPanelChanged`: only a flip of `overlapped` bumps the revision. */
-  setDockPanel(panel: Rect | null): boolean {
-    this.panel = panel === null ? null : { ...panel };
-    return this.apply(this.recomputeOverlap());
+  /**
+   * `EngineInput::DockPanelChanged`: the dock window `label`
+   * sits on `monitor` with its panel at `rect` (screen px; `null` while the
+   * window is hidden); both `null` forgets the label (the window closed).
+   * Only a change of the docks' facts (an entry coming or going, a flip of
+   * its `overlapped`) bumps the revision.
+   */
+  setDockPanel(label: string, monitor: MonitorId | null, rect: Rect | null): boolean {
+    const before = JSON.stringify(this.dockFacts());
+    if (monitor === null && rect === null) {
+      this.panels.delete(label);
+    } else {
+      const panel = this.panels.get(label) ?? { monitor: null, rect: null, overlapped: false };
+      panel.monitor = monitor;
+      panel.rect = rect === null ? null : { ...rect };
+      this.panels.set(label, panel);
+    }
+    this.recomputeOverlap();
+    return this.apply(JSON.stringify(this.dockFacts()) !== before);
   }
 
-  /** `overlap::overlapped` over the tracked windows; whether the flag flipped. */
+  /** `overlap::overlapped` over the tracked windows, per panel; whether any flag flipped. */
   private recomputeOverlap(): boolean {
-    const next = overlapped(
-      this.panel,
-      [...this.windows.values()].map((t) => t.raw),
-      this.ownProcessId,
-    );
-    const flipped = next !== this.overlapped;
-    this.overlapped = next;
+    const windows = [...this.windows.values()].map((t) => t.raw);
+    let flipped = false;
+    for (const panel of this.panels.values()) {
+      const next = overlapped(panel.rect, windows, this.ownProcessId);
+      flipped ||= next !== panel.overlapped;
+      panel.overlapped = next;
+    }
     return flipped;
+  }
+
+  /** The primary monitor as the app layer picks it: the flagged one, else the first. */
+  primaryMonitorId(): MonitorId | null {
+    return (this.monitors.find((m) => m.isPrimary) ?? this.monitors[0])?.id ?? null;
+  }
+
+  /**
+   * `DockState.docks` (`DockEngine::dock_facts`): one entry per
+   * monitor with a registered dock window, sorted by monitor id;
+   * `fullscreen` when the verdict names that monitor, or names none and it
+   * is the primary; `overlapped` from the panel (any panel on it).
+   */
+  dockFacts(): DockFacts[] {
+    const primary = this.primaryMonitorId();
+    const byMonitor = new Map<MonitorId, DockFacts>();
+    for (const panel of this.panels.values()) {
+      if (panel.monitor === null) {
+        continue;
+      }
+      const fullscreen =
+        this.fullscreen.active &&
+        (this.fullscreen.monitor === null
+          ? primary === panel.monitor
+          : this.fullscreen.monitor === panel.monitor);
+      const facts = byMonitor.get(panel.monitor) ?? {
+        monitor: panel.monitor,
+        fullscreen,
+        overlapped: false,
+      };
+      facts.overlapped ||= panel.overlapped;
+      byMonitor.set(panel.monitor, facts);
+    }
+    return [...byMonitor.values()].sort((a, b) =>
+      a.monitor < b.monitor ? -1 : a.monitor > b.monitor ? 1 : 0,
+    );
   }
 
   setForeground(id: WindowId | null): boolean {
@@ -806,17 +971,23 @@ class Engine {
     return this.apply(changed);
   }
 
-  /** `PlatformEvent::FullscreenChanged`: part of the snapshot, so a repeat changes nothing. */
-  setFullscreen(active: boolean): boolean {
-    const changed = this.fullscreen !== active;
-    this.fullscreen = active;
-    return this.apply(changed);
+  /**
+   * `PlatformEvent::FullscreenChanged` with the window's monitor:
+   * part of the snapshot through the docks' facts, so a repeat, or a
+   * verdict about a monitor without a dock, changes nothing.
+   */
+  setFullscreen(active: boolean, monitor: MonitorId | null): boolean {
+    const before = JSON.stringify(this.dockFacts());
+    this.fullscreen = { active, monitor: active ? monitor : null };
+    return this.apply(JSON.stringify(this.dockFacts()) !== before);
   }
 
   setMonitors(monitors: MonitorInfo[]): boolean {
+    const before = JSON.stringify(this.dockFacts());
     const changed = JSON.stringify(monitors) !== JSON.stringify(this.monitors);
     this.monitors = monitors;
-    return this.apply(changed);
+    // A new primary can move a verdict without a monitor to another dock.
+    return this.apply(changed || JSON.stringify(this.dockFacts()) !== before);
   }
 
   setTheme(theme: ThemeInfo): boolean {
@@ -943,8 +1114,7 @@ class Engine {
       revision: this.revision,
       items,
       foreground: this.foreground,
-      fullscreen: this.fullscreen,
-      overlapped: this.overlapped,
+      docks: this.dockFacts(),
     };
   }
 
@@ -1109,6 +1279,8 @@ export class MockBackend implements Backend {
   private readonly identityDelayMs: number;
   private readonly logging: boolean;
   private readonly viewportHeight: number | undefined;
+  /** The monitor of the dock page this backend serves (`MockOptions.monitor`); `null` for the primary's. */
+  readonly pageMonitor: MonitorId | null;
   private readonly timers = new Set<ReturnType<typeof setTimeout>>();
   /** Settles when every command issued so far has run (see `command`). */
   private queue: Promise<void> = Promise.resolve();
@@ -1134,6 +1306,7 @@ export class MockBackend implements Backend {
     this.identityDelayMs = options.identityDelayMs ?? 300;
     this.logging = options.log ?? true;
     this.viewportHeight = options.viewportHeight;
+    this.pageMonitor = options.monitor ?? null;
     this.random = mulberry32(options.seed ?? 0x5eed);
 
     // In a browser the OS theme is the browser's colour scheme, so Playwright's
@@ -1147,7 +1320,7 @@ export class MockBackend implements Backend {
 
     // `MockPlatform::start` delivers these in this order.
     this.engine = new Engine(scenario.settings, DEFAULT_THEME);
-    this.engine.setMonitors([demoMonitor()]);
+    this.engine.setMonitors(scenario.monitors);
     this.engine.setTheme(theme);
     this.engine.setRecycleBin(scenario.recycleBin);
     this.engine.snapshotWindows(scenario.windows);
@@ -1304,28 +1477,46 @@ export class MockBackend implements Backend {
     });
   }
 
+  /** The label of the dock window this backend's page is (`dock`, or `dock-<id>`). */
+  get pageLabel(): string {
+    return dockLabel(this.pageMonitor, this.engine.primaryMonitorId());
+  }
+
+  /** The monitor this backend's page sits on, as the app layer would place its window. */
+  private pageMonitorInfo(): MonitorInfo | undefined {
+    const monitors = this.engine.monitors;
+    return (
+      (this.pageMonitor === null ? undefined : monitors.find((m) => m.id === this.pageMonitor)) ??
+      monitors.find((m) => m.isPrimary) ??
+      monitors[0]
+    );
+  }
+
   /**
-   * `set_dock_panel_rect`: recorded, converted to the mock monitor's
-   * screen coordinates the way the app layer converts it for the real
-   * window (`panelOnScreen`; see `MockOptions.viewportHeight`), and handed
-   * to the engine, which emits a state only when `overlapped` flips.
+   * `set_dock_panel_rect`: recorded, converted to the page's
+   * monitor's screen coordinates the way the app layer converts it for the
+   * real window (`panelOnScreen`, at that monitor's scale; see
+   * `MockOptions.viewportHeight`), and handed to the engine under this dock
+   * window's label and monitor, which emits a state only when the
+   * docks' facts change.
    */
   setDockPanelRect(rect: Rect): Promise<void> {
     return this.command(() => {
       this.record({ type: 'setDockPanelRect', rect: { ...rect } });
-      const workArea = (this.engine.monitors.find((m) => m.isPrimary) ?? this.engine.monitors[0])
-        ?.workArea ?? { x: 0, y: 0, width: 0, height: 0 };
+      const monitor = this.pageMonitorInfo();
+      const workArea = monitor?.workArea ?? { x: 0, y: 0, width: 0, height: 0 };
       const viewportHeight =
         this.viewportHeight ??
         (typeof window !== 'undefined' && window.innerHeight > 0
           ? window.innerHeight
           : workArea.height);
-      const screen = panelOnScreen(rect, workArea, viewportHeight);
+      const screen = panelOnScreen(rect, workArea, viewportHeight, monitor?.scaleFactor ?? 1);
+      const label = this.pageLabel;
       this.log(
         `set_dock_panel_rect(${rect.width}×${rect.height} at ${rect.x},${rect.y}) -> ` +
-          `${screen.x},${screen.y} on screen`,
+          `${screen.x},${screen.y} on screen (${label} on ${monitor?.id ?? 'no monitor'})`,
       );
-      if (this.engine.setDockPanel(screen)) {
+      if (this.engine.setDockPanel(label, monitor?.id ?? null, screen)) {
         this.emitState();
       }
     });
@@ -1521,9 +1712,14 @@ export class MockBackend implements Backend {
     }
   }
 
-  /** Where the engine believes the dock's panel rests (screen px), or `null` before the first report. */
-  dockPanel(): Rect | null {
-    return this.engine.panel === null ? null : { ...this.engine.panel };
+  /**
+   * Where the engine believes the panel of the dock window `label` rests
+   * (screen px; this page's window by default), or `null` before its first
+   * report, while it is hidden, or for a label never registered.
+   */
+  dockPanel(label: string = this.pageLabel): Rect | null {
+    const rect = this.engine.panels.get(label)?.rect ?? null;
+    return rect === null ? null : { ...rect };
   }
 
   /**
@@ -1551,12 +1747,14 @@ export class MockBackend implements Backend {
 
   /**
    * The platform's fullscreen verdict changed (`FullscreenChanged`):
-   * a game, a browser after F11, a video or a slideshow took the screen, or
-   * gave it back. One `dock://state` when the value differs.
+   * a game, a browser after F11, a video or a slideshow took the screen of
+   * `monitor` (`null` when the platform could not tell, which lands
+   * on the primary monitor's dock), or gave it back. One `dock://state`
+   * when some dock's fact changes.
    */
-  setFullscreen(active: boolean): void {
-    if (this.engine.setFullscreen(active)) {
-      this.log(`fullscreen ${active ? 'on' : 'off'}`);
+  setFullscreen(active: boolean, monitor: MonitorId | null = null): void {
+    if (this.engine.setFullscreen(active, monitor)) {
+      this.log(`fullscreen ${active ? `on (${monitor ?? 'unknown monitor'})` : 'off'}`);
       this.emitState();
     }
   }

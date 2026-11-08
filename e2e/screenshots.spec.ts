@@ -39,12 +39,14 @@ interface DemoWindow {
     pushForeground: (id: number | null) => void;
     /** `HSHELL_FLASH` as the platform reports it (`WindowAttention`). */
     pushAttention: (id: number, flashing: boolean) => void;
-    /** `FullscreenChanged` as the platform reports it. */
-    setFullscreen: (active: boolean) => void;
+    /** `FullscreenChanged` as the platform reports it, with the window's monitor. */
+    setFullscreen: (active: boolean, monitor?: string | null) => void;
     /** A window moved or resized: its new frame in screen px. */
     moveWindow: (id: number, rect: Rect | null) => void;
-    /** Where the engine believes the dock's panel rests (screen px). */
-    dockPanel: () => Rect | null;
+    /** Where the engine believes this page's dock panel rests (screen px). */
+    dockPanel: (label?: string) => Rect | null;
+    /** The label of the dock window this page stands for. */
+    pageLabel: string;
     /** `dock://theme`: what Windows reports for accent, mode, contrast and transparency. */
     setTheme: (theme: ThemeInfo) => void;
     /** `dock://show`: the tray or the shortcut pressed while the panel is auto-hidden. */
@@ -206,11 +208,18 @@ function foreground(page: Page, id: number | null): Promise<void> {
   }, id);
 }
 
-/** A fullscreen app took the screen (`FullscreenChanged(true)`), or gave it back. */
-function fullscreen(page: Page, active: boolean): Promise<void> {
-  return page.evaluate((a) => {
-    (window as unknown as DemoWindow).__dockMock?.setFullscreen(a);
-  }, active);
+/**
+ * A fullscreen app took the screen (`FullscreenChanged { active: true }`)
+ * of `monitor` (`null`, the default, when the platform could not tell: the
+ * primary monitor's dock), or gave it back.
+ */
+function fullscreen(page: Page, active: boolean, monitor: string | null = null): Promise<void> {
+  return page.evaluate(
+    ([a, m]) => {
+      (window as unknown as DemoWindow).__dockMock?.setFullscreen(a, m);
+    },
+    [active, monitor] as const,
+  );
 }
 
 /** Window `id` was moved or resized to `rect` (screen px of the mock monitor), as the platform reports it. */
@@ -1042,6 +1051,11 @@ test.describe('dock in mock mode', () => {
   test('a failed command shows a toast that goes away by itself', async ({ page }) => {
     await page.emulateMedia({ colorScheme: 'dark' });
     await openDock(page);
+    // Every icon request must be in before the failure is armed: the cache
+    // issues the magnified bitmaps a few at a time behind the rest ones
+    // (`openDock` waits only for the latter), and a `get_icon` that took the
+    // failure would retry quietly instead of showing a toast.
+    await expectIconPairs(page, { rest: 96, magnified: 192, shown: [96], magnifiedAttr: false });
     // Hover first: entering the panel sends `set_dock_hover`, which must not
     // be the command that fails.
     const code = page.locator(APP_SLOT).nth(5);
@@ -2476,10 +2490,28 @@ test.describe('settings window', () => {
 
     // Disabled, not-yet-available options stay disabled; "when a window
     // overlaps" is available.
-    await expect(page.locator('#current-monitor')).toBeDisabled();
     await expect(page.locator('#position option[value="left"]')).toBeDisabled();
     await expect(page.locator('#auto-hide option[value="whenOverlapped"]')).toBeEnabled();
     await expect(page.locator('#reserve-space')).toBeDisabled();
+
+    // One dock per monitor: *All monitors* can be chosen and the
+    // per-monitor filter is a live switch (no M3 tags left).
+    const monitors = page.locator('#monitors');
+    await expect(monitors).toHaveValue('primary');
+    await expect(page.locator('#monitors option[value="all"]')).toBeEnabled();
+    await expect(page.locator('#monitors option[value="all"]')).toHaveText('All monitors');
+    await monitors.selectOption('all');
+    await expect(page.locator('.status')).toHaveText('Saved');
+    expect((await page.evaluate(SETTINGS_MOCK))?.monitors).toBe('all');
+    const currentMonitor = page.locator('#current-monitor');
+    await expect(currentMonitor).toBeEnabled();
+    await expect(currentMonitor).not.toBeChecked();
+    await expect(page.locator('label[for="current-monitor"] .tag')).toHaveCount(0);
+    await expect(page.locator('label[for="monitors"] .tag')).toHaveCount(0);
+    await currentMonitor.click();
+    await expect(currentMonitor).toBeChecked();
+    await expect(page.locator('.status')).toHaveText('Saved');
+    expect((await page.evaluate(SETTINGS_MOCK))?.behavior.showOnlyCurrentMonitor).toBe(true);
 
     // Backdrop: only the built-in blur can be chosen; the two system
     // materials stay listed, greyed and labelled.
@@ -2859,5 +2891,221 @@ test.describe('settings window', () => {
     }
     await page.keyboard.press('Tab');
     await expect(page.locator('#icon-size')).toBeFocused();
+  });
+});
+
+test.describe('one dock per monitor', () => {
+  /** The second monitor of the mock's `twoMonitors` scenario (`SECOND_MONITOR_ID` in src/lib/ipc/mock.ts). */
+  const DISPLAY3 = '\\\\.\\DISPLAY3';
+  const DISPLAY3_WORK_AREA: Rect = { x: 2560, y: 0, width: 1920, height: 1032 };
+  const DISPLAY3_SCALE = 1.5;
+  const SECOND_PAGE = `mock=1&scenario=twoMonitors&monitor=${encodeURIComponent(DISPLAY3)}`;
+  const PRIMARY_PAGE = 'mock=1&scenario=twoMonitors';
+  const PANEL = '.dock-panel';
+  const DELAY = 600;
+  const SLIDE_MS = 200;
+  const NOTEPAD_SLOT = `${APP_SLOT}[data-key="app:exe:c:/windows/notepad.exe"]`;
+  const CODE_SLOT = `${APP_SLOT}[data-key="${CODE_KEY}"]`;
+  /** Paint's window in the scenario, on the second monitor. */
+  const PAINT_WINDOW_ID = 8;
+  const PAINT_FRAME: Rect = { x: 3200, y: 60, width: 1100, height: 700 };
+
+  const appKeys = (page: Page): Promise<string[]> =>
+    page.$$eval(APP_SLOT, (els) => els.map((el) => (el as HTMLElement).dataset.key ?? ''));
+  const dots = (page: Page, selector: string): Locator => page.locator(selector).locator('.dots i');
+  const showOnlyCurrentMonitor = (page: Page, on: boolean): Promise<void> =>
+    patchSettings(page, { behavior: { showOnlyCurrentMonitor: on } });
+  const pageLabel = (page: Page): Promise<string | undefined> =>
+    page.evaluate(() => (window as unknown as DemoWindow).__dockMock?.pageLabel);
+  /** Paint's window reported again on `monitor` (a `WindowUpdated` after a move between monitors). */
+  const movePaintTo = (page: Page, monitor: string, rect: Rect): Promise<void> =>
+    page.evaluate(
+      (raw) => {
+        (window as unknown as DemoWindow).__dockMock?.pushWindow(raw as RawWindow);
+      },
+      { ...PAINT_WINDOW, id: PAINT_WINDOW_ID, monitor, rect },
+    );
+
+  test('the secondary page lists the pinned apps and only the windows on its monitor', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openDock(page, SECOND_PAGE);
+    expect(await pageLabel(page)).toBe('dock-DISPLAY3');
+    // The setting off: every window, like the primary.
+    await expect(page.locator(APP_SLOT)).toHaveCount(8);
+    await expect(dots(page, NOTEPAD_SLOT)).toHaveCount(1);
+    await expect(dots(page, PAINT_SLOT)).toHaveCount(1);
+    await expect(page.locator(CODE_SLOT)).toHaveCount(1);
+
+    // On: the five pinned apps stay (Notepad with its one window here),
+    // Paint is the only running app on this monitor; Code and Spotify, on
+    // the primary, are gone.
+    await showOnlyCurrentMonitor(page, true);
+    await expect(page.locator(APP_SLOT)).toHaveCount(6);
+    expect(await appKeys(page)).toEqual([
+      'app:exe:c:/windows/explorer.exe',
+      'app:exe:c:/program files/mozilla firefox/firefox.exe',
+      'app:exe:c:/program files/windowsapps/terminal/windowsterminal.exe',
+      'app:exe:c:/windows/notepad.exe',
+      'app:uri:ms-settings:',
+      'app:exe:c:/windows/system32/mspaint.exe',
+    ]);
+    await expect(dots(page, NOTEPAD_SLOT)).toHaveCount(1);
+    await expect(dots(page, PAINT_SLOT)).toHaveCount(1);
+    await expect(page.locator(`${APP_SLOT}[data-pinned="true"]`)).toHaveCount(5);
+    await expect(page.locator('[role="separator"]')).toHaveCount(3);
+    // Firefox's window is in the foreground, on the primary: nothing is
+    // active here.
+    await expect(page.locator(`${APP_SLOT}[data-active="true"]`)).toHaveCount(0);
+    await expect(page.locator(`${APP_SLOT}:not([data-icon="loaded"])`)).toHaveCount(0);
+    await page.screenshot({ path: `${OUT}/dock-second-monitor.png` });
+
+    // Off again: everything is back.
+    await showOnlyCurrentMonitor(page, false);
+    await expect(page.locator(APP_SLOT)).toHaveCount(8);
+    await expect(page.locator(CODE_SLOT)).toHaveCount(1);
+  });
+
+  test('the primary page shows everything with the setting off and only its own windows with it on', async ({
+    page,
+  }) => {
+    await openDock(page, PRIMARY_PAGE);
+    expect(await pageLabel(page)).toBe('dock');
+    await expect(page.locator(APP_SLOT)).toHaveCount(8);
+    await expect(dots(page, NOTEPAD_SLOT)).toHaveCount(1);
+    await expect(page.locator(PAINT_SLOT)).toHaveCount(1);
+
+    await showOnlyCurrentMonitor(page, true);
+    // Notepad stays, pinned, with no window on this monitor; Paint is gone.
+    await expect(page.locator(APP_SLOT)).toHaveCount(7);
+    await expect(dots(page, NOTEPAD_SLOT)).toHaveCount(0);
+    await expect(page.locator(PAINT_SLOT)).toHaveCount(0);
+    await expect(page.locator(CODE_SLOT)).toHaveCount(1);
+    await expect(page.locator(`${APP_SLOT}[data-active="true"]`)).toHaveCount(1);
+    await expect(page.locator('[role="separator"]')).toHaveCount(3);
+
+    // Paint dragged onto this monitor appears at once; dragged back, it goes.
+    await movePaintTo(page, 'mock-primary', { x: 100, y: 100, width: 1100, height: 700 });
+    await expect(page.locator(PAINT_SLOT)).toHaveCount(1);
+    await expect(page.locator(APP_SLOT)).toHaveCount(8);
+    await movePaintTo(page, DISPLAY3, PAINT_FRAME);
+    await expect(page.locator(PAINT_SLOT)).toHaveCount(0);
+    await expect(page.locator(APP_SLOT)).toHaveCount(7);
+  });
+
+  test('a fullscreen app hides only the dock of its monitor', async ({ page }) => {
+    await openDock(page, SECOND_PAGE);
+    const panel = page.locator(PANEL);
+    await expect(panel).not.toHaveAttribute('data-autohide');
+
+    // Fullscreen on the primary, or on an unknown monitor (which the engine
+    // gives to the primary's dock): this dock stays.
+    await fullscreen(page, true, 'mock-primary');
+    await page.waitForTimeout(SLIDE_MS * 2);
+    await expect(panel).not.toHaveAttribute('data-autohide');
+    await expect(panel).toBeVisible();
+    await fullscreen(page, false);
+    await fullscreen(page, true, null);
+    await page.waitForTimeout(SLIDE_MS * 2);
+    await expect(panel).not.toHaveAttribute('data-autohide');
+    await fullscreen(page, false);
+
+    // On this monitor: out at once, and back when it ends.
+    await fullscreen(page, true, DISPLAY3);
+    await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+    await expect(panel).toBeHidden();
+    await fullscreen(page, false);
+    await expect(panel).not.toHaveAttribute('data-autohide');
+    await expect(panel).toBeVisible();
+  });
+
+  test('the primary page takes a fullscreen verdict with no monitor, not one about the other monitor', async ({
+    page,
+  }) => {
+    await openDock(page, PRIMARY_PAGE);
+    const panel = page.locator(PANEL);
+    await fullscreen(page, true, DISPLAY3);
+    await page.waitForTimeout(SLIDE_MS * 2);
+    await expect(panel).not.toHaveAttribute('data-autohide');
+    await expect(panel).toBeVisible();
+    await fullscreen(page, false);
+    await fullscreen(page, true, null);
+    await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+    await fullscreen(page, false);
+    await expect(panel).not.toHaveAttribute('data-autohide');
+    await fullscreen(page, true, 'mock-primary');
+    await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+  });
+
+  test('"when a window overlaps" hides only the dock whose panel the window covers', async ({
+    page,
+  }) => {
+    await openDock(page, SECOND_PAGE);
+    const viewport = page.viewportSize()!;
+    await expect.poll(() => hitRegions(page)).toHaveLength(1);
+    const atRest = (await hitRegions(page))[0]!;
+    const panel = page.locator(PANEL);
+
+    // This page's panel was placed on the second monitor's work area, at
+    // its scale: 1280 × 240 CSS px are 1920 × 360 physical px there.
+    const onScreen = await dockPanel(page);
+    expect(onScreen).not.toBeNull();
+    expect(onScreen!.x).toBe(DISPLAY3_WORK_AREA.x + Math.floor(atRest.panel.x * DISPLAY3_SCALE));
+    expect(onScreen!.y).toBe(
+      DISPLAY3_WORK_AREA.y +
+        DISPLAY3_WORK_AREA.height -
+        Math.round(viewport.height * DISPLAY3_SCALE) +
+        Math.floor(atRest.panel.y * DISPLAY3_SCALE),
+    );
+    expect(onScreen!.x + onScreen!.width).toBeLessThanOrEqual(
+      DISPLAY3_WORK_AREA.x + DISPLAY3_WORK_AREA.width,
+    );
+    expect(onScreen!.y + onScreen!.height).toBeLessThanOrEqual(
+      DISPLAY3_WORK_AREA.y + DISPLAY3_WORK_AREA.height,
+    );
+
+    await patchSettings(page, { autoHide: { mode: 'whenOverlapped', delayMs: DELAY } });
+    await page.waitForTimeout(DELAY + SLIDE_MS);
+    await expect(panel).not.toHaveAttribute('data-autohide');
+
+    // Paint (on this monitor) is dragged down over the panel: the countdown
+    // runs, then the dock slides out; dragged away, it is back at once.
+    const over = { x: onScreen!.x - 100, y: onScreen!.y - 300, width: 900, height: 400 };
+    await moveWindow(page, PAINT_WINDOW_ID, over);
+    await expect(panel).toHaveAttribute('data-autohide', 'pending');
+    await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+    await expect(panel).toBeHidden();
+    await page.screenshot({ path: `${OUT}/dock-second-monitor-overlapped.png` });
+    await moveWindow(page, PAINT_WINDOW_ID, PAINT_FRAME);
+    await expect(panel).not.toHaveAttribute('data-autohide');
+    await expect(panel).toBeVisible();
+
+    // Code's window, dragged over the *primary's* panel area: nothing here.
+    await moveWindow(page, CODE_WINDOW_ID, { x: 900, y: 1100, width: 900, height: 400 });
+    await page.waitForTimeout(DELAY + SLIDE_MS);
+    await expect(panel).not.toHaveAttribute('data-autohide');
+    await expect(panel).toBeVisible();
+  });
+
+  test('the primary page is not hidden by a window over the secondary dock', async ({ page }) => {
+    await openDock(page, PRIMARY_PAGE);
+    const panel = page.locator(PANEL);
+    const onScreen = (await dockPanel(page))!;
+    expect(onScreen.x + onScreen.width).toBeLessThanOrEqual(WORK_AREA.width);
+    await patchSettings(page, { autoHide: { mode: 'whenOverlapped', delayMs: DELAY } });
+    // The frame that covers the second monitor's panel area.
+    await moveWindow(page, PAINT_WINDOW_ID, { x: 3000, y: 800, width: 900, height: 300 });
+    await page.waitForTimeout(DELAY + SLIDE_MS);
+    await expect(panel).not.toHaveAttribute('data-autohide');
+    await expect(panel).toBeVisible();
+    // One over its own panel does hide it.
+    await moveWindow(page, CODE_WINDOW_ID, {
+      x: onScreen.x - 100,
+      y: onScreen.y - 300,
+      width: 900,
+      height: 400,
+    });
+    await expect(panel).toHaveAttribute('data-autohide', 'hidden');
   });
 });

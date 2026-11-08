@@ -12,6 +12,7 @@ import {
   colorFor,
   defaultSettings,
   demoAppInfo,
+  dockLabel,
   fileStem,
   MockBackend,
   nothingToRecycle,
@@ -19,6 +20,7 @@ import {
   panelOnScreen,
   rectsIntersect,
   recyclePlan,
+  SECOND_MONITOR_ID,
   validateSettings,
   type MockOptions,
 } from './mock';
@@ -591,33 +593,50 @@ describe('revisions and events', () => {
     expect(shows).toHaveLength(2);
   });
 
-  it('setFullscreen mirrors FullscreenChanged: in the snapshot, one state event per change', async () => {
+  it('setFullscreen mirrors FullscreenChanged: in the dock’s facts, one state event per change', async () => {
     const b = fast();
     const states = recordStates(b);
+    // The page registers its dock window (no panel rect yet): one entry on
+    // the primary monitor with both facts clear.
+    expect((await b.getDockState()).docks).toEqual([]);
+    await b.setDockPanelRect({ x: 1000, y: 1320, width: 560, height: 72 });
     const before = await b.getDockState();
-    expect(before.fullscreen).toBe(false);
-    // The demo windows carry no geometry, like the Rust demo.
+    expect(before.docks).toEqual([
+      { monitor: 'mock-primary', fullscreen: false, overlapped: false },
+    ]);
     expect(item(before, app(FIREFOX)).windows).toHaveLength(2);
+    states.length = 0;
 
     // The first verdict is usually `false`: no change, no event.
     b.setFullscreen(false);
     expect(states).toHaveLength(0);
 
-    b.setFullscreen(true);
+    // A verdict naming the dock's monitor.
+    b.setFullscreen(true, 'mock-primary');
     expect(states).toHaveLength(1);
-    expect(states[0]!.fullscreen).toBe(true);
+    expect(states[0]!.docks).toEqual([
+      { monitor: 'mock-primary', fullscreen: true, overlapped: false },
+    ]);
     expect(states[0]!.revision).toBe(before.revision + 1);
     // Items and the foreground are untouched by it.
     expect(keys(states[0]!)).toEqual(keys(before));
     expect(states[0]!.foreground).toBe(before.foreground);
-    expect((await b.getDockState()).fullscreen).toBe(true);
+    expect((await b.getDockState()).docks[0]!.fullscreen).toBe(true);
 
-    b.setFullscreen(true);
+    b.setFullscreen(true, 'mock-primary');
     expect(states).toHaveLength(1);
     b.setFullscreen(false);
     expect(states).toHaveLength(2);
-    expect(states[1]!.fullscreen).toBe(false);
+    expect(states[1]!.docks[0]!.fullscreen).toBe(false);
     expect(states[1]!.revision).toBe(before.revision + 2);
+
+    // A verdict with no monitor lands on the primary's dock; one about a
+    // monitor without a dock hides nobody.
+    b.setFullscreen(true);
+    expect(states.at(-1)!.docks[0]!.fullscreen).toBe(true);
+    b.setFullscreen(true, '\\\\.\\DISPLAY9');
+    expect(states.at(-1)!.docks[0]!.fullscreen).toBe(false);
+    expect(states).toHaveLength(4);
   });
 });
 
@@ -796,44 +815,57 @@ describe('a window over the dock (mirror of crates/stem-core/src/overlap.rs)', (
     );
   });
 
-  it('setDockPanelRect and moveWindow drive DockState.overlapped; only flips emit a state', async () => {
+  /** The primary dock's `overlapped`, or `undefined` without an entry. */
+  const overlappedOn = (state: DockState, monitor = 'mock-primary'): boolean | undefined =>
+    state.docks.find((d) => d.monitor === monitor)?.overlapped;
+
+  it('setDockPanelRect and moveWindow drive the dock\u2019s overlapped; only flips emit a state', async () => {
     // No `window` in node: viewport px are screen px (see MockOptions.viewportHeight).
     const b = fast();
     const states = recordStates(b);
     const before = await b.getDockState();
-    expect(before.overlapped).toBe(false);
+    expect(before.docks).toEqual([]);
     expect(b.dockPanel()).toBeNull();
+    expect(b.pageLabel).toBe('dock');
 
+    // The first report registers the dock: one state with its entry, clear
+    // of every demo window.
     await b.setDockPanelRect(PANEL);
     expect(b.calls).toEqual([{ type: 'setDockPanelRect', rect: PANEL }]);
     expect(b.dockPanel()).toEqual(PANEL);
-    // Every demo window is clear of it: nothing emitted.
-    expect(states).toHaveLength(0);
+    expect(b.dockPanel('dock')).toEqual(PANEL);
+    expect(b.dockPanel('dock-DISPLAY3')).toBeNull();
+    expect(states).toHaveLength(1);
+    expect(states[0]!.docks).toEqual([
+      { monitor: 'mock-primary', fullscreen: false, overlapped: false },
+    ]);
+    const registered = states[0]!.revision;
+    expect(registered).toBe(before.revision + 1);
 
     // Code's window is dragged over the dock: a rect-only update, one state.
     b.moveWindow(4, OVER);
-    expect(states).toHaveLength(1);
-    expect(states[0]!.overlapped).toBe(true);
-    expect(states[0]!.revision).toBe(before.revision + 1);
-    expect(keys(states[0]!)).toEqual(keys(before));
-    expect(states[0]!.foreground).toBe(before.foreground);
+    expect(states).toHaveLength(2);
+    expect(overlappedOn(states[1]!)).toBe(true);
+    expect(states[1]!.revision).toBe(registered + 1);
+    expect(keys(states[1]!)).toEqual(keys(before));
+    expect(states[1]!.foreground).toBe(before.foreground);
     // A nudge that keeps it over the dock: stored, nothing emitted.
     b.moveWindow(4, { ...OVER, x: OVER.x + 20 });
-    expect(states).toHaveLength(1);
+    expect(states).toHaveLength(2);
     expect(b['engine'].windows.get(4)!.raw.rect).toEqual({ ...OVER, x: OVER.x + 20 });
     // Away again: cleared.
     b.moveWindow(4, CLEAR);
-    expect(states).toHaveLength(2);
-    expect(states[1]!.overlapped).toBe(false);
+    expect(states).toHaveLength(3);
+    expect(overlappedOn(states[2]!)).toBe(false);
 
     // A minimised window over the dock does not count; restoring it does.
     b.moveWindow(6, OVER);
-    expect(states).toHaveLength(2);
+    expect(states).toHaveLength(3);
     await b.windowAction(6, 'restore');
-    expect(states.at(-1)!.overlapped).toBe(true);
+    expect(overlappedOn(states.at(-1)!)).toBe(true);
     // An unreadable frame says nothing.
     b.moveWindow(6, null);
-    expect(states.at(-1)!.overlapped).toBe(false);
+    expect(overlappedOn(states.at(-1)!)).toBe(false);
     // Unknown windows are ignored.
     const count = states.length;
     b.moveWindow(99, OVER);
@@ -844,17 +876,146 @@ describe('a window over the dock (mirror of crates/stem-core/src/overlap.rs)', (
     await b.setDockPanelRect({ ...PANEL, x: 900, width: 760 });
     expect(states).toHaveLength(count);
     await b.setDockPanelRect({ x: 200, y: 40, width: 100, height: 100 });
-    expect(states.at(-1)!.overlapped).toBe(true);
-    expect((await b.getDockState()).overlapped).toBe(true);
+    expect(overlappedOn(states.at(-1)!)).toBe(true);
+    expect(overlappedOn(await b.getDockState())).toBe(true);
   });
 
   it('a viewport height places the reported panel like the app layer does', async () => {
     const b = fast({ viewportHeight: 240 });
     await b.setDockPanelRect({ x: 360, y: 168, width: 561, height: 64 });
     expect(b.dockPanel()).toEqual({ x: 360, y: 1320, width: 561, height: 64 });
-    expect((await b.getDockState()).overlapped).toBe(false);
+    expect(overlappedOn(await b.getDockState())).toBe(false);
     b.moveWindow(1, { x: 0, y: 1200, width: 2560, height: 192 });
-    expect((await b.getDockState()).overlapped).toBe(true);
+    expect(overlappedOn(await b.getDockState())).toBe(true);
+  });
+
+  it('panelOnScreen scales the CSS rect and the viewport for a monitor at 150 %', () => {
+    const workArea = { x: 2560, y: 0, width: 1920, height: 1032 };
+    // A 1280 × 240 CSS viewport is 1920 × 360 physical px: the panel at
+    // y 168 css (252 px) rests 108 px above the work area's bottom edge.
+    expect(panelOnScreen({ x: 360, y: 168, width: 561, height: 64 }, workArea, 240, 1.5)).toEqual({
+      x: 2560 + 540,
+      y: 1032 - 360 + 252,
+      width: 842,
+      height: 96,
+    });
+    // Rounded outwards like a hit region: 11 css → 16.5 → 16; 21 css → 31.5 → 32.
+    expect(panelOnScreen({ x: 11, y: 0, width: 10, height: 8 }, workArea, 100, 1.5)).toEqual({
+      x: 2560 + 16,
+      y: 1032 - 150,
+      width: 16,
+      height: 12,
+    });
+    // A scale of 1 (or a bad one) is the plain placement.
+    expect(panelOnScreen({ x: 10, y: 20, width: 30, height: 40 }, workArea, 100, 0)).toEqual(
+      panelOnScreen({ x: 10, y: 20, width: 30, height: 40 }, workArea, 100),
+    );
+  });
+});
+
+describe('two monitors', () => {
+  const DISPLAY3 = '\\\\.\\DISPLAY3';
+  const PAINT = appIdForExe('C:\\Windows\\System32\\mspaint.exe');
+  const factsOn = (state: DockState, monitor: string) =>
+    state.docks.find((d) => d.monitor === monitor);
+
+  it('has a second monitor to the right with two windows on it', async () => {
+    const b = fast({ scenario: 'twoMonitors' });
+    const monitors = await b.getMonitors();
+    expect(monitors.map((m) => m.id)).toEqual(['mock-primary', DISPLAY3]);
+    expect(monitors[1]).toMatchObject({
+      bounds: { x: 2560, y: 0, width: 1920, height: 1080 },
+      workArea: { x: 2560, y: 0, width: 1920, height: 1032 },
+      scaleFactor: 1.5,
+      isPrimary: false,
+    });
+    expect(SECOND_MONITOR_ID).toBe(DISPLAY3);
+    const state = await b.getDockState();
+    // Everything on one list: the engine filters nothing by monitor.
+    expect(keys(state)).toEqual([
+      'fixed:launcher',
+      'sep:1',
+      app(EXPLORER),
+      app(FIREFOX),
+      app(TERMINAL),
+      app(NOTEPAD),
+      app(SETTINGS),
+      'sep:2',
+      app(CODE),
+      app(SPOTIFY),
+      app(PAINT),
+      'sep:3',
+      'fixed:recycle-bin',
+    ]);
+    expect(item(state, app(NOTEPAD)).windows.map((w) => w.monitor)).toEqual([DISPLAY3]);
+    expect(item(state, app(PAINT)).windows.map((w) => w.monitor)).toEqual([DISPLAY3]);
+    expect(item(state, app(CODE)).windows.map((w) => w.monitor)).toEqual(['mock-primary']);
+    // Both new frames stay clear of the second dock's panel area.
+    const windows = [...b['engine'].windows.values()].map((t) => t.raw);
+    expect(windows).toHaveLength(8);
+    expect(overlapped({ x: 2560, y: 1032 - 250, width: 1920, height: 250 }, windows, null)).toBe(
+      false,
+    );
+  });
+
+  it('labels the page\u2019s dock window like the app layer and keys the panels by it', async () => {
+    expect(dockLabel(null, 'mock-primary')).toBe('dock');
+    expect(dockLabel('mock-primary', 'mock-primary')).toBe('dock');
+    expect(dockLabel(DISPLAY3, 'mock-primary')).toBe('dock-DISPLAY3');
+    expect(dockLabel('a b/c:d_e', 'x')).toBe('dock-abcd_e');
+
+    const primary = fast({ scenario: 'twoMonitors', viewportHeight: 240 });
+    const second = fast({ scenario: 'twoMonitors', viewportHeight: 240, monitor: DISPLAY3 });
+    expect(primary.pageLabel).toBe('dock');
+    expect(primary.pageMonitor).toBeNull();
+    expect(second.pageLabel).toBe('dock-DISPLAY3');
+    expect(second.pageMonitor).toBe(DISPLAY3);
+
+    // Each page's panel lands on its own monitor, the second at 150 %.
+    const rect = { x: 360, y: 168, width: 561, height: 64 };
+    await primary.setDockPanelRect(rect);
+    await second.setDockPanelRect(rect);
+    expect(primary.dockPanel()).toEqual({ x: 360, y: 1320, width: 561, height: 64 });
+    expect(second.dockPanel()).toEqual({ x: 3100, y: 924, width: 842, height: 96 });
+    // One backend serves one page: each knows only its own dock.
+    expect((await primary.getDockState()).docks).toEqual([
+      { monitor: 'mock-primary', fullscreen: false, overlapped: false },
+    ]);
+    expect((await second.getDockState()).docks).toEqual([
+      { monitor: DISPLAY3, fullscreen: false, overlapped: false },
+    ]);
+    expect(second.dockPanel('dock')).toBeNull();
+  });
+
+  it('fullscreen and overlapped are per dock', async () => {
+    const second = fast({ scenario: 'twoMonitors', viewportHeight: 240, monitor: DISPLAY3 });
+    const states = recordStates(second);
+    await second.setDockPanelRect({ x: 360, y: 168, width: 561, height: 64 });
+    states.length = 0;
+
+    // A video goes fullscreen on the primary: not this dock's business.
+    second.setFullscreen(true, 'mock-primary');
+    expect(states).toHaveLength(0);
+    second.setFullscreen(true);
+    expect(states).toHaveLength(0);
+    // On this monitor: hidden.
+    second.setFullscreen(true, DISPLAY3);
+    expect(states).toHaveLength(1);
+    expect(factsOn(states[0]!, DISPLAY3)?.fullscreen).toBe(true);
+    second.setFullscreen(false);
+    expect(factsOn(states.at(-1)!, DISPLAY3)?.fullscreen).toBe(false);
+
+    // Paint dragged under this dock's panel: overlapped; the same frame on
+    // the primary page's backend overlaps nothing there.
+    const under = { x: 3000, y: 800, width: 900, height: 300 };
+    second.moveWindow(8, under);
+    expect(factsOn(states.at(-1)!, DISPLAY3)?.overlapped).toBe(true);
+    const primary = fast({ scenario: 'twoMonitors', viewportHeight: 240 });
+    await primary.setDockPanelRect({ x: 360, y: 168, width: 561, height: 64 });
+    const primaryStates = recordStates(primary);
+    primary.moveWindow(8, under);
+    expect(primaryStates).toHaveLength(0);
+    expect(factsOn(await primary.getDockState(), 'mock-primary')?.overlapped).toBe(false);
   });
 });
 

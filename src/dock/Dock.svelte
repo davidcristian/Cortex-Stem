@@ -50,6 +50,7 @@
   import { iconSources, type IconSources } from '$lib/dock/icon-size';
   import { gapTransition, itemTransition } from '$lib/dock/item-transition';
   import { computeScales, maxGrowth, type MagnifyParams } from '$lib/dock/magnify';
+  import { dockFactsFor, dockMonitor, itemsForMonitor, monitorFromSearch } from '$lib/dock/monitor';
   import {
     DRAG_START,
     exceedsMoveThreshold,
@@ -116,13 +117,26 @@
 
   // --- Settings-derived values -----------------------------------------------
   const settings = $derived(store.settings);
+
+  // --- This dock's monitor ------------------------------------------------------
+  // With one dock per monitor the page learns its monitor from its URL
+  // (`dock.html?monitor=<id>`); the primary's page has none and takes the
+  // primary monitor of the list. The monitor picks this dock's facts in
+  // `DockState.docks` and, with the setting on, narrows the items to the
+  // windows on it (src/lib/dock/monitor.ts, pure). Everything else about
+  // the items (order, grouping, what a click does) is Rust's.
+  const urlMonitor = monitorFromSearch(window.location.search);
+  const myMonitor = $derived(dockMonitor(urlMonitor, store.monitors));
+  const showOnlyMine = $derived(settings?.behavior.showOnlyCurrentMonitor ?? false);
+  const visibleItems = $derived(itemsForMonitor(store.state?.items ?? [], myMonitor, showOnlyMine));
+  const facts = $derived(dockFactsFor(store.state?.docks ?? [], myMonitor));
   /**
    * The item list a file drop keeps on screen while its pins land:
    * the snapshots in between would show each new item at the end of the
    * pinned group first, before the reorder moves it into the gap.
    */
   let frozenItems = $state.raw<DockItemModel[] | null>(null);
-  const items = $derived(frozenItems ?? store.state?.items ?? []);
+  const items = $derived(frozenItems ?? visibleItems);
   const theme = $derived(resolveTheme(settings?.theme ?? 'system', store.theme, prefersDark));
   const accent = $derived(accentColor(store.theme));
   const highContrast = $derived(store.theme?.highContrast ?? false);
@@ -1236,27 +1250,29 @@
   // An app asking for attention brings a hidden dock back and keeps
   // it up until no item needs attention any more, whatever the motion
   // settings: the wiggle may be off, the item still has to be seen. From the
-  // snapshot, not the rendered list a file drop may be holding.
-  const needsAttention = $derived(store.state?.items.some((i) => i.needsAttention) ?? false);
+  // snapshot's items for this monitor, not the rendered list a file drop may
+  // be holding.
+  const needsAttention = $derived(visibleItems.some((i) => i.needsAttention));
   $effect(() => {
     const active = needsAttention;
     untrack(() => autoHideSend({ type: 'hold', hold: 'attention', active }));
   });
 
-  // A fullscreen app owns the screen (the platform decides, the
-  // snapshot carries it): the dock gets out of the way whatever the auto-hide
-  // mode, and comes back when the app leaves the foreground or fullscreen.
-  const fullscreen = $derived(store.state?.fullscreen ?? false);
+  // A fullscreen app owns this dock's monitor (the platform decides,
+  // the snapshot carries it per dock): the dock gets out of the way
+  // whatever the auto-hide mode, and comes back when the app leaves the
+  // foreground or fullscreen.
+  const fullscreen = $derived(facts.fullscreen);
   $effect(() => {
     const active = fullscreen;
     untrack(() => autoHideSend({ type: 'fullscreen', active }));
   });
 
-  // A window of another process covers the resting panel (the engine
-  // decides from the frames the platform reports and the panel rect sent by
-  // `reportDockPanel`): with the mode `whenOverlapped` the dock hides after
-  // the delay and comes back when the window is gone.
-  const overlapped = $derived(store.state?.overlapped ?? false);
+  // A window of another process covers this dock's resting panel
+  // (the engine decides from the frames the platform reports and the panel
+  // rect sent by `reportDockPanel`): with the mode `whenOverlapped` the dock
+  // hides after the delay and comes back when the window is gone.
+  const overlapped = $derived(facts.overlapped);
   $effect(() => {
     const active = overlapped;
     untrack(() => autoHideSend({ type: 'overlapped', active }));

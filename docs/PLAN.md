@@ -76,7 +76,7 @@ without failures.
 - Clicks outside the panel and the magnified icons reach the desktop and the
   windows behind the dock (`behavior.clickThrough`).
 - `behavior.showOnlyCurrentDesktop` lists only the windows on the current
-  virtual desktop. A fullscreen app in front hides the dock.
+  virtual desktop. A fullscreen app hides the dock of its monitor.
 - Each dock item has `role="button"` and an `aria-label`.
 - Bursts of window events are coalesced: title and location changes per
   window, and the service sends at most one state update per 16 ms.

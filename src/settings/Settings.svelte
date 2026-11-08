@@ -362,15 +362,15 @@
           <SettingRow
             id="current-monitor"
             label="Show only windows on the dock's monitor"
-            description="Each monitor's dock lists the windows on that monitor"
-            disabled
-            tag="M3"
+            description="Each monitor's dock lists the windows on that monitor; pinned apps stay on all"
           >
             <Toggle
               id="current-monitor"
               checked={settings.behavior.showOnlyCurrentMonitor}
-              disabled
-              onchange={() => {}}
+              onchange={(v) =>
+                edit((s) => {
+                  s.behavior.showOnlyCurrentMonitor = v;
+                })}
             />
           </SettingRow>
           <SettingRow
@@ -604,13 +604,17 @@
                 })}
             />
           </SettingRow>
-          <SettingRow id="monitors" label="Monitors" description="Where the dock appears">
+          <SettingRow
+            id="monitors"
+            label="Monitors"
+            description="Where the dock appears; a dock on every monitor follows plugging and unplugging"
+          >
             <Select
               id="monitors"
               value={settings.monitors}
               options={[
                 { value: 'primary', label: 'Primary monitor only' },
-                { value: 'all', label: 'All monitors (M3)', disabled: true },
+                { value: 'all', label: 'All monitors' },
               ]}
               onchange={(v) =>
                 edit((s) => {

@@ -41,8 +41,7 @@ const snapshot = (revision: number, items: DockItem[] = []): DockState => ({
   revision,
   items,
   foreground: null,
-  fullscreen: false,
-  overlapped: false,
+  docks: [],
 });
 
 /** Scripted backend: a settings document, a call log, and manual control over latency. */

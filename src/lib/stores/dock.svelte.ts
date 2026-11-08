@@ -73,10 +73,14 @@ export class DockStore {
       }),
     ];
 
-    const [state, settings, theme] = await Promise.allSettled([
+    // The monitors too: `dock://monitors` fires at start, but the
+    // platform may have reported them before this page subscribed, and a
+    // dock page needs them to tell which monitor it sits on.
+    const [state, settings, theme, monitors] = await Promise.allSettled([
       this.backend.getDockState(),
       this.backend.getSettings(),
       this.backend.getTheme(),
+      this.backend.getMonitors(),
     ]);
     if (state.status === 'fulfilled') {
       this.applyState(state.value);
@@ -92,6 +96,14 @@ export class DockStore {
       this.theme = theme.value;
     } else {
       console.error('get_theme failed:', theme.reason);
+    }
+    if (monitors.status === 'fulfilled') {
+      // An event that arrived meanwhile is at least as fresh.
+      if (this.monitors.length === 0) {
+        this.monitors = monitors.value;
+      }
+    } else {
+      console.error('get_monitors failed:', monitors.reason);
     }
   }
 

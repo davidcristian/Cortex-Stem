@@ -8,6 +8,7 @@ import type {
   Unsubscribe,
 } from '$lib/ipc/backend';
 import type { DockState } from '$lib/ipc/generated/DockState';
+import type { MonitorInfo } from '$lib/ipc/generated/MonitorInfo';
 import type { Settings } from '$lib/ipc/generated/Settings';
 import type { ThemeInfo } from '$lib/ipc/generated/ThemeInfo';
 import { defaultSettings } from '$lib/ipc/mock';
@@ -19,9 +20,17 @@ const snapshot = (revision: number): DockState => ({
   revision,
   items: [],
   foreground: null,
-  fullscreen: false,
-  overlapped: false,
+  docks: [],
 });
+
+const MONITOR: MonitorInfo = {
+  id: 'mock-primary',
+  name: 'Mock Display',
+  bounds: { x: 0, y: 0, width: 2560, height: 1440 },
+  workArea: { x: 0, y: 0, width: 2560, height: 1392 },
+  scaleFactor: 1,
+  isPrimary: true,
+};
 
 const THEME: ThemeInfo = { accent: '#0078D4', dark: true, highContrast: false, transparency: true };
 
@@ -68,8 +77,11 @@ class FakeBackend implements Backend {
     return THEME;
   }
 
-  async getMonitors() {
-    return [];
+  monitors: MonitorInfo[] = [];
+
+  async getMonitors(): Promise<MonitorInfo[]> {
+    this.log.push('get_monitors');
+    return this.monitors;
   }
 
   async updateSettings(settings: Settings): Promise<Settings> {
@@ -141,13 +153,36 @@ describe('DockStore', () => {
       'get_dock_state',
       'get_settings',
       'get_theme',
+      'get_monitors',
     ]);
     expect(store.state).toEqual(snapshot(0));
     expect(store.settings).toEqual(defaultSettings());
     expect(store.theme).toEqual(THEME);
+    expect(store.monitors).toEqual([]);
     // Starting twice does not subscribe twice.
     await store.start();
     expect(backend.log.filter((l) => l === 'on:dock://state')).toHaveLength(1);
+  });
+
+  it('fetches the monitors at start and lets a monitors event that came first stand', async () => {
+    const backend = new FakeBackend();
+    backend.monitors = [MONITOR];
+    const store = new DockStore(backend);
+    await store.start();
+    expect(store.monitors).toEqual([MONITOR]);
+
+    // The event arrives while the fetch is in flight: it is the fresher list.
+    const second = { ...MONITOR, id: '\\\\.\\DISPLAY3', isPrimary: false };
+    const racing = new FakeBackend();
+    racing.monitors = [MONITOR];
+    const late = new DockStore(racing);
+    const started = late.start();
+    racing.emit('dock://monitors', [MONITOR, second]);
+    await started;
+    expect(late.monitors).toEqual([MONITOR, second]);
+    // Later events replace the list as before.
+    racing.emit('dock://monitors', [MONITOR]);
+    expect(late.monitors).toEqual([MONITOR]);
   });
 
   it('drops stale snapshots, accepts equal and newer ones', async () => {
