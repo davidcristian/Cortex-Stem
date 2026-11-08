@@ -118,12 +118,39 @@ jobs:
       - name: pnpm install
         run: pnpm install --frozen-lockfile
 
+      # The NSIS bundler downloads its toolset (NSIS and Tauri's plugin) from
+      # GitHub releases into %LOCALAPPDATA%\tauri when it is not there yet.
+      # Keep it between runs so a build does not depend on that download; the
+      # bundler checks the files it finds and fetches only what is missing.
+      - name: Cache the Tauri bundler tools
+        uses: actions/cache@v6
+        with:
+          path: ~\AppData\Local\tauri
+          key: tauri-tools-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: tauri-tools-${{ runner.os }}-
+
       # `tauri build` runs `pnpm build` first (tauri.conf.json
       # beforeBuildCommand), then `cargo build --release` for src-tauri and the
       # NSIS bundler. The Tauri crate is a workspace member, so everything
       # lands in the repository-root target/, not src-tauri/target/.
       - name: tauri build
-        run: pnpm tauri build
+        # The toolset download has failed with HTTP 504 on the runners while
+        # the same URL answered at once elsewhere. Retry the build, and only
+        # when the failure is a download: cargo's output is already in
+        # target/, so a retry only bundles again. Any other failure fails the
+        # step at once.
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if pnpm tauri build 2>&1 | tee tauri-build.log; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ] || ! grep -Eq 'http status: 5[0-9][0-9]|error sending request|operation timed out|failed to download' tauri-build.log; then
+              exit 1
+            fi
+            echo "::warning::tauri build failed on a download (attempt $attempt of 3); retrying in 30 s"
+            sleep 30
+          done
 
       # Always `--draft`: this workflow never publishes. `--verify-tag` refuses
       # to create a missing tag. A tag that already has a release, draft or
