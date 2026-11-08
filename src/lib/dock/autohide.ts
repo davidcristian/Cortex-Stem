@@ -216,10 +216,12 @@ export function autoHideActive(state: AutoHideState): boolean {
 
 /**
  * Only a fullscreen app makes the machine active: the mode is not
- * `always`, and no window overlaps with the mode `whenOverlapped`.
+ * `always`. An overlap under `whenOverlapped` does not count while
+ * fullscreen: the fullscreen window covers the whole monitor, so it is the
+ * overlap, and the dock's monitor has nothing else in front.
  */
 export function onlyFullscreenHides(state: AutoHideState): boolean {
-  return state.fullscreen && !state.enabled && !(state.dodges && state.overlapped);
+  return state.fullscreen && !state.enabled;
 }
 
 /**

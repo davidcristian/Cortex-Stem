@@ -1117,7 +1117,7 @@ describe('the reveal strip', () => {
     expect(workAreaReachesBottom(null)).toBe(true);
   });
 
-  it('only fullscreen hides when neither the mode nor an overlap would', () => {
+  it('only fullscreen hides when the mode would not; the fullscreen window is itself the overlap', () => {
     expect(onlyFullscreenHides(INITIAL_AUTO_HIDE)).toBe(false);
     expect(onlyFullscreenHides(off().send({ type: 'fullscreen', active: true }).state)).toBe(true);
     expect(onlyFullscreenHides(always().send({ type: 'fullscreen', active: true }).state)).toBe(
@@ -1127,8 +1127,10 @@ describe('the reveal strip', () => {
       .send({ type: 'configure', mode: 'whenOverlapped', delayMs: 250 })
       .send({ type: 'fullscreen', active: true });
     expect(onlyFullscreenHides(dodging.state)).toBe(true);
+    // Under whenOverlapped the fullscreen window covers the dock too: that
+    // overlap is the fullscreen app itself, so fullscreen alone still hides.
     dodging.send({ type: 'overlapped', active: true });
-    expect(onlyFullscreenHides(dodging.state)).toBe(false);
+    expect(onlyFullscreenHides(dodging.state)).toBe(true);
     // An overlap with another mode does not count.
     const overlappedOff = off()
       .send({ type: 'overlapped', active: true })
@@ -1143,11 +1145,13 @@ describe('the reveal strip', () => {
       expect(revealStripOn(always().send({ type: 'fullscreen', active: true }).state, edge)).toBe(
         true,
       );
+      // Under whenOverlapped the fullscreen window is itself the overlap:
+      // it does not bring the strip back above a visible taskbar.
       const overlapped = new Harness()
         .send({ type: 'configure', mode: 'whenOverlapped', delayMs: 250 })
         .send({ type: 'overlapped', active: true })
         .send({ type: 'fullscreen', active: true });
-      expect(revealStripOn(overlapped.state, edge)).toBe(true);
+      expect(revealStripOn(overlapped.state, edge)).toBe(edge);
     }
     const fullscreen = off().send({ type: 'fullscreen', active: true }).state;
     expect(revealStripOn(fullscreen, true)).toBe(true);
