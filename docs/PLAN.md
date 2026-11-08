@@ -2,7 +2,7 @@
 
 The milestones are ordered so that each one confirms what the next one
 depends on. Each milestone lists its scope, its status (the parts of the scope
-that the code does), and its **exit criterion**:
+that the code does), what is still planned, and its **exit criterion**:
 something a person can observe that ends the milestone. M4 and M6 have no
 exit criterion.
 
@@ -50,6 +50,9 @@ The settings file accepts
 `acrylic` and `mica` for `appearance.backdrop`, and the settings page does not
 offer them. With either value the panel draws the CSS backdrop (`css`).
 
+**Planned.** The finished Acrylic and Mica options
+([research](research/backdrop/index.md)).
+
 **Exit criterion.** Stem is the only launcher for a week of daily use, with
 the stock taskbar auto-hidden.
 
@@ -85,6 +88,14 @@ without failures.
 - Elevated windows appear with their name and icon. When Windows blocks an
   action on one (minimise, restore, close), the dock shows a notice.
 
+Window thumbnails have been researched, not built.
+[ADR-0009](adr/0009-window-thumbnails.md) proposes drawing DWM thumbnails
+(live pictures of a window, drawn by DWM, the Desktop Window Manager) into
+the dock window.
+
+**Planned.** A disk icon cache, a measurement of idle CPU, and window
+previews on hover, drawn with DWM thumbnails.
+
 **Exit criterion.** Everything above works on a setup with two monitors at
 different DPI.
 
@@ -104,6 +115,9 @@ right and top positions.
   the user's own state back. After a crash the taskbar stays hidden until
   Stem starts again: the next start puts it back, or keeps it hidden while
   the setting is on. Stem keeps the user's state in `taskbar.json` until then.
+
+**Planned.** Screen space reserved for the dock as an AppBar, and the left,
+right and top positions.
 
 **Exit criterion.** None.
 
@@ -136,7 +150,17 @@ signing keys), notes on code signing, and the v0.1.0 release.
 **Scope.** Jump lists and recent documents, research on the notification
 area, stacks and folders, widgets (clock, battery, volume), and theming.
 
-**Status.** Not done.
+**Status.**
+
+- The notification-area study is done
+  ([research](research/notification-area/index.md)). It recommends against
+  replacing or mirroring the notification area and names the smallest useful
+  step.
+- Jump lists and recent documents in the dock's menu have a study
+  ([research](research/jump-lists/index.md)) and no code.
+
+**Planned.** Jump lists and recent documents in the dock's menu, stacks and
+folders, widgets (clock, battery, volume), and theming.
 
 **Exit criterion.** None.
 

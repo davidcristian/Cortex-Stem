@@ -23,7 +23,8 @@ frontend. It runs only on Windows; macOS and Linux hosts are used only for devel
   default), Task View and Show Desktop; at the right a Recycle Bin (on by default).
 - It can **auto-hide**, follows the Windows **accent colour and light or dark theme**, supports
   **multiple monitors** and **per-monitor DPI**, and can hide the stock taskbar.
-- It is **not** a notification-area (system tray) replacement; that is not a goal for now.
+- It is **not** a notification-area (system tray) replacement; that is not a goal for now
+  ([docs/research/notification-area/](docs/research/notification-area/index.md) says why).
 
 ## 2. Repository map and ownership
 

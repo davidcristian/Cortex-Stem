@@ -226,6 +226,9 @@ The [FAQ](docs/user-guide/faq.md) in the user guide answers common questions abo
 | [docs/PLAN.md](docs/PLAN.md) | The milestones and the non-goals |
 | [docs/RELEASING.md](docs/RELEASING.md) | How a release is built, and what the installer and the uninstaller do |
 | [docs/adr/](docs/adr/) | The architecture decisions, one record each |
+| [docs/research/backdrop/](docs/research/backdrop/index.md) | Acrylic or Mica behind the dock panel: the options |
+| [docs/research/jump-lists/](docs/research/jump-lists/index.md) | Jump lists and recent documents in the dock's menu |
+| [docs/research/notification-area/](docs/research/notification-area/index.md) | What replacing or mirroring the notification area would take, and why Stem does not |
 | [AGENTS.md](AGENTS.md) and [docs/development/](docs/development/index.md) | The rules every change in this repository follows, and the detail behind them |
 
 ## License
