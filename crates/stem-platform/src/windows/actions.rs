@@ -35,6 +35,22 @@
 //! `AllowSetForegroundWindow` only grants the right to *another* process and
 //! does not help a caller that lacks it, so it is not part of the chain.
 //! Nothing here sends a synchronous message to the target process.
+//!
+//! Elevated windows. The dock runs at medium integrity, so UIPI
+//! refuses everything here that posts to a higher-integrity window:
+//! `PostMessageW(WM_CLOSE)`, `ShowWindowAsync` (minimise, restore, and the
+//! restore step of an activation) fail at once with `ERROR_ACCESS_DENIED`,
+//! and `AttachThreadInput` to the elevated thread is refused too.
+//! `SetForegroundWindow` itself is not a message and is granted under the
+//! usual foreground rules (the elevated Task Manager activates
+//! through the plain call). Each refusal is reported, never swallowed:
+//! `Minimize`/`Restore`/`Close` return `PlatformError::AccessDenied`
+//! ("access denied (elevated or protected process)"), which the command
+//! layer logs and shows; `Activate` goes on without the restore (logged
+//! once at debug) and reports a failure only when every strategy was
+//! refused. All lines here are `debug`: a user action that fails is
+//! reported by the command layer once, so nothing is logged twice and
+//! nothing repeats while an elevated window merely sits on the dock.
 
 use stem_core::{WindowAction, WindowId};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
@@ -58,14 +74,12 @@ pub fn perform(id: WindowId, action: WindowAction) -> PlatformResult<()> {
     }
     match action {
         WindowAction::Activate => activate(id, hwnd),
-        WindowAction::Minimize => {
-            show_async(hwnd, SW_MINIMIZE);
-            Ok(())
-        }
-        WindowAction::Restore => {
-            show_async(hwnd, SW_RESTORE);
-            Ok(())
-        }
+        WindowAction::Minimize => show_async(hwnd, SW_MINIMIZE).inspect_err(|e| {
+            log::debug!("minimize {id:?}: ShowWindowAsync(SW_MINIMIZE) refused: {e}");
+        }),
+        WindowAction::Restore => show_async(hwnd, SW_RESTORE).inspect_err(|e| {
+            log::debug!("restore {id:?}: ShowWindowAsync(SW_RESTORE) refused: {e}");
+        }),
         WindowAction::Close => {
             // SAFETY: PostMessageW queues the message and returns immediately;
             // the parameters are plain integers.
@@ -98,10 +112,23 @@ fn is_foreground(hwnd: HWND) -> bool {
 }
 
 /// `ShowWindowAsync`: the request is posted to the owning thread, so this
-/// never waits on the target. The BOOL only reports the previous visibility.
-fn show_async(hwnd: HWND, cmd: SHOW_WINDOW_CMD) {
+/// never waits on the target. Unlike `ShowWindow`'s, its BOOL says whether
+/// the request was posted at all: UIPI refuses a post to a window of higher
+/// integrity (`ERROR_ACCESS_DENIED` → `PlatformError::AccessDenied`), and
+/// that must not pass as success.
+fn show_async(hwnd: HWND, cmd: SHOW_WINDOW_CMD) -> PlatformResult<()> {
     // SAFETY: ShowWindowAsync accepts any handle value and a documented command.
-    let _previously_visible = unsafe { ShowWindowAsync(hwnd, cmd) };
+    if unsafe { ShowWindowAsync(hwnd, cmd) }.as_bool() {
+        return Ok(());
+    }
+    Err(match util::last_error() {
+        // No error code left behind: say what was refused rather than
+        // "operation completed successfully".
+        PlatformError::Os { code: 0, .. } => {
+            PlatformError::Other(format!("ShowWindowAsync({}) refused", cmd.0))
+        }
+        e => e,
+    })
 }
 
 fn set_foreground(hwnd: HWND) -> bool {
@@ -112,8 +139,12 @@ fn set_foreground(hwnd: HWND) -> bool {
 
 fn activate(id: WindowId, hwnd: HWND) -> PlatformResult<()> {
     // SAFETY: IsIconic accepts any handle value.
-    if unsafe { IsIconic(hwnd) }.as_bool() {
-        show_async(hwnd, SW_RESTORE);
+    if unsafe { IsIconic(hwnd) }.as_bool()
+        && let Err(e) = show_async(hwnd, SW_RESTORE)
+    {
+        // An elevated window stays minimised (UIPI); the foreground change
+        // below is still worth trying, and the failure is reported once.
+        log::debug!("activate {id:?}: ShowWindowAsync(SW_RESTORE) refused: {e}; going on");
     }
     if is_foreground(hwnd) {
         log::debug!("activate {id:?}: already foreground");
@@ -138,7 +169,9 @@ fn activate(id: WindowId, hwnd: HWND) -> PlatformResult<()> {
         log::debug!("activate {id:?}: every call refused but the window is foreground");
         return Ok(());
     }
-    log::warn!("activate {id:?}: every activation strategy was refused");
+    // Debug, not warn: the error goes back to the command layer, which logs
+    // and shows the failure once.
+    log::debug!("activate {id:?}: every activation strategy was refused");
     Err(PlatformError::Other(format!(
         "could not bring window {} to the foreground",
         id.0

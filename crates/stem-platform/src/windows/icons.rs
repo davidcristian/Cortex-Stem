@@ -71,10 +71,24 @@
 //!   the mapping before it goes.
 //!
 //! Bounds: each `WM_GETICON` uses a 200 ms `SMTO_ABORTIFHUNG` timeout and
-//! the second one is skipped when the first timed out; the PE chain is file
-//! reads and in-process GDI calls (no messages to other processes), with
-//! each resource capped at `MAX_RESOURCE_BYTES`; dimensions are capped by
-//! `rules::icons::MAX_EDGE`.
+//! the second one is skipped when the first got no answer; the PE chain is
+//! file reads and in-process GDI calls (no messages to other processes),
+//! with each resource capped at `MAX_RESOURCE_BYTES`; dimensions are capped
+//! by `rules::icons::MAX_EDGE`.
+//!
+//! Elevated and protected windows. UIPI refuses `WM_GETICON` to a
+//! window of higher integrity at once (`ERROR_ACCESS_DENIED`, no 200 ms
+//! spent; the trace line names the reason, a hung window's says timed
+//! out), so the `hwnd:` chain falls back to the class icons
+//! (`GetClassLongPtrW` reads class data and is not a message) and then, as
+//! for any window, to the exe's icon when the process could be opened,
+//! which it can for an elevated process. An elevated window with a
+//! readable process goes through this chain once at most (the engine shows
+//! the window's `hwnd:` key until its identity resolves); after that
+//! `identity` gives it the same `exe:` or `aumid:` key as its unelevated
+//! twin. A protected process's window with no class icon yields
+//! `Ok(None)`, which the UI renders as its neutral placeholder tile and
+//! does not ask for again in the session.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -281,18 +295,18 @@ fn largest_window_icon(hwnd: HWND) -> Option<WindowIconCandidate> {
             candidates.push((icon, source));
         }
     };
-    let (big, answered) = window_message_icon(hwnd, ICON_BIG);
-    push(big, "WM_GETICON(ICON_BIG)");
-    if answered {
-        push(
-            window_message_icon(hwnd, ICON_SMALL).0,
-            "WM_GETICON(ICON_SMALL)",
-        );
-    } else {
-        log::trace!(
-            "window {:?}: WM_GETICON(ICON_BIG) got no answer; skipping ICON_SMALL",
+    match window_message_icon(hwnd, ICON_BIG) {
+        Ok(big) => {
+            push(big, "WM_GETICON(ICON_BIG)");
+            push(
+                window_message_icon(hwnd, ICON_SMALL).ok().flatten(),
+                "WM_GETICON(ICON_SMALL)",
+            );
+        }
+        Err(e) => log::trace!(
+            "window {:?}: WM_GETICON(ICON_BIG) got no answer ({e}); skipping ICON_SMALL",
             hwnd.0
-        );
+        ),
     }
     push(class_icon(hwnd, GCLP_HICON), "GCLP_HICON");
     push(class_icon(hwnd, GCLP_HICONSM), "GCLP_HICONSM");
@@ -310,10 +324,12 @@ fn largest_window_icon(hwnd: HWND) -> Option<WindowIconCandidate> {
     best
 }
 
-/// `WM_GETICON` with a bounded timeout. Returns the icon (which belongs to
-/// the window) and whether the window answered at all; a `false` means the
-/// target is hung (or gone) and further messages are pointless.
-fn window_message_icon(hwnd: HWND, which: u32) -> (Option<HICON>, bool) {
+/// `WM_GETICON` with a bounded timeout. `Ok` carries the window's answer
+/// (an icon that belongs to the window, or none); `Err` means the window
+/// did not answer at all, and says why: `AccessDenied` for a window of
+/// higher integrity (UIPI refuses the message at once), `Os` with
+/// `ERROR_TIMEOUT` for a hung one. Further messages are then pointless.
+fn window_message_icon(hwnd: HWND, which: u32) -> PlatformResult<Option<HICON>> {
     let mut result: usize = 0;
     // SAFETY: WM_GETICON carries no pointers; `result` is a valid out-pointer;
     // a hung or elevated target makes the call return 0 within the timeout.
@@ -329,12 +345,12 @@ fn window_message_icon(hwnd: HWND, which: u32) -> (Option<HICON>, bool) {
         )
     };
     if sent.0 == 0 {
-        return (None, false);
+        return Err(util::last_error());
     }
     if result == 0 {
-        return (None, true);
+        return Ok(None);
     }
-    (Some(HICON(result as *mut core::ffi::c_void)), true)
+    Ok(Some(HICON(result as *mut core::ffi::c_void)))
 }
 
 /// The window class icon. Shared; not destroyed.

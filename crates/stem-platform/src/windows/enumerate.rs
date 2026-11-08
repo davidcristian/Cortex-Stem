@@ -31,6 +31,20 @@
 //!   `GetApplicationUserModelId` (the package application identity).
 //!   Access denied (protected processes) yields `exe_path = None` and no
 //!   process AUMID, never an error.
+//! - Elevated and protected processes. Everything in the probe
+//!   (`IsWindowVisible`, `GetClassNameW`, `GetWindowTextW`, the styles, the
+//!   owner, the cloak flags, the frame) reads win32k state and is not
+//!   subject to UIPI, so an elevated window is listed with its title and
+//!   class like any other. The limited open is granted for an elevated
+//!   process of the same user, so its `exe_path` and package identity are
+//!   normally filled in and it groups, is named and gets its icon like its
+//!   unelevated twin. Only a *protected* process (`csrss`, some antivirus
+//!   UIs) refuses the open: then `exe_path` and the process AUMID are
+//!   `None`, the engine groups the window by `class:<class>`, `identity`
+//!   names it after its title and `icons` gets an `hwnd:` key. The refusal
+//!   is logged once per process at debug (`rules::process_access`), not on
+//!   every event about the window; the open itself is still attempted on
+//!   each query, since a process id is reused once its process exits.
 //! - `app_user_model_id` is the window's `System.AppUserModel.ID` property
 //!   when set (UWP frames, apps that opt in), else the process's AUMID when
 //!   the process runs with package identity (packaged Win32 apps such as the
@@ -51,6 +65,7 @@
 //!   location changes for the foreground window only (`windows::fullscreen`).
 
 use std::path::PathBuf;
+use std::sync::{Mutex, PoisonError};
 
 use stem_core::{RawWindow, Rect};
 use windows::Win32::Foundation::{
@@ -79,6 +94,7 @@ use windows::core::{BOOL, PWSTR};
 use super::{monitors, util};
 use crate::rules::eligibility::{self, Owner, WindowFacts};
 use crate::rules::identity::hwnd_icon_key;
+use crate::rules::process_access::DeniedProcesses;
 use crate::rules::recheck::{self, Check};
 use crate::{PlatformError, PlatformResult};
 
@@ -99,6 +115,11 @@ const PATH_BUF_MAX: usize = 32 * 1024;
 /// Largest AUMID buffer we grow to on `ERROR_INSUFFICIENT_BUFFER` (the
 /// documented maximum is `APPLICATION_USER_MODEL_ID_MAX_LENGTH`, 130).
 const AUMID_BUF_MAX: usize = 1024;
+
+/// Processes whose `OpenProcess` refusal has been logged, shared by
+/// every thread that queries windows (events, identity, icons) so the line
+/// appears once per process whichever of them meets the window first.
+static DENIED_PROCESSES: Mutex<DeniedProcesses> = Mutex::new(DeniedProcesses::new());
 
 pub fn enumerate_taskbar_windows() -> PlatformResult<Vec<RawWindow>> {
     let mut handles: Vec<HWND> = Vec::new();
@@ -363,12 +384,24 @@ pub(super) fn window_title(hwnd: HWND) -> String {
 
 /// A limited-query handle to a process, or `None` when it cannot be opened
 /// (protected or exited process). Never an error: identity degrades to
-/// title and class.
+/// title and class. A refusal is logged at debug once per process
+/// ([`DENIED_PROCESSES`]) and at trace afterwards, so a protected process's
+/// window, queried again on every event about it, does not fill the log.
 fn open_process(process_id: u32) -> Option<util::ProcessHandle> {
     match util::ProcessHandle::open_limited(process_id) {
-        Ok(h) => Some(h),
+        Ok(h) => {
+            denied_processes().clear(process_id);
+            Some(h)
+        }
         Err(PlatformError::AccessDenied) => {
-            log::debug!("process {process_id}: access denied, no image path or AUMID");
+            if denied_processes().note(process_id) {
+                log::debug!(
+                    "process {process_id}: access denied, no image path or AUMID (its windows \
+                     keep title, class and `class:` identity; logged once per process)"
+                );
+            } else {
+                log::trace!("process {process_id}: access denied (already logged)");
+            }
             None
         }
         Err(e) => {
@@ -376,6 +409,14 @@ fn open_process(process_id: u32) -> Option<util::ProcessHandle> {
             None
         }
     }
+}
+
+/// The shared refusal memory; a poisoned lock (a panic while held, which
+/// nothing here can cause) still yields the set.
+fn denied_processes() -> std::sync::MutexGuard<'static, DeniedProcesses> {
+    DENIED_PROCESSES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Full image path of a process through an open handle, or `None` when it

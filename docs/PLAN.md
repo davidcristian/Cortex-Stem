@@ -72,7 +72,8 @@ without failures.
 - Each dock item has `role="button"` and an `aria-label`.
 - Bursts of window events are coalesced: title and location changes per
   window, and the service sends at most one state update per 16 ms.
-- Elevated windows appear with their name and icon.
+- Elevated windows appear with their name and icon. When Windows blocks an
+  action on one (minimise, restore, close), the dock shows a notice.
 
 **Exit criterion.** Everything above works on a setup with two monitors at
 different DPI.

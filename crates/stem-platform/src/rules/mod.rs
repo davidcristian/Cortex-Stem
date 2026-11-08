@@ -12,6 +12,7 @@ pub mod fullscreen;
 pub mod hit_region;
 pub mod icons;
 pub mod identity;
+pub mod process_access;
 pub mod recheck;
 pub mod recycle;
 pub mod taskbar;
