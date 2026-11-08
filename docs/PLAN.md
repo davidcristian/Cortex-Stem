@@ -116,6 +116,8 @@ notes on code signing.
 - Crash logging is done. After a panic, the next start of Stem says so once
   in a native dialog and offers to open the log folder. An unclean exit that
   was not a panic is only logged.
+- The README has screenshots, and the user guide has an
+  [FAQ](user-guide/faq.md).
 
 **Exit criterion.** v0.1.0 is published on GitHub Releases.
 

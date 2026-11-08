@@ -50,7 +50,7 @@ colours.
 | Setting                                  | Key                               | Default      | What it does |
 | ---------------------------------------- | --------------------------------- | ------------ | ------------ |
 | Clicking the active app minimises it     | `behavior.clickActiveMinimizes`   | on           | A click on an app whose only window is in front minimises that window. See [Clicking an app](clicking-an-app.md). |
-| Show only windows on the current desktop | `behavior.showOnlyCurrentDesktop` | on           | Leaves out windows on other virtual desktops. |
+| Show only windows on the current desktop | `behavior.showOnlyCurrentDesktop` | on           | Leaves out windows on other virtual desktops. Pinned apps stay on the dock. |
 | Show only windows on the dock's monitor  | `behavior.showOnlyCurrentMonitor` | off          | With a dock on every monitor, each dock lists only the windows on its own monitor. See [More than one monitor](multiple-monitors.md). |
 | Running indicators                       | `behavior.runningIndicators`      | on           | Draws the dots that show an app's open windows. See [Clicking an app](clicking-an-app.md). |
 | Click through outside the dock           | `behavior.clickThrough`           | on           | Clicks beside and above the panel reach the desktop and the windows behind it. With it off, the whole dock window takes clicks, and that window spans the whole edge of the screen. The switch is there for diagnosing problems, not as a preference. It is also a check item in the tray icon's menu. |

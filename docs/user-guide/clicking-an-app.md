@@ -29,7 +29,9 @@ current desktop_ on, windows on other virtual desktops are left out.
 
 Windows limits which app may bring a window to the front. Stem tries the
 documented ways to bring a window forward. If all of them fail, a short
-notice appears on the dock, and the app may only flash.
+notice appears on the dock, and the app may only flash. The
+[FAQ](faq.md#why-does-a-click-on-an-app-sometimes-only-make-it-flash) has
+more.
 
 Dots under an icon show the app's open windows: one dot per window, at most
 three. The dots are dimmed when all the windows are minimised. _Running

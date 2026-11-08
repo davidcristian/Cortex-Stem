@@ -15,3 +15,4 @@ installing and building, see the [README](../../README.md).
 | [hiding-the-windows-taskbar.md](hiding-the-windows-taskbar.md) | How Stem hides the Windows taskbar and puts your taskbar setting back |
 | [multiple-monitors.md](multiple-monitors.md) | One dock on every monitor, and which windows each dock lists |
 | [crashes-and-logs.md](crashes-and-logs.md) | The dialog after a crash, the log file and its levels of detail |
+| [faq.md](faq.md) | Answers to common questions, with links to the pages above |
