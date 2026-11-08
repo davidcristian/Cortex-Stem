@@ -15,6 +15,7 @@ import { defaultSettings } from '$lib/ipc/mock';
 
 import { acceptsRevision, DockStore } from './dock.svelte';
 import { iconId } from './icon-cache';
+import { ReactiveIconCache } from './reactive-icon-cache';
 
 const snapshot = (revision: number): DockState => ({
   revision,
@@ -233,32 +234,28 @@ describe('DockStore', () => {
     expect(store.bounceSerial).toBe(2);
   });
 
-  it('requests each icon once per key+size, never for shell keys, and caches null', async () => {
+  it('keeps its icons in the shared ReactiveIconCache over its backend', async () => {
+    // The cache's own rules (once per key and size, never shell:, null
+    // cached) are tested in reactive-icon-cache.test.ts.
     const backend = new FakeBackend();
     const store = new DockStore(backend);
+    expect(store.iconCache).toBeInstanceOf(ReactiveIconCache);
+    expect(store.icons).toBe(store.iconCache.icons);
+
     store.ensureIcon('mock:a', 96);
     store.ensureIcon('mock:a', 96);
-    store.ensureIcon('mock:a', 48);
     store.ensureIcon('shell:start', 96);
-    store.ensureIcon('missing', 96);
-    expect(store.icon('mock:a', 96)).toBeUndefined();
     await flush();
-    expect(backend.iconRequests).toEqual([
-      ['mock:a', 96],
-      ['mock:a', 48],
-      ['missing', 96],
-    ]);
+    expect(backend.iconRequests).toEqual([['mock:a', 96]]);
     expect(store.icon('mock:a', 96)).toBe('data:mock:a@96');
-    // Two sizes of one key are two entries (rest and magnified bitmaps).
-    expect(store.icon('mock:a', 48)).toBe('data:mock:a@48');
-    expect(store.icons.get(iconId('mock:a', 48))).toBe('data:mock:a@48');
-    expect(store.icon('missing', 96)).toBeNull();
-    expect(store.icon('shell:start', 96)).toBeUndefined();
+    expect(store.iconCache.icon('mock:a', 96)).toBe('data:mock:a@96');
+    expect(store.icons.get(iconId('mock:a', 96))).toBe('data:mock:a@96');
 
     store.clearIcons();
     expect(store.icon('mock:a', 96)).toBeUndefined();
+    expect(store.icons.size).toBe(0);
     store.ensureIcon('mock:a', 96);
     await flush();
-    expect(backend.iconRequests).toHaveLength(4);
+    expect(backend.iconRequests).toHaveLength(2);
   });
 });

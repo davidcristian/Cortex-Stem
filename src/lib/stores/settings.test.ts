@@ -17,6 +17,7 @@ import type { ThemeInfo } from '$lib/ipc/generated/ThemeInfo';
 import { defaultSettings, demoAppInfo, validateSettings } from '$lib/ipc/mock';
 
 import { iconId } from './icon-cache';
+import { ReactiveIconCache } from './reactive-icon-cache';
 import { SettingsStore } from './settings.svelte';
 
 const THEME: ThemeInfo = { accent: '#0078D4', dark: true, highContrast: false, transparency: true };
@@ -310,8 +311,12 @@ describe('SettingsStore', () => {
     expect(console.error).toHaveBeenCalledWith('get_dock_state failed:', 'engine not running');
   });
 
-  it('loads an icon once per key and size, and never a shell: key', async () => {
+  it('keeps its icons in the shared ReactiveIconCache over its backend', async () => {
+    // The cache's own rules (once per key and size, never shell:, null
+    // cached) are tested in reactive-icon-cache.test.ts.
     const { backend, store } = await started();
+    expect(store.iconCache).toBeInstanceOf(ReactiveIconCache);
+    expect(store.icons).toBe(store.iconCache.icons);
     backend.iconUrls.set('exe:a', 'data:image/png;base64,AAAA');
     expect(store.icon('exe:a', 48)).toBeUndefined();
 
@@ -323,16 +328,10 @@ describe('SettingsStore', () => {
     await tick();
     expect(backend.iconRequests).toEqual(['exe:a@48', 'exe:b@48']);
     expect(store.icon('exe:a', 48)).toBe('data:image/png;base64,AAAA');
+    expect(store.iconCache.icon('exe:a', 48)).toBe('data:image/png;base64,AAAA');
     // The backend has no icon for this key: `null`, not a broken image.
     expect(store.icon('exe:b', 48)).toBeNull();
-    expect(store.icon('shell:start', 48)).toBeUndefined();
-
-    // Another size (a display with another scale) is its own entry.
-    store.ensureIcon('exe:a', 72);
-    await tick();
-    await tick();
-    expect(backend.iconRequests).toEqual(['exe:a@48', 'exe:b@48', 'exe:a@72']);
-    expect(store.icon('exe:a', 72)).toBe('data:image/png;base64,AAAA');
+    expect(store.icons.get(iconId('exe:b', 48))).toBeNull();
   });
 
   it('shows edits at once, coalesces them, and saves 150 ms after the last one', async () => {

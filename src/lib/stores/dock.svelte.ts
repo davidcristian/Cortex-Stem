@@ -5,16 +5,16 @@
  * then fetch) and drops snapshots older than the one on screen.
  */
 
-import { SvelteMap } from 'svelte/reactivity';
+import type { SvelteMap } from 'svelte/reactivity';
 
-import { isShellIconKey, type Backend, type Unsubscribe } from '$lib/ipc/backend';
+import type { Backend, Unsubscribe } from '$lib/ipc/backend';
 import type { DockState } from '$lib/ipc/generated/DockState';
 import type { IconKey } from '$lib/ipc/generated/IconKey';
 import type { MonitorInfo } from '$lib/ipc/generated/MonitorInfo';
 import type { Settings } from '$lib/ipc/generated/Settings';
 import type { ThemeInfo } from '$lib/ipc/generated/ThemeInfo';
 
-import { IconCache, iconId } from './icon-cache';
+import { ReactiveIconCache } from './reactive-icon-cache';
 
 /** `DockState.revision` is monotonic; anything older than what is shown is stale. */
 export function acceptsRevision(current: DockState | null, next: DockState): boolean {
@@ -32,21 +32,14 @@ export class DockStore {
   bounceSerial = $state(0);
   /** Stale snapshots ignored so far (diagnostics). */
   droppedSnapshots = $state(0);
-  /** Resolved icons by `iconId(key, size)`: a data URL, or `null` when there is none. */
-  readonly icons = new SvelteMap<string, string | null>();
+  /** The icons the dock renders (the same class as the settings page's). */
+  readonly iconCache: ReactiveIconCache;
 
-  private readonly cache: IconCache;
   private subscriptions: Unsubscribe[] = [];
   private started = false;
 
   constructor(readonly backend: Backend) {
-    this.cache = new IconCache(
-      (key, size) => backend.getIcon(key, size),
-      (id, _key, _size, url) => {
-        this.icons.set(id, url);
-      },
-      { concurrency: 4, retries: 1 },
-    );
+    this.iconCache = new ReactiveIconCache(backend);
   }
 
   /** Subscribe to every event first, then fetch the initial snapshots. */
@@ -130,22 +123,23 @@ export class DockStore {
     this.bounceSerial += 1;
   }
 
+  /** Resolved icons by `iconId(key, size)`: a data URL, or `null` when there is none. */
+  get icons(): SvelteMap<string, string | null> {
+    return this.iconCache.icons;
+  }
+
   /** Reactive read: a data URL, `null` when there is no icon, `undefined` while loading. */
   icon(key: IconKey, size: number): string | null | undefined {
-    return this.icons.get(iconId(key, size));
+    return this.iconCache.icon(key, size);
   }
 
   /** Idempotent; safe to call from an effect on every render. `shell:*` keys are never requested. */
   ensureIcon(key: IconKey, size: number): void {
-    if (isShellIconKey(key)) {
-      return;
-    }
-    void this.cache.request(key, size);
+    this.iconCache.ensureIcon(key, size);
   }
 
   /** Drop cached icons (e.g. on a DPI change) so they are requested again. */
   clearIcons(): void {
-    this.cache.clear();
-    this.icons.clear();
+    this.iconCache.clear();
   }
 }

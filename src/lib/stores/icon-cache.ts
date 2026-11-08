@@ -1,7 +1,8 @@
 /**
  * Icon cache per key + size (docs/ipc/icon-keys.md): one request per entry,
  * a bounded number in flight, one retry on failure. Framework-free so it can
- * be unit-tested; `DockStore` mirrors resolved entries into reactive state.
+ * be unit-tested; `ReactiveIconCache` mirrors resolved entries into reactive
+ * state for the stores.
  */
 
 export type IconLoader = (key: string, size: number) => Promise<string | null>;
