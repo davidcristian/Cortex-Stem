@@ -23,6 +23,16 @@
 //! the UI's latest report is remembered while the setting is off and
 //! replayed when it is turned on again.
 //!
+//! DPI changes: when the dock window's scale factor changes (Windows
+//! Settings → Display → Scale, or the window landing on a monitor with
+//! another scale) tao resizes the window to keep its logical size, which is
+//! not our layout: [`on_scale_factor_changed`] plans the window again from
+//! the remembered content size and converts the remembered hit region and
+//! panel rect again, at the next turn of the event loop (inside the event
+//! callback tao has not applied the new size yet). The UI learns the ratio
+//! from the browser on its own, re-requests its icons and reports its
+//! geometry again; no event is sent to it.
+//!
 //! Auto-hide and the toggle: the UI reports when auto-hide slides
 //! its panel out and back (`set_dock_auto_hidden`, kept in
 //! [`DockAutoHidden`]), so that [`toggle_dock`] (tray click, Ctrl+Alt+D)
@@ -89,6 +99,10 @@ pub struct DockGeometry {
     /// The resting panel of the latest `set_dock_panel_rect`,
     /// converted again whenever the window moves or is shown.
     panel_css: Mutex<Option<Rect>>,
+    /// The dock window's scale factor as last seen (at creation, then on
+    /// every `ScaleFactorChanged`), so the log line of a change can say
+    /// what it changed from.
+    scale: Mutex<Option<f64>>,
 }
 
 /// `settings.theme` as the settings window's title bar last took it (or
@@ -128,12 +142,20 @@ pub fn create_dock_windows(app: &AppHandle, service: &DockService) -> tauri::Res
         .inner_size(INITIAL_SIZE.0, INITIAL_SIZE.1)
         .build()?;
 
-    // The dock is never closed by the user; Quit lives in the tray.
-    window.on_window_event(|event| {
-        if let WindowEvent::CloseRequested { api, .. } = event {
+    // The dock is never closed by the user (Quit lives in the tray), and a
+    // DPI change lays it out again.
+    let handle = app.clone();
+    window.on_window_event(move |event| match event {
+        WindowEvent::CloseRequested { api, .. } => {
             log::debug!("dock window close request ignored");
             api.prevent_close();
         }
+        WindowEvent::ScaleFactorChanged {
+            scale_factor,
+            new_inner_size,
+            ..
+        } => on_scale_factor_changed(&handle, DOCK_LABEL, *scale_factor, *new_inner_size),
+        _ => {}
     });
 
     // On the main thread (inside `setup`), which created the window: the
@@ -142,6 +164,7 @@ pub fn create_dock_windows(app: &AppHandle, service: &DockService) -> tauri::Res
     let click_through = service.settings().behavior.click_through;
     if let Some(geometry) = app.try_state::<DockGeometry>() {
         *geometry.click_through.lock() = Some(click_through);
+        *geometry.scale.lock() = window.scale_factor().ok();
     }
     // A fresh page starts with its panel shown.
     if let Some(flags) = app.try_state::<DockAutoHidden>() {
@@ -553,19 +576,110 @@ pub fn on_monitors_changed(app: &AppHandle, monitors: Vec<MonitorInfo>) {
             log::debug!("monitors changed before the dock window exists");
             return;
         };
-        let content = handle
-            .try_state::<DockGeometry>()
-            .and_then(|g| *g.content_css.lock());
-        let result = match content {
-            Some((width, height)) => layout(&window, &monitors, width, height),
-            None => position_window(&window, primary_monitor(&monitors).as_ref()),
-        };
-        if let Err(e) = result {
+        if let Err(e) = relayout_dock(&handle, &window, &monitors) {
             log::warn!("re-positioning the dock after a monitor change failed: {e}");
         }
     });
     if let Err(e) = scheduled {
         log::warn!("could not schedule the dock re-layout: {e}");
+    }
+}
+
+/// The dock window's scale factor changed (`WindowEvent::ScaleFactorChanged`):
+/// the display scale was changed, or the window landed on a monitor
+/// with another DPI. Runs on the main thread, inside tao's handling of
+/// `WM_DPICHANGED`, which resizes the window to keep its logical size once
+/// this returns; the rest is therefore posted for the next turn of the event
+/// loop ([`post_to_main_thread`]): the window's physical rect from the
+/// remembered content size ([`relayout_dock`], which also converts the
+/// remembered panel rect), then the remembered hit region at the new scale
+/// ([`replay_hit_region`]). The UI watches the ratio in the browser on its
+/// own, re-requests its icons and reports its geometry again; those reports
+/// arrive after this and redo the same conversions with the same numbers.
+fn on_scale_factor_changed(
+    app: &AppHandle,
+    label: &str,
+    scale: f64,
+    new_inner_size: PhysicalSize<u32>,
+) {
+    let previous = app
+        .try_state::<DockGeometry>()
+        .and_then(|geometry| geometry.scale.lock().replace(scale));
+    log::info!(
+        "dock window {label:?}: scale factor {} -> {scale} (inner size now {}x{} px); laying it out again",
+        previous.map_or_else(|| "?".to_owned(), |s| s.to_string()),
+        new_inner_size.width,
+        new_inner_size.height
+    );
+    let handle = app.clone();
+    let label = label.to_owned();
+    post_to_main_thread(app, move || {
+        let Some(window) = handle.get_webview_window(&label) else {
+            log::debug!("dock window {label:?} is gone before its scale change was applied");
+            return;
+        };
+        let monitors = handle
+            .try_state::<crate::AppService>()
+            .map_or_else(Vec::new, |service| service.0.monitors());
+        if let Err(e) = relayout_dock(&handle, &window, &monitors) {
+            log::warn!("laying out the dock again after a scale change failed: {e}");
+        }
+        if let Err(e) = replay_hit_region(&handle, &window) {
+            log::warn!("the hit region could not be converted after a scale change: {e}");
+        }
+    });
+}
+
+/// Run `f` on the main thread at the next turn of the event loop.
+/// `AppHandle::run_on_main_thread` runs its task at once when it is already
+/// on the main thread (tauri-runtime-wry's `send_user_message`), which is
+/// too early from inside a window event callback: tao is still handling the
+/// message that raised the event and sizes the window itself afterwards. A
+/// hop through the async runtime turns the task into a posted message.
+fn post_to_main_thread(app: &AppHandle, f: impl FnOnce() + Send + 'static) {
+    let handle = app.clone();
+    drop(tauri::async_runtime::spawn(async move {
+        if let Err(e) = handle.run_on_main_thread(f) {
+            log::warn!("could not schedule work on the main thread: {e}");
+        }
+    }));
+}
+
+/// Size and place the dock window from the UI's latest content size, or at
+/// its current height before the first report; [`place`] then converts the
+/// latest panel rect for the window's new place. Main thread.
+fn relayout_dock(
+    app: &AppHandle,
+    window: &WebviewWindow,
+    monitors: &[MonitorInfo],
+) -> tauri::Result<()> {
+    let content = app
+        .try_state::<DockGeometry>()
+        .and_then(|geometry| *geometry.content_css.lock());
+    match content {
+        Some((width, height)) => layout(window, monitors, width, height),
+        None => position_window(window, primary_monitor(monitors).as_ref()),
+    }
+}
+
+/// Hand the UI's latest hit region to the platform again, converted at the
+/// window's current scale factor (a DPI change), while
+/// `behavior.clickThrough` is on. Nothing to do before the UI's first report
+/// or while the setting is off. Main thread.
+fn replay_hit_region(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> {
+    let (Some(service), Some(geometry)) = (
+        app.try_state::<crate::AppService>(),
+        app.try_state::<DockGeometry>(),
+    ) else {
+        return Ok(());
+    };
+    if !service.0.settings().behavior.click_through {
+        return Ok(());
+    }
+    let region = *geometry.hit_region_css.lock();
+    match region {
+        Some((panel, envelope)) => push_hit_region(&service.0, window, panel, envelope),
+        None => Ok(()),
     }
 }
 

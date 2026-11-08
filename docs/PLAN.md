@@ -70,6 +70,7 @@ without failures.
 
 **Status.**
 
+- A change of display scale applies without a restart.
 - Clicks outside the panel and the magnified icons reach the desktop and the
   windows behind the dock (`behavior.clickThrough`).
 - A fullscreen app in front hides the dock.
