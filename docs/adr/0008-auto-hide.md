@@ -110,8 +110,9 @@ fullscreen picture, and every pointer crossing it would flash the dock over
 the video. So there is no strip, and the hidden dock reports no clickable
 area, while both of these hold:
 
-- only fullscreen makes the machine active: the mode is not `always`,
-  and under `whenOverlapped` no window overlaps the dock;
+- only fullscreen makes the machine active: the mode is not `always`
+  (under `whenOverlapped` the fullscreen window is itself the overlap, so
+  the overlap does not count);
 - this dock's monitor (from `get_monitors` / `dock://monitors`, matched by
   the page's own monitor) has a work area that stops short of its bounds on
   the bottom edge

@@ -24,11 +24,12 @@ transparent parts. The UI tells Rust where the visible dock is:
   bottom 2 CSS px of the window, as long as the resting panel. While the dock is shown, the UI
   reports an `envelope` grown out to the window's bottom edge to include the strip.
 
-  Exception: there is no strip while only the `fullscreen` fact makes auto-hide active and the
+  Exception: there is no strip while only the `fullscreen` fact makes auto-hide active (the mode
+  is not `always`; under `whenOverlapped` the fullscreen window is itself the overlap) and the
   dock's monitor has `workArea.y + workArea.height < bounds.y + bounds.height`: a visible stock
   taskbar is below the dock window. The hidden dock then reports a
   0×0 rect at the origin as both `panel` and `envelope`, so the window takes no clicks. Only
-  `dock://show` (the tray, the toggle shortcut) brings it back.
+  `dock://show` (the tray, the toggle shortcut) or an app asking for attention brings it back.
 
   Hiding and revealing change only these reports; the window keeps its size and place.
 - Only dock windows may call it. Rust rejects non-dock windows and negative sizes. On a platform

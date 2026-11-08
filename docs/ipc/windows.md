@@ -38,8 +38,8 @@ Each window of the app has a label and loads one page:
   The primary's page has no query string and takes the primary monitor of `get_monitors` /
   `dock://monitors` (the same rule as the app layer's). The monitor selects the page's entry in
   `DockState.docks` ([The state snapshot](state-snapshot.md#dockstatedocks)). With
-  `Settings.behavior.showOnlyCurrentMonitor`, it also narrows the snapshot's items
-  (`src/lib/dock/monitor.ts`, pure and unit-tested):
+  `Settings.monitors = all` and `Settings.behavior.showOnlyCurrentMonitor`, it also narrows the
+  snapshot's items (`src/lib/dock/monitor.ts`, pure and unit-tested):
   - each app item keeps only the windows whose `WindowInfo.monitor` is this monitor;
   - an item left with no windows stays only if it is pinned (fixed items always stay);
   - `isActive` and `needsAttention` follow the remaining windows' `WindowInfo.isActive` and
@@ -49,7 +49,8 @@ Each window of the app has a label and loads one page:
   - separators that would then lead, trail or double up are dropped.
 
   The page decides nothing else: the order, the grouping and what a click does stay in Rust.
-  With the setting off, every dock lists everything.
+  With the setting off, or with `monitors = primary` (the switch is greyed out then and its
+  stored value kept), every dock lists everything.
 - **Clicks and menus use the dock's own view** (v1.15). `primary_click` and `show_item_menu`
   identify the calling window by its label. With `Settings.monitors = all` and
   `Settings.behavior.showOnlyCurrentMonitor` on, Rust narrows the item's windows to that dock's
@@ -61,7 +62,8 @@ Each window of the app has a label and loads one page:
   and its *Close all windows* closes only them. With `monitors = primary`, with the setting off,
   or for a dock whose monitor Rust has not registered yet (before the page's first
   `set_dock_panel_rect`), every window of the app counts. With `monitors = primary` the one
-  dock's page still narrows its list when the setting is on.
+  dock's page does not narrow either: the filter applies only with `monitors = all`, and the
+  stored setting is kept.
 - **Mock.** `MockBackend` takes the page's monitor (`?monitor=`, read by `createBackend`;
   `MockOptions.monitor`) and a `twoMonitors` scenario (`?scenario=twoMonitors`): the demo plus
   `\\.\DISPLAY3`, 1920×1080 to the right of the primary at scale 1.5, with a Notepad window (a
