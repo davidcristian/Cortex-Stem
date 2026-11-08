@@ -185,7 +185,7 @@ jobs:
       - name: Cache the Tauri bundler tools
         uses: actions/cache@v6
         with:
-          path: ~\AppData\Local\tauri
+          path: ~/AppData/Local/tauri
           key: tauri-tools-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
           restore-keys: tauri-tools-${{ runner.os }}-
 
