@@ -2029,7 +2029,9 @@
       animation: none;
     }
 
-    .toasts {
+    /* Both: `.toasts.at-edge` alone would win over `.toasts` and slide. */
+    .toasts,
+    .toasts.at-edge {
       transition: none;
     }
   }

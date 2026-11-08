@@ -2581,6 +2581,27 @@ test.describe('auto-hide', () => {
     await page.mouse.move(640, 10);
     await expect(panel).toHaveAttribute('data-autohide', 'hidden');
   });
+
+  test('under reduced motion the toasts do not slide with the panel either', async ({ page }) => {
+    await page.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' });
+    await openDock(page);
+    const panel = page.locator(PANEL);
+    const toasts = page.locator('.toasts');
+    await page.mouse.move(640, 10);
+    expect(await computed(toasts, 'transition-property')).toBe('none');
+    await setAutoHide(page, 'always', 0);
+    await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+    await expect(page.locator('.toasts.at-edge')).toHaveCount(1);
+    expect(await computed(toasts, 'transition-property')).toBe('none');
+    expect(await computed(toasts, 'transition-duration')).toBe('0s');
+    expect(await toasts.evaluate((el) => el.getAnimations().length)).toBe(0);
+    await page.evaluate(() => {
+      (window as unknown as DemoWindow).__dockMock?.requestShow();
+    });
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+    await expect(page.locator('.toasts.at-edge')).toHaveCount(0);
+    expect(await toasts.evaluate((el) => el.getAnimations().length)).toBe(0);
+  });
 });
 
 test.describe('settings window', () => {
