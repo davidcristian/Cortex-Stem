@@ -54,3 +54,31 @@ resolves. Otherwise it comes from the exe's version resource
 the window title and the class name, in that order. Every candidate is
 cleaned (`rules::identity::clean_display_name`), so no name ends in `.exe`.
 "Application" is the last resort.
+
+## Elevated and protected processes
+
+The dock runs at medium integrity. Everything the window probe reads
+(visibility, class, title, styles, owner, cloak flags, frame) is win32k
+state that User Interface Privilege Isolation (UIPI) does not block. So an
+elevated window is listed with its title and class like any other.
+`OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` succeeds for an elevated
+process of the same user, so its image path and package identity are read.
+It gets the same `exe:` or `aumid:` id, name, icon and launch target as
+the same app running unelevated. A pin of it therefore launches
+unelevated, or through UAC when the exe's manifest requires elevation.
+
+Only for a *protected* process does the open fail. Its window keeps its
+title and class, `exe_path` is `None`, the id is `class:<class>`, the name
+is the window title (then the class), the icon key is `hwnd:` and the
+launch target is `None`. The failure is logged once per process at debug
+(`rules::process_access`). The open is still attempted on each query,
+because process ids are reused. The service resolves identity once per app
+id, and the UI keeps a missing icon's placeholder for the session, so
+nothing about such a window is retried on every event.
+
+Actions: UIPI blocks posted messages to a higher-integrity window, so
+`Minimize`, `Restore` and `Close` return `PlatformError::AccessDenied`. The
+command layer logs the error and shows it once. `Activate` skips the
+restore that would be blocked and calls `SetForegroundWindow`, which is not
+a message and normally succeeds (an elevated Task Manager activates). Every
+line the platform logs about this is at `debug`.

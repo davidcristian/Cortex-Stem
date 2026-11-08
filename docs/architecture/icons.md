@@ -37,7 +37,13 @@ comes back at its own size.
 **Window icons.** For `hwnd:` keys the largest of `WM_GETICON` (big and
 small) and the class icons is used. When it is smaller than requested and
 the exe is known, the exe's icon (through the same `PE resources` chain) is
-used instead if it is larger.
+used instead if it is larger. UIPI blocks `WM_GETICON` to a window of
+higher integrity at once, so no timeout is spent, and the trace line says
+access denied rather than timed out. So an `hwnd:` key of an elevated or
+protected window resolves to the class icon, then to the exe's icon when
+the process could be opened. It resolves to `None` when the process could
+not be opened and the class has no icon. The UI then shows its neutral
+placeholder tile, and keeps it for the session.
 
 **Logging and the memory cache.** Each real load logs one debug line with
 the key, the requested size, the chain that produced the bitmap, and the

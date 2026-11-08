@@ -34,7 +34,8 @@ The tray and the toggle shortcut also reveal the panel. The UI reports its
 phase through `set_dock_auto_hidden`. When the primary window is visible
 with its panel slid out, a press sends `dock://show` to the pages instead
 of hiding the windows; a window that was hidden reveals its panel when it
-is shown again (`visibilitychange`).
+is shown again (`visibilitychange`). See
+[`docs/ipc/toggle-while-hidden.md`](../ipc/toggle-while-hidden.md).
 
 An item that needs attention also reveals the dock. The `attention` hold is
 the one hold that reveals when it begins. It keeps the dock up until no item

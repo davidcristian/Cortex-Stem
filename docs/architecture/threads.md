@@ -40,3 +40,32 @@ eligibility rule. Such a window is queried again 250 ms, 1 s and 3 s later
 on one thread timer (`rules::recheck`; at most 64 windows pending, the
 oldest dropped first). Once it qualifies it is reported with the same
 `WindowAdded` that a show produces.
+
+## Event sources
+
+The events thread listens to two sources:
+
+- the WinEvent hooks, which are required: `start` fails without them;
+- a shell hook window (`RegisterShellHookWindow`), which is optional: a
+  failed registration only logs a warning.
+
+WinEvents drive every `PlatformEvent` about windows. The shell hook adds
+`HSHELL_WINDOWCREATED` as one more show-type event, `HSHELL_WINDOWACTIVATED`
+and `HSHELL_RUDEAPPACTIVATED` as one more foreground report, and
+`HSHELL_FLASH` as the only source of `WindowAttention`.
+
+Both sources go through the same query, and the thread's `known` map
+coalesces them. The first source to find a window eligible emits the one
+`WindowAdded` (debug line `window 0x… added by <source>`). The other
+source's report becomes a `WindowUpdated` with unchanged facts, which
+changes nothing in the engine. A foreground switch can arrive twice with
+the same id, which also changes nothing.
+
+Without the shell hook, the dock loses only the attention cue. When a
+WinEvent for one window is missed, the shell hook, the delayed re-checks or
+the foreground path still report the window. `HSHELL_WINDOWDESTROYED` and
+`HSHELL_REDRAW` are not translated, on purpose: `EVENT_OBJECT_DESTROY`,
+`EVENT_OBJECT_HIDE` and `EVENT_OBJECT_NAMECHANGE` already cover them, and
+removals are idempotent. Every received event of either source is logged
+once at trace with its name, so a trace log can be counted per source. The
+full table is in `windows/events.rs`, section *Sources*.
