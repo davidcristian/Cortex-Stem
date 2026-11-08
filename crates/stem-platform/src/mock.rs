@@ -121,7 +121,8 @@ impl MockPlatform {
                 PlatformEvent::MonitorsChanged(m) => s.monitors = m.clone(),
                 PlatformEvent::ThemeChanged(t) => s.theme = t.clone(),
                 PlatformEvent::RecycleBinChanged(r) => s.recycle_bin = *r,
-                PlatformEvent::WindowAttention { .. } | PlatformEvent::FullscreenChanged(_) => {}
+                PlatformEvent::WindowAttention { .. } | PlatformEvent::FullscreenChanged { .. } => {
+                }
             }
             s.sink.clone()
         };

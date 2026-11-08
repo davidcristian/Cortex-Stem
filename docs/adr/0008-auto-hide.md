@@ -79,7 +79,8 @@ shell's `SHQueryUserNotificationState` returns `QUNS_BUSY`,
 frame covers its monitor's full bounds and it is not minimised, not
 maximised, not a shell surface and not one of Stem's windows. The thread
 emits `PlatformEvent::FullscreenChanged` when the result changes. The
-engine stores it as `DockState.fullscreen`; there is no separate `dock://visibility`
+engine stores it per dock, as `DockFacts.fullscreen` in `DockState.docks`;
+there is no separate `dock://visibility`
 event. A maximised window is excluded on purpose: with the stock taskbar
 auto-hidden, the work area is the whole monitor, and every maximised
 window would otherwise count.
@@ -126,7 +127,7 @@ the resting panel.
   area. The monitor is implicit in the geometry. The engine stores the panel,
   recomputes the flag after every input that can change it (a frame,
   visibility, minimised or cloaked state, a window coming or going, a
-  resync, the panel) and puts it in the snapshot as `DockState.overlapped`.
+  resync, the panel) and puts it in the snapshot as `DockFacts.overlapped`.
   A `WindowUpdated` that only moves a window bumps the revision exactly when
   the flag flips.
 - **Frames stay current** through an `EVENT_OBJECT_LOCATIONCHANGE` hook for

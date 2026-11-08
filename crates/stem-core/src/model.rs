@@ -283,21 +283,39 @@ pub struct DockState {
     /// window no item shows (e.g. on another virtual desktop); use
     /// `DockItem.isActive` / `WindowInfo.isActive` for highlighting.
     pub foreground: Option<WindowId>,
-    /// The foreground window of the dock's monitor owns the whole screen: a
-    /// game, a browser after F11, a video in fullscreen, a slideshow.
-    /// The platform decides (`PlatformEvent::FullscreenChanged`), the engine
-    /// stores it, and the UI gets the dock out of the way while it is set,
-    /// whatever `autoHide.mode` says. With a single dock, "the dock's
-    /// monitor" is the foreground window's own monitor.
-    pub fullscreen: bool,
-    /// A window of another process overlaps the dock's resting panel:
-    /// visible, not minimised, not cloaked, with a frame that
-    /// intersects the panel rect the UI reported through
-    /// `set_dock_panel_rect` (`crate::overlap`). `false` while no panel rect
-    /// is known. The UI hides the dock after `autoHide.delayMs` while it is
-    /// set and `autoHide.mode` is `whenOverlapped`, and shows it again when
-    /// it clears; `fullscreen` and `overlapped` are independent facts.
+    /// The per-dock facts: one entry per dock window whose monitor
+    /// the app layer has told the engine (`EngineInput::DockPanelChanged`),
+    /// sorted by monitor id. A dock page finds its own entry by the monitor
+    /// it sits on; a dock with no entry (yet) takes both facts as `false`.
     #[serde(default)]
+    pub docks: Vec<DockFacts>,
+}
+
+/// What one dock window needs to know about its own monitor, part
+/// of [`DockState`]. The two facts are independent; the UI combines them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub struct DockFacts {
+    /// The monitor this dock window sits on (`dock.html?monitor=<id>`; the
+    /// primary monitor for the `dock` window).
+    pub monitor: MonitorId,
+    /// The foreground window owns the whole of this monitor: a game, a
+    /// browser after F11, a video in fullscreen, a slideshow. The
+    /// platform decides (`PlatformEvent::FullscreenChanged`, with the
+    /// window's monitor); the engine sets it on the dock of that monitor,
+    /// or on the primary monitor's dock when the platform could not tell
+    /// the monitor; the UI gets that dock out of the way while it is set,
+    /// whatever `autoHide.mode` says.
+    pub fullscreen: bool,
+    /// A window of another process overlaps this dock's resting panel:
+    /// visible, not minimised, not cloaked, with a frame that
+    /// intersects the panel rect the dock's page reported through
+    /// `set_dock_panel_rect` (`crate::overlap`). `false` while no panel
+    /// rect is known for the dock (before its page's first report, or
+    /// while its window is hidden). The UI hides the dock after
+    /// `autoHide.delayMs` while it is set and `autoHide.mode` is
+    /// `whenOverlapped`, and shows it again when it clears.
     pub overlapped: bool,
 }
 

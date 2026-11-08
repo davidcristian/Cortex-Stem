@@ -1,11 +1,12 @@
 //! Does a window cover the dock?
 //!
-//! `autoHide.mode = whenOverlapped` hides the dock while some window on its
+//! `autoHide.mode = whenOverlapped` hides a dock while some window on its
 //! monitor overlaps the panel where it rests, and shows it again when none
 //! does. The fact is computed here, from what the platform already reports
-//! about every window ([`RawWindow`]) and the panel rect the UI reports
-//! through `set_dock_panel_rect`, converted by the app layer to the same
-//! coordinate space (physical pixels of the virtual desktop).
+//! about every window ([`RawWindow`]) and the panel rect each dock page
+//! reports through `set_dock_panel_rect`, converted by the app layer to the
+//! same coordinate space (physical pixels of the virtual desktop). With one
+//! dock per monitor the engine runs the rule once per panel.
 //!
 //! The rule ([`overlapped`]): a window counts when it
 //! - is visible (`is_visible`), not minimised and not cloaked, whatever
@@ -49,7 +50,7 @@ pub fn covers(panel: &Rect, window: &RawWindow, own_process_id: Option<u32>) -> 
         .is_some_and(|frame| intersects(panel, frame))
 }
 
-/// `DockState::overlapped` for a panel resting at `panel` (physical screen
+/// `DockFacts::overlapped` for a panel resting at `panel` (physical screen
 /// pixels) among `windows`: whether any of them [`covers`] it. O(windows);
 /// a panel with no area is never overlapped.
 pub fn overlapped<'a>(

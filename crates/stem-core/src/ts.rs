@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use ts_rs::{Config, ExportError, TS};
 
 use crate::model::{
-    AppFolder, AppId, AppIdentity, AppInfo, DockItem, DockItemKind, DockState, IconKey,
+    AppFolder, AppId, AppIdentity, AppInfo, DockFacts, DockItem, DockItemKind, DockState, IconKey,
     LaunchTarget, MonitorId, MonitorInfo, RawWindow, Rect, RecycleBinState, ShellAction, ThemeInfo,
     WindowAction, WindowId, WindowInfo,
 };
@@ -73,6 +73,7 @@ exported_types! {
     AppId,
     AppIdentity,
     AppInfo,
+    DockFacts,
     DockItem,
     DockItemKind,
     DockState,
@@ -108,6 +109,7 @@ exported_types! {
 /// argument type in `docs/ipc/` (events and commands).
 const IPC_PAYLOAD_TYPES: &[&str] = &[
     "DockState",
+    "DockFacts",
     "Settings",
     "ThemeInfo",
     "MonitorInfo",

@@ -59,7 +59,7 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use parking_lot::Mutex;
 use stem_core::{
     AppId, AppIdentity, DockEngine, DockState, EngineInput, IconKey, ItemAction, LaunchTarget,
-    MonitorInfo, PlatformEvent, Rect, Settings, SettingsError, ShellAction, ThemeInfo,
+    MonitorId, MonitorInfo, PlatformEvent, Rect, Settings, SettingsError, ShellAction, ThemeInfo,
     WindowAction, WindowId,
 };
 use stem_platform::{Platform, PlatformError};
@@ -266,18 +266,25 @@ impl DockService {
         self.inner.engine.lock().monitors().to_vec()
     }
 
-    /// Where the dock's panel rests on screen, in physical pixels of
-    /// the virtual desktop (the app layer converts the UI's CSS rect), or
-    /// `None` while the dock window is hidden. Queued for the worker like a
-    /// platform event, so it is applied in order with the window updates it
-    /// is compared against; the engine recomputes `DockState::overlapped`
-    /// and a `State` follows only when the flag flips. Never blocks.
-    pub fn set_dock_panel(&self, rect: Option<Rect>) {
-        log::debug!("dock panel: {rect:?}");
+    /// Where the panel of the dock window `label` rests on screen, in
+    /// physical pixels of the virtual desktop (the app layer
+    /// converts the UI's CSS rect), with the monitor the app layer placed
+    /// the window on; `rect` is `None` while the window is hidden, and
+    /// `monitor` and `rect` both `None` once the window is gone (the engine
+    /// forgets the label). Queued for the worker like a platform event, so
+    /// it is applied in order with the window updates it is compared
+    /// against; the engine recomputes that dock's `overlapped` and a `State`
+    /// follows only when its facts change. Never blocks.
+    pub fn set_dock_panel(&self, label: &str, monitor: Option<MonitorId>, rect: Option<Rect>) {
+        log::debug!("dock panel of {label:?} on {monitor:?}: {rect:?}");
         let _ = self
             .inner
             .worker_tx
-            .send(WorkerMsg::Input(EngineInput::DockPanelChanged(rect)));
+            .send(WorkerMsg::Input(EngineInput::DockPanelChanged {
+                label: label.to_owned(),
+                monitor,
+                rect,
+            }));
     }
 
     /// Validate, persist, and apply new settings. Returns the validated copy.
@@ -560,7 +567,7 @@ impl Inner {
     /// changed; the caller decides when to emit it. "Changed" is the
     /// engine's verdict per input, by snapshot comparison, so a
     /// `WindowUpdated` that only moves a window counts exactly when the move
-    /// flips `DockState::overlapped`, and a `DockPanelChanged` the
+    /// flips some dock's `overlapped`, and a `DockPanelChanged` the
     /// same way.
     fn process_batch(&self, inputs: Vec<EngineInput>) -> bool {
         let mut changed = false;
@@ -1750,32 +1757,90 @@ mod tests {
         service.shutdown();
     }
 
-    // ----- the platform's fullscreen verdict -----------------------------------
+    // ----- the platform's fullscreen verdict, per dock -------------------------
+
+    /// The demo monitor's id (`demo_monitor` in the mock platform).
+    const DEMO_MONITOR: &str = "mock-primary";
+
+    fn demo_monitor_id() -> MonitorId {
+        MonitorId(DEMO_MONITOR.into())
+    }
+
+    /// The facts of the dock on `monitor`, if the snapshot has an entry.
+    fn facts_on(state: &DockState, monitor: &str) -> Option<stem_core::DockFacts> {
+        state.docks.iter().find(|d| d.monitor.0 == monitor).cloned()
+    }
+
+    fn fullscreen_on(state: &DockState, monitor: &str) -> bool {
+        facts_on(state, monitor).is_some_and(|d| d.fullscreen)
+    }
+
+    fn overlapped_on(state: &DockState, monitor: &str) -> bool {
+        facts_on(state, monitor).is_some_and(|d| d.overlapped)
+    }
 
     #[test]
     fn fullscreen_verdicts_reach_the_snapshot_and_repeats_emit_nothing() {
         let relay = Arc::new(Relay::demo());
         let (service, rx) = start_relay(relay.clone());
         wait_state(&rx, resolved);
+        // The app layer registers the primary dock window on the demo
+        // monitor (no panel rect yet): one entry, both facts clear.
+        service.set_dock_panel("dock", Some(demo_monitor_id()), None);
+        let state = wait_state(&rx, |s| !s.docks.is_empty());
+        assert_eq!(
+            state.docks,
+            vec![stem_core::DockFacts {
+                monitor: demo_monitor_id(),
+                fullscreen: false,
+                overlapped: false,
+            }]
+        );
         while rx.try_recv().is_ok() {}
-        assert!(!service.state().fullscreen);
 
         // The first verdict after the start snapshot is usually `false`:
         // nothing changes, nothing is emitted.
-        relay.emit(PlatformEvent::FullscreenChanged(false));
+        relay.emit(PlatformEvent::FullscreenChanged {
+            active: false,
+            monitor: None,
+        });
         assert!(rx.recv_timeout(Duration::from_millis(150)).is_err());
 
-        relay.emit(PlatformEvent::FullscreenChanged(true));
-        let state = wait_state(&rx, |s| s.fullscreen);
+        // A verdict naming the dock's monitor.
+        relay.emit(PlatformEvent::FullscreenChanged {
+            active: true,
+            monitor: Some(demo_monitor_id()),
+        });
+        let state = wait_state(&rx, |s| fullscreen_on(s, DEMO_MONITOR));
         // The items are untouched by it.
         assert_eq!(app_items(&state).len(), 5);
-        assert!(service.state().fullscreen);
+        assert!(fullscreen_on(&service.state(), DEMO_MONITOR));
 
-        relay.emit(PlatformEvent::FullscreenChanged(true));
+        relay.emit(PlatformEvent::FullscreenChanged {
+            active: true,
+            monitor: Some(demo_monitor_id()),
+        });
         assert!(rx.recv_timeout(Duration::from_millis(150)).is_err());
 
-        relay.emit(PlatformEvent::FullscreenChanged(false));
-        wait_state(&rx, |s| !s.fullscreen);
+        relay.emit(PlatformEvent::FullscreenChanged {
+            active: false,
+            monitor: None,
+        });
+        wait_state(&rx, |s| !fullscreen_on(s, DEMO_MONITOR));
+
+        // A verdict with no monitor lands on the primary monitor's dock; one
+        // for another monitor hides nobody.
+        relay.emit(PlatformEvent::FullscreenChanged {
+            active: true,
+            monitor: None,
+        });
+        wait_state(&rx, |s| fullscreen_on(s, DEMO_MONITOR));
+        relay.emit(PlatformEvent::FullscreenChanged {
+            active: true,
+            monitor: Some(MonitorId(r"\\.\DISPLAY3".into())),
+        });
+        wait_state(&rx, |s| !fullscreen_on(s, DEMO_MONITOR));
+        assert!(facts_on(&service.state(), DEMO_MONITOR).is_some());
         service.shutdown();
     }
 
@@ -1787,23 +1852,25 @@ mod tests {
         let (service, rx) = start_relay(relay.clone());
         wait_state(&rx, resolved);
         while rx.try_recv().is_ok() {}
-        assert!(!service.state().overlapped);
+        assert!(service.state().docks.is_empty());
 
         // The UI's panel rests at the bottom of the demo monitor's work
-        // area, below every demo window: nothing overlaps, nothing emitted.
+        // area, below every demo window: the dock's entry appears (one
+        // state) with nothing overlapping it.
         let panel = Rect::new(1000, 1320, 560, 72);
-        service.set_dock_panel(Some(panel));
+        service.set_dock_panel("dock", Some(demo_monitor_id()), Some(panel));
+        let state = wait_state(&rx, |s| facts_on(s, DEMO_MONITOR).is_some());
+        assert!(!overlapped_on(&state, DEMO_MONITOR));
         assert!(rx.recv_timeout(Duration::from_millis(150)).is_err());
-        assert!(!service.state().overlapped);
 
         // Code's window is dragged down over the dock: the platform reports
         // a rect-only update, the flag flips, one state follows.
         relay
             .mock
             .move_window(WindowId(4), Some(Rect::new(600, 900, 700, 480)));
-        let state = wait_state(&rx, |s| s.overlapped);
+        let state = wait_state(&rx, |s| overlapped_on(s, DEMO_MONITOR));
         assert_eq!(app_items(&state).len(), 5);
-        assert!(service.state().overlapped);
+        assert!(overlapped_on(&service.state(), DEMO_MONITOR));
         // Another nudge that keeps it over the dock: nothing to emit.
         relay
             .mock
@@ -1814,28 +1881,33 @@ mod tests {
         relay
             .mock
             .move_window(WindowId(4), Some(Rect::new(200, 40, 1600, 1000)));
-        wait_state(&rx, |s| !s.overlapped);
+        wait_state(&rx, |s| !overlapped_on(s, DEMO_MONITOR));
 
         // A minimised window over the dock does not count; restoring it does.
         relay
             .mock
             .move_window(WindowId(6), Some(Rect::new(600, 900, 700, 480)));
         assert!(rx.recv_timeout(Duration::from_millis(150)).is_err());
-        assert!(!service.state().overlapped);
+        assert!(!overlapped_on(&service.state(), DEMO_MONITOR));
         service
             .window_action(WindowId(6), WindowAction::Restore)
             .unwrap();
-        wait_state(&rx, |s| s.overlapped);
+        wait_state(&rx, |s| overlapped_on(s, DEMO_MONITOR));
 
-        // The dock window was hidden (the tray): no panel, no overlap; shown
-        // again: back.
-        service.set_dock_panel(None);
-        wait_state(&rx, |s| !s.overlapped);
-        service.set_dock_panel(Some(panel));
-        wait_state(&rx, |s| s.overlapped);
+        // The dock window was hidden (the tray): no panel, no overlap, the
+        // entry stays; shown again: back.
+        service.set_dock_panel("dock", Some(demo_monitor_id()), None);
+        let state = wait_state(&rx, |s| !overlapped_on(s, DEMO_MONITOR));
+        assert!(facts_on(&state, DEMO_MONITOR).is_some());
+        service.set_dock_panel("dock", Some(demo_monitor_id()), Some(panel));
+        wait_state(&rx, |s| overlapped_on(s, DEMO_MONITOR));
         // A window the platform cannot read the frame of says nothing.
         relay.mock.move_window(WindowId(6), None);
-        wait_state(&rx, |s| !s.overlapped);
+        wait_state(&rx, |s| !overlapped_on(s, DEMO_MONITOR));
+
+        // The window is gone (its monitor unplugged): the entry goes with it.
+        service.set_dock_panel("dock", None, None);
+        wait_state(&rx, |s| s.docks.is_empty());
         service.shutdown();
     }
 
@@ -1844,7 +1916,12 @@ mod tests {
         let relay = Arc::new(Relay::demo());
         let (service, rx) = start_relay(relay.clone());
         wait_state(&rx, resolved);
-        service.set_dock_panel(Some(Rect::new(1000, 1320, 560, 72)));
+        service.set_dock_panel(
+            "dock",
+            Some(demo_monitor_id()),
+            Some(Rect::new(1000, 1320, 560, 72)),
+        );
+        wait_state(&rx, |s| facts_on(s, DEMO_MONITOR).is_some());
         while rx.try_recv().is_ok() {}
 
         // A window of this very process (the settings window) over the dock.
@@ -1855,13 +1932,53 @@ mod tests {
         ours.rect = Some(Rect::new(0, 0, 2560, 1392));
         relay.emit(PlatformEvent::WindowAdded(ours.clone()));
         let state = wait_state(&rx, |s| has_window_titled(s, "Stem Settings"));
-        assert!(!state.overlapped);
+        assert!(!overlapped_on(&state, DEMO_MONITOR));
         // The same frame on another process's window counts.
         ours.id = WindowId(71);
         ours.process_id = 7171;
         ours.title = "Theirs".into();
         relay.emit(PlatformEvent::WindowAdded(ours));
-        wait_state(&rx, |s| s.overlapped);
+        wait_state(&rx, |s| overlapped_on(s, DEMO_MONITOR));
+        service.shutdown();
+    }
+
+    // ----- two dock windows -------------------------------------------------------
+
+    #[test]
+    fn two_docks_keep_their_own_facts() {
+        let relay = Arc::new(Relay::demo());
+        let (service, rx) = start_relay(relay.clone());
+        wait_state(&rx, resolved);
+        let second = MonitorId(r"\\.\DISPLAY3".into());
+        service.set_dock_panel(
+            "dock",
+            Some(demo_monitor_id()),
+            Some(Rect::new(1000, 1320, 560, 72)),
+        );
+        service.set_dock_panel(
+            "dock-DISPLAY3",
+            Some(second.clone()),
+            Some(Rect::new(3560, 1000, 560, 72)),
+        );
+        let state = wait_state(&rx, |s| s.docks.len() == 2);
+        assert!(state.docks.iter().all(|d| !d.fullscreen && !d.overlapped));
+        while rx.try_recv().is_ok() {}
+
+        // A window dragged under the second dock: only it is overlapped.
+        relay
+            .mock
+            .move_window(WindowId(4), Some(Rect::new(3200, 800, 700, 480)));
+        let state = wait_state(&rx, |s| overlapped_on(s, r"\\.\DISPLAY3"));
+        assert!(!overlapped_on(&state, DEMO_MONITOR));
+
+        // A video goes fullscreen on the second monitor: only its dock.
+        relay.emit(PlatformEvent::FullscreenChanged {
+            active: true,
+            monitor: Some(second),
+        });
+        let state = wait_state(&rx, |s| fullscreen_on(s, r"\\.\DISPLAY3"));
+        assert!(!fullscreen_on(&state, DEMO_MONITOR));
+        assert!(overlapped_on(&state, r"\\.\DISPLAY3"));
         service.shutdown();
     }
 

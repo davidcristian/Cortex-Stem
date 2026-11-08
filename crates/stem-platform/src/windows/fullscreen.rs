@@ -5,7 +5,9 @@
 //! - [`evaluate`] takes the foreground window (`GetForegroundWindow`; NULL
 //!   while the foreground changes hands or the station is locked) and
 //!   answers whether it owns the whole screen, with its class and title for
-//!   the events thread's log line.
+//!   the events thread's log line and, when it does, the monitor it owns
+//!   (`monitors::monitor_for_window`), so the engine hides only that
+//!   monitor's dock.
 //! - The facts: `SHQueryUserNotificationState` (the shell's own verdict,
 //!   `Unknown` when the call fails), the frame from
 //!   `DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS)` with `GetWindowRect`
@@ -24,7 +26,7 @@
 //! Runs on the events thread (`windows::events`), which owns the timing: one
 //! evaluation per burst of foreground or location events.
 
-use stem_core::Rect;
+use stem_core::{MonitorId, Rect};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
@@ -35,7 +37,7 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{IsIconic, IsZoomed};
 
-use super::{enumerate, util};
+use super::{enumerate, monitors, util};
 use crate::rules::fullscreen::{self as rules, FullscreenFacts, NotificationState};
 
 // The host-independent codes in `rules::fullscreen` mirror shellapi.h; prove
@@ -54,6 +56,10 @@ const _: () = {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Verdict {
     pub fullscreen: bool,
+    /// The monitor the window owns while `fullscreen`, from
+    /// `MonitorFromWindow`; `None` when it could not be read, and always
+    /// while not fullscreen (the engine would not use it).
+    pub monitor: Option<MonitorId>,
     /// `GetClassNameW`; empty for a NULL foreground.
     pub class_name: String,
     /// The cached caption; empty for a NULL foreground and for our own windows.
@@ -95,8 +101,16 @@ pub fn evaluate(foreground: HWND) -> Verdict {
         "fullscreen check of {:#x}: {facts:?} -> {fullscreen}",
         foreground.0 as isize
     );
+    // A NULL foreground can be fullscreen by the shell's state alone; it has
+    // no monitor, and the engine then takes the primary monitor's dock.
+    let monitor = if fullscreen && present {
+        monitors::monitor_for_window(foreground)
+    } else {
+        None
+    };
     Verdict {
         fullscreen,
+        monitor,
         class_name,
         title,
     }

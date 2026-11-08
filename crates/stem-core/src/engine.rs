@@ -24,24 +24,29 @@
 //!   may point at a window no item shows (cloaked, invisible); nothing is
 //!   marked active then, and the item lights up as soon as the window is shown
 //!   again without needing another `ForegroundChanged`.
-//! - `fullscreen` is the platform's verdict, stored as is: the engine
-//!   never derives it from window rects;
+//! - the per-dock facts (`DockState::docks`) come from the panels the
+//!   app layer registers with [`EngineInput::DockPanelChanged`], one per dock
+//!   window label; a panel whose monitor is unknown yields no entry. The
+//!   snapshot lists one entry per monitor, sorted by monitor id;
+//! - `fullscreen` is the platform's verdict, stored as is (with the
+//!   monitor it names): the engine never derives it from window rects. It
+//!   sets the fact on the dock of the verdict's monitor, or on the primary
+//!   monitor's dock when the verdict names none;
 //! - `overlapped` is the one thing the engine derives from window
-//!   rects: whether a window of another process covers the dock's resting
-//!   panel ([`crate::overlap`]), from the panel rect the app layer feeds in
-//!   as [`EngineInput::DockPanelChanged`]. It is recomputed only after an
+//!   rects: whether a window of another process covers a dock's resting
+//!   panel ([`crate::overlap`]), per panel. It is recomputed only after an
 //!   input that can change it (a window's frame, visibility, minimised or
-//!   cloaked state, a window coming or going, a resync, the panel itself),
-//!   in O(windows), and it is part of the snapshot, so a `WindowUpdated`
-//!   that only moves a window bumps the revision exactly when the flag
-//!   flips.
+//!   cloaked state, a window coming or going, a resync, a panel itself),
+//!   in O(windows × panels), and it is part of the snapshot, so a
+//!   `WindowUpdated` that only moves a window bumps the revision exactly
+//!   when a flag flips.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::events::{EngineInput, PlatformEvent};
 use crate::model::{
-    AppId, AppIdentity, DockItem, DockItemKind, DockState, IconKey, MonitorInfo, RawWindow, Rect,
-    RecycleBinState, ShellAction, ThemeInfo, WindowId, WindowInfo,
+    AppId, AppIdentity, DockFacts, DockItem, DockItemKind, DockState, IconKey, MonitorId,
+    MonitorInfo, RawWindow, Rect, RecycleBinState, ShellAction, ThemeInfo, WindowId, WindowInfo,
 };
 use crate::overlap;
 use crate::settings::Settings;
@@ -96,6 +101,21 @@ struct Tracked {
     attention: bool,
 }
 
+/// One dock window as the app layer registered it, keyed by its
+/// label in [`DockEngine::panels`].
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct DockPanel {
+    /// The monitor the window sits on; `None` while the app layer could not
+    /// tell, in which case the dock has no entry in `DockState::docks`.
+    monitor: Option<MonitorId>,
+    /// Where its panel rests, in the windows' coordinate space;
+    /// `None` before the page's first report and while the window is hidden.
+    rect: Option<Rect>,
+    /// `DockFacts::overlapped` for this panel, recomputed by
+    /// [`DockEngine::apply`] when `overlap_dirty` was set by the input.
+    overlapped: bool,
+}
+
 #[derive(Debug)]
 pub struct DockEngine {
     settings: Settings,
@@ -105,17 +125,19 @@ pub struct DockEngine {
     /// First-seen order of apps that currently have windows.
     running_order: Vec<AppId>,
     foreground: Option<WindowId>,
-    /// The platform's fullscreen verdict; see `DockState::fullscreen`.
+    /// The platform's fullscreen verdict; see `DockFacts::fullscreen`.
     fullscreen: bool,
-    /// Where the dock's panel rests, in the windows' coordinate space;
-    /// `None` before the first report and while the dock window is hidden.
-    panel: Option<Rect>,
+    /// The monitor the fullscreen verdict names; `None` when the
+    /// platform could not tell, which points the fact at the primary
+    /// monitor's dock.
+    fullscreen_monitor: Option<MonitorId>,
+    /// The dock windows the app layer registered, by label.
+    panels: BTreeMap<String, DockPanel>,
     /// Our own process id, whose windows never count as overlapping. `None`
     /// when unknown (every window counts then).
     own_process_id: Option<u32>,
-    /// `DockState::overlapped`, recomputed by [`Self::apply`] when
-    /// `overlap_dirty` was set by the input.
-    overlapped: bool,
+    /// Some panel's `overlapped` may be stale: recompute them all in
+    /// [`Self::apply`].
     overlap_dirty: bool,
     monitors: Vec<MonitorInfo>,
     theme: ThemeInfo,
@@ -134,9 +156,9 @@ impl DockEngine {
             running_order: Vec::new(),
             foreground: None,
             fullscreen: false,
-            panel: None,
+            fullscreen_monitor: None,
+            panels: BTreeMap::new(),
             own_process_id: None,
-            overlapped: false,
             overlap_dirty: false,
             monitors: Vec::new(),
             theme: ThemeInfo::default(),
@@ -183,15 +205,30 @@ impl DockEngine {
         self.fullscreen
     }
 
-    /// Where the dock's panel rests, as last fed in; `None` while
-    /// the dock window is hidden or before the UI's first report.
-    pub fn dock_panel(&self) -> Option<Rect> {
-        self.panel
+    /// The monitor the latest fullscreen verdict names; `None`
+    /// while nothing is fullscreen or the platform could not tell.
+    pub fn fullscreen_monitor(&self) -> Option<&MonitorId> {
+        self.fullscreen_monitor.as_ref()
     }
 
-    /// `DockState::overlapped` as of the last input.
-    pub fn overlapped(&self) -> bool {
-        self.overlapped
+    /// Where the panel of the dock window `label` rests, as last fed in;
+    /// `None` while that window is hidden, before its page's first
+    /// report, or for a label the app layer never registered.
+    pub fn dock_panel(&self, label: &str) -> Option<Rect> {
+        self.panels.get(label).and_then(|p| p.rect)
+    }
+
+    /// The monitor the dock window `label` sits on, as the app layer last
+    /// said; `None` for an unknown label or an unplaced window.
+    pub fn dock_monitor(&self, label: &str) -> Option<&MonitorId> {
+        self.panels.get(label).and_then(|p| p.monitor.as_ref())
+    }
+
+    /// Whether a window of another process covers the panel of the dock
+    /// window `label`, as of the last input; `false` for a label
+    /// without a panel.
+    pub fn overlapped(&self, label: &str) -> bool {
+        self.panels.get(label).is_some_and(|p| p.overlapped)
     }
 
     pub fn window(&self, id: WindowId) -> Option<&RawWindow> {
@@ -242,17 +279,29 @@ impl DockEngine {
                 // present, `take_new_unresolved` below asks for it afresh.
                 self.identity_requested.remove(&app_id);
             }
-            EngineInput::DockPanelChanged(panel) => {
-                if self.panel != panel {
-                    self.panel = panel;
-                    self.overlap_dirty = true;
+            EngineInput::DockPanelChanged {
+                label,
+                monitor,
+                rect,
+            } => {
+                if monitor.is_none() && rect.is_none() {
+                    // The window is gone (or was never placed and is
+                    // hidden): nothing left to remember about the label.
+                    self.panels.remove(&label);
+                } else {
+                    let panel = self.panels.entry(label).or_default();
+                    if panel.rect != rect {
+                        panel.rect = rect;
+                        self.overlap_dirty = true;
+                    }
+                    panel.monitor = monitor;
                 }
             }
         }
         self.rebuild_running_order();
         if self.overlap_dirty {
             self.overlap_dirty = false;
-            self.overlapped = self.compute_overlapped();
+            self.compute_overlapped();
         }
         let unresolved_apps = self.take_new_unresolved();
         let changed = self.snapshot() != before;
@@ -319,9 +368,12 @@ impl DockEngine {
             PlatformEvent::MonitorsChanged(monitors) => self.monitors = monitors,
             PlatformEvent::ThemeChanged(theme) => self.theme = theme,
             PlatformEvent::RecycleBinChanged(state) => self.recycle_bin = state,
-            // Part of the snapshot, so `apply` bumps the revision only when
-            // the value differs from the stored one.
-            PlatformEvent::FullscreenChanged(fullscreen) => self.fullscreen = fullscreen,
+            // Part of the snapshot (through the docks' facts), so `apply`
+            // bumps the revision only when some dock's fact changes.
+            PlatformEvent::FullscreenChanged { active, monitor } => {
+                self.fullscreen = active;
+                self.fullscreen_monitor = if active { monitor } else { None };
+            }
         }
     }
 
@@ -349,16 +401,54 @@ impl DockEngine {
         }
     }
 
-    /// [`overlap::overlapped`] over the tracked windows, for the panel as
-    /// last reported; `false` without one.
-    fn compute_overlapped(&self) -> bool {
-        self.panel.as_ref().is_some_and(|panel| {
-            overlap::overlapped(
-                panel,
-                self.windows.values().map(|t| &t.raw),
-                self.own_process_id,
-            )
-        })
+    /// [`overlap::overlapped`] over the tracked windows, for every panel as
+    /// last reported; `false` for a dock without a rect.
+    fn compute_overlapped(&mut self) {
+        let windows = &self.windows;
+        let own_process_id = self.own_process_id;
+        for panel in self.panels.values_mut() {
+            panel.overlapped = panel.rect.as_ref().is_some_and(|rect| {
+                overlap::overlapped(rect, windows.values().map(|t| &t.raw), own_process_id)
+            });
+        }
+    }
+
+    /// The monitor the app layer treats as primary (the flagged one, else
+    /// the first), whose dock takes a fullscreen verdict that names no
+    /// monitor.
+    fn primary_monitor_id(&self) -> Option<&MonitorId> {
+        self.monitors
+            .iter()
+            .find(|m| m.is_primary)
+            .or_else(|| self.monitors.first())
+            .map(|m| &m.id)
+    }
+
+    /// `DockState::docks`: one entry per monitor that has a
+    /// registered dock window, sorted by monitor id. `fullscreen` is the
+    /// verdict when it names this monitor, or names none and this is the
+    /// primary; `overlapped` is the panel's (any panel's, should two share
+    /// a monitor). A panel whose monitor is unknown yields no entry.
+    fn dock_facts(&self) -> Vec<DockFacts> {
+        let primary = self.primary_monitor_id();
+        let mut by_monitor: BTreeMap<&MonitorId, DockFacts> = BTreeMap::new();
+        for panel in self.panels.values() {
+            let Some(monitor) = &panel.monitor else {
+                continue;
+            };
+            let fullscreen = self.fullscreen
+                && match &self.fullscreen_monitor {
+                    Some(target) => target == monitor,
+                    None => primary == Some(monitor),
+                };
+            let facts = by_monitor.entry(monitor).or_insert_with(|| DockFacts {
+                monitor: monitor.clone(),
+                fullscreen,
+                overlapped: false,
+            });
+            facts.overlapped |= panel.overlapped;
+        }
+        by_monitor.into_values().collect()
     }
 
     fn alloc_seq(&mut self) -> u64 {
@@ -527,8 +617,7 @@ impl DockEngine {
             revision: self.revision,
             items,
             foreground: self.foreground,
-            fullscreen: self.fullscreen,
-            overlapped: self.overlapped,
+            docks: self.dock_facts(),
         }
     }
 
@@ -750,56 +839,187 @@ mod tests {
         .into()
     }
 
-    fn fullscreen(active: bool) -> EngineInput {
-        PlatformEvent::FullscreenChanged(active).into()
+    // ----- the fullscreen verdict, per dock -------------------------------------
+
+    /// The primary demo monitor and a second one to its right.
+    const PRIMARY: &str = "mock-primary";
+    const SECOND: &str = r"\\.\DISPLAY3";
+
+    fn monitor(id: &str, primary: bool, x: i32) -> MonitorInfo {
+        MonitorInfo {
+            id: MonitorId(id.into()),
+            name: id.into(),
+            bounds: Rect::new(x, 0, 2560, 1440),
+            work_area: Rect::new(x, 0, 2560, 1392),
+            scale_factor: 1.0,
+            is_primary: primary,
+        }
+    }
+
+    fn monitors(list: Vec<MonitorInfo>) -> EngineInput {
+        PlatformEvent::MonitorsChanged(list).into()
+    }
+
+    /// The platform's verdict, with the fullscreen window's monitor.
+    fn fullscreen_on(monitor: Option<&str>) -> EngineInput {
+        PlatformEvent::FullscreenChanged {
+            active: true,
+            monitor: monitor.map(|m| MonitorId(m.into())),
+        }
+        .into()
+    }
+
+    fn fullscreen_off() -> EngineInput {
+        PlatformEvent::FullscreenChanged {
+            active: false,
+            monitor: None,
+        }
+        .into()
+    }
+
+    /// `DockState::docks` entry of `monitor`, if the snapshot has one.
+    fn facts(state: &DockState, monitor: &str) -> Option<DockFacts> {
+        state.docks.iter().find(|d| d.monitor.0 == monitor).cloned()
+    }
+
+    fn is_fullscreen(engine: &DockEngine, monitor: &str) -> bool {
+        facts(&engine.snapshot(), monitor).is_some_and(|d| d.fullscreen)
+    }
+
+    fn is_overlapped(engine: &DockEngine, monitor: &str) -> bool {
+        facts(&engine.snapshot(), monitor).is_some_and(|d| d.overlapped)
+    }
+
+    /// An engine that knows the primary monitor and has the primary dock
+    /// window registered on it, without a panel rect yet.
+    fn engine_with_primary_dock() -> DockEngine {
+        let mut engine = DockEngine::new(minimal_settings());
+        engine.apply(monitors(vec![monitor(PRIMARY, true, 0)]));
+        engine.apply(panel_of("dock", Some(PRIMARY), None));
+        engine
     }
 
     #[test]
     fn fullscreen_is_stored_and_bumps_only_on_a_change() {
-        let mut engine = DockEngine::new(minimal_settings());
+        let mut engine = engine_with_primary_dock();
         engine.apply(added(win(1, r"C:\a.exe", "A")));
         let r = engine.snapshot().revision;
-        assert!(!engine.snapshot().fullscreen);
+        assert!(!is_fullscreen(&engine, PRIMARY));
         assert!(!engine.fullscreen());
+        assert_eq!(engine.fullscreen_monitor(), None);
 
         // The platform's first verdict is usually `false`: nothing to emit.
-        assert!(!engine.apply(fullscreen(false)).changed);
+        assert!(!engine.apply(fullscreen_off()).changed);
         assert_eq!(engine.snapshot().revision, r);
 
-        let out = engine.apply(fullscreen(true));
+        // A verdict that names the dock's monitor.
+        let out = engine.apply(fullscreen_on(Some(PRIMARY)));
         assert!(out.changed);
         assert!(out.unresolved_apps.is_empty());
         let state = engine.snapshot();
-        assert!(state.fullscreen);
+        assert_eq!(
+            state.docks,
+            vec![DockFacts {
+                monitor: MonitorId(PRIMARY.into()),
+                fullscreen: true,
+                overlapped: false,
+            }]
+        );
         assert!(engine.fullscreen());
+        assert_eq!(
+            engine.fullscreen_monitor(),
+            Some(&MonitorId(PRIMARY.into()))
+        );
         assert_eq!(state.revision, r + 1);
         // Items and foreground are untouched by it.
         assert_eq!(keys(&state), vec!["app:exe:c:/a.exe"]);
 
         // Repeats change nothing; the end of fullscreen is one more bump.
-        assert!(!engine.apply(fullscreen(true)).changed);
+        assert!(!engine.apply(fullscreen_on(Some(PRIMARY))).changed);
         assert_eq!(engine.snapshot().revision, r + 1);
-        assert!(engine.apply(fullscreen(false)).changed);
-        assert!(!engine.snapshot().fullscreen);
+        assert!(engine.apply(fullscreen_off()).changed);
+        assert!(!is_fullscreen(&engine, PRIMARY));
+        assert!(!engine.fullscreen());
+        assert_eq!(engine.fullscreen_monitor(), None);
         assert_eq!(engine.snapshot().revision, r + 2);
+
+        // A verdict that names no monitor lands on the primary's dock.
+        assert!(engine.apply(fullscreen_on(None)).changed);
+        assert!(is_fullscreen(&engine, PRIMARY));
+        assert_eq!(engine.fullscreen_monitor(), None);
     }
 
     #[test]
     fn fullscreen_survives_a_resync_and_is_independent_of_the_foreground() {
-        let mut engine = DockEngine::new(minimal_settings());
+        let mut engine = engine_with_primary_dock();
         engine.apply(added(win(1, r"C:\a.exe", "A")));
-        engine.apply(fullscreen(true));
+        engine.apply(fullscreen_on(Some(PRIMARY)));
         engine.apply(foreground(Some(1)));
         engine.apply(PlatformEvent::WindowsSnapshot(vec![win(1, r"C:\a.exe", "A")]).into());
         engine.apply(foreground(None));
         engine.apply(removed(1));
         // Only the platform says when it is over.
-        assert!(engine.snapshot().fullscreen);
+        assert!(is_fullscreen(&engine, PRIMARY));
+    }
+
+    #[test]
+    fn fullscreen_lands_on_the_dock_of_the_verdicts_monitor_only() {
+        let mut engine = DockEngine::new(minimal_settings());
+        engine.apply(monitors(vec![
+            monitor(PRIMARY, true, 0),
+            monitor(SECOND, false, 2560),
+        ]));
+        engine.apply(panel_of("dock", Some(PRIMARY), None));
+        engine.apply(panel_of("dock-DISPLAY3", Some(SECOND), None));
+        let r = engine.snapshot().revision;
+
+        // A video goes fullscreen on the second monitor: only its dock hides.
+        assert!(engine.apply(fullscreen_on(Some(SECOND))).changed);
+        assert!(!is_fullscreen(&engine, PRIMARY));
+        assert!(is_fullscreen(&engine, SECOND));
+        assert_eq!(engine.snapshot().revision, r + 1);
+
+        // The fullscreen window moves to the primary: the fact moves with it.
+        assert!(engine.apply(fullscreen_on(Some(PRIMARY))).changed);
+        assert!(is_fullscreen(&engine, PRIMARY));
+        assert!(!is_fullscreen(&engine, SECOND));
+
+        // A verdict with no monitor: the primary's dock, not the other.
+        assert!(!engine.apply(fullscreen_on(None)).changed);
+        assert!(is_fullscreen(&engine, PRIMARY));
+        assert!(!is_fullscreen(&engine, SECOND));
+
+        // A monitor no dock sits on: nobody hides.
+        assert!(engine.apply(fullscreen_on(Some(r"\\.\DISPLAY9"))).changed);
+        assert!(!is_fullscreen(&engine, PRIMARY));
+        assert!(!is_fullscreen(&engine, SECOND));
+        assert!(engine.fullscreen());
+
+        assert!(!engine.apply(fullscreen_off()).changed);
+        assert!(!engine.fullscreen());
+    }
+
+    #[test]
+    fn without_a_flagged_primary_the_first_monitor_takes_an_unplaced_verdict() {
+        let mut engine = DockEngine::new(minimal_settings());
+        engine.apply(monitors(vec![
+            monitor(SECOND, false, 2560),
+            monitor(PRIMARY, false, 0),
+        ]));
+        engine.apply(panel_of("dock", Some(SECOND), None));
+        engine.apply(panel_of("dock-mock-primary", Some(PRIMARY), None));
+        engine.apply(fullscreen_on(None));
+        assert!(is_fullscreen(&engine, SECOND));
+        assert!(!is_fullscreen(&engine, PRIMARY));
+        // No monitors known at all: an unplaced verdict hides nobody.
+        engine.apply(monitors(vec![]));
+        assert!(!is_fullscreen(&engine, SECOND));
+        assert!(!is_fullscreen(&engine, PRIMARY));
     }
 
     #[test]
     fn a_rect_change_alone_is_stored_without_bumping_the_revision() {
-        let mut engine = DockEngine::new(minimal_settings());
+        let mut engine = engine_with_primary_dock();
         let mut raw = win(1, r"C:\a.exe", "A");
         raw.rect = Some(Rect::new(0, 0, 800, 600));
         engine.apply(added(raw.clone()));
@@ -830,7 +1050,7 @@ mod tests {
         raw.rect = Some(Rect::new(0, 0, 800, 600));
         assert!(!engine.apply(updated(raw)).changed);
         assert_eq!(engine.snapshot().revision, r);
-        assert!(!engine.overlapped());
+        assert!(!engine.overlapped("dock"));
     }
 
     // ----- a window over the dock ------------------------------------------------
@@ -842,8 +1062,18 @@ mod tests {
     /// A frame in the top-left corner, clear of the panel.
     const CLEAR: Rect = Rect::new(0, 0, 800, 600);
 
+    /// The app layer's report about one dock window.
+    fn panel_of(label: &str, monitor: Option<&str>, rect: Option<Rect>) -> EngineInput {
+        EngineInput::DockPanelChanged {
+            label: label.to_owned(),
+            monitor: monitor.map(|m| MonitorId(m.into())),
+            rect,
+        }
+    }
+
+    /// The primary dock window's panel, as the single-dock tests report it.
     fn panel(rect: Option<Rect>) -> EngineInput {
-        EngineInput::DockPanelChanged(rect)
+        panel_of("dock", Some(PRIMARY), rect)
     }
 
     fn framed(id: u64, exe: &str, rect: Rect) -> RawWindow {
@@ -857,19 +1087,32 @@ mod tests {
         let mut engine = DockEngine::new(minimal_settings());
         engine.apply(added(framed(1, r"C:\a.exe", OVER)));
         let r = engine.snapshot().revision;
-        // No panel yet: nothing can overlap it.
-        assert!(!engine.overlapped());
-        assert!(!engine.snapshot().overlapped);
-        assert_eq!(engine.dock_panel(), None);
+        // No panel yet: nothing can overlap it, and there is no dock entry.
+        assert!(!engine.overlapped("dock"));
+        assert!(engine.snapshot().docks.is_empty());
+        assert_eq!(engine.dock_panel("dock"), None);
+        assert_eq!(engine.dock_monitor("dock"), None);
 
-        // The UI's first report: the window is over it.
+        // The UI's first report: the window is over it. The dock gets its
+        // entry (one bump) with the flag set.
         let out = engine.apply(panel(Some(PANEL)));
         assert!(out.changed);
         assert!(out.unresolved_apps.is_empty());
-        assert!(engine.overlapped());
-        assert_eq!(engine.dock_panel(), Some(PANEL));
+        assert!(engine.overlapped("dock"));
+        assert_eq!(engine.dock_panel("dock"), Some(PANEL));
+        assert_eq!(
+            engine.dock_monitor("dock"),
+            Some(&MonitorId(PRIMARY.into()))
+        );
         let state = engine.snapshot();
-        assert!(state.overlapped);
+        assert_eq!(
+            state.docks,
+            vec![DockFacts {
+                monitor: MonitorId(PRIMARY.into()),
+                fullscreen: false,
+                overlapped: true,
+            }]
+        );
         assert_eq!(state.revision, r + 1);
         assert_eq!(keys(&state), vec!["app:exe:c:/a.exe"]);
 
@@ -882,47 +1125,49 @@ mod tests {
         // Moved clear of it: the flag flips, one bump.
         moved.rect = Some(CLEAR);
         assert!(engine.apply(updated(moved.clone())).changed);
-        assert!(!engine.snapshot().overlapped);
+        assert!(!is_overlapped(&engine, PRIMARY));
         assert_eq!(engine.snapshot().revision, r + 2);
 
         // Back over it, then minimised, restored, cloaked, uncloaked, hidden.
         moved.rect = Some(OVER);
         assert!(engine.apply(updated(moved.clone())).changed);
-        assert!(engine.snapshot().overlapped);
+        assert!(is_overlapped(&engine, PRIMARY));
         moved.is_minimized = true;
         assert!(engine.apply(updated(moved.clone())).changed);
-        assert!(!engine.snapshot().overlapped);
+        assert!(!is_overlapped(&engine, PRIMARY));
         moved.is_minimized = false;
         assert!(engine.apply(updated(moved.clone())).changed);
-        assert!(engine.snapshot().overlapped);
+        assert!(is_overlapped(&engine, PRIMARY));
         moved.is_cloaked = true;
         assert!(engine.apply(updated(moved.clone())).changed);
-        assert!(!engine.snapshot().overlapped);
+        assert!(!is_overlapped(&engine, PRIMARY));
         moved.is_cloaked = false;
         assert!(engine.apply(updated(moved.clone())).changed);
-        assert!(engine.snapshot().overlapped);
+        assert!(is_overlapped(&engine, PRIMARY));
         moved.is_visible = false;
         assert!(engine.apply(updated(moved.clone())).changed);
-        assert!(!engine.snapshot().overlapped);
+        assert!(!is_overlapped(&engine, PRIMARY));
         moved.is_visible = true;
         assert!(engine.apply(updated(moved)).changed);
-        assert!(engine.snapshot().overlapped);
+        assert!(is_overlapped(&engine, PRIMARY));
 
         // The window closes: clear. A new window over it: set again.
         assert!(engine.apply(removed(1)).changed);
-        assert!(!engine.snapshot().overlapped);
+        assert!(!is_overlapped(&engine, PRIMARY));
         assert!(engine.apply(added(framed(2, r"C:\b.exe", OVER))).changed);
-        assert!(engine.snapshot().overlapped);
+        assert!(is_overlapped(&engine, PRIMARY));
 
-        // The dock window was hidden: no panel, nothing overlaps.
+        // The dock window was hidden: no panel, nothing overlaps; the dock
+        // keeps its entry (it is still on its monitor).
         let r = engine.snapshot().revision;
         assert!(engine.apply(panel(None)).changed);
-        assert!(!engine.snapshot().overlapped);
-        assert_eq!(engine.dock_panel(), None);
+        assert!(!is_overlapped(&engine, PRIMARY));
+        assert!(facts(&engine.snapshot(), PRIMARY).is_some());
+        assert_eq!(engine.dock_panel("dock"), None);
         assert_eq!(engine.snapshot().revision, r + 1);
         // Shown again where it was: set again.
         assert!(engine.apply(panel(Some(PANEL))).changed);
-        assert!(engine.snapshot().overlapped);
+        assert!(is_overlapped(&engine, PRIMARY));
     }
 
     #[test]
@@ -934,7 +1179,7 @@ mod tests {
         // The dock grew by an item: a wider panel, still clear of the window.
         let wider = Rect::new(972, 1320, 616, 72);
         assert!(!engine.apply(panel(Some(wider))).changed);
-        assert_eq!(engine.dock_panel(), Some(wider));
+        assert_eq!(engine.dock_panel("dock"), Some(wider));
         assert_eq!(engine.snapshot().revision, r);
         assert!(!engine.apply(panel(None)).changed);
         assert_eq!(engine.snapshot().revision, r);
@@ -950,9 +1195,9 @@ mod tests {
         // The item is shown (the setting lists other desktops' windows) ...
         assert_eq!(keys(&engine.snapshot()), vec!["app:exe:c:/a.exe"]);
         // ... but a cloaked window is not on screen, so it covers nothing.
-        assert!(!engine.snapshot().overlapped);
+        assert!(!is_overlapped(&engine, PRIMARY));
         assert!(engine.apply(updated(framed(1, r"C:\a.exe", OVER))).changed);
-        assert!(engine.snapshot().overlapped);
+        assert!(is_overlapped(&engine, PRIMARY));
     }
 
     #[test]
@@ -962,25 +1207,25 @@ mod tests {
         ours.process_id = 4242;
         engine.apply(added(ours.clone()));
         engine.apply(panel(Some(PANEL)));
-        assert!(engine.snapshot().overlapped);
+        assert!(is_overlapped(&engine, PRIMARY));
 
         // The service tells the engine who we are: the flag clears with the
         // next input that touches the rule, without a bump of its own.
         engine.set_own_process_id(Some(4242));
         let out = engine.apply(updated(ours.clone()));
         assert!(out.changed);
-        assert!(!engine.snapshot().overlapped);
+        assert!(!is_overlapped(&engine, PRIMARY));
         // A window of another process over it still counts.
         let mut theirs = framed(2, r"C:\b.exe", OVER);
         theirs.process_id = 4243;
         assert!(engine.apply(added(theirs)).changed);
-        assert!(engine.snapshot().overlapped);
+        assert!(is_overlapped(&engine, PRIMARY));
         assert!(engine.apply(removed(2)).changed);
-        assert!(!engine.snapshot().overlapped);
+        assert!(!is_overlapped(&engine, PRIMARY));
         // Forgetting the id makes ours count again.
         engine.set_own_process_id(None);
         assert!(engine.apply(updated(ours)).changed);
-        assert!(engine.snapshot().overlapped);
+        assert!(is_overlapped(&engine, PRIMARY));
     }
 
     #[test]
@@ -988,20 +1233,20 @@ mod tests {
         let mut engine = DockEngine::new(minimal_settings());
         engine.apply(panel(Some(PANEL)));
         engine.apply(added(framed(1, r"C:\a.exe", CLEAR)));
-        assert!(!engine.snapshot().overlapped);
+        assert!(!is_overlapped(&engine, PRIMARY));
 
         // The platform re-enumerates: the window has moved over the dock.
         let out =
             engine.apply(PlatformEvent::WindowsSnapshot(vec![framed(1, r"C:\a.exe", OVER)]).into());
         assert!(out.changed);
-        assert!(engine.snapshot().overlapped);
+        assert!(is_overlapped(&engine, PRIMARY));
         // A resync that lists nothing clears it.
         assert!(
             engine
                 .apply(PlatformEvent::WindowsSnapshot(vec![]).into())
                 .changed
         );
-        assert!(!engine.snapshot().overlapped);
+        assert!(!is_overlapped(&engine, PRIMARY));
         // Identical resyncs are no-ops.
         engine.apply(PlatformEvent::WindowsSnapshot(vec![framed(1, r"C:\a.exe", OVER)]).into());
         let r = engine.snapshot().revision;
@@ -1017,23 +1262,228 @@ mod tests {
     fn overlap_is_independent_of_fullscreen_the_foreground_and_the_settings() {
         let mut settings = minimal_settings();
         let mut engine = DockEngine::new(settings.clone());
+        engine.apply(monitors(vec![monitor(PRIMARY, true, 0)]));
         engine.apply(added(framed(1, r"C:\a.exe", OVER)));
         engine.apply(panel(Some(PANEL)));
-        assert!(engine.snapshot().overlapped);
+        assert!(is_overlapped(&engine, PRIMARY));
 
         engine.apply(foreground(Some(1)));
-        assert!(engine.snapshot().overlapped);
+        assert!(is_overlapped(&engine, PRIMARY));
         let state = engine.snapshot();
-        engine.apply(fullscreen(true));
-        assert!(engine.snapshot().overlapped);
-        assert!(engine.snapshot().fullscreen);
-        engine.apply(fullscreen(false));
-        assert!(engine.snapshot().overlapped);
+        engine.apply(fullscreen_on(Some(PRIMARY)));
+        assert!(is_overlapped(&engine, PRIMARY));
+        assert!(is_fullscreen(&engine, PRIMARY));
+        engine.apply(fullscreen_off());
+        assert!(is_overlapped(&engine, PRIMARY));
+        assert!(!is_fullscreen(&engine, PRIMARY));
         settings.icon_size = 64;
         settings.behavior.show_only_current_desktop = false;
         assert!(!engine.apply(EngineInput::SettingsChanged(settings)).changed);
-        assert!(engine.snapshot().overlapped);
+        assert!(is_overlapped(&engine, PRIMARY));
         assert_eq!(engine.snapshot().items, state.items);
+    }
+
+    // ----- one dock per monitor ------------------------------------------------
+
+    /// A 560 × 72 panel at the bottom of the second monitor's work area.
+    const SECOND_PANEL: Rect = Rect::new(3560, 1320, 560, 72);
+    /// A frame on the second monitor that covers that panel's left half.
+    const SECOND_OVER: Rect = Rect::new(3160, 900, 700, 480);
+
+    #[test]
+    fn each_dock_is_overlapped_by_the_windows_over_its_own_panel() {
+        let mut engine = DockEngine::new(minimal_settings());
+        engine.apply(monitors(vec![
+            monitor(PRIMARY, true, 0),
+            monitor(SECOND, false, 2560),
+        ]));
+        engine.apply(panel_of("dock", Some(PRIMARY), Some(PANEL)));
+        engine.apply(panel_of("dock-DISPLAY3", Some(SECOND), Some(SECOND_PANEL)));
+        // Two entries, sorted by monitor id (`\\.\DISPLAY3` < `mock-primary`).
+        let state = engine.snapshot();
+        assert_eq!(
+            state
+                .docks
+                .iter()
+                .map(|d| d.monitor.0.as_str())
+                .collect::<Vec<_>>(),
+            vec![SECOND, PRIMARY]
+        );
+        assert!(state.docks.iter().all(|d| !d.overlapped && !d.fullscreen));
+        let r = state.revision;
+
+        // A window over the second dock's panel: only that dock.
+        assert!(
+            engine
+                .apply(added(framed(1, r"C:\a.exe", SECOND_OVER)))
+                .changed
+        );
+        assert!(!is_overlapped(&engine, PRIMARY));
+        assert!(is_overlapped(&engine, SECOND));
+        assert!(engine.overlapped("dock-DISPLAY3"));
+        assert!(!engine.overlapped("dock"));
+        // One over the primary's as well: both.
+        let r2 = engine.snapshot().revision;
+        assert!(engine.apply(added(framed(2, r"C:\b.exe", OVER))).changed);
+        assert!(is_overlapped(&engine, PRIMARY));
+        assert!(is_overlapped(&engine, SECOND));
+        assert!(r2 > r);
+        // The first one dragged from the second monitor to the primary,
+        // over the primary's panel: the second clears, the primary stays.
+        assert!(engine.apply(updated(framed(1, r"C:\a.exe", OVER))).changed);
+        assert!(is_overlapped(&engine, PRIMARY));
+        assert!(!is_overlapped(&engine, SECOND));
+
+        // Dragged back under the second dock: that flag is set again (the
+        // primary's stays, window 2 is still there).
+        assert!(
+            engine
+                .apply(updated(framed(1, r"C:\a.exe", SECOND_OVER)))
+                .changed
+        );
+        assert!(is_overlapped(&engine, PRIMARY));
+        assert!(is_overlapped(&engine, SECOND));
+
+        // The second dock's window is hidden by the tray: its flag clears,
+        // its entry stays; shown again: back.
+        assert!(
+            engine
+                .apply(panel_of("dock-DISPLAY3", Some(SECOND), None))
+                .changed
+        );
+        assert!(!is_overlapped(&engine, SECOND));
+        assert!(facts(&engine.snapshot(), SECOND).is_some());
+        assert!(
+            engine
+                .apply(panel_of("dock-DISPLAY3", Some(SECOND), Some(SECOND_PANEL)))
+                .changed
+        );
+        assert!(is_overlapped(&engine, SECOND));
+    }
+
+    #[test]
+    fn docks_come_and_go_with_their_windows_and_only_that_bumps() {
+        let mut engine = DockEngine::new(minimal_settings());
+        engine.apply(monitors(vec![
+            monitor(PRIMARY, true, 0),
+            monitor(SECOND, false, 2560),
+        ]));
+        engine.apply(panel_of("dock", Some(PRIMARY), Some(PANEL)));
+        let r = engine.snapshot().revision;
+        assert_eq!(engine.snapshot().docks.len(), 1);
+
+        // A second monitor's dock is created: one new entry, one bump.
+        assert!(
+            engine
+                .apply(panel_of("dock-DISPLAY3", Some(SECOND), None))
+                .changed
+        );
+        assert_eq!(engine.snapshot().docks.len(), 2);
+        assert_eq!(engine.snapshot().revision, r + 1);
+        // Its page reports a panel clear of every window: no bump.
+        assert!(
+            !engine
+                .apply(panel_of("dock-DISPLAY3", Some(SECOND), Some(SECOND_PANEL)))
+                .changed
+        );
+        assert_eq!(engine.dock_panel("dock-DISPLAY3"), Some(SECOND_PANEL));
+        assert_eq!(engine.snapshot().revision, r + 1);
+
+        // The monitor is unplugged and its window closed: the entry goes,
+        // one bump; the label is forgotten.
+        assert!(engine.apply(panel_of("dock-DISPLAY3", None, None)).changed);
+        assert_eq!(engine.snapshot().docks.len(), 1);
+        assert_eq!(engine.snapshot().revision, r + 2);
+        assert_eq!(engine.dock_panel("dock-DISPLAY3"), None);
+        assert_eq!(engine.dock_monitor("dock-DISPLAY3"), None);
+        assert!(!engine.overlapped("dock-DISPLAY3"));
+        // Forgetting it again is a no-op.
+        assert!(!engine.apply(panel_of("dock-DISPLAY3", None, None)).changed);
+        assert_eq!(engine.snapshot().revision, r + 2);
+    }
+
+    #[test]
+    fn a_dock_whose_monitor_is_unknown_has_no_entry_until_it_is_placed() {
+        let mut engine = DockEngine::new(minimal_settings());
+        engine.apply(monitors(vec![monitor(PRIMARY, true, 0)]));
+        engine.apply(added(framed(1, r"C:\a.exe", OVER)));
+        let r = engine.snapshot().revision;
+
+        // The app layer had no monitor list when it placed the window: the
+        // panel is remembered, but nothing is published for it.
+        assert!(!engine.apply(panel_of("dock", None, Some(PANEL))).changed);
+        assert!(engine.snapshot().docks.is_empty());
+        assert_eq!(engine.dock_panel("dock"), Some(PANEL));
+        assert!(
+            engine.overlapped("dock"),
+            "the flag is kept up to date meanwhile"
+        );
+        assert_eq!(engine.snapshot().revision, r);
+        // A fullscreen verdict changes nothing visible either.
+        assert!(!engine.apply(fullscreen_on(None)).changed);
+
+        // The monitors arrive and the window is placed: the entry appears
+        // with both facts right, in one bump.
+        assert!(
+            engine
+                .apply(panel_of("dock", Some(PRIMARY), Some(PANEL)))
+                .changed
+        );
+        assert_eq!(
+            engine.snapshot().docks,
+            vec![DockFacts {
+                monitor: MonitorId(PRIMARY.into()),
+                fullscreen: true,
+                overlapped: true,
+            }]
+        );
+        assert_eq!(engine.snapshot().revision, r + 1);
+    }
+
+    #[test]
+    fn two_docks_on_one_monitor_fold_into_one_entry() {
+        let mut engine = DockEngine::new(minimal_settings());
+        engine.apply(monitors(vec![monitor(PRIMARY, true, 0)]));
+        engine.apply(added(framed(1, r"C:\a.exe", OVER)));
+        engine.apply(panel_of("dock", Some(PRIMARY), Some(CLEAR)));
+        engine.apply(panel_of("dock-extra", Some(PRIMARY), Some(PANEL)));
+        let state = engine.snapshot();
+        assert_eq!(state.docks.len(), 1);
+        assert!(state.docks[0].overlapped, "any panel of the monitor counts");
+        assert!(!engine.overlapped("dock"));
+        assert!(engine.overlapped("dock-extra"));
+    }
+
+    #[test]
+    fn a_docks_monitor_can_change_without_its_panel_changing() {
+        // The primary monitor changed in Windows Settings: the `dock` window
+        // moves to the new primary and the app layer re-registers it there.
+        let mut engine = DockEngine::new(minimal_settings());
+        engine.apply(monitors(vec![
+            monitor(PRIMARY, true, 0),
+            monitor(SECOND, false, 2560),
+        ]));
+        engine.apply(panel_of("dock", Some(PRIMARY), Some(PANEL)));
+        engine.apply(fullscreen_on(None));
+        assert!(is_fullscreen(&engine, PRIMARY));
+        let r = engine.snapshot().revision;
+
+        engine.apply(monitors(vec![
+            monitor(PRIMARY, false, 0),
+            monitor(SECOND, true, 2560),
+        ]));
+        // The verdict without a monitor now points at the second monitor,
+        // where no dock is yet: the primary's dock clears (one bump).
+        assert!(!is_fullscreen(&engine, PRIMARY));
+        assert_eq!(engine.snapshot().revision, r + 1);
+        assert!(
+            engine
+                .apply(panel_of("dock", Some(SECOND), Some(SECOND_PANEL)))
+                .changed
+        );
+        assert_eq!(engine.dock_monitor("dock"), Some(&MonitorId(SECOND.into())));
+        assert!(is_fullscreen(&engine, SECOND));
+        assert!(facts(&engine.snapshot(), PRIMARY).is_none());
     }
 
     #[test]

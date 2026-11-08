@@ -50,8 +50,10 @@
 //!   thread last saw in the foreground). Each trigger arms one
 //!   [`FULLSCREEN_SETTLE`] timer (150 ms) if none is running, so a burst (F11
 //!   in a browser fires dozens of location changes) costs one evaluation,
-//!   against the live `GetForegroundWindow`. `info` on each change
-//!   (`fullscreen on: <class> <title>` / `fullscreen off`).
+//!   against the live `GetForegroundWindow`. The verdict carries the
+//!   window's monitor, so a fullscreen window that changes monitor
+//!   is a change too. `info` on each change (`fullscreen on: <class>
+//!   <title> on <monitor>` / `fullscreen off`).
 //! - Virtual desktops: every query fills
 //!   `RawWindow::on_current_desktop` from the shell's
 //!   `IVirtualDesktopManager` (`windows::virtual_desktop`), whose
@@ -191,7 +193,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TryRecvError, bounded};
-use stem_core::{PlatformEvent, RawWindow, RecycleBinState, ThemeInfo, WindowId};
+use stem_core::{MonitorId, PlatformEvent, RawWindow, RecycleBinState, ThemeInfo, WindowId};
 use windows::Win32::Foundation::{
     ERROR_CLASS_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM,
 };
@@ -702,8 +704,9 @@ struct ThreadState {
     /// The timer armed for a re-check, with the due time (ms) it was armed
     /// for; never later than `rechecks.next_due()`.
     recheck_timer: Option<(ThreadTimer, u64)>,
-    /// The last fullscreen verdict emitted; `None` before the first.
-    fullscreen: Option<bool>,
+    /// The last fullscreen verdict emitted, with the monitor it
+    /// named; `None` before the first.
+    fullscreen: Option<(bool, Option<MonitorId>)>,
     /// The [`FULLSCREEN_SETTLE`] timer, while an evaluation is pending.
     fullscreen_timer: Option<ThreadTimer>,
     /// Cloak events counted towards a virtual-desktop switch.
@@ -1038,19 +1041,28 @@ impl ThreadState {
         let foreground = unsafe { GetForegroundWindow() };
         self.foreground_hwnd = foreground.0 as isize;
         let verdict = fullscreen::evaluate(foreground);
-        if self.fullscreen == Some(verdict.fullscreen) {
+        let next = (verdict.fullscreen, verdict.monitor);
+        if self.fullscreen.as_ref() == Some(&next) {
             return;
         }
         let first = self.fullscreen.is_none();
-        self.fullscreen = Some(verdict.fullscreen);
-        if verdict.fullscreen {
-            log::info!("fullscreen on: {} {:?}", verdict.class_name, verdict.title);
+        self.fullscreen = Some(next.clone());
+        let (active, monitor) = next;
+        if active {
+            log::info!(
+                "fullscreen on: {} {:?} on {}",
+                verdict.class_name,
+                verdict.title,
+                monitor
+                    .as_ref()
+                    .map_or("an unknown monitor", |m| m.0.as_str())
+            );
         } else if first {
             log::debug!("fullscreen off at start");
         } else {
             log::info!("fullscreen off");
         }
-        self.emit(PlatformEvent::FullscreenChanged(verdict.fullscreen));
+        self.emit(PlatformEvent::FullscreenChanged { active, monitor });
     }
 
     /// Re-query a window and report it as added, updated or removed, and

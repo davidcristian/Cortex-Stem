@@ -4,7 +4,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::model::{
-    AppId, AppIdentity, MonitorInfo, RawWindow, Rect, RecycleBinState, ThemeInfo, WindowId,
+    AppId, AppIdentity, MonitorId, MonitorInfo, RawWindow, Rect, RecycleBinState, ThemeInfo,
+    WindowId,
 };
 use crate::settings::Settings;
 
@@ -29,13 +30,20 @@ pub enum PlatformEvent {
     MonitorsChanged(Vec<MonitorInfo>),
     ThemeChanged(ThemeInfo),
     RecycleBinChanged(RecycleBinState),
-    /// The foreground window started (`true`) or stopped (`false`) owning
-    /// the whole screen: the platform's verdict from the shell's
-    /// notification state and the window's frame against its monitor,
-    /// re-evaluated on foreground changes and on moves of the foreground
-    /// window, and sent only when it changes (plus once after the start
-    /// snapshot). Stored as `DockState::fullscreen`.
-    FullscreenChanged(bool),
+    /// The foreground window started (`active`) or stopped owning the whole
+    /// screen: the platform's verdict from the shell's notification
+    /// state and the window's frame against its monitor, re-evaluated on
+    /// foreground changes and on moves of the foreground window, and sent
+    /// only when it changes (plus once after the start snapshot). `monitor`
+    /// is the window's monitor while `active` (`None` when the
+    /// platform could not tell, and always while inactive). The engine sets
+    /// `DockFacts::fullscreen` on the dock of that monitor, or on the
+    /// primary monitor's dock when the verdict names none.
+    #[serde(rename_all = "camelCase")]
+    FullscreenChanged {
+        active: bool,
+        monitor: Option<MonitorId>,
+    },
 }
 
 /// Everything the engine can be fed.
@@ -55,13 +63,21 @@ pub enum EngineInput {
     IdentityUnavailable {
         app_id: AppId,
     },
-    /// Where the dock's panel rests on screen: the rect the UI
-    /// reported through `set_dock_panel_rect`, converted by the app layer to
-    /// physical pixels of the virtual desktop, the same space as
-    /// `RawWindow::rect`. `None` while the dock window is hidden (the tray,
-    /// the toggle shortcut) or before the UI's first report; it clears
-    /// `DockState::overlapped`.
-    DockPanelChanged(Option<Rect>),
+    /// Where one dock window's panel rests on screen: the
+    /// rect its page reported through `set_dock_panel_rect`, converted by
+    /// the app layer to physical pixels of the virtual desktop, the same
+    /// space as `RawWindow::rect`. `label` is the dock window's label
+    /// (`dock`, `dock-<id>`), `monitor` the monitor the app layer placed
+    /// it on (`None` while it could not tell: the dock then has no entry
+    /// in `DockState::docks`), `rect` `None` while the window is hidden
+    /// (the tray, the toggle shortcut) or before the page's first report,
+    /// which clears the dock's `overlapped`. `monitor` and `rect` both
+    /// `None` means the window is gone: the engine forgets the label.
+    DockPanelChanged {
+        label: String,
+        monitor: Option<MonitorId>,
+        rect: Option<Rect>,
+    },
 }
 
 impl From<PlatformEvent> for EngineInput {
