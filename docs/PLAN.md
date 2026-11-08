@@ -116,7 +116,8 @@ notes on code signing.
 **Status.**
 
 - The release workflow is done
-  ([`release.yml`](../.github/workflows/release.yml)). A pushed tag `v<version>` builds the NSIS
+  ([`release.yml`](../.github/workflows/release.yml), steps in
+  [RELEASING.md](RELEASING.md)). A pushed tag `v<version>` builds the NSIS
   installer on `windows-latest` and attaches it to a draft GitHub release,
   which is published by hand.
 - Crash logging is done. After a panic, the next start of Stem says so once

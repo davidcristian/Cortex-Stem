@@ -136,8 +136,8 @@ the user did. [docs/architecture/](docs/architecture/index.md) describes every p
 ## Install
 
 Every run of the _CI_ workflow on GitHub builds the installer. A pushed `v<version>` tag also builds
-it and attaches it to a draft GitHub release, which is published by hand. To take the installer
-from CI:
+it and attaches it to a draft GitHub release, which is published by hand
+([docs/RELEASING.md](docs/RELEASING.md)). To take the installer from CI:
 
 1. Open the repository's _Actions_ tab, then the _CI_ workflow, and pick the latest run on
    `master` with a green tick.
@@ -224,6 +224,7 @@ The [FAQ](docs/user-guide/faq.md) in the user guide answers common questions abo
 | [docs/architecture/](docs/architecture/index.md) | Layers, data flow, threads, app identity, icons, the dock window, settings, error handling, performance budgets and security |
 | [docs/ipc/](docs/ipc/index.md) | The contract between Rust and the page: every command and event |
 | [docs/PLAN.md](docs/PLAN.md) | The milestones and the non-goals |
+| [docs/RELEASING.md](docs/RELEASING.md) | How a release is built, and what the installer and the uninstaller do |
 | [docs/adr/](docs/adr/) | The architecture decisions, one record each |
 | [AGENTS.md](AGENTS.md) and [docs/development/](docs/development/index.md) | The rules every change in this repository follows, and the detail behind them |
 
