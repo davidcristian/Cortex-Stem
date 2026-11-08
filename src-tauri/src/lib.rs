@@ -7,7 +7,9 @@
 //!   and the tray icon, and applies the settings that belong to the shell
 //!   (`autostart`, `taskbar`, `shortcut`, click-through in `windows`, the
 //!   tray's check mark),
-//! - reports a crash of the previous run at the next start (`crash`).
+//! - reports a crash of the previous run at the next start (`crash`),
+//! - knows where its own files are (`AppPaths`) for the settings page's
+//!   About section.
 //!
 //! Lifecycle: this is a tray application. The dock window ignores close
 //! requests, closing the settings window only destroys that window, and an
@@ -24,10 +26,11 @@ mod taskbar;
 mod tray;
 mod windows;
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use stem_core::Settings;
+use stem_core::{AppFolder, Settings};
 use stem_platform::{Platform, create_platform, is_mock};
 use stem_service::{
     DockService, FileSettingsStore, MemorySettingsStore, ServiceError, ServiceEvent, ServiceResult,
@@ -39,6 +42,76 @@ use tauri_plugin_log::{RotationStrategy, Target, TargetKind};
 /// Shared handle to the service, stored in Tauri's managed state.
 #[derive(Debug, Clone)]
 pub struct AppService(pub Arc<DockService>);
+
+/// Where this installation keeps its files, resolved once in
+/// `setup` and kept in Tauri's managed state for `commands::get_app_info`
+/// and `commands::open_app_folder`: the settings page's About section shows
+/// the paths and opens the folders.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AppPaths {
+    /// The settings file the service reads and writes; `None` under the
+    /// in-memory store (the mock platform, or a profile that could not be
+    /// used this session, see `start_service`).
+    pub settings_file: Option<PathBuf>,
+    /// The app's log folder (`app_log_dir()`), whether or not it exists
+    /// yet; `None` when the host has none.
+    pub log_dir: Option<PathBuf>,
+    /// `stem.log` in `log_dir` while file logging is on this run; `None`
+    /// when it is off (`system.fileLogging` at startup) or unavailable.
+    pub log_file: Option<PathBuf>,
+}
+
+impl AppPaths {
+    /// The folder `open_app_folder` opens for `folder`: the log folder; or,
+    /// while none exists yet (file logging has never been on), its parent,
+    /// the app's local data folder, which the crash markers and
+    /// `taskbar.json` share and which exists once the app has run; the
+    /// settings file's folder. `Err` is the command's error string: a demo
+    /// run has no settings file, and a host without the directories has
+    /// nothing to open. Touches the disk (existence checks), so it runs on
+    /// the blocking pool.
+    pub fn folder_to_open(&self, folder: AppFolder) -> Result<PathBuf, String> {
+        match folder {
+            AppFolder::Logs => {
+                let dir = self
+                    .log_dir
+                    .as_deref()
+                    .ok_or_else(|| "the log folder is unknown on this host".to_owned())?;
+                if dir.is_dir() {
+                    return Ok(dir.to_path_buf());
+                }
+                match dir.parent().filter(|parent| parent.is_dir()) {
+                    Some(parent) => {
+                        log::info!(
+                            "the log folder {} does not exist yet; opening {} instead",
+                            dir.display(),
+                            parent.display()
+                        );
+                        Ok(parent.to_path_buf())
+                    }
+                    None => Err(format!("the log folder {} does not exist", dir.display())),
+                }
+            }
+            AppFolder::Settings => {
+                let file = self
+                    .settings_file
+                    .as_deref()
+                    .ok_or_else(|| "settings are not saved to a file in this run".to_owned())?;
+                let dir = file
+                    .parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                    .ok_or_else(|| format!("{} has no folder", file.display()))?;
+                if !dir.is_dir() {
+                    return Err(format!(
+                        "the settings folder {} does not exist",
+                        dir.display()
+                    ));
+                }
+                Ok(dir.to_path_buf())
+            }
+        }
+    }
+}
 
 /// Event names, as documented in `docs/ipc/events.md`. All but `SHOW` forward a
 /// `ServiceEvent`; `SHOW` comes from the shell itself (`windows::toggle_dock`).
@@ -82,16 +155,22 @@ pub fn run() {
             // `start`, which happens after logging is up.
             let platform = create_platform();
             let store = settings_store(app.handle(), platform.as_ref());
-            init_logging(app.handle(), store.as_ref());
+            let log_file = init_logging(app.handle(), store.as_ref());
             // Before the test panic, so that it leaves a crash marker like a
             // real one.
             crash::init(app.handle(), platform.as_ref());
             panic_test();
             log::info!("platform: {}", platform.name());
 
-            let service = Arc::new(start_service(platform, store)?);
+            let (service, settings_file) = start_service(platform, store)?;
+            let service = Arc::new(service);
             forward_events(app.handle().clone(), &service);
             app.manage(AppService(Arc::clone(&service)));
+            app.manage(AppPaths {
+                settings_file,
+                log_dir: app.path().app_log_dir().ok(),
+                log_file,
+            });
             app.manage(windows::DockGeometry::default());
             app.manage(windows::DockAutoHidden::default());
             app.manage(windows::SettingsWindowTheme::default());
@@ -159,14 +238,18 @@ fn settings_store(app: &AppHandle, platform: &dyn Platform) -> Option<FileSettin
 /// - unreadable or invalid file: keep it as `settings.json.broken`, write
 ///   fresh defaults and start with them;
 /// - unreadable directory: run with an in-memory store for this session.
+///
+/// Also returns the settings file the service ended up with (`None` for the
+/// in-memory store), for `AppPaths`.
 fn start_service(
     platform: Arc<dyn Platform>,
     store: Option<FileSettingsStore>,
-) -> ServiceResult<DockService> {
+) -> ServiceResult<(DockService, Option<PathBuf>)> {
     let Some(file) = store else {
-        return DockService::start(platform, Box::new(MemorySettingsStore::default()));
+        return in_memory(platform);
     };
-    log::info!("settings file: {}", file.path().display());
+    let path = file.path().to_path_buf();
+    log::info!("settings file: {}", path.display());
     write_defaults_if_missing(&file);
 
     // `DockService::start` loads and parses the document before it touches
@@ -183,22 +266,28 @@ fn start_service(
             match std::fs::rename(file.path(), &broken) {
                 Ok(()) => {
                     write_defaults_if_missing(&file);
-                    DockService::start(platform, Box::new(file))
+                    DockService::start(platform, Box::new(file)).map(|s| (s, Some(path)))
                 }
                 Err(io) => {
                     log::error!(
                         "could not move the broken settings file ({io}); settings will not persist this session"
                     );
-                    DockService::start(platform, Box::new(MemorySettingsStore::default()))
+                    in_memory(platform)
                 }
             }
         }
         Err(ServiceError::Store(e)) => {
             log::error!("settings cannot be read ({e}); settings will not persist this session");
-            DockService::start(platform, Box::new(MemorySettingsStore::default()))
+            in_memory(platform)
         }
-        other => other,
+        other => other.map(|s| (s, Some(path))),
     }
+}
+
+/// The service over an in-memory store: nothing is saved, so there is no
+/// settings file to report.
+fn in_memory(platform: Arc<dyn Platform>) -> ServiceResult<(DockService, Option<PathBuf>)> {
+    DockService::start(platform, Box::new(MemorySettingsStore::default())).map(|s| (s, None))
 }
 
 fn write_defaults_if_missing(file: &FileSettingsStore) {
@@ -224,7 +313,10 @@ fn write_defaults_if_missing(file: &FileSettingsStore) {
 /// Runs inside `setup` rather than in the builder because the setting is
 /// read from the app config dir, which needs an `AppHandle`. Anything logged
 /// before this point (only the panic hook can) is dropped by `log`.
-fn init_logging(app: &AppHandle, store: Option<&FileSettingsStore>) {
+///
+/// Returns the log file while file logging is on and the log folder is
+/// known (for `AppPaths`), else `None`.
+fn init_logging(app: &AppHandle, store: Option<&FileSettingsStore>) -> Option<PathBuf> {
     let raw_level = std::env::var("STEM_LOG").ok();
     let level = raw_level
         .as_deref()
@@ -242,15 +334,17 @@ fn init_logging(app: &AppHandle, store: Option<&FileSettingsStore>) {
         }),
         Err(e) => Err(e),
     };
+    let mut log_file = None;
     match registered {
         Ok(file_logging) => {
             log::info!("log level {level}; file logging {}", on_off(file_logging));
             if file_logging {
                 match app.path().app_log_dir() {
-                    Ok(dir) => log::info!(
-                        "log file: {}",
-                        dir.join(format!("{LOG_FILE_NAME}.log")).display()
-                    ),
+                    Ok(dir) => {
+                        let file = log_file_in(&dir);
+                        log::info!("log file: {}", file.display());
+                        log_file = Some(file);
+                    }
                     Err(e) => log::warn!("app log dir unknown: {e}"),
                 }
             }
@@ -264,6 +358,12 @@ fn init_logging(app: &AppHandle, store: Option<&FileSettingsStore>) {
     {
         log::warn!("STEM_LOG={raw:?} is not a log level; using info");
     }
+    log_file
+}
+
+/// The file `tauri-plugin-log`'s `LogDir` target writes in `dir`.
+fn log_file_in(dir: &Path) -> PathBuf {
+    dir.join(format!("{LOG_FILE_NAME}.log"))
 }
 
 fn log_plugin(
@@ -373,4 +473,81 @@ fn forward_events(app: AppHandle, service: &DockService) {
 #[serde(rename_all = "camelCase")]
 struct BouncePayload<'a> {
     item_key: &'a str,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("stem-paths-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn the_log_folder_opens_when_it_exists_and_its_parent_until_then() {
+        let data = scratch_dir("logs");
+        let logs = data.join("logs");
+        let paths = AppPaths {
+            log_dir: Some(logs.clone()),
+            ..AppPaths::default()
+        };
+        assert_eq!(paths.folder_to_open(AppFolder::Logs), Ok(data.clone()));
+        std::fs::create_dir_all(&logs).unwrap();
+        assert_eq!(paths.folder_to_open(AppFolder::Logs), Ok(logs.clone()));
+
+        assert_eq!(
+            AppPaths::default().folder_to_open(AppFolder::Logs),
+            Err("the log folder is unknown on this host".to_owned())
+        );
+        let gone = AppPaths {
+            log_dir: Some(data.join("missing").join("logs")),
+            ..AppPaths::default()
+        };
+        assert!(
+            gone.folder_to_open(AppFolder::Logs)
+                .is_err_and(|e| e.starts_with("the log folder ") && e.ends_with(" does not exist")),
+            "neither the folder nor its parent exists"
+        );
+        std::fs::remove_dir_all(&data).unwrap();
+    }
+
+    #[test]
+    fn the_settings_folder_is_the_files_parent_and_a_demo_run_has_none() {
+        let config = scratch_dir("settings");
+        let paths = AppPaths {
+            settings_file: Some(config.join("settings.json")),
+            ..AppPaths::default()
+        };
+        assert_eq!(
+            paths.folder_to_open(AppFolder::Settings),
+            Ok(config.clone())
+        );
+
+        assert_eq!(
+            AppPaths::default().folder_to_open(AppFolder::Settings),
+            Err("settings are not saved to a file in this run".to_owned())
+        );
+        let unwritten = AppPaths {
+            settings_file: Some(config.join("never-made").join("settings.json")),
+            ..AppPaths::default()
+        };
+        assert!(
+            unwritten
+                .folder_to_open(AppFolder::Settings)
+                .is_err_and(|e| e.starts_with("the settings folder ")),
+            "a folder the first save never created"
+        );
+        std::fs::remove_dir_all(&config).unwrap();
+    }
+
+    #[test]
+    fn the_log_file_is_stem_log_in_the_log_folder() {
+        assert_eq!(
+            log_file_in(Path::new("logs")),
+            Path::new("logs").join("stem.log")
+        );
+    }
 }
