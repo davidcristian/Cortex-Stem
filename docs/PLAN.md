@@ -46,6 +46,10 @@ shortcut that shows or hides the dock.
 **Status.** Done, except the backdrop option. Theme sync also follows
 Windows' _Transparency effects_.
 
+The settings file accepts
+`acrylic` and `mica` for `appearance.backdrop`, and the settings page does not
+offer them. With either value the panel draws the CSS backdrop (`css`).
+
 **Exit criterion.** Stem is the only launcher for a week of daily use, with
 the stock taskbar auto-hidden.
 

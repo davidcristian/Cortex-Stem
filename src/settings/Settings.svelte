@@ -268,18 +268,21 @@
                 })}
             />
           </SettingRow>
+          <!-- Only the built-in blur is implemented, not the system
+               materials. The other two stay as options so a settings
+               file that names one still shows its value, but cannot be chosen. -->
           <SettingRow
             id="backdrop"
             label="Backdrop"
-            description="How the panel blends with what is behind it"
+            description="How the panel blends with what is behind it. Acrylic and Mica are not available yet."
           >
             <Select
               id="backdrop"
               value={settings.appearance.backdrop}
               options={[
                 { value: 'css', label: 'Blur (built in)' },
-                { value: 'acrylic', label: 'Acrylic (Windows 11; applies on restart)' },
-                { value: 'mica', label: 'Mica (Windows 11; applies on restart)' },
+                { value: 'acrylic', label: 'Acrylic (not yet available)', disabled: true },
+                { value: 'mica', label: 'Mica (not yet available)', disabled: true },
               ]}
               onchange={(v) =>
                 edit((s) => {
@@ -530,7 +533,7 @@
 
       <section aria-labelledby="h-pinned">
         <h2 id="h-pinned">Pinned apps</h2>
-        <SettingsCard note="Drag apps onto the dock to pin them (M2).">
+        <SettingsCard note="Drag apps onto the dock to pin them.">
           {#if settings.pinned.length === 0}
             <p class="empty">Nothing is pinned yet.</p>
           {:else}

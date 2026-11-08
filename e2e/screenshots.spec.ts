@@ -2303,6 +2303,24 @@ test.describe('settings window', () => {
     await expect(page.locator('#position option[value="left"]')).toBeDisabled();
     await expect(page.locator('#auto-hide option[value="whenOverlapped"]')).toBeEnabled();
     await expect(page.locator('#reserve-space')).toBeDisabled();
+
+    // Backdrop: only the built-in blur can be chosen; the two system
+    // materials stay listed, greyed and labelled.
+    const backdrop = page.locator('#backdrop');
+    await expect(backdrop).toHaveValue('css');
+    await expect(page.locator('#backdrop option[value="css"]')).toBeEnabled();
+    const acrylic = page.locator('#backdrop option[value="acrylic"]');
+    const mica = page.locator('#backdrop option[value="mica"]');
+    await expect(acrylic).toBeDisabled();
+    await expect(acrylic).toHaveText('Acrylic (not yet available)');
+    await expect(mica).toBeDisabled();
+    await expect(mica).toHaveText('Mica (not yet available)');
+    await expect(page.locator('#backdrop-description')).toContainText('not available yet');
+    // A settings file that already names a material still shows its value
+    // (the stored value round-trips; nothing is rewritten).
+    await patchSettings(page, { appearance: { backdrop: 'acrylic' } });
+    await expect(backdrop).toHaveValue('acrylic');
+    expect((await page.evaluate(SETTINGS_MOCK))?.appearance.backdrop).toBe('acrylic');
   });
 
   test('auto-hide offers always and "when a window overlaps", and the notes say what each does', async ({
@@ -2410,6 +2428,9 @@ test.describe('settings window', () => {
     await expect(page.locator('.pin .placeholder')).toHaveCount(0);
     // The launch target stays as the second line.
     await expect(page.locator('.pin-launch').first()).toHaveText('C:\\Windows\\explorer.exe');
+    await expect(page.locator('section[aria-labelledby="h-pinned"] .note')).toHaveText(
+      'Drag apps onto the dock to pin them.',
+    );
 
     await page.getByRole('button', { name: `Move ${before[0]} down` }).click();
     await expect.poll(names).toEqual([before[1], before[0], before[2], before[3], before[4]]);
