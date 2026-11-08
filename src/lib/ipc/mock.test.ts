@@ -132,6 +132,36 @@ describe('demo scenario (mirror of crates/stem-platform/src/mock.rs)', () => {
     await vi.advanceTimersByTimeAsync(61);
     expect(settled).toBe(true);
   });
+
+  it('runs commands in the order they were issued, whatever latency each one drew', async () => {
+    vi.useFakeTimers();
+    // A wide range: with twenty draws some later command is bound to draw
+    // a shorter latency than an earlier one.
+    const b = new MockBackend({ latencyMs: [1, 200], identityDelayMs: 0, log: false });
+    backends.push(b);
+    const issued = Array.from({ length: 20 }, (_, i) => i % 2 === 0);
+    const settled: boolean[] = [];
+    const all = Promise.all(
+      issued.map((hidden) =>
+        b.setDockAutoHidden(hidden).then(() => {
+          settled.push(hidden);
+        }),
+      ),
+    );
+    await vi.advanceTimersByTimeAsync(200);
+    await all;
+    expect(b.calls.map((c) => (c.type === 'setDockAutoHidden' ? c.hidden : null))).toEqual(issued);
+    expect(settled).toEqual(issued);
+
+    // A failure keeps its place and stops nothing after it.
+    b.failNextCommand('refused');
+    const first = b.openSettings();
+    const second = b.quit();
+    await vi.advanceTimersByTimeAsync(200);
+    await expect(first).rejects.toBe('refused');
+    await second;
+    expect(b.calls.slice(-1)).toEqual([{ type: 'quit' }]);
+  });
 });
 
 describe('click semantics (mirror of DockEngine::primary_action)', () => {

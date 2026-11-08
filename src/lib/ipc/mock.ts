@@ -57,7 +57,11 @@ export type MockScenario = 'default' | 'many';
 
 export interface MockOptions {
   scenario?: MockScenario;
-  /** Simulated command latency range in ms. `[0, 0]` settles in a microtask. */
+  /**
+   * Simulated command latency range in ms. `[0, 0]` settles in a microtask.
+   * Commands run in the order they were issued whatever each one draws,
+   * like Tauri's IPC, so one may wait a little longer for an earlier one.
+   */
   latencyMs?: readonly [number, number];
   /** Delay before app identities (names, icons) resolve. `0` resolves synchronously at construction. */
   identityDelayMs?: number;
@@ -1075,6 +1079,8 @@ export class MockBackend implements Backend {
   private readonly logging: boolean;
   private readonly viewportHeight: number | undefined;
   private readonly timers = new Set<ReturnType<typeof setTimeout>>();
+  /** Settles when every command issued so far has run (see `command`). */
+  private queue: Promise<void> = Promise.resolve();
   private identityTimer: ReturnType<typeof setTimeout> | null = null;
   private failNext: string | null = null;
   private readonly mediaQuery: MediaQueryList | null;
@@ -1501,6 +1507,12 @@ export class MockBackend implements Backend {
 
   // --- internals
 
+  /**
+   * A command runs after its own latency and after every command issued
+   * before it has run: Tauri delivers a webview's commands in order, so a
+   * later report (a hit region, the auto-hide flag) never lands before an
+   * earlier one, however the latencies were drawn; `calls` is in issue order.
+   */
   private command<T>(job: () => T): Promise<T> {
     const failure = this.failNext;
     this.failNext = null;
@@ -1512,22 +1524,25 @@ export class MockBackend implements Backend {
           };
     const [lo, hi] = this.latency;
     const ms = lo + (hi - lo) * this.random();
-    if (ms <= 0) {
-      return Promise.resolve().then(run);
-    }
-    return new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.timers.delete(timer);
-        try {
-          resolve(run());
-        } catch (err) {
-          // Commands fail with a `string` across IPC (docs/ipc/); the mock
-          // throws strings for the same reason.
-          reject(err);
-        }
-      }, ms);
-      this.timers.add(timer);
-    });
+    const latency =
+      ms <= 0
+        ? Promise.resolve()
+        : new Promise<void>((resolve) => {
+            const timer = setTimeout(() => {
+              this.timers.delete(timer);
+              resolve();
+            }, ms);
+            this.timers.add(timer);
+          });
+    // `run` may throw: commands fail with a `string` across IPC
+    // (docs/ipc/) and the mock throws strings for the same reason; the
+    // rejection is the caller's, the queue goes on.
+    const result = Promise.all([latency, this.queue]).then(run);
+    this.queue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
   }
 
   private emit<E extends BackendEvent>(event: E, payload: BackendEvents[E]): void {
