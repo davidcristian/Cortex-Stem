@@ -60,7 +60,7 @@ colours.
 
 _Clicking the active app minimises it_, _Show only windows on the current
 desktop_, _Show only windows on the dock's monitor_, _Running indicators_,
-_Click through outside the dock_ and _Toggle the dock_ are the
+_Click through outside the dock_, _Toggle the dock_ and _Focus the dock_ are the
 [`behavior`](../SETTINGS.md#behavior) keys. _Auto-hide_ and _Auto-hide delay_
 are the [`autoHide`](../SETTINGS.md#autohide) keys.
 
@@ -80,6 +80,8 @@ are the [`autoHide`](../SETTINGS.md#autohide) keys.
   preference. It is also a check item in the tray icon's menu.
 - _Toggle the dock_: see
   [The toggle shortcut](keyboard-shortcuts.md#the-toggle-shortcut).
+- _Focus the dock_: see
+  [The focus shortcut](keyboard-shortcuts.md#the-focus-shortcut).
 - _Auto-hide_ and its delay: see [Auto-hide](auto-hide.md). The delay counts
   from the moment the pointer leaves the dock, or a window starts to cover
   it.

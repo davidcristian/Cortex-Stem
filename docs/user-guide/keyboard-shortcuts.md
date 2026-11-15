@@ -1,7 +1,7 @@
 # Keyboard shortcuts
 
-This page describes Stem's keyboard shortcut, the toggle shortcut, and how
-to write a shortcut.
+This page describes Stem's two keyboard shortcuts, the toggle shortcut and
+the focus shortcut, and how to write a shortcut.
 
 ## The toggle shortcut
 
@@ -27,3 +27,22 @@ leave the field. Esc puts back the previous value. A change takes effect at
 once, without a restart. Stem keeps a shortcut it cannot register (an unknown
 key, or one that another app has already registered) as you wrote it, but no
 shortcut is active, and the log has a warning.
+
+## The focus shortcut
+
+The focus shortcut, `Ctrl+Alt+Shift+D` by default, moves the keyboard into
+the dock from any app, as `Win+T` does for the Windows taskbar. The dock on
+the monitor of the window you were in takes the focus, on the icon of that
+window's app (or on the first icon). If that dock was hidden or slid away,
+it comes back first. Then:
+
+- the arrow keys along the dock, `Home` and `End` move between icons;
+- `Enter` or `Space` opens the focused icon;
+- `Shift+F10` or the menu key opens its menu;
+- `Esc`, or the shortcut again, takes you back to the window you were in.
+
+Change the shortcut under _Behaviour_ → _Focus the dock_. It has the same
+syntax and rules as [the toggle shortcut](#the-toggle-shortcut). Stem does
+not register a focus shortcut with the same keys as the toggle shortcut (the
+toggle shortcut keeps them), and the log has a warning. An empty field turns
+the focus shortcut off.
