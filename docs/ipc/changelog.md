@@ -6,7 +6,12 @@ to the file that covers that section now.
 - **v1.26 (fixes):** No command, event or payload type changed.
   [Keyboard entry](keyboard-entry.md): *Hide from Stem* no longer supersedes the window that the
   focus shortcut stored, just as *Pin to Stem* and *Unpin from Stem* do not, so Escape after
-  hiding an app from its menu gives the focus back.
+  hiding an app from its menu gives the focus back. `update_settings` ignores the `pinned` and
+  `hiddenApps` of the document it is sent and keeps Rust's lists, which only the pin commands,
+  `hide_app`, `unhide_app` and `reset_settings` change ([Hidden apps](hidden-apps.md)). So a save
+  from the settings page that reaches Rust after a hide or pin from the dock no longer undoes it.
+  `MockBackend` does the same and gains `loadSettings`, a test hook for a whole document as the
+  settings file gives one at start.
 - **v1.25 (the clock's regional format):** `DockState.clockFormat: ClockFormat { locale, hour12
   }` from the new `PlatformEvent::ClockFormatChanged`: the clock follows the Windows regional
   format instead of the display language. New subsection

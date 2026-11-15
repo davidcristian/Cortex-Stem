@@ -343,7 +343,9 @@ describe('click semantics (mirror of DockEngine::primary_action)', () => {
 
       // Nothing but the two: no separator before them.
       const settings = await b.getSettings();
-      settings.pinned = [];
+      for (const pin of settings.pinned) {
+        await b.unpinApp(pin.id);
+      }
       settings.items = { ...settings.items, launcher: false, separators: true };
       await b.updateSettings(settings);
       for (const id of [1, 2, 3, 4, 5, 6]) {
@@ -861,7 +863,7 @@ describe('hidden apps (docs/ipc/hidden-apps.md; mirror of hide_app / unhide_app)
     expect((await b.getSettings()).hiddenApps).toEqual([{ id: tool, name: 'Tool main' }]);
   });
 
-  it('a settings document that hides an app hides it; pinned, blank and repeated entries are dropped', async () => {
+  it('a settings file that hides an app hides it; pinned, blank and repeated entries are dropped', async () => {
     const b = fast();
     const s = await b.getSettings();
     s.hiddenApps = [
@@ -870,11 +872,35 @@ describe('hidden apps (docs/ipc/hidden-apps.md; mirror of hide_app / unhide_app)
       { id: ' ', name: 'blank' },
       { id: SPOTIFY, name: 'again' },
     ];
-    const saved = await b.updateSettings(s);
-    expect(saved.hiddenApps).toEqual([{ id: SPOTIFY, name: 'Spotify' }]);
+    b.loadSettings(s);
+    expect((await b.getSettings()).hiddenApps).toEqual([{ id: SPOTIFY, name: 'Spotify' }]);
     const state = await b.getDockState();
     expect(keys(state)).not.toContain(app(SPOTIFY));
     expect(item(state, app(EXPLORER)).pinned).toBe(true);
+  });
+
+  it('updateSettings keeps the pins and hidden apps: an older document does not undo a hide or a pin (v1.26)', async () => {
+    const b = fast();
+    // The settings page's document, built before the dock hid Code and pinned Spotify.
+    const stale = await b.getSettings();
+    stale.iconSize = 64;
+    await b.hideApp(CODE);
+    await b.pinApp(SPOTIFY);
+    const pins = (await b.getSettings()).pinned.map((p) => p.id);
+    expect(pins).toContain(SPOTIFY);
+
+    const saved = await b.updateSettings(stale);
+    expect(saved.iconSize).toBe(64);
+    expect(saved.hiddenApps).toEqual([{ id: CODE, name: 'Code' }]);
+    expect(saved.pinned.map((p) => p.id)).toEqual(pins);
+    // Lists it names itself are ignored too.
+    const foreign = { ...saved, pinned: [], hiddenApps: [{ id: SPOTIFY, name: 'x' }] };
+    const again = await b.updateSettings(foreign);
+    expect(again.pinned.map((p) => p.id)).toEqual(pins);
+    expect(again.hiddenApps).toEqual([{ id: CODE, name: 'Code' }]);
+    const state = await b.getDockState();
+    expect(keys(state)).not.toContain(app(CODE));
+    expect(item(state, app(SPOTIFY)).pinned).toBe(true);
   });
 });
 

@@ -15,6 +15,11 @@ This file describes how a running app is hidden from every dock and shown again.
   already hidden is not an error, and nothing is saved. `unhide_app { appId }` removes the entry
   and saves; an id that is not listed is not an error. Both reach the pages as any settings
   change does (`dock://settings`, then a new `dock://state`).
+- Only these two commands, the pin commands (a pin removes the app from the list) and
+  `reset_settings` change `hiddenApps`. `update_settings` ignores the `pinned` and `hiddenApps`
+  it is sent and keeps Rust's lists (v1.26). So a settings-page document built before a hide or a
+  pin from the dock cannot undo it, whenever it arrives. `Settings::validate` still applies to
+  the lists that a settings file contains at start.
 - The item menu of a running, unpinned app has *Hide from Stem* after *Pin to Stem* (with no
   confirmation). The settings page lists the hidden apps by their saved names, each with a *Show*
   button, or says that there are none.

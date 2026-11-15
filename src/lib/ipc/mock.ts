@@ -1,5 +1,5 @@
 /**
- * `MockBackend`: the whole IPC contract (docs/ipc/ v1.25) without Rust, for
+ * `MockBackend`: the whole IPC contract (docs/ipc/ v1.26) without Rust, for
  * browser runs and Playwright screenshots.
  *
  * It mirrors, deliberately in this one file so the two sides can be compared,
@@ -1711,9 +1711,14 @@ export class MockBackend implements Backend {
     return this.command(() => structuredClone(this.engine.settings));
   }
 
+  /**
+   * `DockService::update_settings`: the pins and hidden apps stay as their
+   * own commands left them, whatever `settings` says (IPC v1.26).
+   */
   updateSettings(settings: Settings): Promise<Settings> {
     return this.command(() => {
-      const validated = validateSettings(settings);
+      const { pinned, hiddenApps } = this.engine.settings;
+      const validated = validateSettings({ ...settings, pinned, hiddenApps });
       this.applySettings(validated);
       return structuredClone(validated);
     });
@@ -2054,7 +2059,7 @@ export class MockBackend implements Backend {
     });
   }
 
-  /** `DockService::reset_settings`: the defaults, validated and applied like any update. */
+  /** `DockService::reset_settings`: the defaults, pins and hidden apps included, validated and applied. */
   resetSettings(): Promise<Settings> {
     return this.command(() => {
       const defaults = validateSettings(defaultSettings());
@@ -2271,6 +2276,17 @@ export class MockBackend implements Backend {
   dockPanel(label: string = this.pageLabel): Rect | null {
     const rect = this.engine.panels.get(label)?.rect ?? null;
     return rect === null ? null : { ...rect };
+  }
+
+  /**
+   * A whole settings document, the pins and hidden apps included, as the
+   * settings file gives one at start (validated, `dock://settings` to
+   * whoever listens): for tests of a list that no command made, such as a
+   * pin the dock has not resolved yet. No command does this at runtime:
+   * `updateSettings` keeps the lists (IPC v1.26).
+   */
+  loadSettings(settings: Settings): void {
+    this.applySettings(validateSettings(settings));
   }
 
   /**

@@ -40,6 +40,8 @@ interface DemoWindow {
     getSettings: () => Promise<Settings>;
     getDockState: () => Promise<DockState>;
     updateSettings: (settings: Settings) => Promise<Settings>;
+    /** A whole settings document, lists included, as the settings file gives one at start. */
+    loadSettings: (settings: Settings) => void;
     pushWindow: (raw: RawWindow) => void;
     pushWindowRemoved: (id: number) => void;
     pushForeground: (id: number | null) => void;
@@ -3813,7 +3815,8 @@ test.describe('settings window', () => {
           workingDir: null,
         },
       });
-      await mock.updateSettings(settings);
+      // As the file at start: `update_settings` keeps the pins (IPC v1.26).
+      mock.loadSettings(settings);
       let row: HTMLElement | null = null;
       for (let i = 0; i < 10 && row === null; i += 1) {
         await new Promise(requestAnimationFrame);

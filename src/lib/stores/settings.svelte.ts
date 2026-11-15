@@ -7,11 +7,13 @@
  * Edits are optimistic on screen and sent as one `update_settings` after a
  * short debounce; the value Rust returns (validated, clamped) replaces the
  * draft. Pin commands, *Show* for a hidden app and the reset go
- * through their own IPC commands; they wait for pending edits first so a
- * stale full document can never overwrite what the command just changed.
- * The pins and hidden apps, which only those commands change (from this
- * page or the dock), are taken from every `dock://settings`, even while an
- * edit is pending or a request is running.
+ * through their own IPC commands; they wait for pending edits first so the
+ * page shows them in order. The pins and hidden apps change only through
+ * those commands (from this page or the dock): Rust's `update_settings`
+ * keeps its own lists whatever the document says (IPC v1.26), so no save
+ * can undo a pin or a hide, even one that reaches Rust while the save is
+ * on its way. The page takes the lists from every `dock://settings`, even
+ * while an edit is pending or a request is running, so that it shows them.
  */
 
 import type { SvelteMap } from 'svelte/reactivity';
@@ -100,10 +102,11 @@ export class SettingsStore {
         // While an edit of ours is pending or running, its own result is the
         // newer truth, except for the pins and hidden apps, which only Rust's
         // commands change (the dock's menu, a drop). Those are taken
-        // at once: into the pending edit, so its save does not undo what the
-        // dock did, or into what is shown, so the next edit starts from them;
-        // and they are laid over the answer of the request in flight, which
-        // may be older than this event (see `withLatestLists`).
+        // at once: into the pending edit, so the page shows them (Rust keeps
+        // its own lists on the save anyway, v1.26), or into what is shown, so
+        // the next edit starts from them; and they are laid over the answer
+        // of the request in flight, which may be older than this event (see
+        // `withLatestLists`).
         const lists = listsOf(s);
         this.latestLists = lists;
         if (this.draft !== null) {
@@ -350,8 +353,9 @@ export class SettingsStore {
    * current document, but an answer and an event travel apart: the event
    * of a change the dock made just after this request (a hide from its
    * menu) can arrive before the answer, which then lacks it. Were
-   * the answer shown as it is, the next edit would send the stale lists and
-   * undo the dock's change. An event that is instead older than the answer
+   * the answer shown as it is, the page would show stale lists until the
+   * next change (the next edit's save could not undo this one: Rust keeps
+   * its own lists, v1.26). An event that is instead older than the answer
    * is always followed by a newer one, which puts the lists right again.
    */
   private withLatestLists(doc: Settings): Settings {

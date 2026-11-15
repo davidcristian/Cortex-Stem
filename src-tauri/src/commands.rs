@@ -1,4 +1,4 @@
-//! Tauri commands, one per entry in `docs/ipc/commands.md` (v1.25). They
+//! Tauri commands, one per entry in `docs/ipc/commands.md` (v1.26). They
 //! validate and clamp their arguments, then translate and delegate to
 //! `stem-service` (semantics live there).
 //!
@@ -99,8 +99,8 @@ fn get_settings(service: State<'_, AppService>) -> Settings {
     service.0.settings()
 }
 
-/// The service migrates, validates (clamps) and persists; the validated
-/// copy comes back.
+/// The service migrates, validates (clamps) and persists, keeping its own
+/// pinned and hidden apps (IPC v1.26); the validated copy comes back.
 #[tauri::command]
 async fn update_settings(
     service: State<'_, AppService>,
@@ -488,14 +488,11 @@ fn open_settings(app: AppHandle) -> CmdResult<()> {
     )
 }
 
-/// Restore and persist the defaults; the service emits `dock://settings`.
+/// Restore and persist the defaults, pins and hidden apps included (which
+/// `update_settings` keeps); the service emits `dock://settings`.
 #[tauri::command]
 async fn reset_settings(service: State<'_, AppService>) -> CmdResult<Settings> {
-    checked(
-        "reset_settings",
-        &(),
-        service.0.update_settings(Settings::default()),
-    )
+    checked("reset_settings", &(), service.0.reset_settings())
 }
 
 #[tauri::command]

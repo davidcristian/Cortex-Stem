@@ -7,7 +7,7 @@ arguments are named and how a failed command rejects.
 |-------------------------|---------------------------------------------|--------------------|-----------|
 | `get_dock_state`        | none                                        | `DockState`        | the current snapshot |
 | `get_settings`          | none                                        | `Settings`         | |
-| `update_settings`       | `{ settings: Settings }`                    | `Settings`         | validates and persists the settings; emits `dock://settings`, and `dock://state` if the items change |
+| `update_settings`       | `{ settings: Settings }`                    | `Settings`         | validates and persists the settings; emits `dock://settings`, and `dock://state` if the items change. It ignores `pinned` and `hiddenApps` and keeps Rust's own lists (v1.26). |
 | `get_theme`             | none                                        | `ThemeInfo`        | |
 | `get_monitors`          | none                                        | `MonitorInfo[]`    | |
 | `primary_click`         | `{ itemKey: string }`                       | `void`             | the engine chooses the action (launch, activate, minimise, cycle windows or a shell action) among the windows the calling dock window lists (see [Dock windows per monitor](windows.md#dock-windows-per-monitor)) |
@@ -28,7 +28,7 @@ arguments are named and how a failed command rejects.
 | `shell_action`          | `{ action: ShellAction }`                   | `void`             | runs a shell action directly (menus, the Recycle Bin's "Empty") |
 | `delete_to_recycle_bin` | `{ paths: string[] }`                       | `void`             | moves files and folders to the Recycle Bin, for a file drop on its item (see [File drags](file-drags.md)); dock windows only; resolves when the shell has finished |
 | `open_settings`         | none                                        | `void`             | opens the settings window, or focuses it if it is already open |
-| `reset_settings`        | none                                        | `Settings`         | restores and persists the defaults; emits `dock://settings` |
+| `reset_settings`        | none                                        | `Settings`         | restores and persists the defaults, which pin and hide nothing; emits `dock://settings` |
 | `quit`                  | none                                        | none               | exits the application |
 | `get_app_info`          | none                                        | `AppInfo`          | the version, the settings file, the log file and the platform name, for Settings → About (see [About](about.md)) |
 | `open_app_folder`       | `{ folder: AppFolder }`                     | `void`             | opens the log folder (`logs`) or the settings file's folder (`settings`) in Explorer (see [About](about.md)); rejects when there is none |

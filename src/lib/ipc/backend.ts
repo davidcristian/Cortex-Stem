@@ -1,5 +1,5 @@
 /**
- * The frontend's only door to the Rust side (docs/ipc/, contract v1.25).
+ * The frontend's only door to the Rust side (docs/ipc/, contract v1.26).
  *
  * One method per command and one `on` subscription per event (plus
  * `onFileDrag` for Tauri's own file drag events). Components
@@ -91,7 +91,7 @@ export type FileDragEvent =
 export type FileDragHandler = (event: FileDragEvent) => void;
 
 /**
- * Commands and events of docs/ipc/ v1.25. Method names are the command
+ * Commands and events of docs/ipc/ v1.26. Method names are the command
  * names in camelCase; argument order follows the command's argument list.
  *
  * Failed commands reject with a `string` (the Rust error message).
@@ -99,7 +99,11 @@ export type FileDragHandler = (event: FileDragEvent) => void;
 export interface Backend {
   getDockState(): Promise<DockState>;
   getSettings(): Promise<Settings>;
-  /** Validated and persisted; the returned copy is what Rust kept. */
+  /**
+   * Validated and persisted; the returned copy is what Rust kept. The
+   * `pinned` and `hiddenApps` sent are ignored: only their own commands and
+   * `resetSettings` change them (v1.26).
+   */
   updateSettings(settings: Settings): Promise<Settings>;
   getTheme(): Promise<ThemeInfo>;
   getMonitors(): Promise<MonitorInfo[]>;

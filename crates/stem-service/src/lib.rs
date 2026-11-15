@@ -387,9 +387,29 @@ impl DockService {
     }
 
     /// Validate, persist, and apply new settings. Returns the validated copy.
+    ///
+    /// The pinned and hidden apps are kept as they are, whatever `settings`
+    /// says (`docs/ipc/`, v1.26): only their own commands (`pin_app`,
+    /// `pin_target`, `unpin_app`, `reorder_pinned`, `hide_app`,
+    /// `unhide_app`) and [`Self::reset_settings`] change them, so a document
+    /// the settings page built before a pin or a hide from the dock cannot
+    /// undo it when it arrives after them.
     pub fn update_settings(&self, settings: Settings) -> ServiceResult<Settings> {
         self.inner.mutate_settings(|current| {
+            let pinned = std::mem::take(&mut current.pinned);
+            let hidden_apps = std::mem::take(&mut current.hidden_apps);
             *current = settings;
+            current.pinned = pinned;
+            current.hidden_apps = hidden_apps;
+            true
+        })
+    }
+
+    /// Restore and persist the defaults, the pinned and hidden apps
+    /// included (they are empty there). Returns the validated copy.
+    pub fn reset_settings(&self) -> ServiceResult<Settings> {
+        self.inner.mutate_settings(|current| {
+            *current = Settings::default();
             true
         })
     }
@@ -1737,6 +1757,58 @@ mod tests {
         assert_eq!(saved.icon_size, 72);
         assert!(saved.is_pinned(&spotify));
         assert_eq!(saved, service.settings());
+        service.shutdown();
+    }
+
+    #[test]
+    fn a_settings_document_older_than_a_pin_or_a_hide_does_not_undo_them() {
+        let platform = Arc::new(MockPlatform::with_demo_scenario());
+        let store = SharedStore::default();
+        let document = Arc::clone(&store.0);
+        let service = DockService::start(platform, Box::new(store)).unwrap();
+        let rx = record(&service);
+        let state = wait_state(&rx, resolved);
+        let app = |title: &str| item_titled(&state, title).unwrap().app_id.clone().unwrap();
+        let (spotify, code) = (app("Spotify"), app("Code"));
+        let pinned_before = pinned_ids(&service.settings());
+
+        // The settings page builds its document; before it arrives, the
+        // dock's menu hides Spotify and pins Code.
+        let mut stale = service.settings();
+        stale.icon_size = 64;
+        service.hide_app(&spotify).unwrap();
+        service.pin_app(&code).unwrap();
+        // The page's lists are older still: it names other apps altogether.
+        let mut from_page = stale.clone();
+        from_page.pinned.clear();
+        from_page.hidden_apps.push(stem_core::settings::HiddenApp {
+            id: AppId::for_exe(Path::new(r"C:\Apps\other.exe")),
+            name: "other".into(),
+        });
+        let saved = service.update_settings(stale).unwrap();
+        assert_eq!(saved.icon_size, 64, "the rest of the document applies");
+        assert_eq!(hidden_ids(&saved), vec![spotify.as_str()]);
+        assert!(saved.is_pinned(&code));
+        let saved = service.update_settings(from_page).unwrap();
+        assert_eq!(hidden_ids(&saved), vec![spotify.as_str()]);
+        let mut expected = pinned_before.clone();
+        expected.push(code.clone());
+        assert_eq!(pinned_ids(&saved), expected);
+        // In memory and on disk alike.
+        assert_eq!(saved, service.settings());
+        let on_disk = Settings::from_json(&document.document().unwrap()).unwrap();
+        assert_eq!(on_disk, saved);
+
+        // A reset clears both lists, as its confirmation says.
+        let reset = service.reset_settings().unwrap();
+        assert_eq!(reset, Settings::default());
+        assert!(reset.pinned.is_empty() && reset.hidden_apps.is_empty());
+        assert_eq!(service.settings(), reset);
+        let on_disk = Settings::from_json(&document.document().unwrap()).unwrap();
+        assert_eq!(on_disk, reset);
+        wait_state(&rx, |s| {
+            item_titled(s, "Spotify").is_some() && app_items(s).iter().all(|i| !i.pinned)
+        });
         service.shutdown();
     }
 
