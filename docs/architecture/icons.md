@@ -62,7 +62,7 @@ the directory. There is none under the mock platform, and without one every
 icon comes from the platform.
 
 The cache stores only keys whose bitmap is a pure function of one file:
-`exe:` and `file:` keys of an absolute path to a PE image. These
+`exe:` and `file:` keys of an absolute, local path to a PE image. These
 always go to the platform:
 
 - `hwnd:` keys (a live window);
@@ -70,7 +70,10 @@ always go to the platform:
 - `aumid:` keys (the key has no version, and the service cannot see the
   package's version);
 - `file:` keys of shortcuts and documents (their icon follows a target or a
-  file association).
+  file association);
+- network paths (`\\server\…`), because reading the length and
+  modification time of a file on an offline share blocks for the
+  redirector's timeout.
 
 One file per (key, size), named `<FNV-1a 64 hex>.icon`, holds the key, the
 size, the id of the Stem build that wrote it, the source file's length and
@@ -91,17 +94,23 @@ folder and replace each other's entries, which costs one start without
 cache hits per switch. A `stem.exe` whose length and modification time
 cannot be read runs without the cache.
 
-A bitmap that the platform's memory cache returns for a file that changed
-since this session first loaded it is not written, because it may be the
-old one. The next start loads the new icon.
+Each (key, size) goes to the disk at most once per session. Later requests
+(a second monitor's dock, a reload) touch no file. They are served from
+the bytes of the session's disk hit, or by the platform, whose memory cache
+holds what it loaded. Like that memory cache, the disk cache does not see a
+file that changes while Stem runs. Its entry keeps the old length and time,
+and the next start loads the new icon. Only a session's first platform load
+of a (key, size) is written, and only when the file did not change during
+the load.
 
 Writes go through the `stem-icon-cache` thread
 ([Threads](threads.md#the-icon-cache-thread)). They are atomic: a temp file,
 then a rename, with no `fsync`. A partly written entry fails its checksum.
 Bounds: 4096 files or 64 MiB, least recently used evicted first.
-A hit refreshes its file's modification time when that time is more
+A disk hit refreshes its file's modification time when that time is more
 than an hour old, so recency is kept across restarts. PNGs over 1 MiB and
 keys over 4 KiB are not cached. At shutdown one `info` line counts the
-session's hits, misses, bypassed requests, writes, failures, drops and
-evictions. The uninstaller's *Delete the application data* option removes
-the folder with the rest of `%LOCALAPPDATA%\dev.davidcristian.stem`.
+session's hits, repeats, misses, bypassed requests, writes, failures,
+drops and evictions. The uninstaller's *Delete the application data*
+option removes the folder with the rest of
+`%LOCALAPPDATA%\dev.davidcristian.stem`.

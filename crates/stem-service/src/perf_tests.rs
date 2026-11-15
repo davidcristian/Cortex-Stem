@@ -400,32 +400,40 @@ fn perf_icon_requests_hit_the_disk_cache_after_a_restart() {
         assert_eq!(written.entries, APPS as u64);
 
         // Warm: a restart over the same directory. No request reaches the
-        // platform, and every answer is the platform's bitmap.
+        // platform, and every answer is the platform's bitmap. The second
+        // round is the session's repeats, answered from memory.
         let platform = Counted::over(MockPlatform::new());
         let service = with_cache(platform.clone(), &dir);
-        for (key, png) in keys.iter().zip(&expected) {
-            assert_eq!(service.icon_png(key, size).unwrap().as_ref(), Some(png));
-        }
+        let mut answers = Vec::with_capacity(APPS);
         let warm = time_each(&keys, |k| {
+            answers.push(service.icon_png(k, size).unwrap().unwrap());
+        });
+        assert_eq!(answers, expected);
+        let repeat = time_each(&keys, |k| {
             service.icon_png(k, size).unwrap();
         });
         service.shutdown();
         let read = cache_stats(&service);
         assert_eq!(platform.icon_calls(), 0);
-        assert_eq!((read.hits, read.misses), (2 * APPS as u64, 0));
+        assert_eq!(
+            (read.hits, read.repeats, read.misses),
+            (APPS as u64, APPS as u64, 0)
+        );
         let stamps = time_each(&keys, |k| {
             crate::icon_cache::Stamp::of(crate::icon_cache::source_file(k).unwrap()).unwrap();
         });
 
         eprintln!(
             "icons at {size} px ({} bytes each), {APPS} apps: no cache {}; cold miss + queued write {}; \
-             writer {:.0} µs per entry (off the caller's thread); warm hit {} (of which the source file's metadata {})",
+             writer {:.0} µs per entry (off the caller's thread); warm hit {} (of which the source file's metadata {}); \
+             repeat in the session {}",
             expected[0].len(),
             summary(&none),
             summary(&cold),
             written.write_nanos as f64 / written.writes as f64 / 1e3,
             summary(&warm),
-            summary(&stamps)
+            summary(&stamps),
+            summary(&repeat)
         );
     }
 }

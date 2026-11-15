@@ -7,10 +7,10 @@
 //!
 //! **What is cached.** Only keys whose bitmap is a pure function of one file
 //! on disk ([`source_file`]): `exe:<path>` and `file:<path>` where `path` is
-//! absolute and names a PE image (`.exe`, `.dll`, `.scr`;
-//! `stem_platform::rules::icons::is_pe_image_path`), whose icon the platform
-//! reads from the file's own resources. Everything else goes straight to the
-//! platform, every time, exactly as without this cache:
+//! absolute, not a network path, and names a PE image (`.exe`, `.dll`,
+//! `.scr`; `stem_platform::rules::icons::is_pe_image_path`), whose icon the
+//! platform reads from the file's own resources. Everything else goes
+//! straight to the platform, every time, exactly as without this cache:
 //! - `hwnd:` keys (a live window's icon, which the window may change);
 //! - `shell:` keys (the Recycle Bin's full and empty states change on their
 //!   own; the UI draws them anyway);
@@ -19,7 +19,12 @@
 //!   be told from the old one);
 //! - `file:` keys of anything but a PE image (a shortcut's icon follows its
 //!   target, a document's its file association), relative paths, and any
-//!   namespace this module does not know (the mock's `mock:`).
+//!   namespace this module does not know (the mock's `mock:`);
+//! - paths that start with two slashes or backslashes (`\\server\share\…`,
+//!   `\\?\UNC\…`, and `\\?\` verbatim paths with them): stamping a file on
+//!   a share that went offline blocks for the redirector's timeout, which
+//!   the request would then pay again in the platform. A share mapped to a
+//!   drive letter cannot be told from a local disk here and is cached.
 //!
 //! **Validity.** Each entry stores the source file's length and modification
 //! time ([`Stamp`]), taken before the platform loaded the bitmap and checked
@@ -39,11 +44,19 @@
 //! running executable cannot be stamped, [`DiskIconCache::open`] fails and
 //! the service runs without the cache.
 //!
-//! The platform's memory cache does not notice a file that changes while
-//! Stem runs, so a bitmap it returns for a file whose stamp differs from the
-//! one this session first loaded it at may be the old one. Such a bitmap is
-//! not written ([`DiskIconCache::admit`]); the disk keeps the entry with the
-//! old stamp, which misses at the next start, where a fresh load is written.
+//! **Within a session.** Each (key, size) goes to the disk once per session
+//! at most. The first request stamps the source file and reads the entry;
+//! on a miss it asks the platform and queues the answer for writing. Later
+//! requests touch no file: an entry read from disk is answered from the
+//! bytes this cache kept, and anything the platform loaded is asked of the
+//! platform again, whose memory cache holds it (so the memory held is what
+//! the platform's cache alone would hold). Like that memory cache, neither
+//! notices a file that changes while Stem runs. The disk keeps the entry
+//! with the old stamp, which misses at the next start, where a fresh load is
+//! written. Only a session's first platform load of a (key, size) is
+//! written, and only when the file did not change during it
+//! ([`DiskIconCache::admit`]): a second, racing load may get the
+//! platform's memory copy of an older file.
 //!
 //! **Layout.** One file per (key, requested size) in the cache directory,
 //! named `<16 hex digits>.icon` (FNV-1a 64 of the key and the size; the
@@ -59,7 +72,8 @@
 //!
 //! **Bounds.** At most [`DEFAULT_MAX_FILES`] entries and [`DEFAULT_MAX_BYTES`]
 //! bytes ([`CacheLimits`]); past either, the least recently used entries are
-//! deleted after each write. "Used" is the last write or hit; a hit
+//! deleted after each write. "Used" is the last write or disk hit (the
+//! session's later requests, answered from memory, do not count); a hit
 //! refreshes the file's modification time when it is older than
 //! [`TOUCH_PERSIST_AFTER`], so recency survives a restart at that
 //! granularity. A PNG larger than [`MAX_PAYLOAD_BYTES`] or a key longer
@@ -67,7 +81,8 @@
 //! one entry's maximum size.
 //!
 //! **Threads.** Reads happen on the caller's thread (a hit is a `metadata`
-//! of the source file plus one small file read). Writes, hits' recency
+//! of the source file plus one small file read; a later request in the
+//! session is a map lookup). Writes, hits' recency
 //! updates and deletions are queued for one writer thread
 //! (`stem-icon-cache`) on a bounded queue ([`QUEUE_CAPACITY`]); when the
 //! queue is full the job is dropped, never waited for, so a miss costs its
@@ -75,8 +90,9 @@
 //! directory when it starts (indexing entries, deleting stray temp files,
 //! evicting down to the bounds) and drains its queue on shutdown.
 //!
-//! **Logging.** One `debug` line per hit (`icon <key>: <size> px from the
-//! disk cache`, the counterpart of the platform's one line per real load)
+//! **Logging.** One `debug` line per disk hit (`icon <key>: <size> px from
+//! the disk cache`, the counterpart of the platform's one line per real
+//! load; none for the session's later requests)
 //! and one `info` line at shutdown with the session's [`CacheStats`].
 //!
 //! **Failure.** Nothing here is ever an error to the caller: a missing,
@@ -157,6 +173,10 @@ impl Default for CacheLimits {
 pub struct CacheStats {
     /// Requests answered from disk.
     pub hits: u64,
+    /// Later requests for a cacheable (key, size) this session already
+    /// read from disk or loaded: answered without touching a file (from
+    /// the bytes of the hit, or by the platform's memory cache).
+    pub repeats: u64,
     /// Requests for a cacheable key that went to the platform.
     pub misses: u64,
     /// Requests for keys that are never cached, or whose source file could
@@ -179,6 +199,7 @@ pub struct CacheStats {
 #[derive(Debug, Default)]
 struct Counters {
     hits: AtomicU64,
+    repeats: AtomicU64,
     misses: AtomicU64,
     bypassed: AtomicU64,
     writes: AtomicU64,
@@ -199,6 +220,7 @@ impl Counters {
         let get = |c: &AtomicU64| c.load(Ordering::Relaxed);
         CacheStats {
             hits: get(&self.hits),
+            repeats: get(&self.repeats),
             misses: get(&self.misses),
             bypassed: get(&self.bypassed),
             writes: get(&self.writes),
@@ -264,7 +286,15 @@ pub fn source_file(key: &IconKey) -> Option<&Path> {
         return None;
     }
     let path = Path::new(value);
-    (is_pe_image_path(value) && path.is_absolute()).then_some(path)
+    (is_pe_image_path(value) && path.is_absolute() && !is_network_path(value)).then_some(path)
+}
+
+/// `\\server\share\…`, `\\?\UNC\…` and anything else that starts with two
+/// slashes or backslashes (`\\?\C:\…` too: rare in keys, and merely not
+/// cached).
+fn is_network_path(value: &str) -> bool {
+    let separator = |b: u8| b == b'\\' || b == b'/';
+    matches!(value.as_bytes(), [a, b, ..] if separator(*a) && separator(*b))
 }
 
 enum Job {
@@ -283,6 +313,16 @@ enum Job {
     },
     Flush(Sender<()>),
     Shutdown,
+}
+
+/// What this session already did with a cacheable (key, size).
+#[derive(Debug)]
+enum Seen {
+    /// Read from disk: later requests get these bytes.
+    Hit(Vec<u8>),
+    /// Loaded by the platform, whose memory cache now holds the bitmap
+    /// (written or not). Later requests go to the platform.
+    Loaded,
 }
 
 /// What a read found.
@@ -305,11 +345,9 @@ pub struct DiskIconCache {
     tx: Sender<Job>,
     writer: Mutex<Option<JoinHandle<()>>>,
     counters: Arc<Counters>,
-    /// The stamp each (key, size) had when this session first loaded it
-    /// through the platform, whose memory cache then holds that bitmap for
-    /// the rest of the session; `None` when the file changed during that
-    /// load. See [`DiskIconCache::admit`].
-    loaded: Mutex<HashMap<(IconKey, u32), Option<Stamp>>>,
+    /// What this session did with each cacheable (key, size) it answered;
+    /// see the module docs, "Within a session".
+    seen: Mutex<HashMap<(IconKey, u32), Seen>>,
 }
 
 impl DiskIconCache {
@@ -343,7 +381,7 @@ impl DiskIconCache {
             tx,
             writer: Mutex::new(Some(writer)),
             counters,
-            loaded: Mutex::new(HashMap::new()),
+            seen: Mutex::new(HashMap::new()),
         })
     }
 
@@ -358,8 +396,9 @@ impl DiskIconCache {
     /// `key`'s bitmap at `size`: from disk when a valid entry exists, else
     /// from `load` (the platform), whose `Some` result is queued for
     /// writing when the key is cacheable and the source file did not change
-    /// meanwhile. `load`'s errors are returned unchanged; the cache itself
-    /// never fails.
+    /// meanwhile. A (key, size) this session already answered touches no
+    /// file (module docs, "Within a session"). `load`'s errors are returned
+    /// unchanged; the cache itself never fails.
     pub fn get_or_load(
         &self,
         key: &IconKey,
@@ -370,6 +409,25 @@ impl DiskIconCache {
             Counters::bump(&self.counters.bypassed);
             return load();
         };
+        let slot = (key.clone(), size);
+        // `Some(Some(png))`: a hit this session; `Some(None)`: loaded by
+        // the platform this session. The lock is not held while loading.
+        let seen = self.seen.lock().get(&slot).map(|seen| match seen {
+            Seen::Hit(png) => Some(png.clone()),
+            Seen::Loaded => None,
+        });
+        match seen {
+            Some(Some(png)) => {
+                Counters::bump(&self.counters.repeats);
+                return Ok(Some(png));
+            }
+            Some(None) => {
+                Counters::bump(&self.counters.repeats);
+                return load();
+            }
+            None => {}
+        }
+
         let name = entry_name(key, size);
         let before = Stamp::of(source);
         match before {
@@ -378,6 +436,10 @@ impl DiskIconCache {
                     Counters::bump(&self.counters.hits);
                     log::debug!("icon {}: {size} px from the disk cache", key.0);
                     self.queue(Job::Touch { name });
+                    self.seen
+                        .lock()
+                        .entry(slot)
+                        .or_insert_with(|| Seen::Hit(png.clone()));
                     return Ok(Some(png));
                 }
                 Lookup::Miss => Counters::bump(&self.counters.misses),
@@ -391,8 +453,8 @@ impl DiskIconCache {
 
         let answer = load()?;
         if let Some(png) = &answer {
-            let after = Stamp::of(source);
-            if let Some(stamp) = self.admit(key, size, before, after)
+            let after = before.and_then(|_| Stamp::of(source));
+            if let Some(stamp) = self.admit(slot, before, after)
                 && png.len() <= MAX_PAYLOAD_BYTES
             {
                 self.queue(Job::Write {
@@ -407,37 +469,33 @@ impl DiskIconCache {
         Ok(answer)
     }
 
-    /// Whether the platform's `Some` answer for (key, size), loaded between
-    /// the stamps `before` and `after`, may be written, and under which
-    /// stamp. The platform keeps the first bitmap it loads for (key, size)
-    /// for the whole session, so only the stamp of that first load
-    /// describes what it returns later: an answer is written when the file
-    /// did not change during this load and still has that first stamp.
+    /// Record that the platform loaded (key, size) between the stamps
+    /// `before` and `after`, and say whether its answer may be written, and
+    /// under which stamp. Only this session's first load of (key, size) is
+    /// written, and only when the file did not change during it: the
+    /// platform keeps that first bitmap for the session, so a second load
+    /// (one that raced the first past the session check) may be its memory
+    /// copy of a file that has changed since.
     fn admit(
         &self,
-        key: &IconKey,
-        size: u32,
+        slot: (IconKey, u32),
         before: Option<Stamp>,
         after: Option<Stamp>,
     ) -> Option<Stamp> {
         let current = before.filter(|b| after == Some(*b));
-        match self.loaded.lock().entry((key.clone(), size)) {
-            Entry::Vacant(slot) => {
-                slot.insert(current);
+        match self.seen.lock().entry(slot) {
+            Entry::Vacant(vacant) => {
+                if before.is_some() && current.is_none() {
+                    log::debug!(
+                        "icon {} ({} px) changed on disk while it loaded; not cached until the next start",
+                        vacant.key().0.0,
+                        vacant.key().1
+                    );
+                }
+                vacant.insert(Seen::Loaded);
                 current
             }
-            Entry::Occupied(slot) => {
-                let first = *slot.get();
-                if first.is_some() && first == current {
-                    current
-                } else {
-                    log::debug!(
-                        "icon {} ({size} px) changed on disk during this session; not cached until the next start",
-                        key.0
-                    );
-                    None
-                }
-            }
+            Entry::Occupied(_) => None,
         }
     }
 
@@ -510,8 +568,9 @@ impl DiskIconCache {
         }
         let s = self.stats();
         log::info!(
-            "icon cache: {} hits, {} misses, {} bypassed, {} written ({} failed, {} dropped, {} µs writing), {} evicted; {} entries, {} bytes in {}",
+            "icon cache: {} hits, {} repeats, {} misses, {} bypassed, {} written ({} failed, {} dropped, {} µs writing), {} evicted; {} entries, {} bytes in {}",
             s.hits,
+            s.repeats,
             s.misses,
             s.bypassed,
             s.writes,
@@ -1021,6 +1080,9 @@ pub(crate) mod tests {
             IconKey(format!("file:{}", root.path().join("app.lnk").display())),
             IconKey(format!("file:{}", root.path().join("notes.txt").display())),
             IconKey("exe:relative/app.exe".into()),
+            IconKey(r"exe:\\server\share\app.exe".into()),
+            IconKey(r"file:\\?\UNC\server\share\app.exe".into()),
+            IconKey("exe://server/share/app.exe".into()),
             IconKey("exe:".into()),
             IconKey("nonsense".into()),
             IconKey(format!(
@@ -1170,7 +1232,11 @@ pub(crate) mod tests {
         assert_eq!(loader.calls(), 2);
         cache.flush();
         let stats = cache.stats();
-        assert_eq!((stats.hits, stats.misses, stats.writes), (3, 1, 1));
+        // One disk hit; the two requests after it come from memory.
+        assert_eq!(
+            (stats.hits, stats.repeats, stats.misses, stats.writes),
+            (1, 2, 1, 1)
+        );
         assert_eq!(stats.entries, 2);
         assert_eq!(entries(&cache_dir(&root)).len(), 2, "no temp file left");
     }
@@ -1291,6 +1357,103 @@ pub(crate) mod tests {
         assert_eq!(cache.stats().writes, 0);
         assert_eq!(loader.calls(), 2);
         assert!(entries(&cache_dir(&root)).is_empty());
+    }
+
+    #[test]
+    fn later_requests_in_a_session_touch_no_file() {
+        let root = TempDir::new("repeats");
+        let hit = root.exe("hit.exe", b"MZ hit");
+        let loaded = root.exe("loaded.exe", b"MZ loaded");
+        let dir = cache_dir(&root);
+        {
+            let cache = DiskIconCache::open(&dir).unwrap();
+            cache
+                .get_or_load(&hit, 48, || Ok(Some(png(1, 100))))
+                .unwrap();
+            cache.flush();
+        }
+        let cache = DiskIconCache::open(&dir).unwrap();
+        let loader = Loader::new();
+        let from_disk = || loader.answer(Ok(None));
+        let from_platform = || loader.answer(Ok(Some(png(2, 100))));
+        assert_eq!(
+            cache.get_or_load(&hit, 48, from_disk).unwrap(),
+            Some(png(1, 100))
+        );
+        assert_eq!(
+            cache.get_or_load(&loaded, 48, from_platform).unwrap(),
+            Some(png(2, 100))
+        );
+        cache.flush();
+        assert_eq!(loader.calls(), 1);
+
+        // Without the source files and the cache directory the session
+        // answers as before: a stamp would now fail (bypassed) and a read
+        // miss. The hit comes from its bytes, the loaded key from the
+        // platform (its memory cache, on Windows).
+        fs::remove_file(source_file(&hit).unwrap()).unwrap();
+        fs::remove_file(source_file(&loaded).unwrap()).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+        for _ in 0..3 {
+            assert_eq!(
+                cache.get_or_load(&hit, 48, from_disk).unwrap(),
+                Some(png(1, 100))
+            );
+            assert_eq!(
+                cache.get_or_load(&loaded, 48, from_platform).unwrap(),
+                Some(png(2, 100))
+            );
+        }
+        assert_eq!(loader.calls(), 4, "the hit never reaches the platform");
+        cache.flush();
+        let stats = cache.stats();
+        assert_eq!(
+            (stats.hits, stats.misses, stats.repeats, stats.bypassed),
+            (1, 1, 6, 0)
+        );
+        assert_eq!((stats.writes, stats.write_failures), (1, 0));
+    }
+
+    #[test]
+    fn of_two_racing_loads_only_the_first_is_written() {
+        let root = TempDir::new("race");
+        let cache = DiskIconCache::open(cache_dir(&root)).unwrap();
+
+        // Another request for the same icon arrives while this one loads
+        // and finishes first: one write, not two.
+        let same = root.exe("same.exe", b"MZ");
+        let got = cache
+            .get_or_load(&same, 48, || {
+                let inner = cache.get_or_load(&same, 48, || Ok(Some(png(1, 100))));
+                assert_eq!(inner.unwrap(), Some(png(1, 100)));
+                Ok(Some(png(1, 100)))
+            })
+            .unwrap();
+        assert_eq!(got, Some(png(1, 100)));
+        cache.flush();
+        assert_eq!(cache.stats().writes, 1);
+
+        // The app updates itself between the two: the racing request loads
+        // the new file and is written; the first one's older bitmap is not.
+        let updated = root.exe("updated.exe", b"MZ version 1");
+        let path = source_file(&updated).unwrap().to_path_buf();
+        let got = cache
+            .get_or_load(&updated, 48, || {
+                fs::write(&path, b"MZ version 2, longer").unwrap();
+                let inner = cache.get_or_load(&updated, 48, || Ok(Some(png(2, 100))));
+                assert_eq!(inner.unwrap(), Some(png(2, 100)));
+                Ok(Some(png(1, 100)))
+            })
+            .unwrap();
+        assert_eq!(got, Some(png(1, 100)));
+        cache.flush();
+        assert_eq!(cache.stats().writes, 2);
+        drop(cache);
+        let cache = DiskIconCache::open(cache_dir(&root)).unwrap();
+        assert_eq!(
+            cache.get_or_load(&updated, 48, || Ok(None)).unwrap(),
+            Some(png(2, 100))
+        );
     }
 
     #[test]
@@ -1457,15 +1620,19 @@ pub(crate) mod tests {
         let keys: Vec<IconKey> = (0..4)
             .map(|i| root.exe(&format!("app{i}.exe"), b"MZ"))
             .collect();
-        let cache = DiskIconCache::open_with_limits(cache_dir(&root), limits).unwrap();
-        for (i, key) in keys.iter().take(3).enumerate() {
-            cache
-                .get_or_load(key, 48, || Ok(Some(png(i as u8, 200))))
-                .unwrap();
-            cache.flush();
-            std::thread::sleep(Duration::from_millis(5));
+        {
+            let cache = DiskIconCache::open_with_limits(cache_dir(&root), limits).unwrap();
+            for (i, key) in keys.iter().take(3).enumerate() {
+                cache
+                    .get_or_load(key, 48, || Ok(Some(png(i as u8, 200))))
+                    .unwrap();
+                cache.flush();
+                std::thread::sleep(Duration::from_millis(5));
+            }
         }
-        // app0 is used again, so app1 is now the least recently used.
+        // The next start uses app0 again (a disk hit), so app1 is now the
+        // least recently used.
+        let cache = DiskIconCache::open_with_limits(cache_dir(&root), limits).unwrap();
         cache.get_or_load(&keys[0], 48, || Ok(None)).unwrap();
         cache.flush();
         std::thread::sleep(Duration::from_millis(5));
@@ -1475,7 +1642,7 @@ pub(crate) mod tests {
         cache.flush();
 
         let stats = cache.stats();
-        assert_eq!((stats.entries, stats.evictions), (3, 1));
+        assert_eq!((stats.hits, stats.entries, stats.evictions), (1, 3, 1));
         let mut expected: Vec<String> = [0, 2, 3]
             .iter()
             .map(|&i| entry_name(&keys[i], 48))
@@ -1612,9 +1779,12 @@ pub(crate) mod tests {
             after.duration_since(before).unwrap() >= Duration::from_secs(old - 5),
             "{before:?} -> {after:?}"
         );
-        // A recent entry is not rewritten on a hit.
+        // A recent entry is not rewritten on a hit (the next start's).
+        drop(cache);
+        let cache = DiskIconCache::open(&dir).unwrap();
         assert!(cache.get_or_load(&key, 48, || Ok(None)).unwrap().is_some());
         cache.flush();
+        assert_eq!(cache.stats().hits, 1);
         assert_eq!(fs::metadata(&file).unwrap().modified().unwrap(), after);
     }
 
@@ -1668,11 +1838,12 @@ pub(crate) mod tests {
                 .unwrap(),
             Some(png(1, 10))
         );
-        assert!(
+        // A key this session loaded goes to the platform, as before.
+        assert_eq!(
             cache
-                .get_or_load(&keys[0], 48, || Ok(None))
-                .unwrap()
-                .is_some()
+                .get_or_load(&keys[0], 48, || Ok(Some(png(0, 2000))))
+                .unwrap(),
+            Some(png(0, 2000))
         );
         cache.flush();
         assert_eq!(entries(&cache_dir(&root)).len(), 20);
