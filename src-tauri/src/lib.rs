@@ -37,6 +37,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use stem_core::{AppFolder, Settings};
 use stem_platform::{Platform, create_platform, is_mock};
+use stem_service::store::StoreError;
 use stem_service::{
     DockService, FileSettingsStore, MemorySettingsStore, ServiceError, ServiceEvent,
     ServiceOptions, ServiceResult, SettingsStore,
@@ -287,9 +288,11 @@ fn icon_cache_dir(app: &AppHandle, platform: &dyn Platform) -> Option<PathBuf> {
 
 /// Start the service, never failing because of the settings *file*:
 /// - no file yet: write the defaults first so users can find and edit it;
-/// - unreadable or invalid file: keep it as `settings.json.broken`, write
-///   fresh defaults and start with them;
-/// - unreadable directory: run with an in-memory store for this session.
+/// - a file that is not text (`StoreError::Encoding`) or not a valid
+///   document: keep it as `settings.json.broken`, write fresh defaults and
+///   start with them (UTF-8 with a byte order mark and UTF-16 are text);
+/// - a file or directory that cannot be read: run with an in-memory store
+///   for this session.
 ///
 /// `options` (the icon cache directory) apply whichever store it ends up
 /// with. Also returns the settings file the service ended up with (`None`
@@ -314,7 +317,7 @@ fn start_service(
         Box::new(file.clone()),
         options.clone(),
     ) {
-        Err(ServiceError::Settings(e)) => {
+        Err(e @ (ServiceError::Settings(_) | ServiceError::Store(StoreError::Encoding { .. }))) => {
             let broken = file.path().with_extension("json.broken");
             log::error!(
                 "settings file {} cannot be used ({e}); moving it to {} and starting with defaults",

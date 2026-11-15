@@ -10,10 +10,14 @@ update. It writes atomically (`FileSettingsStore`: temp file, then rename)
 to `<app config dir>/settings.json` (`%APPDATA%\dev.davidcristian.stem\`).
 A default file is written on first start.
 
-A file the service rejects (invalid JSON or a newer version) is renamed to
-`settings.json.broken`; the app then writes fresh defaults and continues
-with them. A rejected file that cannot be renamed leaves the session on an
-in-memory store.
+The file is read as UTF-8, with or without a byte order mark, or as UTF-16
+with one (`store::decode_document`; editors and Windows PowerShell 5.1
+write those), and saved back as UTF-8 without one. A file the service
+rejects (invalid JSON, a newer version, or bytes in neither encoding) is
+renamed to `settings.json.broken`; the app then writes fresh defaults and
+continues with them. A file that cannot be read at all (no permission), or
+a rejected file that cannot be renamed, leaves the session on an in-memory
+store.
 
 `system.fileLogging` is read once at startup; a change applies after a
 restart. `STEM_PLATFORM=mock` uses an in-memory store, so demo runs never

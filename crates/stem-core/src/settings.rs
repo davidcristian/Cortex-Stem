@@ -109,8 +109,11 @@ impl Default for Settings {
 }
 
 impl Settings {
-    /// Parse, migrate, and validate a settings document.
+    /// Parse, migrate, and validate a settings document. A leading byte
+    /// order mark (U+FEFF, which some editors write) is ignored, as RFC 8259
+    /// lets a parser do.
     pub fn from_json(json: &str) -> Result<Self, SettingsError> {
+        let json = json.strip_prefix('\u{feff}').unwrap_or(json);
         let mut settings: Self = serde_json::from_str(json)?;
         if settings.version > SETTINGS_VERSION {
             return Err(SettingsError::TooNew {
@@ -890,6 +893,14 @@ mod tests {
     fn empty_document_yields_defaults() {
         let s = Settings::from_json("{}").unwrap();
         assert_eq!(s, Settings::default());
+    }
+
+    #[test]
+    fn a_byte_order_mark_is_ignored() {
+        let s = Settings::from_json("\u{feff}{\"iconSize\": 64}").unwrap();
+        assert_eq!(s.icon_size, 64);
+        // Only a leading one: inside the document it is still an error.
+        assert!(Settings::from_json("{\u{feff}\"iconSize\": 64}").is_err());
     }
 
     #[test]
