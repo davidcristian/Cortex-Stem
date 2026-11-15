@@ -1,5 +1,7 @@
 import type * as TauriCore from '@tauri-apps/api/core';
 import { PhysicalPosition } from '@tauri-apps/api/dpi';
+import type * as TauriEvent from '@tauri-apps/api/event';
+import type * as TauriWebview from '@tauri-apps/api/webview';
 import { describe, expect, it, vi } from 'vitest';
 
 import { fileDragFromTauri, TauriBackend } from './tauri';
@@ -10,6 +12,21 @@ const invokeMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => undefin
 vi.mock('@tauri-apps/api/core', async (importOriginal) => ({
   ...(await importOriginal<typeof TauriCore>()),
   invoke: invokeMock,
+}));
+
+// The subscriptions: `listen` recorded (it resolves to an unlisten that is
+// recorded too), and the page's webview is a second monitor's dock window.
+const unlistenMock = vi.hoisted(() => vi.fn());
+const listenMock = vi.hoisted(() =>
+  vi.fn(async (..._args: unknown[]): Promise<() => void> => unlistenMock),
+);
+vi.mock('@tauri-apps/api/event', async (importOriginal) => ({
+  ...(await importOriginal<typeof TauriEvent>()),
+  listen: listenMock,
+}));
+vi.mock('@tauri-apps/api/webview', async (importOriginal) => ({
+  ...(await importOriginal<typeof TauriWebview>()),
+  getCurrentWebview: () => ({ label: 'dock-DISPLAY3' }),
 }));
 
 describe('fileDragFromTauri (docs/ipc/file-drags.md)', () => {
@@ -96,5 +113,43 @@ describe('TauriBackend keyboard entry (docs/ipc/keyboard-entry.md, v1.19)', () =
     const before = invokeMock.mock.calls.length;
     await backend.releaseDockFocus();
     expect(invokeMock.mock.calls.slice(before)).toEqual([['release_dock_focus']]);
+  });
+});
+
+describe('TauriBackend events (docs/ipc/events.md)', () => {
+  it('listens on its own window, so an event Rust sends to another dock window never reaches it', () => {
+    const backend = new TauriBackend();
+    const events = [
+      'dock://state',
+      'dock://settings',
+      'dock://show',
+      'dock://focus',
+      'dock://release-focus',
+      'dock://user-css',
+    ] as const;
+    for (const event of events) {
+      backend.on(event, () => undefined);
+    }
+    // Not `{ kind: 'Any' }` (`listen`'s default), which Tauri hands every
+    // `emit_to` whatever window it names.
+    expect(listenMock.mock.calls.map(([event, , options]) => [event, options])).toEqual(
+      events.map((event) => [event, { target: { kind: 'WebviewWindow', label: 'dock-DISPLAY3' } }]),
+    );
+  });
+
+  it('hands the payload to the handler until it unsubscribes, then unlistens', async () => {
+    const backend = new TauriBackend();
+    const seen: unknown[] = [];
+    const stop = backend.on('dock://focus', (payload) => seen.push(payload));
+    const [, callback] = listenMock.mock.calls[0] as [string, (e: { payload: unknown }) => void];
+    callback({ payload: null });
+    expect(seen).toEqual([null]);
+    // Let the registration resolve, so the unlisten is known.
+    await Promise.resolve();
+    await Promise.resolve();
+    stop();
+    expect(unlistenMock).toHaveBeenCalledTimes(1);
+    callback({ payload: null });
+    expect(seen).toEqual([null]);
   });
 });

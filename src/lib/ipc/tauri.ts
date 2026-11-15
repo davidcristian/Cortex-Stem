@@ -5,7 +5,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { listen, type EventTarget, type UnlistenFn } from '@tauri-apps/api/event';
 import { getCurrentWebview, type DragDropEvent } from '@tauri-apps/api/webview';
 
 import type { AppFolder } from '$lib/ipc/generated/AppFolder';
@@ -100,6 +100,20 @@ function subscribe(
     unlisten?.();
     unlisten = undefined;
   };
+}
+
+/**
+ * The page's own window as the target of its event listeners
+ * (docs/ipc/events.md). Tauri hands a listener registered without a target
+ * (`{ kind: 'Any' }`, `listen`'s default) every event, also one Rust sends
+ * to another window with `emit_to`; with several dock windows each page
+ * would then act on the `dock://focus`, `dock://release-focus` and
+ * `dock://show` meant for one of them. A listener on its own window still
+ * gets every broadcast (`emit`) and every `emit_filter` that names its
+ * window.
+ */
+function ownWindow(): EventTarget {
+  return { kind: 'WebviewWindow', label: getCurrentWebview().label };
 }
 
 export class TauriBackend implements Backend {
@@ -237,7 +251,9 @@ export class TauriBackend implements Backend {
 
   on<E extends BackendEvent>(event: E, handler: EventHandler<E>): Unsubscribe {
     return subscribe(`listen(${event})`, (deliver) =>
-      listen<BackendEvents[E]>(event, (e) => deliver(() => handler(e.payload))),
+      listen<BackendEvents[E]>(event, (e) => deliver(() => handler(e.payload)), {
+        target: ownWindow(),
+      }),
     );
   }
 
