@@ -20,12 +20,18 @@ area.
 
 One pure rule places every dock window:
 `windows::edge_rect(work_area, edge, thickness)`, with
-`windows::plan_dock_rect` for a content size in CSS px. Every path that
-sizes or moves a dock window goes through it: window creation (the
-initial height is the thickness on any edge), the content size, the
-per-monitor reconcile and any monitor or work-area change, the DPI re-plan,
-and the drag growth (a very thick content size, which grows the window
-away from its edge).
+`windows::plan_dock_rect` for a content size in CSS px, and
+`windows::relayout_rect` to choose between the latest content size and the
+window's current thickness. Every path that sizes or moves a dock window
+goes through it: window creation (the initial height is the
+thickness on any edge), the content size, the per-monitor reconcile and any
+monitor or work-area change, the DPI re-plan, and the drag growth (a very
+thick content size, which grows the window away from its edge).
+
+The window calls of a placement (`windows::placement_steps`: shrink where it
+stands, move, grow) never pass through a rect outside both the old and the
+new place. So a move between edges does not cross onto a neighbouring
+monitor and change the window's DPI on the way.
 
 A change of `settings.position` moves every dock window to the new edge
 **in place**: no window attribute depends on the edge, and a new window

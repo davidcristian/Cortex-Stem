@@ -40,8 +40,12 @@
 //! monitor change, the scale changes, or the edge changes
 //! ([`on_settings_changed`]: every dock window moves to the new edge in
 //! place, keeping its thickness until its UI reports again,
-//! [`DockContent::on_edge`]). Every placement goes through one function,
-//! [`place`], with the rect from [`edge_rect`]. Clicks outside the
+//! [`DockContent::on_edge`]). Every placement takes its rect from one pure
+//! function, [`relayout_rect`] (over [`plan_dock_rect`] and [`edge_rect`]),
+//! and goes through one function, [`place`], whose window calls never pass
+//! through a rect outside both the old and the new place
+//! ([`placement_steps`]), so a move between edges cannot cross onto a
+//! neighbouring monitor with another scale on the way. Clicks outside the
 //! panel fall through to the desktop via the hit region
 //! ([`apply_hit_region`]), which `behavior.clickThrough` switches off
 //! and on without a restart ([`on_settings_changed`]): the UI's latest
@@ -134,9 +138,10 @@ pub struct DockWindowState {
     /// The latest `set_dock_content_size`, clamped, with the edge it was
     /// reported on; `None` before the UI's first report.
     content: Option<DockContent>,
-    /// The edge the window was placed on last ([`place`]); `None` before its
-    /// first placement. Says which side of the window is its thickness when
-    /// no content was reported yet ([`thickness_of`]).
+    /// The edge the window was placed on last, taken as soon as the window
+    /// has its size for that edge ([`place`]); `None` before its first
+    /// placement. Says which side of the window is its thickness when no
+    /// content was reported yet ([`thickness_of`]).
     edge: Option<DockPosition>,
     /// `(panel, envelope)` of the latest `set_dock_hit_region`; applied
     /// while `behavior.clickThrough` is on and replayed when it is turned
@@ -480,7 +485,7 @@ fn create_dock_window(
         flags.0.lock().insert(label.to_owned(), false);
     }
     // Not placed yet: the initial height becomes the thickness on any edge.
-    position_window(&window, monitor, dock_edge(app))?;
+    layout(&window, monitor, dock_edge(app), None)?;
     let primary_visible = if label == DOCK_LABEL {
         None
     } else {
@@ -677,7 +682,7 @@ pub fn apply_content_size(
         None => Vec::new(),
     };
     let monitor = monitor_of(app, window.label(), &monitors);
-    layout(window, monitor.as_ref(), edge, content)
+    layout(window, monitor.as_ref(), edge, Some(content))
 }
 
 /// Argument check for `set_dock_hit_region` (`docs/ipc/hit-region.md`):
@@ -1199,12 +1204,10 @@ fn post_to_main_thread(app: &AppHandle, f: impl FnOnce() + Send + 'static) {
 }
 
 /// Size and place a dock window on the edge in effect ([`dock_edge`]) of its
-/// own monitor's work area, from its UI's latest content size (taken across
-/// the edge it is placed on now, [`DockContent::on_edge`]), or at its
-/// current thickness before the first report; [`place`] then converts the
-/// latest panel rect for the window's new place. The one path behind a
-/// monitor or work-area change, a DPI change and an edge
-/// change. Main thread.
+/// own monitor's work area from what is remembered for it: [`layout`] with
+/// its UI's latest content size, or none before the first report. The one
+/// path behind a monitor or work-area change, a DPI change
+/// and an edge change. Main thread.
 fn relayout_dock(
     app: &AppHandle,
     window: &WebviewWindow,
@@ -1215,11 +1218,7 @@ fn relayout_dock(
         .and_then(|geometry| geometry.dock(window.label()))
         .and_then(|dock| dock.content);
     let monitor = monitor_of(app, window.label(), monitors);
-    let edge = dock_edge(app);
-    match content {
-        Some(content) => layout(window, monitor.as_ref(), edge, content),
-        None => position_window(window, monitor.as_ref(), edge),
-    }
+    layout(window, monitor.as_ref(), dock_edge(app), content)
 }
 
 /// Hand a dock window's latest hit region to the platform again, converted
@@ -1258,21 +1257,61 @@ fn dock_edge(app: &AppHandle) -> DockPosition {
         .unwrap_or(DockPosition::Bottom)
 }
 
-/// Size and place the window on `edge` for a content size in CSS px: its
-/// monitor's work area's full length along the edge, the content's
-/// thickness across it ([`plan_dock_rect`]).
+/// Size and place the window on `edge` of `monitor`'s work area (Tauri's
+/// own view of the window's monitor while none is known): the rect
+/// [`relayout_rect`] gives from `content`, the UI's latest content size, or
+/// before its first report (`None`) from the window's current size and the
+/// edge it was placed on last. Every path that sizes or moves a dock window
+/// comes here (creation, the content size, [`relayout_dock`]); [`place`]
+/// applies the rect.
 fn layout(
     window: &WebviewWindow,
     monitor: Option<&MonitorInfo>,
     edge: DockPosition,
-    content: DockContent,
+    content: Option<DockContent>,
 ) -> tauri::Result<()> {
-    let (width, height) = content.on_edge(edge);
-    let mut work_area = match monitor {
+    let work_area = match monitor {
         Some(m) => m.work_area,
         None => fallback_work_area(window)?,
     };
-    let scale = match window.scale_factor() {
+    let scale = window_scale(window, monitor);
+    let size: PhysicalSize<u32> = window.outer_size()?;
+    let size = (size.width, size.height);
+    let placed = window
+        .app_handle()
+        .try_state::<DockGeometry>()
+        .and_then(|geometry| geometry.dock(window.label()))
+        .and_then(|dock| dock.edge);
+    let rect = relayout_rect(
+        work_area,
+        monitor.is_some(),
+        edge,
+        content,
+        scale,
+        size,
+        placed,
+    );
+    match content {
+        Some(content) => {
+            let (width, height) = content.on_edge(edge);
+            log::debug!(
+                "dock window {:?}: {width}x{height} css at {scale}x -> {rect:?} in {work_area:?} (the {edge:?} edge, full length)",
+                window.label()
+            );
+        }
+        None => log::debug!(
+            "dock window {:?}: no content size yet, {} px across the edge kept at {scale}x -> {rect:?} in {work_area:?} (the {edge:?} edge, full length)",
+            window.label(),
+            thickness_of(size, placed)
+        ),
+    }
+    place(window, edge, rect)
+}
+
+/// The window's scale factor, or its monitor's (1 without one) when the
+/// window cannot give a usable one (logged).
+fn window_scale(window: &WebviewWindow, monitor: Option<&MonitorInfo>) -> f64 {
+    match window.scale_factor() {
         Ok(s) if s.is_finite() && s > 0.0 => s,
         Ok(s) => {
             log::warn!("window scale factor {s} is unusable; using the monitor's");
@@ -1282,59 +1321,77 @@ fn layout(
             log::warn!("window scale factor unavailable ({e}); using the monitor's");
             monitor.map_or(1.0, |m| m.scale_factor)
         }
-    };
-    if monitor.is_none() {
-        // No monitor list to trust: the content's length is the lower
-        // bound, so the panel is never cut (`docs/ipc/sizing-protocol.md`).
-        let length = if is_vertical(edge) { height } else { width };
-        work_area = with_min_length(work_area, edge, physical_px(length, scale));
     }
-    let rect = plan_dock_rect(work_area, scale, width, height, edge);
-    log::debug!(
-        "dock window {:?}: {width}x{height} css at {scale}x -> {rect:?} in {work_area:?} (the {edge:?} edge, full length)",
-        window.label()
-    );
-    place(window, edge, rect)
 }
 
-/// Lay the window on `edge` of its monitor's work area at its current
-/// thickness ([`thickness_of`]: across the edge it was placed on last, or
-/// the initial height before its first placement), as long as the work area
-/// along the edge. Used before the UI has reported a content size: at
-/// creation, and after a monitor, work-area, scale or edge change.
-fn position_window(
-    window: &WebviewWindow,
-    monitor: Option<&MonitorInfo>,
-    edge: DockPosition,
-) -> tauri::Result<()> {
-    let size: PhysicalSize<u32> = window.outer_size()?;
-    let work_area = match monitor {
-        Some(m) => m.work_area,
-        None => fallback_work_area(window)?,
-    };
-    let placed = window
-        .app_handle()
-        .try_state::<DockGeometry>()
-        .and_then(|geometry| geometry.dock(window.label()))
-        .and_then(|dock| dock.edge);
-    let thickness = thickness_of((size.width, size.height), placed);
-    place(window, edge, edge_rect(work_area, edge, thickness))
-}
-
-/// Size and position a dock window on `edge`, remember the edge for its
-/// next placement, then redo the panel conversion for its new place.
-/// Every placement of a dock window ends here.
+/// Size and position a dock window at `rect` on `edge`, through the window
+/// calls of [`placement_steps`] (never through a rect outside both its old
+/// and its new place, so a move between edges does not pass over a
+/// neighbouring monitor and change the window's DPI on the way); remember
+/// the edge for its next placement as soon as the window has its new size
+/// (the size alone says which side is the thickness, [`thickness_of`], so
+/// a move that fails after the resize still leaves the right pair); then
+/// redo the panel conversion for its new place. Every placement of
+/// a dock window ends here.
 fn place(window: &WebviewWindow, edge: DockPosition, rect: Rect) -> tauri::Result<()> {
-    window.set_size(PhysicalSize::new(
-        rect.width.unsigned_abs(),
-        rect.height.unsigned_abs(),
-    ))?;
-    window.set_position(PhysicalPosition::new(rect.x, rect.y))?;
-    if let Some(geometry) = window.app_handle().try_state::<DockGeometry>() {
-        geometry.update(window.label(), |dock| dock.edge = Some(edge));
+    let current = current_rect(window);
+    let target = (rect.width, rect.height);
+    let mut size = current.map(|r| (r.width, r.height));
+    let mut remembered = false;
+    for step in placement_steps(current, rect) {
+        if !remembered && size == Some(target) {
+            remember_edge(window, edge);
+            remembered = true;
+        }
+        match step {
+            PlaceStep::Size { width, height } => {
+                window.set_size(PhysicalSize::new(
+                    width.unsigned_abs(),
+                    height.unsigned_abs(),
+                ))?;
+                size = Some((width, height));
+            }
+            PlaceStep::Move { x, y } => window.set_position(PhysicalPosition::new(x, y))?,
+        }
+    }
+    if !remembered {
+        remember_edge(window, edge);
     }
     sync_dock_panel(window, Some((rect.x, rect.y)));
     Ok(())
+}
+
+/// Remember `edge` as the one the dock window was placed on ([`place`]).
+fn remember_edge(window: &WebviewWindow, edge: DockPosition) {
+    if let Some(geometry) = window.app_handle().try_state::<DockGeometry>() {
+        geometry.update(window.label(), |dock| dock.edge = Some(edge));
+    }
+}
+
+/// The window's rect on screen now, in physical pixels; `None` (logged at
+/// debug) when the window cannot say, and [`placement_steps`] then resizes
+/// before it moves.
+fn current_rect(window: &WebviewWindow) -> Option<Rect> {
+    let read = || -> tauri::Result<Rect> {
+        let position = window.outer_position()?;
+        let size = window.outer_size()?;
+        Ok(Rect::new(
+            position.x,
+            position.y,
+            i32::try_from(size.width).unwrap_or(i32::MAX),
+            i32::try_from(size.height).unwrap_or(i32::MAX),
+        ))
+    };
+    match read() {
+        Ok(rect) => Some(rect),
+        Err(e) => {
+            log::debug!(
+                "dock window {:?}: its rect could not be read before a placement ({e})",
+                window.label()
+            );
+            None
+        }
+    }
 }
 
 /// Before the platform reported monitors, fall back to Tauri's own view: the
@@ -1449,6 +1506,99 @@ pub fn thickness_of(size: (u32, u32), placed: Option<DockPosition>) -> i32 {
         _ => size.1,
     };
     i32::try_from(across).unwrap_or(i32::MAX)
+}
+
+/// The rect (physical px) a dock window is laid out at on `edge` of
+/// `work_area`, every time it is sized or placed ([`layout`]):
+/// - with `content`, the UI's latest content size (CSS px), taken across
+///   `edge` by [`DockContent::on_edge`] (a size reported on an edge of the
+///   other orientation keeps its thickness) and scaled by `scale`
+///   ([`plan_dock_rect`]); where `monitor_known` is `false` (`work_area` is
+///   Tauri's own view, the platform listed no monitors yet) the content's
+///   length is the lower bound of the window's length, so the panel is
+///   never cut (`docs/ipc/sizing-protocol.md`);
+/// - before the UI's first report (`content` is `None`), at the window's
+///   current thickness: the side of its physical `size` that
+///   [`thickness_of`] picks for the edge it was `placed` on last (after a
+///   DPI change, the size tao gave it to keep its logical size).
+///
+/// Pure.
+pub fn relayout_rect(
+    work_area: Rect,
+    monitor_known: bool,
+    edge: DockPosition,
+    content: Option<DockContent>,
+    scale: f64,
+    size: (u32, u32),
+    placed: Option<DockPosition>,
+) -> Rect {
+    let Some(content) = content else {
+        return edge_rect(work_area, edge, thickness_of(size, placed));
+    };
+    let (width, height) = content.on_edge(edge);
+    let work_area = if monitor_known {
+        work_area
+    } else {
+        let length = if is_vertical(edge) { height } else { width };
+        with_min_length(work_area, edge, physical_px(length, scale))
+    };
+    plan_dock_rect(work_area, scale, width, height, edge)
+}
+
+/// One window call of a placement ([`placement_steps`]), in physical px.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaceStep {
+    /// A new size; the top-left corner stays (`set_size`).
+    Size { width: i32, height: i32 },
+    /// A new top-left corner; the size stays (`set_position`).
+    Move { x: i32, y: i32 },
+}
+
+/// The window calls that take a dock window from `current` (its rect now)
+/// to `target`, such that every rect it passes through lies inside
+/// `current` or inside `target`: shrink to the smaller of the two sizes on
+/// each axis where it stands (inside `current`), move (inside `target`),
+/// grow to `target`; a call that would change nothing is left out, and a
+/// window that keeps its top-left corner is resized in one call. The new
+/// size at the old place, which a resize-then-move would pass through, can
+/// stick out of both on a move between edges (a right dock turning into a
+/// top one, 1920 px wide at the old `x`, lies mostly on the monitor to its
+/// right), and Windows changes the DPI of a window whose larger part lands
+/// on a monitor with another scale (`WM_DPICHANGED`, which tao answers by
+/// resizing the window), then changes it back on the move. With
+/// `current` unknown (`None`), resize then move. Pure.
+pub fn placement_steps(current: Option<Rect>, target: Rect) -> Vec<PlaceStep> {
+    let resize = PlaceStep::Size {
+        width: target.width,
+        height: target.height,
+    };
+    let reposition = PlaceStep::Move {
+        x: target.x,
+        y: target.y,
+    };
+    let Some(current) = current else {
+        return vec![resize, reposition];
+    };
+    let same_size = (current.width, current.height) == (target.width, target.height);
+    if (current.x, current.y) == (target.x, target.y) {
+        return if same_size { Vec::new() } else { vec![resize] };
+    }
+    let interim = (
+        current.width.min(target.width).max(1),
+        current.height.min(target.height).max(1),
+    );
+    let mut steps = Vec::with_capacity(3);
+    if interim != (current.width, current.height) {
+        steps.push(PlaceStep::Size {
+            width: interim.0,
+            height: interim.1,
+        });
+    }
+    steps.push(reposition);
+    if interim != (target.width, target.height) {
+        steps.push(resize);
+    }
+    steps
 }
 
 /// The content size a dock window's UI reported through
@@ -2196,6 +2346,306 @@ mod tests {
             assert_on_edge(wa, edge, rect);
             let rect = plan_dock_rect(Rect::new(0, 0, 0, 0), 1.0, 10.0, 10.0, edge);
             assert_eq!((rect.width, rect.height), (1, 1), "{edge:?}");
+        }
+    }
+
+    fn inside(inner: Rect, outer: Rect) -> bool {
+        inner.x >= outer.x
+            && inner.y >= outer.y
+            && inner.right() <= outer.right()
+            && inner.bottom() <= outer.bottom()
+    }
+
+    /// The window's rect after the call `step`, from its rect before.
+    fn apply(step: PlaceStep, rect: Rect) -> Rect {
+        match step {
+            PlaceStep::Size { width, height } => Rect::new(rect.x, rect.y, width, height),
+            PlaceStep::Move { x, y } => Rect::new(x, y, rect.width, rect.height),
+        }
+    }
+
+    /// Run `steps` from `current` and check that every rect the window
+    /// passes through lies inside `current` or `target`, and that it ends
+    /// at `target`.
+    fn assert_steps_stay_inside(current: Rect, target: Rect) {
+        let steps = placement_steps(Some(current), target);
+        assert!(steps.len() <= 3, "{steps:?}");
+        let mut rect = current;
+        for step in &steps {
+            rect = apply(*step, rect);
+            assert!(
+                inside(rect, current) || inside(rect, target),
+                "{current:?} -> {target:?}: {rect:?} after {step:?} of {steps:?} leaves both"
+            );
+            assert!(rect.width >= 1 && rect.height >= 1, "{rect:?} is empty");
+        }
+        assert_eq!(rect, target, "{current:?} -> {target:?} by {steps:?}");
+    }
+
+    #[test]
+    fn placement_steps_never_pass_through_a_rect_outside_the_old_and_the_new_place() {
+        // A 150 % secondary left of the primary, work area x -1920..0: its
+        // dock goes from the right edge to the top. Resize-then-move would
+        // pass through 1920x144 at x = -144, mostly on the primary.
+        let secondary = Rect::new(-1920, 0, 1920, 1032);
+        let right = edge_rect(secondary, DockPosition::Right, 144);
+        let top = edge_rect(secondary, DockPosition::Top, 144);
+        assert_eq!(right, Rect::new(-144, 0, 144, 1032));
+        assert_eq!(
+            placement_steps(Some(right), top),
+            vec![
+                PlaceStep::Size {
+                    width: 144,
+                    height: 144
+                },
+                PlaceStep::Move { x: -1920, y: 0 },
+                PlaceStep::Size {
+                    width: 1920,
+                    height: 144
+                },
+            ]
+        );
+        // The bottom dock growing for a drag moves up first and
+        // grows down into its new place, never below the work area (onto a
+        // monitor under this one); it shrinks back where it stands, then
+        // moves down.
+        let wa = Rect::new(0, 0, 2560, 1392);
+        let rest = edge_rect(wa, DockPosition::Bottom, 135);
+        let grown = edge_rect(wa, DockPosition::Bottom, 1000);
+        assert_eq!(
+            placement_steps(Some(rest), grown),
+            vec![
+                PlaceStep::Move { x: 0, y: 392 },
+                PlaceStep::Size {
+                    width: 2560,
+                    height: 1000
+                },
+            ]
+        );
+        assert_eq!(
+            placement_steps(Some(grown), rest),
+            vec![
+                PlaceStep::Size {
+                    width: 2560,
+                    height: 135
+                },
+                PlaceStep::Move { x: 0, y: 1257 },
+            ]
+        );
+        // A top or left dock keeps its corner: one resize; nothing to do
+        // when it is already in place; a pure move is one move.
+        let top_rest = edge_rect(wa, DockPosition::Top, 135);
+        assert_eq!(
+            placement_steps(Some(top_rest), edge_rect(wa, DockPosition::Top, 1000)),
+            vec![PlaceStep::Size {
+                width: 2560,
+                height: 1000
+            }]
+        );
+        assert_eq!(placement_steps(Some(rest), rest), Vec::new());
+        let shifted = Rect::new(rest.x - 2560, rest.y, rest.width, rest.height);
+        assert_eq!(
+            placement_steps(Some(shifted), rest),
+            vec![PlaceStep::Move {
+                x: rest.x,
+                y: rest.y
+            }]
+        );
+        // The window's rect unknown: resize, then move.
+        assert_eq!(
+            placement_steps(None, rest),
+            vec![
+                PlaceStep::Size {
+                    width: 2560,
+                    height: 135
+                },
+                PlaceStep::Move { x: 0, y: 1257 },
+            ]
+        );
+        // Every edge to every edge, at several thicknesses, on a monitor
+        // with a negative origin and on one right of the primary, and from
+        // one monitor to another (a reconcile after a new primary).
+        let areas = [
+            wa,
+            secondary,
+            Rect::new(2560, -200, 1920, 1032),
+            Rect::new(0, 48, 1280, 672),
+        ];
+        for from_area in areas {
+            for to_area in areas {
+                for from in EDGES {
+                    for to in EDGES {
+                        for (a, b) in [(135, 135), (96, 144), (135, 1000), (1000, 135), (1, 5000)] {
+                            assert_steps_stay_inside(
+                                edge_rect(from_area, from, a),
+                                edge_rect(to_area, to, b),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        // A freshly created window at the initial size somewhere on screen.
+        assert_steps_stay_inside(
+            Rect::new(300, 200, 640, 96),
+            edge_rect(wa, DockPosition::Right, 96),
+        );
+    }
+
+    #[test]
+    fn relayout_rect_lays_a_window_out_from_its_content_or_its_current_thickness() {
+        let wa = Rect::new(0, 0, 2560, 1392);
+        let bottom = DockContent {
+            width: 700.0,
+            height: 135.0,
+            edge: DockPosition::Bottom,
+        };
+        let placed = edge_rect(wa, DockPosition::Bottom, 135);
+        let size = (placed.width.unsigned_abs(), placed.height.unsigned_abs());
+        // Bottom -> left with a content size reported on the bottom: the
+        // 135 css thickness is now the width.
+        assert_eq!(
+            relayout_rect(
+                wa,
+                true,
+                DockPosition::Left,
+                Some(bottom),
+                1.0,
+                size,
+                Some(DockPosition::Bottom)
+            ),
+            Rect::new(0, 0, 135, 1392)
+        );
+        // The same switch before any report: the window's height on the
+        // bottom is its thickness, now its width.
+        assert_eq!(
+            relayout_rect(
+                wa,
+                true,
+                DockPosition::Left,
+                None,
+                1.0,
+                size,
+                Some(DockPosition::Bottom)
+            ),
+            Rect::new(0, 0, 135, 1392)
+        );
+        // A first placement (never placed): the initial height, on any edge.
+        assert_eq!(
+            relayout_rect(wa, true, DockPosition::Right, None, 1.5, (960, 144), None),
+            Rect::new(2416, 0, 144, 1392)
+        );
+        // Reported on the right, laid out again on the right at 150 %.
+        let right = DockContent {
+            width: 96.0,
+            height: 700.0,
+            edge: DockPosition::Right,
+        };
+        assert_eq!(
+            relayout_rect(
+                wa,
+                true,
+                DockPosition::Right,
+                Some(right),
+                1.5,
+                (135, 1392),
+                Some(DockPosition::Right)
+            ),
+            Rect::new(2416, 0, 144, 1392)
+        );
+        // No monitor list yet (Tauri's own view of the monitor): the content's
+        // length is the lower bound along a vertical edge too, the origin kept.
+        let small = Rect::new(0, 0, 1920, 1040);
+        let tall = DockContent {
+            width: 135.0,
+            height: 1500.0,
+            edge: DockPosition::Left,
+        };
+        assert_eq!(
+            relayout_rect(
+                small,
+                false,
+                DockPosition::Left,
+                Some(tall),
+                1.0,
+                (135, 1040),
+                Some(DockPosition::Left)
+            ),
+            Rect::new(0, 0, 135, 1500)
+        );
+        assert_eq!(
+            relayout_rect(
+                small,
+                false,
+                DockPosition::Right,
+                Some(tall),
+                1.25,
+                (135, 1040),
+                Some(DockPosition::Left)
+            ),
+            Rect::new(1751, 0, 169, 1875)
+        );
+        // With a monitor list the work area is the length, whatever the
+        // content says.
+        assert_eq!(
+            relayout_rect(
+                small,
+                true,
+                DockPosition::Left,
+                Some(tall),
+                1.0,
+                (135, 1040),
+                Some(DockPosition::Left)
+            ),
+            Rect::new(0, 0, 135, 1040)
+        );
+        // A DPI change (100 % -> 150 %) before any report: tao kept the
+        // window's logical size (2560x96 -> 3840x144), so the 144 px it has
+        // across its bottom edge is kept; with a report, the content's 96 css
+        // gives the same 144 px.
+        assert_eq!(
+            relayout_rect(
+                wa,
+                true,
+                DockPosition::Bottom,
+                None,
+                1.5,
+                (3840, 144),
+                Some(DockPosition::Bottom)
+            ),
+            Rect::new(0, 1248, 2560, 144)
+        );
+        let bottom_96 = DockContent {
+            width: 700.0,
+            height: 96.0,
+            edge: DockPosition::Bottom,
+        };
+        assert_eq!(
+            relayout_rect(
+                wa,
+                true,
+                DockPosition::Bottom,
+                Some(bottom_96),
+                1.5,
+                (3840, 144),
+                Some(DockPosition::Bottom)
+            ),
+            Rect::new(0, 1248, 2560, 144)
+        );
+        // Every edge stays flush and full length, with or without content.
+        for edge in EDGES {
+            for content in [None, Some(bottom), Some(right), Some(tall)] {
+                let rect = relayout_rect(
+                    wa,
+                    true,
+                    edge,
+                    content,
+                    1.5,
+                    size,
+                    Some(DockPosition::Bottom),
+                );
+                assert_on_edge(wa, edge, rect);
+            }
         }
     }
 
