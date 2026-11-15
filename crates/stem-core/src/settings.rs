@@ -143,9 +143,10 @@ impl Settings {
             .retain(|p| !p.id.as_str().trim().is_empty() && seen.insert(p.id.clone()));
     }
 
-    /// Whether replacing `self` by `other` needs the dock windows to be
-    /// created again: the screen edge or the set of monitors that get a dock
-    /// changed. Everything else restyles them in place.
+    /// Whether replacing `self` by `other` changes where the dock windows
+    /// are or which exist: the screen edge (the app moves every window in
+    /// place) or the set of monitors that get a dock (windows are
+    /// created or closed). Everything else restyles them in place.
     pub fn diff_requires_window_rebuild(&self, other: &Settings) -> bool {
         self.position != other.position || self.monitors != other.monitors
     }
