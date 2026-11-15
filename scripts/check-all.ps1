@@ -5,7 +5,7 @@
     debug Tauri build.
 
 .DESCRIPTION
-    Runs the same rungs as scripts/check-all.sh (1, 2, 3, 3b, 4, 5, 6, 7) and
+    Runs the same rungs as scripts/check-all.sh (1, 2, 3, 3b, 3c, 4, 5, 6, 7) and
     then `pnpm tauri build --debug`, which links and bundles the real app: the
     local equivalent of the CI `windows` job (rung 8). Keep the commands in
     sync with scripts/check-all.sh and .github/workflows/ci.yml.
@@ -86,6 +86,30 @@ if ($changed.Count -gt 0) {
     Write-Host "src/lib/ipc/generated/ changed after export; run 'cargo test -p stem-core --features ts' and commit the result:" -ForegroundColor Red
     git --no-pager status --short src/lib/ipc/generated
     git --no-pager diff src/lib/ipc/generated
+    exit 1
+}
+
+Step '3c/7 settings reference (docs/SETTINGS.md) is up to date'
+# crates/stem-core/tests/settings_reference.rs rewrites docs/SETTINGS.md from
+# the doc comments and defaults in crates/stem-core/src/settings.rs when
+# STEM_UPDATE_SETTINGS_REFERENCE=1 (without it, rung 3 already fails on a
+# stale page). The file is tracked, so a change after the rewrite means it was
+# stale or never committed.
+$env:STEM_UPDATE_SETTINGS_REFERENCE = '1'
+try {
+    Run cargo @('test', '-p', 'stem-core', '--test', 'settings_reference', '--quiet')
+}
+finally {
+    Remove-Item Env:STEM_UPDATE_SETTINGS_REFERENCE -ErrorAction SilentlyContinue
+}
+$changed = @(git status --porcelain docs/SETTINGS.md)
+if ($LASTEXITCODE -ne 0) {
+    throw "'git status' failed with exit code $LASTEXITCODE"
+}
+if ($changed.Count -gt 0) {
+    Write-Host "docs/SETTINGS.md changed after regeneration; run 'STEM_UPDATE_SETTINGS_REFERENCE=1 cargo test -p stem-core --test settings_reference' and commit the result:" -ForegroundColor Red
+    git --no-pager status --short docs/SETTINGS.md
+    git --no-pager diff docs/SETTINGS.md
     exit 1
 }
 

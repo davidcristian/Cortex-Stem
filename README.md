@@ -210,7 +210,7 @@ Most of the code (everything except the final binary) can be developed and teste
 | `pnpm dev` | Serves the page alone at `http://localhost:1420/dock.html` and `http://localhost:1420/settings.html`, against the mock backend, in any browser |
 | `pnpm tauri dev` | Builds and starts the app in debug, with the page served by `pnpm dev` |
 | `set STEM_PLATFORM=mock && pnpm tauri dev` | Starts the app on the mock platform, which shows demo data and saves nothing, so your real windows and settings are untouched (Command Prompt; in PowerShell, set `$env:STEM_PLATFORM = 'mock'` first) |
-| `scripts/check-all.sh` | The verification ladder on Linux or macOS: formatting, lints, tests, the generated TypeScript bindings, the Windows-target lint, frontend checks and the Playwright suite |
+| `scripts/check-all.sh` | The verification ladder on Linux or macOS: formatting, lints, tests, the generated TypeScript bindings and settings reference, the Windows-target lint, frontend checks and the Playwright suite |
 | `scripts/check-all.ps1` | The same ladder on Windows, then `pnpm tauri build --debug` |
 | `pnpm e2e:screenshots` | The Playwright suite in mock mode: screenshots in `e2e/output/` |
 
