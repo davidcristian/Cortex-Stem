@@ -16,15 +16,15 @@
  *   does not);
  * - an init script wraps `requestAnimationFrame`, `setTimeout`,
  *   `setInterval` and `requestIdleCallback` before any page code runs: in
- *   the window no frame or timer callback of page code may run and no
- *   timer may be set, and at its end nothing may repeat faster than once a
- *   minute;
+ *   the window no frame, timer or idle callback of page code may run and
+ *   no timer may be set, and at its end nothing may repeat faster than
+ *   once a minute;
  * - `document.getAnimations()`: nothing may be running (an infinite CSS
  *   animation is busy work, even when the compositor plays it).
  *
  * Settled means: fonts and images loaded, and for `QUIET_FOR_MS` straight no
- * running animation, no pending frame or idle callback, no timer due before the
- * window would end, and nothing that repeats faster than once a minute.
+ * running animation, no pending frame or idle callback, no timer due before
+ * the window would end, and nothing that repeats faster than once a minute.
  * Work that recurs once a minute (the clock item's tick) is allowed:
  * the settle waits until its next run is past the window. A page that never
  * gets there is measured anyway after `SETTLE_TIMEOUT_MS`, and the report
