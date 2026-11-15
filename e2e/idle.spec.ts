@@ -681,6 +681,10 @@ async function runScenario(browser: Browser, scenario: Scenario): Promise<Measur
  * one's window. A scenario that throws fails the test after the others ran.
  */
 async function expectQuiet(browser: Browser, scenarios: readonly Scenario[]): Promise<void> {
+  // Every scenario settles and is watched for 3 s in its own context, all at
+  // once; on a loaded host (other builds, a 2-core CI runner) nine of them
+  // took longer than the default 60 s, so the budget grows with the count.
+  test.setTimeout(Math.max(60_000, 20_000 * scenarios.length));
   const results = await Promise.allSettled(scenarios.map((s) => runScenario(browser, s)));
   const errors: unknown[] = [];
   results.forEach((result, i) => {

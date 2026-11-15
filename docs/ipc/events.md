@@ -14,7 +14,7 @@ how a page listens and which pages an event reaches.
 | `dock://focus`       | `null`                          | to one dock window: the focus shortcut gave it the keyboard focus. The page focuses the toolbar (see [Keyboard entry](keyboard-entry.md), v1.19). |
 | `dock://release-focus` | `null`                        | to one dock window: the focus shortcut was pressed again while that dock still has the keyboard from the last press. The page does what Escape does (see [Keyboard entry](keyboard-entry.md), v1.19). |
 | `dock://user-css`    | `UserCss`                       | to every dock window: `reload_user_css` read `dock.css` again (see [Themes](themes.md), v1.20) |
-| `dock://settings-closing` | `null`                     | to the settings window (v1.25): a close request (×, Alt+F4) hid the window. Rust destroys it 250 ms later unless it is opened again in that time. The page commits the focused field (its blur) and sends any pending edit at once instead of after its debounce. |
+| `dock://settings-closing` | `null`                     | to the settings window (v1.27): a close request (×, Alt+F4) hid the window. Rust destroys it 250 ms later unless it is opened again in that time. The page commits the focused field (its blur) and sends any pending edit at once instead of after its debounce. |
 
 Tauri's own `tauri://drag-enter|over|drop|leave` events (files dragged from the shell over a dock
 window) are not part of this contract; see [File drags](file-drags.md).
