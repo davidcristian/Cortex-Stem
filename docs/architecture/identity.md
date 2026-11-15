@@ -19,7 +19,11 @@ Pinned entries store the same id, so a pinned app and its running windows
 merge into one item. `identify_target` must return the id that the running
 windows will have: it resolves a `.lnk` to its target exe, and a Store app
 to its AUMID. A `.lnk` with a `System.AppUserModel.ID` property is
-identified by that AUMID, because its app's windows are grouped by it.
+identified by that AUMID, because its app's windows are grouped by it. An
+advertised (Windows Installer) shortcut resolves through Windows Installer
+to the installed program, not to the icon file that its
+`IShellLinkW::GetPath` names. When Windows Installer cannot resolve it, the
+`.lnk` itself is pinned and launched.
 
 ## Executables of packaged apps
 

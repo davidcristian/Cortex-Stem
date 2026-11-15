@@ -69,6 +69,13 @@
 //!   and icon come from the AppsFolder when the shell knows the AUMID, else
 //!   from the exe (`rules::identity::plan_shortcut`). `.url` files are not
 //!   shell links; they stay `Shortcut` targets with a `file:` icon.
+//! - An advertised (Windows Installer) shortcut (`SLDF_HAS_DARWINID`) has no
+//!   usable path: `GetPath` names the icon file the installer cached under
+//!   `C:\Windows\Installer\{ProductCode}\`. Its target is the installed key
+//!   file Windows Installer names for it (`MsiGetShortcutTargetW`,
+//!   `MsiGetComponentPathW`, installed locally and present), else none, so
+//!   the `.lnk` itself is pinned and launched and the shell and Windows
+//!   Installer start the program.
 //! - Pure helpers (parsing, fallbacks, the shortcut decision, command-line
 //!   splitting) live in `rules::identity` and are unit-tested on every host.
 
@@ -89,6 +96,10 @@ use windows::Win32::Storage::Packaging::Appx::{
     GetPackagePathByFullName, GetPackagesByPackageFamily, IAppxFactory, OpenPackageInfoByFullName,
     PACKAGE_FAMILY_NAME_MAX_LENGTH, PackageFamilyNameFromFullName,
 };
+use windows::Win32::System::ApplicationInstallationAndServicing::{
+    INSTALLSTATE_LOCAL, MAX_FEATURE_CHARS, MAX_GUID_CHARS, MsiGetComponentPathW,
+    MsiGetShortcutTargetW,
+};
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, CoCreateInstance, IPersistFile, STGM_READ, STGM_SHARE_DENY_NONE,
 };
@@ -101,8 +112,9 @@ use windows::Win32::System::Registry::{
 };
 use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
 use windows::Win32::UI::Shell::{
-    IShellItem, IShellLinkW, SHCreateItemFromParsingName, SHCreateStreamOnFileEx,
-    SIGDN_NORMALDISPLAY, SLGP_RAWPATH, SLR_NO_UI, SLR_NOUPDATE, ShellLink,
+    IShellItem, IShellLinkDataList, IShellLinkW, SHCreateItemFromParsingName,
+    SHCreateStreamOnFileEx, SIGDN_NORMALDISPLAY, SLDF_HAS_DARWINID, SLGP_RAWPATH, SLR_NO_UI,
+    SLR_NOUPDATE, ShellLink,
 };
 use windows::core::{Interface, PCWSTR, PWSTR, w};
 
@@ -568,8 +580,20 @@ fn read_shortcut(path: &str) -> PlatformResult<ShortcutInfo> {
 
     let mut info = ShortcutInfo::default();
     let mut buffer = vec![0u16; LINK_BUFFER];
+    if is_advertised(&link) {
+        // An advertised (MSI) shortcut: `GetPath` names the icon file the
+        // installer cached under `C:\Windows\Installer\{ProductCode}\`, not
+        // the program. MSI says which program; without it the `.lnk` itself
+        // is pinned and launched, which lets the shell and MSI start it.
+        info.target = msi_shortcut_target(path);
+        match &info.target {
+            Some(target) => log::debug!("{path}: advertised shortcut: MSI target {target}"),
+            None => log::debug!("{path}: advertised shortcut: pinning the .lnk itself"),
+        }
     // SAFETY: the wrapper passes the buffer length; no find-data requested.
-    if unsafe { link.GetPath(&mut buffer, std::ptr::null_mut(), SLGP_RAWPATH.0 as u32) }.is_ok() {
+    } else if unsafe { link.GetPath(&mut buffer, std::ptr::null_mut(), SLGP_RAWPATH.0 as u32) }
+        .is_ok()
+    {
         info.target = Some(util::from_wide(&buffer)).filter(|s| !s.is_empty());
     }
     buffer.fill(0);
@@ -584,6 +608,66 @@ fn read_shortcut(path: &str) -> PlatformResult<ShortcutInfo> {
     }
     info.app_user_model_id = link_app_user_model_id(&link);
     Ok(info)
+}
+
+/// Whether the shortcut is an advertised (Windows Installer, "Darwin")
+/// shortcut: `SLDF_HAS_DARWINID` in its data flags.
+fn is_advertised(link: &IShellLinkW) -> bool {
+    let Ok(data) = link.cast::<IShellLinkDataList>() else {
+        return false;
+    };
+    // SAFETY: plain COM call on a live interface.
+    unsafe { data.GetFlags() }.is_ok_and(|flags| flags & SLDF_HAS_DARWINID.0 as u32 != 0)
+}
+
+/// The installed program behind the advertised shortcut at `path`: the key
+/// file of the component the shortcut names (`MsiGetShortcutTargetW`, then
+/// `MsiGetComponentPathW`), when that component is installed locally and
+/// the file exists. `None` otherwise (Windows Installer does not know the
+/// shortcut, or the component is advertised but not installed). Neither
+/// call installs, repairs or shows anything.
+fn msi_shortcut_target(path: &str) -> Option<String> {
+    const GUID_BUFFER: usize = MAX_GUID_CHARS as usize + 1;
+    const FEATURE_BUFFER: usize = MAX_FEATURE_CHARS as usize + 1;
+    let path_w = util::to_wide(path);
+    let mut product = [0u16; GUID_BUFFER];
+    let mut feature = [0u16; FEATURE_BUFFER];
+    let mut component = [0u16; GUID_BUFFER];
+    // SAFETY: `path_w` is NUL-terminated and outlives the call; each buffer
+    // holds the documented maximum (38 characters) plus the NUL.
+    let status = unsafe {
+        MsiGetShortcutTargetW(
+            util::pcwstr(&path_w),
+            Some(PWSTR(product.as_mut_ptr())),
+            Some(PWSTR(feature.as_mut_ptr())),
+            Some(PWSTR(component.as_mut_ptr())),
+        )
+    };
+    if status != ERROR_SUCCESS.0 {
+        log::debug!("{path}: MsiGetShortcutTargetW failed ({status})");
+        return None;
+    }
+    let mut buffer = vec![0u16; LINK_BUFFER];
+    let mut len = LINK_BUFFER as u32;
+    // SAFETY: the codes were written NUL-terminated by the call above;
+    // `buffer` holds `len` characters, which the call is told.
+    let state = unsafe {
+        MsiGetComponentPathW(
+            util::pcwstr(&product),
+            util::pcwstr(&component),
+            Some(PWSTR(buffer.as_mut_ptr())),
+            Some(&mut len),
+        )
+    };
+    if state != INSTALLSTATE_LOCAL {
+        log::debug!(
+            "{path}: its component is not installed locally (state {})",
+            state.0
+        );
+        return None;
+    }
+    let target = util::from_wide(&buffer);
+    (!target.is_empty() && Path::new(&target).is_file()).then_some(target)
 }
 
 /// `System.AppUserModel.ID` from the shortcut's property store, if set.
