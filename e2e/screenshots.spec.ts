@@ -1226,7 +1226,23 @@ test.describe('dock in mock mode', () => {
     expect(request?.y).toBeLessThan(slot.y + slot.height);
 
     // The panel's own padding (no item under the pointer): the dock menu.
-    const panel = (await page.locator('.dock-panel').boundingBox())!;
+    // Measured at rest: after the item's right-click the panel is still
+    // magnified around Firefox, and moving the pointer to its left edge
+    // shrinks it, so a click 3 px inside the magnified box could land
+    // outside the panel on a slow host. From rest the panel only grows
+    // under the pointer, so the point stays inside.
+    await page.mouse.move(10, 10);
+    let rest = (await page.locator('.dock-panel').boundingBox())!;
+    await expect
+      .poll(async () => {
+        const now = (await page.locator('.dock-panel').boundingBox())!;
+        const settled =
+          (await runningAnimations(page)) === 0 && now.x === rest.x && now.width === rest.width;
+        rest = now;
+        return settled;
+      })
+      .toBe(true);
+    const panel = rest;
     await page.mouse.click(panel.x + 3, panel.y + panel.height / 2, { button: 'right' });
     await expect.poll(() => callsOfType(page, 'showDockMenu')).toBe(1);
 
