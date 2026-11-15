@@ -1,6 +1,6 @@
 # Widget items
 
-This file describes the clock and battery items.
+This file describes the clock and battery items, and the clock's regional format.
 
 ## Clock and battery items (v1.22)
 
@@ -44,3 +44,29 @@ Two optional fixed items that are widgets, items that draw live data:
 - `MockBackend`: `MockOptions.power` (default: a laptop at 76 %, on battery) and
   `setPower(status)`, which emits a new state. The clock follows the page's
   own clock (Playwright installs a fixed one).
+
+### The clock's regional format (v1.25)
+
+The page's own locale is WebView2's language, which follows the Windows display language, not the
+regional format. With an English display language and a 24-hour region, the page would show
+`10:42 AM` where the taskbar shows `10:42`. So the format comes from Rust:
+
+- `DockState.clockFormat: ClockFormat` is `{ locale: string | null, hour12: boolean | null }`:
+  the user's regional format as Windows stores it.
+  - `locale` is `GetUserDefaultLocaleName` (a BCP 47 name such as `en-GB`).
+  - `hour12` is `false` when the user's short time format
+    (`GetLocaleInfoEx(LOCALE_NAME_USER_DEFAULT, LOCALE_SSHORTTIME)`) uses `H` (24-hour) and
+    `true` when it uses `h`.
+  - Either field is `null` when Windows does not report it.
+
+  The engine stores the last `PlatformEvent::ClockFormatChanged(ClockFormat)`; until the first
+  one both fields are `null`.
+- The platform side is `Platform::clock_format()`. The events thread reads it after the start
+  snapshot, and again on a `WM_SETTINGCHANGE` whose `lParam` is the string `intl`. It sends
+  `ClockFormatChanged` only when the reading differs from the last one sent.
+- The page builds its `Intl.DateTimeFormat`s for the clock face, its title pill and its
+  accessible name with `locale` (when it is not `null`) and `hour12` (when it is not `null`). The
+  page falls back to its own locale when Intl rejects the name. A custom Windows pattern (literal
+  text, a seconds field) is not copied; only the hour cycle and the locale's order are used.
+- `MockBackend`: `MockOptions.clockFormat` (default: both fields `null`) and
+  `setClockFormat(format)`, which emits a new state.

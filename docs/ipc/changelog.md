@@ -3,6 +3,11 @@
 This file lists every version of the [IPC contract](index.md), newest first. A section name links
 to the file that covers that section now.
 
+- **v1.25 (the clock's regional format):** `DockState.clockFormat: ClockFormat { locale, hour12
+  }` from the new `PlatformEvent::ClockFormatChanged`: the clock follows the Windows regional
+  format instead of the display language. New subsection
+  [The clock's regional format](widget-items.md#the-clocks-regional-format-v125) under
+  [Clock and battery items](widget-items.md#clock-and-battery-items-v122).
 - **v1.24 (scrolling over an item):** `Settings.behavior.scrollAction` (`ScrollAction`: `none`,
   `cycleWindows`) and `scroll_item { itemKey, direction: ScrollDirection }`. New section
   [Scrolling over an item](scrolling-over-an-item.md).
