@@ -4,7 +4,7 @@ Open the settings window from the tray icon (_Settings…_) or from the dock
 (right-click, then _Stem settings…_). Every change applies at once and is
 saved at once. There is no _Apply_ button. _Reset to defaults_ at the bottom
 of the window shows a confirmation first. Its _Reset_ button restores every
-default and removes all pinned apps.
+default, removes all pinned apps and shows the hidden apps again.
 
 The settings are stored in one file,
 `%APPDATA%\dev.davidcristian.stem\settings.json`. The
@@ -107,6 +107,12 @@ and _Separators_ are on by default. The others are off.
 The _Pinned apps_ section of the window lists the pinned apps.
 [The Pinned apps section](pinned-apps.md#the-pinned-apps-section) describes
 what it shows and the `pinned` array behind it.
+
+## Hidden apps
+
+The _Hidden apps_ section of the window lists the apps you hid from the dock.
+[The Hidden apps section](hidden-apps.md#the-hidden-apps-section) describes
+what it shows and the `hiddenApps` array behind it.
 
 ## Position & monitors
 

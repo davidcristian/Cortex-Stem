@@ -49,6 +49,8 @@ A right-click opens a menu. The menu of an app lists:
 - _New window_, for an app Stem can start;
 - _Pin to Stem_ or _Unpin from Stem_. _Pin to Stem_ is disabled for an app
   Stem cannot start;
+- _Hide from Stem_, for an app that is not pinned (see
+  [Hiding an app](hidden-apps.md#hiding-an-app));
 - _Close all windows_, while the app has windows on that dock.
 
 Every menu ends with _Stem settings…_ and _Quit Stem_. A right-click on the
