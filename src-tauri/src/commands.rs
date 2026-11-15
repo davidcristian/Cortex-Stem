@@ -27,8 +27,8 @@ use std::sync::Arc;
 use base64::Engine as _;
 use stem_core::settings::DockPosition;
 use stem_core::{
-    AppFolder, AppId, AppInfo, DockState, IconKey, LaunchTarget, MonitorInfo, Rect, Settings,
-    ShellAction, ThemeInfo, UserCss, WindowAction, WindowId,
+    AppFolder, AppId, AppInfo, DockState, IconKey, LaunchTarget, MonitorInfo, Rect,
+    ScrollDirection, Settings, ShellAction, ThemeInfo, UserCss, WindowAction, WindowId,
 };
 use stem_platform::is_mock;
 use tauri::{AppHandle, Manager, State};
@@ -59,6 +59,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         get_theme,
         get_monitors,
         primary_click,
+        scroll_item,
         window_action,
         launch_app,
         pin_app,
@@ -141,6 +142,33 @@ async fn primary_click(
         &(dock, &item_key),
         service.0.primary_click(&item_key, dock),
     )
+}
+
+/// One wheel notch over a dock item (`docs/ipc/scrolling-over-an-item.md`).
+/// As for `primary_click`, the calling window's label names the
+/// dock whose own view of the windows the service cycles through, and the
+/// service's 150 ms gate is that dock window's. A notch that activated a
+/// window supersedes the window the focus shortcut would go back to,
+/// as a click does; one that did nothing (the setting is `none`,
+/// no windows, dropped by the gate) leaves it.
+#[tauri::command]
+async fn scroll_item(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    service: State<'_, AppService>,
+    item_key: String,
+    direction: ScrollDirection,
+) -> CmdResult<()> {
+    let dock = window.label();
+    let activated = checked(
+        "scroll_item",
+        &(dock, &item_key, direction),
+        service.0.scroll_item(&item_key, dock, direction),
+    )?;
+    if activated.is_some() {
+        crate::windows::forget_dock_focus(&app, "a scroll over an item");
+    }
+    Ok(())
 }
 
 /// A direct action on one window; like a click, it supersedes the window
