@@ -964,18 +964,21 @@ pub fn on_settings_changed(app: &AppHandle, settings: &Settings) {
 
 /// `settings.position` changed (with `monitors`, one of the two
 /// changes `Settings::diff_requires_window_rebuild` names): move every dock
-/// window to the new edge of its own monitor's work area (`docs/ipc/sizing-protocol.md`
-/// , step 5). The windows are moved in place, not created anew: no
-/// window attribute depends on the edge (only its rect does), a new window
-/// would reload its page for nothing (a blank frame, every icon fetched
-/// again, the hover and auto-hide state lost), and a monitor change already
-/// re-places windows the same way ([`relayout_dock`]). Each window keeps its
-/// thickness, now across the new edge, until its page reports a content
-/// size for that edge ([`DockContent::on_edge`]); what its page laid out
-/// for the old edge is dropped first ([`forget_edge_layout`]). The pages
-/// get `dock://settings` before this runs (`lib.rs`, `forward_events`), so
-/// a page usually lays itself out for the new edge before its window moves.
-/// Any thread; the window work hops to the main thread.
+/// window to the new edge of its own monitor's work area
+/// (`docs/ipc/sizing-protocol.md`, step 5). The windows are moved in place,
+/// not created anew: no window attribute depends on the edge (only its rect
+/// does), a new window would reload its page for nothing (a blank frame,
+/// every icon fetched again, the hover and auto-hide state lost), and a
+/// monitor change already re-places windows the same way
+/// ([`relayout_dock`]). Each window keeps its thickness, now across the new
+/// edge, until its page reports a content size for that edge
+/// ([`DockContent::on_edge`]); what its page laid out for the old edge is
+/// dropped first ([`forget_edge_layout`]), and the primary's backdrop and
+/// every band go with it (`backdrop::on_panel`, `appbar::sync`) until the
+/// page reports its panel on the new edge. The pages get `dock://settings`
+/// before this runs (`lib.rs`, `forward_events`), so a page usually lays
+/// itself out for the new edge before its window moves. Any thread; the
+/// window work hops to the main thread.
 fn on_position_setting(app: &AppHandle, edge: DockPosition) {
     let Some(geometry) = app.try_state::<DockGeometry>() else {
         return;
@@ -1001,8 +1004,12 @@ fn on_position_setting(app: &AppHandle, edge: DockPosition) {
         let monitors = service.0.monitors();
         for window in windows {
             forget_edge_layout(&handle, &service.0, window.label());
-            // The band on the old edge goes now, before the window moves;
-            // the new edge's comes with the page's first panel report there.
+            // The backdrop and the band on the old edge go now,
+            // before the window moves: no material without its panel, and
+            // the move converts no panel rect (there is none until the page
+            // reports one), so nothing else would take the material away.
+            // Both come back with the page's first panel report there.
+            crate::backdrop::on_panel(&handle, &window, None);
             crate::appbar::sync(&handle, &window);
             if let Err(e) = relayout_dock(&handle, &window, &monitors) {
                 log::warn!(

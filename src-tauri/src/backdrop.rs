@@ -13,7 +13,9 @@
 //!   that `windows` hands to the service ([`on_panel`], from
 //!   `push_dock_panel` and `sync_dock_panel`), rounded inwards
 //!   ([`panel_inwards`]: the material must never stick out of the panel);
-//!   `None` while the window is hidden by the tray or the toggle shortcut.
+//!   `None` while the window is hidden by the tray or the toggle shortcut,
+//!   and from a position change (`windows::on_position_setting`)
+//!   until the UI reports the panel on the new edge.
 //!   A conversion is used only while the window's viewport has the size the
 //!   report was measured in ([`on_panel_measured`], [`panel_fits`]): when
 //!   the window grows for a drag or shrinks back, the old rect describes
@@ -389,8 +391,10 @@ pub fn on_panel_measured(app: &AppHandle, window: &WebviewWindow) {
 /// The panel of the dock window `window` was converted for the engine:
 /// `Some((origin, css, scale))` with the window's top-left corner (physical
 /// px), the UI's latest resting panel (CSS px) and the scale factor, after a
-/// report or a move of the window, or `None` while the window is hidden.
-/// Only the primary dock has a backdrop. Main thread (window getters).
+/// report or a move of the window, or `None` while the window is hidden and
+/// while its page's panel rect is withdrawn (a position change, until the
+/// page reports the panel on the new edge). Only the primary dock has a
+/// backdrop. Main thread (window getters).
 pub fn on_panel(app: &AppHandle, window: &WebviewWindow, place: Option<((i32, i32), Rect, f64)>) {
     if window.label() != DOCK_LABEL {
         return;
@@ -752,10 +756,6 @@ mod tests {
         // Measured in a taller viewport: below this one's bottom edge.
         assert!(!panel_fits(Rect::new(534, 848, 640, 64), rest, rest));
         assert!(!panel_fits(Rect::new(534, -8, 640, 64), rest, rest));
-    }
-
-    #[test]
-    fn a_window_that_grew_or_shrank_has_no_material_until_the_ui_reports_the_panel_again() {
         // A row longer than its window: material would stick out of it.
         assert!(!panel_fits(Rect::new(-40, 16, 2600, 64), rest, rest));
 
@@ -811,6 +811,10 @@ mod tests {
         // The UI measures the panel in the short viewport again.
         assert!(!facts.panel_converted(at_rest, rest));
         assert_eq!(facts.step().send, Some((DOCK, Some(resting))));
+    }
+
+    #[test]
+    fn a_window_that_grew_or_shrank_has_no_material_until_the_ui_reports_the_panel_again() {
         let mut facts = shown();
         // The drag grows the window to the work area (1392 px) with its
         // bottom edge fixed; the stored rect is from the short viewport and

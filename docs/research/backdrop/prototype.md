@@ -34,8 +34,9 @@ The prototype of the [backdrop research](index.md) is
   `set_dock_panel_rect` (`push_dock_panel`, `sync_dock_panel`), rounded
   inwards, while the window's viewport keeps the size the report was
   measured in (`panel_fits`). It is hidden while the window is hidden by the
-  tray or the toggle shortcut, while auto-hide has the panel slid out, and
-  in a contrast theme.
+  tray or the toggle shortcut, while auto-hide has the panel slid out, in a
+  contrast theme, and after a change of the `position` setting until the UI
+  reports the panel on the new edge.
 - Log lines at `info`, once per change of the effective look, say what the
   app asked for: `backdrop: css (the built-in look)`, `backdrop: acrylic
   requested under the primary dock's panel (prototype; …)` or `backdrop:
