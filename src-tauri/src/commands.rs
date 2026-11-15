@@ -17,7 +17,9 @@
 //! synchronous. `delete_to_recycle_bin` can wait on the user for as long as
 //! the shell's dialogs are up, so it goes one step further and hands the
 //! call to Tauri's blocking pool, keeping the async runtime's workers free;
-//! `open_app_folder` (disk checks, then the shell) does the same.
+//! `open_app_folder` (disk checks, then the shell) does the same, and so do
+//! `reload_user_css` (a read of `dock.css`) and `open_user_css` (the
+//! template, then the shell).
 
 use std::fmt::{Debug, Display};
 use std::sync::Arc;
@@ -26,11 +28,12 @@ use base64::Engine as _;
 use stem_core::settings::DockPosition;
 use stem_core::{
     AppFolder, AppId, AppInfo, DockState, IconKey, LaunchTarget, MonitorInfo, Rect, Settings,
-    ShellAction, ThemeInfo, WindowAction, WindowId,
+    ShellAction, ThemeInfo, UserCss, WindowAction, WindowId,
 };
 use stem_platform::is_mock;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
+use crate::user_css::UserCssState;
 use crate::windows::{CssViewport, PanelReport};
 use crate::{AppPaths, AppService};
 
@@ -77,6 +80,9 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         crate::menus::show_item_menu,
         crate::menus::show_dock_menu,
         release_dock_focus,
+        get_user_css,
+        reload_user_css,
+        open_user_css,
     ]
 }
 
@@ -508,6 +514,68 @@ async fn open_app_folder(
         Err(e) => checked(
             "open_app_folder",
             &folder,
+            Err::<(), _>(format!("the open task did not finish: {e}")),
+        ),
+    }
+}
+
+/// The user's `dock.css` as read at start or by the last `reload_user_css`
+/// (`docs/ipc/themes.md`). Synchronous: a mutex read.
+#[tauri::command]
+fn get_user_css(user_css: State<'_, UserCssState>) -> UserCss {
+    user_css.current()
+}
+
+/// Read `dock.css` again (`user_css::UserCssState::reload`, which logs what
+/// came of it) and send the result to every dock window as
+/// `dock://user-css`. The read touches the disk, so it runs on
+/// Tauri's blocking pool like `open_app_folder`; the command resolves with
+/// what the docks were sent.
+#[tauri::command]
+async fn reload_user_css(app: AppHandle) -> CmdResult<UserCss> {
+    let joined = tauri::async_runtime::spawn_blocking(move || {
+        let css = app.state::<UserCssState>().reload();
+        crate::user_css::emit_to_docks(&app, &css);
+        css
+    })
+    .await;
+    checked(
+        "reload_user_css",
+        &(),
+        joined.map_err(|e| format!("the read task did not finish: {e}")),
+    )
+}
+
+/// Create `dock.css` from the template if it does not exist, then open it
+/// with the default app for `.css`: `Platform::launch` hands the
+/// path to the shell (`ShellExecuteExW`), like `open_app_folder` does a
+/// folder, on Tauri's blocking pool. Nothing is read: the dock changes at
+/// the next `reload_user_css`. A failure (no settings file in this run, a
+/// template that cannot be written, no app for `.css`) is the command's
+/// error string.
+#[tauri::command]
+async fn open_user_css(app: AppHandle, service: State<'_, AppService>) -> CmdResult<()> {
+    let service = Arc::clone(&service.0);
+    let joined = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let file = app.state::<UserCssState>().file_to_open()?;
+        let target = LaunchTarget::Uri {
+            uri: file.to_string_lossy().into_owned(),
+        };
+        service.platform().launch(&target).map_err(|e| {
+            format!(
+                "could not open {} with its default app: {e}",
+                file.display()
+            )
+        })?;
+        log::info!("open_user_css: opened {}", file.display());
+        Ok(())
+    })
+    .await;
+    match joined {
+        Ok(result) => checked("open_user_css", &(), result),
+        Err(e) => checked(
+            "open_user_css",
+            &(),
             Err::<(), _>(format!("the open task did not finish: {e}")),
         ),
     }

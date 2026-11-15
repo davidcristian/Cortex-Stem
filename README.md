@@ -226,6 +226,7 @@ The [FAQ](docs/user-guide/faq.md) in the user guide answers common questions abo
 | ----- | ---- |
 | [docs/user-guide/](docs/user-guide/index.md) | Every part of the settings window and how the dock behaves |
 | [docs/SETTINGS.md](docs/SETTINGS.md) | Every key of `settings.json` with its type, range and default, generated from the source |
+| [docs/THEMING.md](docs/THEMING.md) | The theme presets and the variables and selectors a `dock.css` can use |
 | [docs/architecture/](docs/architecture/index.md) | Layers, data flow, threads, app identity, icons, the dock window, settings, error handling, performance budgets and security |
 | [docs/ipc/](docs/ipc/index.md) | The contract between Rust and the page: every command and event |
 | [docs/PLAN.md](docs/PLAN.md) | The milestones and the non-goals |

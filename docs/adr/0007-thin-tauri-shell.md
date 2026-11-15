@@ -22,7 +22,8 @@ and an in-memory settings store (`MemorySettingsStore`). `src-tauri` only:
   and the tray icon, and applies the settings that belong to the shell
   (autostart, hiding the taskbar, reserving screen space, the shortcuts,
   click-through);
-- reports a crash of the previous run at the next start.
+- reports a crash of the previous run at the next start, and reads the
+  user's `dock.css`.
 
 ## Consequences
 

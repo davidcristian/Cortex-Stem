@@ -11,7 +11,7 @@
 //!   `backdrop`),
 //! - reports a crash of the previous run at the next start (`crash`),
 //! - knows where its own files are (`AppPaths`) for the settings page's
-//!   About section.
+//!   About section, and reads the user's `dock.css` (`user_css`).
 //!
 //! Lifecycle: this is a tray application. The dock window ignores close
 //! requests, closing the settings window only destroys that window, and an
@@ -28,6 +28,7 @@ mod menus;
 mod shortcut;
 mod taskbar;
 mod tray;
+mod user_css;
 mod windows;
 
 use std::path::{Path, PathBuf};
@@ -117,9 +118,10 @@ impl AppPaths {
     }
 }
 
-/// Event names, as documented in `docs/ipc/events.md`. All but `SHOW`, `FOCUS`
-/// and `RELEASE_FOCUS` forward a `ServiceEvent`; those come from the shell
-/// itself (`windows::toggle_dock`, `windows::on_focus_shortcut`).
+/// Event names, as documented in `docs/ipc/events.md`. All but `SHOW`, `FOCUS`,
+/// `RELEASE_FOCUS` and `USER_CSS` forward a `ServiceEvent`; the first
+/// three come from the shell itself (`windows::toggle_dock`,
+/// `windows::on_focus_shortcut`), `USER_CSS` from `reload_user_css`.
 pub mod events {
     pub const STATE: &str = "dock://state";
     pub const SETTINGS: &str = "dock://settings";
@@ -134,6 +136,8 @@ pub mod events {
     /// To one dock window: a press of the focus shortcut while it still
     /// has the keyboard from an earlier press; do what Escape does.
     pub const RELEASE_FOCUS: &str = "dock://release-focus";
+    /// To every dock window: `dock.css` was read again.
+    pub const USER_CSS: &str = "dock://user-css";
 }
 
 /// File name (without extension) of the log file in the app log dir.
@@ -176,8 +180,14 @@ pub fn run() {
             let options = ServiceOptions {
                 icon_cache_dir: icon_cache_dir(app.handle(), platform.as_ref()),
             };
+            let demo = is_mock(platform.as_ref());
             let (service, settings_file) = start_service(platform, store, &options)?;
             let service = Arc::new(service);
+            // The user's dock.css, read once here: before the dock
+            // windows exist, so their first `get_user_css` has it.
+            let user_css = user_css::UserCssState::new(settings_file.as_deref(), demo);
+            user_css.reload();
+            app.manage(user_css);
             forward_events(app.handle().clone(), &service);
             app.manage(AppService(Arc::clone(&service)));
             app.manage(AppPaths {
