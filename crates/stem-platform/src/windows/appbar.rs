@@ -38,6 +38,9 @@
 //! - `TaskbarCreated` (the shell started again: an Explorer restart drops
 //!   every registration) registers each bar again ([`on_taskbar_created`]);
 //!   `WM_NCDESTROY` removes the window's bar ([`on_destroyed`]).
+//! - [`allow_shell_messages`] lets the callback message and
+//!   `TaskbarCreated` through UIPI to a dock window, for an elevated Stem
+//!   (below).
 //! - [`release_all`] gives every band back and waits, bounded, while
 //!   handling the messages other threads send to the calling thread's
 //!   windows ([`pump_sent_messages`]); [`AppBarThread::stop`] does the same
@@ -61,6 +64,22 @@
 //! the shell addresses its notifications to that window, whichever thread
 //! sent the message; nothing in Microsoft's documentation ties the call to
 //! the window's own thread.
+//!
+//! # An elevated Stem (UIPI)
+//!
+//! Explorer runs at medium integrity. When Stem runs elevated (*Run as
+//! administrator*), User Interface Privilege Isolation drops the messages a
+//! lower-integrity process sends or posts to its windows from `WM_USER` up,
+//! registered messages included, unless the window lets them through. Both
+//! the callback message (`WM_APP + 0x17`) and `TaskbarCreated` are in that
+//! range, so without [`allow_shell_messages`] an elevated dock would never
+//! hear `ABN_POSCHANGED` (its band would not follow the taskbar's auto-hide
+//! or other bars) nor re-register after an Explorer restart. The
+//! `SHAppBarMessage` calls themselves go from the higher level to the
+//! lower one and are not filtered. The filter is changed for those two
+//! messages only, on each dock window, at any integrity level: at medium
+//! integrity it only lets a low-integrity process send them too, which
+//! costs at most a bounded requery.
 //!
 //! # No tray
 //!
@@ -86,8 +105,8 @@ use windows::Win32::UI::Shell::{
     ABN_WINDOWARRANGE, APPBARDATA, SHAppBarMessage,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, MSG, PM_NOREMOVE, PM_QS_SENDMESSAGE, PeekMessageW, RegisterWindowMessageW,
-    WA_INACTIVE, WM_APP,
+    ChangeWindowMessageFilterEx, FindWindowW, MSG, MSGFLT_ALLOW, PM_NOREMOVE, PM_QS_SENDMESSAGE,
+    PeekMessageW, RegisterWindowMessageW, WA_INACTIVE, WM_APP,
 };
 use windows::core::{PCWSTR, w};
 
@@ -109,7 +128,7 @@ const STOP_TIMEOUT: Duration = Duration::from_millis(200);
 /// Locked only to clone or send, never across a `SHAppBarMessage`.
 static SENDER: Mutex<Option<Sender<Command>>> = Mutex::new(None);
 
-/// The `TaskbarCreated` message id, registered when the thread starts.
+/// The `TaskbarCreated` message id, registered on first use.
 static TASKBAR_CREATED: OnceLock<u32> = OnceLock::new();
 
 /// What the thread is asked to do.
@@ -305,6 +324,38 @@ fn pump_sent_messages() {
 // From the dock windows' subclass (the main thread): queue and return
 // ---------------------------------------------------------------------------
 
+/// Let the shell's AppBar messages ([`CALLBACK_MESSAGE`] and
+/// `TaskbarCreated`) through UIPI to the dock window `hwnd`, so an elevated
+/// Stem still hears them from the medium-integrity Explorer (module docs).
+/// `dock_window::prepare` calls it for each dock window; it sends nothing
+/// and a failure is logged, never fatal (the band then does not follow the
+/// shell's changes while elevated).
+pub fn allow_shell_messages(hwnd: HWND) {
+    let messages = [
+        (CALLBACK_MESSAGE, "the AppBar callback message"),
+        (taskbar_created_message(), "TaskbarCreated"),
+    ];
+    for (message, name) in messages {
+        if message == 0 {
+            continue;
+        }
+        // SAFETY: changes the message filter of a window of this process;
+        // no out-structure is passed. A dead handle only makes it fail.
+        let allowed = unsafe { ChangeWindowMessageFilterEx(hwnd, message, MSGFLT_ALLOW, None) };
+        match allowed {
+            Ok(()) => log::trace!(
+                "dock window {:#x}: {name} ({message:#x}) allowed through UIPI",
+                raw(hwnd)
+            ),
+            Err(e) => log::debug!(
+                "dock window {:#x}: could not let {name} ({message:#x}) through UIPI: {e}; an \
+                 elevated Stem would not hear it",
+                raw(hwnd)
+            ),
+        }
+    }
+}
+
 /// Queue `command` for the thread, if one runs. Never waits.
 fn forward(command: Command) {
     if let Some(sender) = SENDER.lock().as_ref() {
@@ -338,8 +389,8 @@ pub fn on_window_pos_changed(hwnd: HWND) {
     forward(Command::WindowPosChanged(raw(hwnd)));
 }
 
-/// Whether `msg` is `TaskbarCreated` (known once the thread has started;
-/// before that no bar exists that would need it).
+/// Whether `msg` is `TaskbarCreated` (known once a dock window was prepared
+/// or the thread started; before that no bar exists that would need it).
 pub fn is_taskbar_created(msg: u32) -> bool {
     TASKBAR_CREATED
         .get()

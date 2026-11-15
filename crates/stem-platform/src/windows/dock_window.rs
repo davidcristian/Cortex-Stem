@@ -7,8 +7,10 @@
 //!   (`WS_EX_TOOLWINDOW`: hidden from Alt+Tab and the stock taskbar;
 //!   `WS_EX_NOACTIVATE`: clicks do not take the foreground), asks DWM not to
 //!   round the corners (`DWMWA_WINDOW_CORNER_PREFERENCE = DWMWCP_DONOTROUND`)
-//!   when `no_system_decorations`, subclasses the window (below) and applies
-//!   `WS_EX_NOACTIVATE` to the WebView2 child windows.
+//!   when `no_system_decorations`, subclasses the window (below), lets the
+//!   shell's AppBar messages through UIPI (`appbar::allow_shell_messages`,
+//!   for an elevated Stem) and applies `WS_EX_NOACTIVATE` to the WebView2
+//!   child windows.
 //! - [`post_pass_through`] is what the hit-test thread (`hit_test`)
 //!   calls on a transition: it posts [`MSG_SET_PASS_THROUGH`], and the
 //!   subclass toggles `WS_EX_LAYERED | WS_EX_TRANSPARENT` on the window's
@@ -233,6 +235,9 @@ pub fn prepare(handle: NativeWindowHandle, options: DockWindowOptions) -> Platfo
         next.0
     );
     DOCK_WINDOWS.lock().push(handle.0);
+    // The shell's AppBar messages reach the subclass even when Stem runs
+    // elevated (UIPI).
+    appbar::allow_shell_messages(hwnd);
 
     if options.no_system_decorations {
         set_corner_preference(hwnd)?;

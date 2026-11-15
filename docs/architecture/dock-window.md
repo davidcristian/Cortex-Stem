@@ -31,6 +31,7 @@ creation. It:
   extended styles again on every `WM_STYLECHANGING`, returns
   `MA_NOACTIVATE` for `WM_MOUSEACTIVATE` and applies the pass-through
   transitions;
+- lets the shell's AppBar messages through UIPI, for an elevated Stem;
 - puts `WS_EX_NOACTIVATE` on the WebView2 child windows (Chromium applies
   it on windows that are not top-level).
 
