@@ -414,6 +414,17 @@ impl DockService {
         })
     }
 
+    /// Change the settings in place, under the lock every settings change
+    /// takes, then validate, persist and apply them; returns the validated
+    /// copy. For an edit of one field (the tray's click-through toggle) that
+    /// must not write back a copy read before another change landed.
+    pub fn modify_settings(&self, edit: impl FnOnce(&mut Settings)) -> ServiceResult<Settings> {
+        self.inner.mutate_settings(|current| {
+            edit(current);
+            true
+        })
+    }
+
     /// The dock's "click" on `item_key` in the dock window `dock` (its
     /// label): launch, activate, minimise, or run a shell action. Only the
     /// windows that dock lists take part (`DockEngine::primary_action`):
@@ -3200,6 +3211,42 @@ mod tests {
                 MockCall::WindowAction(WindowId(3), WindowAction::Activate),
             ]
         );
+        service.shutdown();
+    }
+
+    #[test]
+    fn a_stale_whole_document_never_undoes_a_pin_and_reset_clears_them() {
+        let (service, _platform, rx) = start();
+        let state = wait_state(&rx, resolved);
+        let spotify = item_titled(&state, "Spotify")
+            .unwrap()
+            .app_id
+            .clone()
+            .unwrap();
+
+        // The settings page took its copy, then the dock pinned an app.
+        let mut stale = service.settings();
+        service.pin_app(&spotify).unwrap();
+        stale.icon_size = 64;
+        let saved = service.update_settings(stale.clone()).unwrap();
+        assert_eq!(saved.icon_size, 64);
+        assert!(saved.is_pinned(&spotify), "the pin survives the stale copy");
+        // A document that drops every pin changes none either.
+        stale.pinned.clear();
+        assert!(service.update_settings(stale).unwrap().is_pinned(&spotify));
+
+        // One field in place: the pin made meanwhile stays too.
+        let was = service.settings().behavior.click_through;
+        let saved = service
+            .modify_settings(|s| s.behavior.click_through = !was)
+            .unwrap();
+        assert_eq!(saved.behavior.click_through, !was);
+        assert!(saved.is_pinned(&spotify));
+
+        // Reset restores the defaults, pins included.
+        let reset = service.reset_settings().unwrap();
+        assert_eq!(reset, Settings::default());
+        assert_eq!(service.settings(), Settings::default());
         service.shutdown();
     }
 }

@@ -343,6 +343,9 @@ describe('click semantics (mirror of DockEngine::primary_action)', () => {
       ]);
 
       // Nothing but the two: no separator before them.
+      for (const pin of (await b.getSettings()).pinned) {
+        await b.unpinApp(pin.id);
+      }
       const settings = await b.getSettings();
       for (const pin of settings.pinned) {
         await b.unpinApp(pin.id);
@@ -1126,6 +1129,20 @@ describe('revisions and events', () => {
     expect(item(await b.getDockState(), 'fixed:recycle-bin').iconKey).toBe(
       'shell:recycle-bin-empty',
     );
+  });
+
+  it('updateSettings keeps the pins: a stale copy never undoes a pin (as Rust does)', async () => {
+    const b = fast();
+    const stale = await b.getSettings();
+    await b.pinApp(SPOTIFY);
+    stale.iconSize = 64;
+    const saved = await b.updateSettings(stale);
+    expect(saved.iconSize).toBe(64);
+    expect(saved.pinned.map((p) => p.id)).toContain(SPOTIFY);
+    // A copy without any pin removes none either.
+    stale.pinned = [];
+    expect((await b.updateSettings(stale)).pinned.map((p) => p.id)).toContain(SPOTIFY);
+    expect((await b.getSettings()).pinned.map((p) => p.id)).toContain(SPOTIFY);
   });
 
   it('resetSettings restores the defaults, emits dock://settings and re-renders', async () => {

@@ -107,8 +107,10 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
 }
 
 /// Flip `behavior.clickThrough` through the service, off the main thread
-/// (the service persists the settings file). The menu library has already
-/// toggled the check mark on the click; a failed save puts it back.
+/// (the service persists the settings file), in place under the settings
+/// lock (`DockService::modify_settings`), so a change saved meanwhile is
+/// not overwritten by an older copy. The menu library has already toggled
+/// the check mark on the click; a failed save puts it back.
 fn toggle_click_through(app: &AppHandle) {
     let Some(service) = app.try_state::<AppService>().map(|s| Arc::clone(&s.0)) else {
         log::warn!("click-through toggle ignored: the service is not running");
@@ -116,10 +118,12 @@ fn toggle_click_through(app: &AppHandle) {
     };
     let app = app.clone();
     drop(tauri::async_runtime::spawn_blocking(move || {
-        let mut settings = service.settings();
-        let was = settings.behavior.click_through;
-        settings.behavior.click_through = !was;
-        match service.update_settings(settings) {
+        let mut was = service.settings().behavior.click_through;
+        let toggled = service.modify_settings(|settings| {
+            was = settings.behavior.click_through;
+            settings.behavior.click_through = !was;
+        });
+        match toggled {
             Ok(saved) => log::info!(
                 "click-through {} from the tray",
                 crate::on_off(saved.behavior.click_through)
