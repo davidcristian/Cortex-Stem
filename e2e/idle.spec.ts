@@ -97,8 +97,9 @@ const SETTLE_TIMEOUT_MS = 10_000;
  */
 const SCRIPT_BUDGET_MS = 3;
 /**
- * Main-thread task time allowed in a 3 s window. A settled page measures
- * 1–2 ms (the probe's evaluations and the CDP calls themselves); the frame
+ * Main-thread task time allowed in a 3 s window. A settled page measured
+ * 0.7–2.2 ms on a Windows 11 PC, and up to 3.8 ms while that PC was
+ * loaded (the probe's evaluations and the CDP calls themselves); the frame
  * loop control about 230 ms, and it must trip this budget. The margin is
  * for loaded hosts.
  */
