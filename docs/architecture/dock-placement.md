@@ -103,6 +103,14 @@ windows, destroys the ones whose monitor is gone (never the primary's), and
 lays out the rest on the dock edge of their own monitor's work area at its
 scale.
 
+Tauri only posts a destroy, and keeps the label until
+`WindowEvent::Destroyed`, so a destroyed window is *closing* until then.
+Its state is gone, so its page's late reports and the relayouts posted for
+it are dropped. A reconcile that needs the label again waits, and runs once
+more on that `Destroyed`. `appbar` reads each window's handle again at
+every sync, so a re-created window never inherits the bar of the window it
+replaces.
+
 All per-window state is kept by label: the content size and the edge it was
 reported on, the hit region, the panel rect, the scale, the monitor and the
 edge the window was placed on. Every UI report is routed by the calling

@@ -25,7 +25,11 @@ Each window of the app has a label and loads one page:
   monitor is gone are closed (never `dock`), and the rest are laid out again on their own
   monitor's work area at its scale ([Sizing protocol](sizing-protocol.md)). Each creation and
   each closing logs one info line: `dock window created "<label>" on <monitor>` or `dock window
-  closed "<label>" (monitor <id>)`.
+  closed "<label>" (monitor <id>)`. A closed window stays until Tauri destroys it at the next
+  turn of the event loop. What its page still sends in that time is dropped (a `debug` line
+  `... dropped; the window is closing`). A monitor that comes back before then gets its window
+  once the old one is gone (an info line `dock window "<label>" is gone; reconciling the dock
+  windows again, which wanted it`).
 
   Every command a page sends is routed by its window (its label), as the
   [commands](commands.md) say. `set_dock_hit_region`, `set_dock_content_size`,

@@ -143,7 +143,7 @@
 //! the *Theme* setting (`settings.theme`): set when the window is
 //! created and again whenever the setting changes ([`on_settings_changed`]).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 use parking_lot::Mutex;
@@ -437,6 +437,16 @@ pub struct DockGeometry {
     /// settings event only moves them on a change; [`dock_edge`] reads it
     /// for every placement.
     position: Mutex<Option<DockPosition>>,
+    /// The labels of the dock windows [`close_dock_window`] destroyed whose
+    /// `WindowEvent::Destroyed` has not arrived yet. Tauri only posts the
+    /// destroy, and keeps the label (and `get_webview_window`) until then,
+    /// so such a window is neither live (it has no state in `docks`) nor
+    /// gone (its label cannot be built again) until that event.
+    closing: Mutex<HashSet<String>>,
+    /// The closing labels a reconcile wanted again while they were closing
+    /// ([`reconcile_docks`]): their `Destroyed` runs the reconcile again,
+    /// which creates them anew.
+    wanted_again: Mutex<HashSet<String>>,
 }
 
 impl DockGeometry {
@@ -456,6 +466,33 @@ impl DockGeometry {
         let mut labels: Vec<String> = self.docks.lock().keys().cloned().collect();
         labels.sort_by(|a, b| (a != DOCK_LABEL).cmp(&(b != DOCK_LABEL)).then(a.cmp(b)));
         labels
+    }
+
+    /// The dock window `label` was just destroyed ([`close_dock_window`]);
+    /// its `Destroyed` is still to come ([`Self::closing`]).
+    fn start_closing(&self, label: &str) {
+        self.closing.lock().insert(label.to_owned());
+    }
+
+    /// Whether the dock window `label` is still closing; if it is, a
+    /// reconcile that wants it is remembered ([`Self::wanted_again`]) and
+    /// runs again once the window is gone.
+    fn defer_if_closing(&self, label: &str) -> bool {
+        if !self.closing.lock().contains(label) {
+            return false;
+        }
+        self.wanted_again.lock().insert(label.to_owned());
+        true
+    }
+
+    /// The dock window `label` is gone (`WindowEvent::Destroyed`): `None`
+    /// when it was not closing (the quit destroys every window), else
+    /// whether a reconcile wanted it again meanwhile.
+    fn finish_closing(&self, label: &str) -> Option<bool> {
+        if !self.closing.lock().remove(label) {
+            return None;
+        }
+        Some(self.wanted_again.lock().remove(label))
     }
 }
 
@@ -617,7 +654,12 @@ pub fn create_dock_windows(app: &AppHandle, service: &DockService) -> tauri::Res
 /// primary's), create the missing ones, and lay every remaining one out on
 /// its own monitor (which the panel conversion then reports to the engine
 /// with the monitor id). A secondary window that cannot be created is
-/// logged and skipped; the primary's failure is returned. Main thread.
+/// logged and skipped; the primary's failure is returned. A window this
+/// wants that is still closing (destroyed by an earlier reconcile, its
+/// `Destroyed` still to come: a monitor that dropped and came back before
+/// the main thread caught up) is neither laid out nor created: its
+/// `Destroyed` runs the reconcile again ([`on_dock_destroyed`]). Main
+/// thread.
 fn reconcile_docks(
     app: &AppHandle,
     service: &DockService,
@@ -648,6 +690,16 @@ fn reconcile_docks(
     }
 
     for entry in plan {
+        if app
+            .try_state::<DockGeometry>()
+            .is_some_and(|geometry| geometry.defer_if_closing(&entry.label))
+        {
+            log::debug!(
+                "dock window {:?} is still closing; reconciling again once it is gone",
+                entry.label
+            );
+            continue;
+        }
         match app.get_webview_window(&entry.label) {
             Some(window) => {
                 let monitor_id = entry.monitor.as_ref().map(|m| m.id.clone());
@@ -717,8 +769,9 @@ fn create_dock_window(
         .build()?;
 
     // The dock is never closed by the user (Quit lives in the tray), a DPI
-    // change lays it out again, and losing the focus may end the
-    // focus shortcut's session.
+    // change lays it out again, losing the focus may end the focus
+    // shortcut's session, and a window `close_dock_window` destroyed
+    // is only gone once its `Destroyed` arrives.
     let handle = app.clone();
     let owned = label.to_owned();
     window.on_window_event(move |event| match event {
@@ -733,6 +786,7 @@ fn create_dock_window(
         } => on_scale_factor_changed(&handle, &owned, *scale_factor, *new_inner_size),
         // The dock lost the keyboard focus; maybe the activation.
         WindowEvent::Focused(false) => on_dock_blurred(&handle, &owned),
+        WindowEvent::Destroyed => on_dock_destroyed(&handle, &owned),
         _ => {}
     });
 
@@ -803,10 +857,15 @@ fn primary_visibility(app: &AppHandle) -> Option<bool> {
 /// Close the secondary dock window `label` (its monitor went away, or the
 /// mode went back to the primary only): destroy it (a plain close would be
 /// refused like a user's), forget its state, and tell the engine the dock
-/// is gone. Main thread.
+/// is gone. Tauri only posts the destroy: until the window's `Destroyed`
+/// the label stays registered and its page may still report, so the label
+/// is marked closing ([`DockGeometry::start_closing`]); with its state
+/// gone, every report and every posted relayout for it is dropped, and a
+/// reconcile waits for [`on_dock_destroyed`]. Main thread.
 fn close_dock_window(app: &AppHandle, service: &DockService, label: &str) {
-    let monitor = app
-        .try_state::<DockGeometry>()
+    let geometry = app.try_state::<DockGeometry>();
+    let monitor = geometry
+        .as_ref()
         .and_then(|geometry| geometry.docks.lock().remove(label))
         .and_then(|dock| dock.monitor);
     if let Some(flags) = app.try_state::<DockAutoHidden>() {
@@ -816,8 +875,15 @@ fn close_dock_window(app: &AppHandle, service: &DockService, label: &str) {
     crate::appbar::forget(app, label);
     match app.get_webview_window(label) {
         Some(window) => {
+            if let Some(geometry) = geometry.as_ref() {
+                geometry.start_closing(label);
+            }
             if let Err(e) = window.destroy() {
                 log::warn!("dock window {label:?} could not be closed: {e}");
+                // No `Destroyed` follows a destroy that was never posted.
+                if let Some(geometry) = geometry.as_ref() {
+                    geometry.finish_closing(label);
+                }
             }
         }
         None => log::debug!("dock window {label:?} was already gone"),
@@ -827,6 +893,43 @@ fn close_dock_window(app: &AppHandle, service: &DockService, label: &str) {
         "dock window closed {label:?} (monitor {})",
         monitor.as_ref().map_or("unknown", |m| m.0.as_str())
     );
+}
+
+/// The dock window `label` is gone (`WindowEvent::Destroyed`; Tauri freed
+/// the label before it called the window's listeners). For a window
+/// [`close_dock_window`] destroyed: forget any bar a late report recreated
+/// for it while it was closing (`appbar::forget`), and when a reconcile
+/// wanted the label meanwhile, run the reconcile again for the mode and
+/// monitors of the moment, at the next turn of the main thread's loop, so
+/// a monitor that dropped and came back ends with its dock. Nothing for the
+/// windows the quit destroys. Main thread.
+fn on_dock_destroyed(app: &AppHandle, label: &str) {
+    let Some(again) = app
+        .try_state::<DockGeometry>()
+        .and_then(|geometry| geometry.finish_closing(label))
+    else {
+        return;
+    };
+    crate::appbar::forget(app, label);
+    log::debug!("dock window {label:?} is gone");
+    if !again {
+        return;
+    }
+    log::info!(
+        "dock window {label:?} is gone; reconciling the dock windows again, which wanted it"
+    );
+    let handle = app.clone();
+    let label = label.to_owned();
+    post_to_main_thread(app, move || {
+        let Some(service) = handle.try_state::<crate::AppService>() else {
+            return;
+        };
+        let mode = service.0.settings().monitors;
+        let monitors = service.0.monitors();
+        if let Err(e) = reconcile_docks(&handle, &service.0, mode, &monitors) {
+            log::warn!("re-creating the dock windows after {label:?} closed failed: {e}");
+        }
+    });
 }
 
 fn describe_click_through(enabled: bool) -> &'static str {
@@ -903,7 +1006,23 @@ fn monitor_id_of(app: &AppHandle, label: &str) -> Option<MonitorId> {
         .and_then(|dock| dock.monitor)
 }
 
-/// The dock windows that exist, the primary's first.
+/// The dock window `label` while it is live: Tauri still has it and so does
+/// [`DockGeometry`] (a window [`close_dock_window`] destroyed keeps its
+/// label in Tauri until its `Destroyed`, without state here). Work posted
+/// for a dock window looks it up through this.
+fn live_dock_window(app: &AppHandle, label: &str) -> Option<WebviewWindow> {
+    let live = app
+        .try_state::<DockGeometry>()
+        .is_none_or(|geometry| geometry.dock(label).is_some());
+    if live {
+        app.get_webview_window(label)
+    } else {
+        None
+    }
+}
+
+/// The dock windows that exist, the primary's first (never one that is
+/// closing: it has no state, [`live_dock_window`]).
 pub(crate) fn dock_windows(app: &AppHandle) -> Vec<WebviewWindow> {
     let labels = app
         .try_state::<DockGeometry>()
@@ -926,6 +1045,14 @@ fn log_stale(label: &str, report: &str, edge: DockPosition, placed: DockPosition
     log::debug!(
         "dock window {label:?}: {report} measured for the {edge:?} edge dropped; the window is on the {placed:?} edge"
     );
+}
+
+/// One `debug` line for a report from a dock window that has no state: it
+/// is closing ([`close_dock_window`] forgot it; Tauri destroys it at the
+/// next turn of the event loop), so the report is dropped. A window gets
+/// its state right after it is built, before its page loads.
+fn log_closing(label: &str, report: &str) {
+    log::debug!("dock window {label:?}: {report} dropped; the window is closing");
 }
 
 /// Take the reported content size (CSS px), measured for `edge`: the value
@@ -966,10 +1093,10 @@ pub fn apply_content_size(
             log_stale(window.label(), "a content size", edge, placed);
             return Ok(());
         }
-        None => log::warn!(
-            "no state for dock window {:?}; monitor changes will not re-layout it",
-            window.label()
-        ),
+        None => {
+            log_closing(window.label(), "a content size");
+            return Ok(());
+        }
     }
     let monitors = match app.try_state::<crate::AppService>() {
         Some(service) => service.0.monitors(),
@@ -1023,9 +1150,16 @@ pub fn apply_hit_region(
         let taken = geometry.update(window.label(), |dock| {
             dock.take_hit_region(panel, envelope, edge)
         });
-        if let Some(Err(placed)) = taken {
-            log_stale(window.label(), "a hit region", edge, placed);
-            return Ok(());
+        match taken {
+            Some(Ok(())) => {}
+            Some(Err(placed)) => {
+                log_stale(window.label(), "a hit region", edge, placed);
+                return Ok(());
+            }
+            None => {
+                log_closing(window.label(), "a hit region");
+                return Ok(());
+            }
         }
     }
     if !service.0.settings().behavior.click_through {
@@ -1117,7 +1251,11 @@ pub fn apply_dock_panel(
                 report.viewport,
                 report.edge
             ),
-            Some((Ok(Some(_)), _)) | None => {}
+            Some((Ok(Some(_)), _)) => {}
+            None => {
+                log_closing(window.label(), "a panel rect");
+                return Ok(());
+            }
         }
     }
     let pushed = push_dock_panel(app, &service.0, window, report, None);
@@ -1585,7 +1723,7 @@ fn on_scale_factor_changed(
     let handle = app.clone();
     let label = label.to_owned();
     post_to_main_thread(app, move || {
-        let Some(window) = handle.get_webview_window(&label) else {
+        let Some(window) = live_dock_window(&handle, &label) else {
             log::debug!("dock window {label:?} is gone before its scale change was applied");
             return;
         };
@@ -1625,7 +1763,7 @@ pub(crate) fn relayout_later(app: &AppHandle, label: &str) {
     let handle = app.clone();
     let label = label.to_owned();
     post_to_main_thread(app, move || {
-        let Some(window) = handle.get_webview_window(&label) else {
+        let Some(window) = live_dock_window(&handle, &label) else {
             log::debug!("dock window {label:?} is gone before it could go onto its band");
             return;
         };
@@ -2297,6 +2435,10 @@ fn show_dock_window(window: &WebviewWindow) -> tauri::Result<()> {
 /// to bring the panel back instead (`dock://show`, as [`toggle_dock`] does).
 pub fn reveal_all(app: &AppHandle) {
     for (label, window) in app.webview_windows() {
+        if label.starts_with(DOCK_LABEL) && live_dock_window(app, &label).is_none() {
+            log::debug!("dock window {label:?} is closing; not revealed");
+            continue;
+        }
         if label.starts_with(DOCK_LABEL)
             && window.is_visible().unwrap_or(false)
             && is_auto_hidden(app, &label)
@@ -3009,6 +3151,32 @@ mod tests {
         assert_eq!(geometry.update("nope", |_| 1), None);
         assert_eq!(geometry.dock("dock").unwrap().content, Some(content));
         assert_eq!(geometry.dock("dock").unwrap().edge, None);
+    }
+
+    #[test]
+    fn a_closing_dock_window_defers_a_reconcile_until_it_is_gone() {
+        let geometry = DockGeometry::default();
+        // Not closing: a reconcile goes ahead, and a `Destroyed` (the quit's)
+        // asks for nothing.
+        assert!(!geometry.defer_if_closing("dock-DISPLAY2"));
+        assert_eq!(geometry.finish_closing("dock-DISPLAY2"), None);
+
+        // Destroyed, `Destroyed` still to come, and nobody wanted it back.
+        geometry.start_closing("dock-DISPLAY2");
+        assert_eq!(geometry.finish_closing("dock-DISPLAY2"), Some(false));
+        assert!(!geometry.defer_if_closing("dock-DISPLAY2"), "gone now");
+
+        // A monitor that drops and comes back before the main thread caught
+        // up: the second reconcile neither lays the dying window out nor
+        // builds its label again; its `Destroyed` runs the reconcile again,
+        // once.
+        geometry.start_closing("dock-DISPLAY2");
+        assert!(geometry.defer_if_closing("dock-DISPLAY2"));
+        assert!(geometry.defer_if_closing("dock-DISPLAY2"));
+        assert!(!geometry.defer_if_closing("dock-DISPLAY3"));
+        assert_eq!(geometry.finish_closing("dock-DISPLAY2"), Some(true));
+        assert_eq!(geometry.finish_closing("dock-DISPLAY2"), None);
+        assert!(!geometry.defer_if_closing("dock-DISPLAY2"));
     }
 
     const EDGES: [DockPosition; 4] = [
