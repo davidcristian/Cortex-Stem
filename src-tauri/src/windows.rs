@@ -80,12 +80,11 @@
 //! on), with the window's label and monitor, which is what the engine
 //! compares window frames against, per dock. The conversion is redone
 //! whenever this module moves the window ([`place`]: a monitor or
-//! work-area change moves it without the UI's viewport changing; an edge
-//! change moves it before the UI has laid itself out for the new edge, and
-//! the UI's next report replaces the rect), the service gets no rect while
-//! the window is hidden by the tray or the toggle shortcut
-//! ([`toggle_dock`]), and neither monitor nor rect once the window is
-//! closed.
+//! work-area change moves it without the UI's viewport changing), the
+//! service gets no rect while the window is hidden by the tray or the
+//! toggle shortcut ([`toggle_dock`]), nor after an edge change until the UI
+//! reports a rect laid out for the new edge ([`forget_edge_layout`]), and
+//! neither monitor nor rect once the window is closed.
 //!
 //! The settings window (`settings`) is an ordinary decorated window,
 //! created on demand and destroyed when closed. Its native title bar follows
@@ -901,8 +900,11 @@ pub fn on_settings_changed(app: &AppHandle, settings: &Settings) {
 /// again, the hover and auto-hide state lost), and a monitor change already
 /// re-places windows the same way ([`relayout_dock`]). Each window keeps its
 /// thickness, now across the new edge, until its page reports a content
-/// size for that edge ([`DockContent::on_edge`]). Any thread; the window
-/// work hops to the main thread.
+/// size for that edge ([`DockContent::on_edge`]); what its page laid out
+/// for the old edge is dropped first ([`forget_edge_layout`]). The pages
+/// get `dock://settings` before this runs (`lib.rs`, `forward_events`), so
+/// a page usually lays itself out for the new edge before its window moves.
+/// Any thread; the window work hops to the main thread.
 fn on_position_setting(app: &AppHandle, edge: DockPosition) {
     let Some(geometry) = app.try_state::<DockGeometry>() else {
         return;
@@ -927,6 +929,7 @@ fn on_position_setting(app: &AppHandle, edge: DockPosition) {
         );
         let monitors = service.0.monitors();
         for window in windows {
+            forget_edge_layout(&handle, &service.0, window.label());
             if let Err(e) = relayout_dock(&handle, &window, &monitors) {
                 log::warn!(
                     "dock window {:?} could not be moved to the {edge:?} edge: {e}",
@@ -937,6 +940,35 @@ fn on_position_setting(app: &AppHandle, edge: DockPosition) {
     });
     if let Err(e) = scheduled {
         log::warn!("could not schedule the move to the {edge:?} edge: {e}");
+    }
+}
+
+/// Before the dock window `label` moves to another edge: forget the
+/// panel rect and the hit region its page laid out for the old edge, and
+/// tell the engine the dock has no panel until the page reports one for
+/// the new edge (as while the window is hidden). Converted again at the
+/// window's new origin, the old rect would lie where no panel is (a bottom
+/// panel 700 px long running from a left window 135 px wide into the
+/// desktop), and the engine would compute the dock's `overlapped` from it:
+/// with *When a window overlaps* the dock could slide out and back
+/// for nothing. The platform keeps the hit region it has (window-local,
+/// where the page last drew its panel) until the page's next report; it is
+/// not replayed meanwhile (a DPI change, `behavior.clickThrough` turned
+/// on). The content size is kept: its thickness holds until the next
+/// report (`docs/ipc/sizing-protocol.md`, step 5). Main thread.
+fn forget_edge_layout(app: &AppHandle, service: &DockService, label: &str) {
+    let Some(geometry) = app.try_state::<DockGeometry>() else {
+        return;
+    };
+    let forgotten = geometry.update(label, |dock| {
+        dock.hit_region_css = None;
+        dock.panel_css.take().map(|_| dock.monitor.clone())
+    });
+    if let Some(Some(monitor)) = forgotten {
+        log::debug!(
+            "dock window {label:?}: panel rect withdrawn until its page reports for the new edge"
+        );
+        service.set_dock_panel(label, monitor, None);
     }
 }
 

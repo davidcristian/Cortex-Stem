@@ -484,12 +484,18 @@ fn forward_events(app: AppHandle, service: &DockService) {
         let result = match event {
             ServiceEvent::State(state) => app.emit(events::STATE, state),
             ServiceEvent::Settings(settings) => {
-                windows::on_settings_changed(&app, settings);
                 tray::on_settings_changed(&app, settings);
                 autostart::on_settings_changed(&app, settings);
                 taskbar::on_settings_changed(&app, settings);
                 shortcut::on_settings_changed(&app, settings);
-                app.emit(events::SETTINGS, settings)
+                // The pages before their windows: the emit is queued on the
+                // main thread ahead of the window work `windows` posts, so
+                // on a new edge a page usually lays itself out for
+                // it before its window moves, and its next content-size
+                // report is read for the edge it was laid out for.
+                let emitted = app.emit(events::SETTINGS, settings);
+                windows::on_settings_changed(&app, settings);
+                emitted
             }
             ServiceEvent::Theme(theme) => app.emit(events::THEME, theme),
             ServiceEvent::Monitors(monitors) => {

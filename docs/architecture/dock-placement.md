@@ -35,11 +35,14 @@ monitor and change the window's DPI on the way.
 
 A change of `settings.position` moves every dock window to the new edge
 **in place**: no window attribute depends on the edge, and a new window
-would reload its page. Each window keeps its thickness, now across the new
-edge, until its page reports a content size laid out for that edge
-(`windows::DockContent::on_edge`). The hit region stays window-local, and
-the panel rect is offset by the window's own origin, so both are correct
-for a window whose origin is not the work area's (a right or bottom dock).
+would reload its page. The pages get `dock://settings` before their windows
+move. Each window keeps its thickness, now across the new edge, until its
+page reports a content size laid out for that edge
+(`windows::DockContent::on_edge`). The engine has no panel rect for the dock
+until its page reports one for the new edge, because the old rect would lie
+where no panel is. The hit region stays window-local, and the panel rect is
+offset by the window's own origin, so both are correct for a window whose
+origin is not the work area's (a right or bottom dock).
 
 ## One window per monitor
 
