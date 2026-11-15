@@ -819,6 +819,7 @@ pub fn apply_dock_panel(app: &AppHandle, window: &WebviewWindow, rect: Rect) -> 
                 .map(|(edge, viewport)| reserved_thickness(viewport, rect, edge));
         });
     }
+    crate::backdrop::on_panel_measured(app, window);
     let pushed = push_dock_panel(app, &service.0, window, rect);
     crate::appbar::sync(app, window);
     pushed

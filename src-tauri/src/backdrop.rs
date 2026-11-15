@@ -13,7 +13,12 @@
 //!   that `windows` hands to the service ([`on_panel`], from
 //!   `push_dock_panel` and `sync_dock_panel`), rounded inwards
 //!   ([`panel_inwards`]: the material must never stick out of the panel);
-//!   `None` while the window is hidden by the tray or the toggle shortcut;
+//!   `None` while the window is hidden by the tray or the toggle shortcut.
+//!   A conversion is used only while the window's viewport has the size the
+//!   report was measured in ([`on_panel_measured`], [`panel_fits`]): when
+//!   the window grows for a drag or shrinks back, the old rect describes
+//!   the wrong place, and the material is gone until the UI reports the
+//!   panel in the new viewport (it measures again after every resize);
 //! - auto-hide ([`on_auto_hidden`], from `set_dock_auto_hidden`): the
 //!   material goes when the slide (or fade) out starts, and comes back
 //!   [`REVEAL_DELAY`] after the slide in started, which is when it ends; the
@@ -122,6 +127,47 @@ pub fn panel_inwards(origin: (i32, i32), css: Rect, scale: f64) -> Rect {
     )
 }
 
+/// A dock window's viewport in CSS px: the space the UI measures its panel
+/// in (`window.innerWidth` and `innerHeight`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Viewport {
+    pub width: f64,
+    pub height: f64,
+}
+
+impl Viewport {
+    /// A client area of `physical` px (width, height) at `scale`. Pure.
+    pub fn of(physical: (u32, u32), scale: f64) -> Self {
+        let scale = usable_scale(scale);
+        Self {
+            width: f64::from(physical.0) / scale,
+            height: f64::from(physical.1) / scale,
+        }
+    }
+}
+
+/// How far (CSS px) two viewports may differ and still count as one, and how
+/// far a panel may reach past its viewport's top or bottom edge: the UI
+/// rounds the panel outwards to whole CSS px, and a client area of whole
+/// physical px is fractional in CSS px.
+const VIEWPORT_SLACK: f64 = 1.5;
+
+/// Whether the resting panel `css`, reported while the window's viewport
+/// was `measured_in`, still says where the panel is in the window whose
+/// viewport is `now`. Only when the viewport kept its size: the window grows
+/// and shrinks with one edge fixed (a drag; a new content size), which
+/// moves the panel within the viewport, so the old rect is stale until the
+/// UI measures again. A window that only moved keeps its panel. And only
+/// when the panel lies within the viewport's height, which a report measured
+/// before a resize but handled after it does not. Pure.
+pub fn panel_fits(css: Rect, measured_in: Viewport, now: Viewport) -> bool {
+    let same_size = (measured_in.width - now.width).abs() <= VIEWPORT_SLACK
+        && (measured_in.height - now.height).abs() <= VIEWPORT_SLACK;
+    let inside = f64::from(css.y) >= -VIEWPORT_SLACK
+        && f64::from(css.bottom()) <= now.height + VIEWPORT_SLACK;
+    same_size && inside
+}
+
 /// The request for the platform: a backdrop only for a native material, a
 /// known panel with an area, and a panel that is not slid out. The corner
 /// radius is `appearance.cornerRadius` at the panel's scale. Pure.
@@ -192,7 +238,12 @@ struct Facts {
     /// `None` until [`init`].
     inputs: Option<Inputs>,
     theme: ThemeInfo,
-    /// `None` before the first panel report and while the window is hidden.
+    /// The window's viewport when the UI's latest panel report came: the
+    /// space that report is measured in. `None` before the first report, or
+    /// when the window's size could not be read.
+    measured_in: Option<Viewport>,
+    /// `None` before the first panel report, while the window is hidden, and
+    /// while the latest report does not fit the window ([`panel_fits`]).
     panel: Option<PanelPlace>,
     /// Slid out by auto-hide, or sliding back in for [`REVEAL_DELAY`].
     slid_out: bool,
@@ -217,12 +268,27 @@ struct Step {
 impl Facts {
     /// A conversion of the panel: `Some((origin, css, scale))` with the
     /// window's top-left corner (physical px), the UI's resting panel (CSS
-    /// px) and the scale factor, or `None` while the window is hidden.
-    fn panel_converted(&mut self, place: Option<((i32, i32), Rect, f64)>) {
-        self.panel = place.map(|(origin, css, scale)| PanelPlace {
+    /// px) and the scale factor, or `None` while the window is hidden; `now`
+    /// is the window's viewport. A panel that does not fit the viewport
+    /// ([`panel_fits`]) counts as none; then this returns `true`.
+    fn panel_converted(
+        &mut self,
+        place: Option<((i32, i32), Rect, f64)>,
+        now: Option<Viewport>,
+    ) -> bool {
+        let Some((origin, css, scale)) = place else {
+            self.panel = None;
+            return false;
+        };
+        let fits = match (self.measured_in, now) {
+            (Some(measured_in), Some(now)) => panel_fits(css, measured_in, now),
+            _ => false,
+        };
+        self.panel = fits.then(|| PanelPlace {
             rect: panel_inwards(origin, css, scale),
             scale,
         });
+        !fits
     }
 
     /// An auto-hide report. Out (`hidden`): the panel counts as slid out at
@@ -298,11 +364,26 @@ pub fn on_theme_changed(app: &AppHandle, theme: &ThemeInfo) {
     update(app, |facts| facts.theme = theme.clone());
 }
 
+/// The UI of the dock window `window` reported its resting panel
+/// (`set_dock_panel_rect`); called before that report is converted
+/// ([`on_panel`]): the window's viewport now is the one the report is
+/// measured in. Main thread (window getters).
+pub fn on_panel_measured(app: &AppHandle, window: &WebviewWindow) {
+    if window.label() != DOCK_LABEL {
+        return;
+    }
+    let Some(state) = app.try_state::<DockBackdropState>() else {
+        return;
+    };
+    let viewport = viewport_of(window);
+    state.0.lock().measured_in = viewport;
+}
+
 /// The panel of the dock window `window` was converted for the engine:
 /// `Some((origin, css, scale))` with the window's top-left corner (physical
-/// px), the UI's resting panel (CSS px) and the scale factor, or `None`
-/// while the window is hidden. Only the primary dock has a backdrop. Main
-/// thread (the handle is a window getter).
+/// px), the UI's latest resting panel (CSS px) and the scale factor, after a
+/// report or a move of the window, or `None` while the window is hidden.
+/// Only the primary dock has a backdrop. Main thread (window getters).
 pub fn on_panel(app: &AppHandle, window: &WebviewWindow, place: Option<((i32, i32), Rect, f64)>) {
     if window.label() != DOCK_LABEL {
         return;
@@ -310,13 +391,37 @@ pub fn on_panel(app: &AppHandle, window: &WebviewWindow, place: Option<((i32, i3
     let Some(state) = app.try_state::<DockBackdropState>() else {
         return;
     };
+    let now = place.and_then(|_| viewport_of(window));
     let mut facts = state.0.lock();
     if facts.handle.is_none() && place.is_some() {
         facts.handle = crate::windows::native_handle(window);
     }
-    facts.panel_converted(place);
+    if facts.panel_converted(place, now) {
+        log::debug!(
+            "dock backdrop: the panel report does not fit the window (viewport {now:?} css, report measured in {:?}); no material until the UI reports the panel again",
+            facts.measured_in
+        );
+    }
     if let Some(service) = app.try_state::<crate::AppService>() {
         evaluate(&service.0, &mut facts);
+    }
+}
+
+/// The window's viewport in CSS px; `None` (logged at debug) when a getter
+/// fails.
+fn viewport_of(window: &WebviewWindow) -> Option<Viewport> {
+    let size = window
+        .inner_size()
+        .and_then(|size| Ok((size, window.scale_factor()?)));
+    match size {
+        Ok((size, scale)) => Some(Viewport::of((size.width, size.height), scale)),
+        Err(e) => {
+            log::debug!(
+                "dock backdrop: the viewport of {:?} is unknown: {e}",
+                window.label()
+            );
+            None
+        }
     }
 }
 
@@ -533,6 +638,11 @@ mod tests {
         Some(((0, 1248), Rect::new(534, 16, 640, 64), 1.5))
     }
 
+    /// That window's viewport: 2560 x 144 px at 1.5x.
+    fn rest_view() -> Option<Viewport> {
+        Some(Viewport::of((2560, 144), 1.5))
+    }
+
     fn backdrop_at_rest() -> DockBackdrop {
         DockBackdrop {
             rect: Rect::new(801, 1272, 960, 96),
@@ -548,9 +658,10 @@ mod tests {
         let mut facts = Facts {
             inputs: Some(acrylic_inputs()),
             handle: Some(DOCK),
+            measured_in: rest_view(),
             ..Facts::default()
         };
-        facts.panel_converted(at_rest());
+        facts.panel_converted(at_rest(), rest_view());
         assert_eq!(
             facts.step().send,
             Some((DOCK, Some(backdrop_at_rest()))),
@@ -561,8 +672,11 @@ mod tests {
 
     #[test]
     fn nothing_is_logged_or_sent_before_the_settings_and_the_handle_arrive() {
-        let mut facts = Facts::default();
-        facts.panel_converted(at_rest());
+        let mut facts = Facts {
+            measured_in: rest_view(),
+            ..Facts::default()
+        };
+        facts.panel_converted(at_rest(), rest_view());
         assert_eq!(facts.step(), Step::default(), "no settings yet");
 
         facts.inputs = Some(acrylic_inputs());
@@ -592,20 +706,94 @@ mod tests {
     #[test]
     fn the_panel_moving_or_the_window_hiding_sends_the_new_request_once() {
         let mut facts = shown();
-        facts.panel_converted(Some(((0, 1200), Rect::new(534, 16, 640, 64), 1.5)));
+        facts.panel_converted(
+            Some(((0, 1200), Rect::new(534, 16, 640, 64), 1.5)),
+            rest_view(),
+        );
         let moved = DockBackdrop {
             rect: Rect::new(801, 1224, 960, 96),
             ..backdrop_at_rest()
         };
         assert_eq!(facts.step().send, Some((DOCK, Some(moved))));
-        facts.panel_converted(Some(((0, 1200), Rect::new(534, 16, 640, 64), 1.5)));
+        facts.panel_converted(
+            Some(((0, 1200), Rect::new(534, 16, 640, 64), 1.5)),
+            rest_view(),
+        );
         assert_eq!(facts.step().send, None, "the same place again");
 
-        facts.panel_converted(None);
+        facts.panel_converted(None, None);
         assert_eq!(facts.step().send, Some((DOCK, None)), "window hidden");
         assert_eq!(facts.step().send, None);
-        facts.panel_converted(at_rest());
+        facts.panel_converted(at_rest(), rest_view());
         assert_eq!(facts.step().send, Some((DOCK, Some(backdrop_at_rest()))));
+    }
+
+    #[test]
+    fn a_panel_fits_only_the_viewport_size_it_was_measured_in() {
+        let rest = Viewport::of((2560, 144), 1.5);
+        let panel = Rect::new(534, 16, 640, 64);
+        assert!(panel_fits(panel, rest, rest));
+        // The same CSS viewport at another scale (a DPI change).
+        assert!(panel_fits(panel, rest, Viewport::of((3413, 192), 2.0)));
+        // A client area one physical px off is the same viewport.
+        assert!(panel_fits(panel, rest, Viewport::of((2560, 145), 1.5)));
+        // Grown for a drag, or another width (a monitor change).
+        assert!(!panel_fits(panel, rest, Viewport::of((2560, 1392), 1.5)));
+        assert!(!panel_fits(panel, rest, Viewport::of((1920, 144), 1.5)));
+        // Rounded outwards past the bottom edge by less than a px: fits.
+        assert!(panel_fits(Rect::new(534, 32, 640, 65), rest, rest));
+        // Measured in a taller viewport: below this one's bottom edge.
+        assert!(!panel_fits(Rect::new(534, 848, 640, 64), rest, rest));
+        assert!(!panel_fits(Rect::new(534, -8, 640, 64), rest, rest));
+    }
+
+    #[test]
+    fn a_window_that_grew_or_shrank_has_no_material_until_the_ui_reports_the_panel_again() {
+        let mut facts = shown();
+        // The drag grows the window to the work area (1392 px) with its
+        // bottom edge fixed; the stored rect is from the short viewport and
+        // would put the material 1248 px above the panel.
+        let grown = Some(Viewport::of((2560, 1392), 1.5));
+        assert!(facts.panel_converted(Some(((0, 0), Rect::new(534, 16, 640, 64), 1.5)), grown));
+        assert_eq!(facts.step().send, Some((DOCK, None)));
+
+        // The UI reports the panel in the grown viewport: 928 - 96 css lower.
+        facts.measured_in = grown;
+        assert!(!facts.panel_converted(Some(((0, 0), Rect::new(534, 848, 640, 64), 1.5)), grown));
+        assert_eq!(
+            facts.step().send,
+            Some((DOCK, Some(backdrop_at_rest()))),
+            "the same place on screen as before the drag"
+        );
+
+        // The drop shrinks the window back: the grown rect is stale again.
+        assert!(facts.panel_converted(
+            Some(((0, 1248), Rect::new(534, 848, 640, 64), 1.5)),
+            rest_view()
+        ));
+        assert_eq!(facts.step().send, Some((DOCK, None)));
+
+        // A report measured before the shrink but handled after it.
+        facts.measured_in = rest_view();
+        assert!(facts.panel_converted(
+            Some(((0, 1248), Rect::new(534, 848, 640, 64), 1.5)),
+            rest_view()
+        ));
+        assert_eq!(facts.step().send, None);
+
+        // The UI measures the panel in the short viewport again.
+        assert!(!facts.panel_converted(at_rest(), rest_view()));
+        assert_eq!(facts.step().send, Some((DOCK, Some(backdrop_at_rest()))));
+    }
+
+    #[test]
+    fn no_material_while_the_viewport_is_unknown() {
+        let mut facts = shown();
+        assert!(facts.panel_converted(at_rest(), None));
+        assert_eq!(facts.step().send, Some((DOCK, None)));
+        facts.measured_in = None;
+        assert!(facts.panel_converted(at_rest(), rest_view()));
+        assert_eq!(facts.step().send, None);
     }
 
     #[test]
