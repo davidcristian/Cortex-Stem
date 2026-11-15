@@ -1000,6 +1000,17 @@ impl Inner {
         if let Some(id) = window {
             tried = true;
             match self.platform.identify_window(id) {
+                // The platform reads the window's facts again and derives
+                // the id the engine would (`app_id_for`): another id means
+                // the facts changed under the request (an AppUserModelID
+                // that showed up late), so this identity is another app's
+                // and must not be stored under `app_id`. The engine regroups
+                // the window once it sees the new facts; until then this
+                // counts as unresolved (the pin, the retry, the fallback).
+                Ok(identity) if identity.id != *app_id => log::debug!(
+                    "window {id:?} of {app_id:?} now identifies as {:?}; not stored under {app_id:?}",
+                    identity.id
+                ),
                 Ok(identity) => resolved = Some(identity),
                 Err(e) => log::debug!("identify_window({id:?}) for {app_id:?} failed: {e}"),
             }
@@ -1044,7 +1055,8 @@ impl Inner {
             }
         });
         // The engine groups by the id *it* derived; keep that as the key even
-        // if the platform preferred a different canonical form.
+        // if the platform preferred a different canonical form for the pin's
+        // target (a window's identity with another id never gets here).
         identity.id = app_id.clone();
         if identity.launch.is_none() {
             identity.launch = pinned.map(|p| p.launch);
@@ -1298,6 +1310,9 @@ mod tests {
         /// `window_action(refused_window, Activate)` fails and changes
         /// nothing, as Windows refusing to bring an elevated window forward.
         refused_window: Option<WindowId>,
+        /// Scripted `identify_window` answers, by window: the identity the
+        /// platform would give after the window's facts changed.
+        window_answers: Vec<(WindowId, AppIdentity)>,
     }
 
     impl Relay {
@@ -1316,12 +1331,19 @@ mod tests {
                 target_answers: Vec::new(),
                 target_calls: Mutex::new(Vec::new()),
                 refused_window: None,
+                window_answers: Vec::new(),
             }
         }
 
         /// Activating `id` fails (see `refused_window`).
         fn refusing(mut self, id: WindowId) -> Self {
             self.refused_window = Some(id);
+            self
+        }
+
+        /// `identify_window(id)` answers `identity`.
+        fn answering_window(mut self, id: WindowId, identity: AppIdentity) -> Self {
+            self.window_answers.push((id, identity));
             self
         }
 
@@ -1427,6 +1449,9 @@ mod tests {
             }
             if !self.identify_delay.is_zero() {
                 std::thread::sleep(self.identify_delay);
+            }
+            if let Some((_, identity)) = self.window_answers.iter().find(|(w, _)| *w == id) {
+                return Ok(identity.clone());
             }
             self.mock.identify_window(id)
         }
@@ -2224,6 +2249,45 @@ mod tests {
         // The engine stopped asking: no third attempt.
         std::thread::sleep(Duration::from_millis(300));
         assert_eq!(relay.identify_calls_for(WindowId(2)).len(), 2);
+        service.shutdown();
+    }
+
+    #[test]
+    fn an_identity_for_another_id_is_never_stored_under_the_engines_id() {
+        // Firefox's first window now reads as another app (its facts
+        // changed after the engine grouped it): the platform's answer names
+        // that app, with its name, icon and Store launch.
+        let other = AppIdentity {
+            id: AppId::for_app_user_model_id("Contoso.Other_p!App"),
+            display_name: "Other".into(),
+            icon_key: Some(IconKey("aumid:Contoso.Other_p!App".into())),
+            launch: Some(LaunchTarget::StoreApp {
+                app_user_model_id: "Contoso.Other_p!App".into(),
+            }),
+        };
+        let relay = Arc::new(Relay::demo().answering_window(WindowId(2), other));
+        let (service, rx) = start_relay(relay.clone());
+
+        // Asked twice (the retry), then the fallback: the app id's name, no
+        // icon, no launch target of the other app.
+        let state = wait_state(&rx, |s| {
+            item_titled(s, "firefox").is_some_and(|i| i.icon_key.is_none())
+        });
+        let firefox = item_titled(&state, "firefox").unwrap();
+        assert_eq!(firefox.windows.len(), 2);
+        assert_eq!(relay.identify_calls_for(WindowId(2)).len(), 2);
+        assert!(item_titled(&state, "Other").is_none());
+        let app_id = firefox.app_id.clone().unwrap();
+        let identity = service.inner.engine.lock().identity(&app_id).cloned();
+        let identity = identity.expect("the fallback is stored");
+        assert_eq!(identity.display_name, "firefox");
+        assert_eq!(identity.icon_key, None);
+        assert_eq!(identity.launch, None);
+        // So the item cannot be pinned as the other app.
+        assert!(matches!(
+            service.pin_app(&app_id),
+            Err(ServiceError::NotLaunchable(_))
+        ));
         service.shutdown();
     }
 

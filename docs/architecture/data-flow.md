@@ -23,7 +23,14 @@ UI click ──invoke("primary_click")──▶ service.primary_click
 - **Identity resolution is lazy.** The engine reports the app ids it has
   not seen before. The service requests each one's name, icon and launch
   target from the platform off the UI thread, and passes the result back
-  to the engine. Until then the item shows the window title.
+  to the engine. Until then the item shows the window title. For the
+  result, the platform reads the window's facts again. If the identity it
+  returns has another id than the one requested, the facts changed in the
+  meantime (for example, the window set its AppUserModelID late). That
+  identity belongs to another app and is never stored under the old id.
+  The request then counts as unresolved (the service tries the pin's
+  target, then the retry, then the fallback name) while the engine
+  regroups the window.
 - **Snapshots, not diffs.** `DockState` is small (tens of items). Sending
   it whole avoids the bugs of keeping a second copy in step through diffs.
   The service coalesces the emits to at most one per 16 ms.
