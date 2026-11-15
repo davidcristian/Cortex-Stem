@@ -172,18 +172,25 @@ default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'
 
 What that means for a `dock.css`:
 
+- **Where a relative URL points.** Your CSS is in a `<style>` element of
+  the dock's page, so a relative or root-relative URL (`url(wallpaper.png)`,
+  `url(/assets/…)`) resolves against that page, `http://tauri.localhost/dock.html`
+  in an installed Stem, not against the folder of `dock.css`. That is
+  `'self'`: it is allowed, but it reaches only the files bundled with Stem,
+  never one next to your `dock.css`.
 - **Images** (`background-image`, `border-image`, `mask-image`,
   `list-style-image`, `cursor`, `content: url(…)`) fall under `img-src`:
   `data:` URLs work (`url("data:image/png;base64,…")`,
-  `url("data:image/svg+xml,…")`). `blob:` and `'self'` URLs are the app's
-  own, and a stylesheet cannot reach them. A file on your disk
-  (`file:///C:/…`, a relative path) or a web address (`https://…`) is
-  blocked.
-- **Fonts** in `@font-face` fall under `font-src`: a `data:` URL works, and
-  nothing from the disk or the web loads. A font installed in Windows needs
-  no load at all: name it in `font-family`, or use `src: local("…")`.
-- **`@import`** falls under `style-src`: it reaches only the app's own
-  files, so another stylesheet of yours cannot be imported; put
+  `url("data:image/svg+xml,…")`) and are the only way to bring in an image
+  of your own. A file on your disk (`file:///C:/…`) or a web address
+  (`https://…`) is blocked. `blob:` URLs are made by the page's own scripts;
+  a stylesheet cannot make or name one.
+- **Fonts** in `@font-face` fall under `font-src`: a `data:` URL works, a
+  relative URL reaches only Stem's bundled files, and nothing from the disk
+  or the web loads. A font installed in Windows needs no load at all: name
+  it in `font-family`, or use `src: local("…")`.
+- **`@import`** falls under `style-src`: a relative `@import` reaches only
+  Stem's own files, so another stylesheet of yours cannot be imported; put
   everything in `dock.css`.
 - **The `<style>` element itself** is allowed by `style-src
   'unsafe-inline'`.
