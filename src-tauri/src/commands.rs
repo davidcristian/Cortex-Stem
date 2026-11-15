@@ -125,9 +125,11 @@ fn get_monitors(service: State<'_, AppService>) -> Vec<MonitorInfo> {
 
 /// A click on a dock item. The calling window's label names the dock it
 /// happened in, whose own view of the windows the service acts on
-/// (`docs/ipc/windows.md` §Dock windows per monitor); the payload is the item key
-/// alone. Whatever it does supersedes the window the focus shortcut would
-/// go back to.
+/// (`docs/ipc/windows.md` §Dock windows per monitor); the payload is the
+/// item key alone. Whatever it does supersedes the window the focus
+/// shortcut would go back to. A click that would minimise the active app
+/// while Stem's settings window is in front of it brings the app forward
+/// instead (`stem_service::over_own_window`).
 #[tauri::command]
 async fn primary_click(
     app: AppHandle,
@@ -137,10 +139,14 @@ async fn primary_click(
 ) -> CmdResult<()> {
     crate::windows::forget_dock_focus(&app, "a click on an item");
     let dock = window.label();
+    let own_window_in_front =
+        || crate::windows::non_dock_window_in_front(&app, service.0.platform().as_ref());
     checked(
         "primary_click",
         &(dock, &item_key),
-        service.0.primary_click(&item_key, dock),
+        service
+            .0
+            .primary_click_over(&item_key, dock, own_window_in_front),
     )
 }
 

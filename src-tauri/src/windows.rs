@@ -2719,6 +2719,17 @@ fn own_foreground(app: &AppHandle, platform: &dyn Platform) -> Option<String> {
         .map(|(label, _)| label)
 }
 
+/// Whether one of Stem's own windows other than a dock (the settings
+/// window) is the foreground window right now ([`own_foreground`]): the
+/// engine's active window is then the app behind it, and a click that would
+/// minimise that app brings it forward instead
+/// (`DockService::primary_click_over`). A dock in front (the focus
+/// shortcut's session) does not count. Any thread: the window getters hop
+/// to the main thread.
+pub fn non_dock_window_in_front(app: &AppHandle, platform: &dyn Platform) -> bool {
+    own_foreground(app, platform).is_some_and(|label| !label.starts_with(DOCK_LABEL))
+}
+
 /// The dock window that is the foreground window right now, if one is (the
 /// platform's view; never on a host without native handles).
 fn focused_dock(app: &AppHandle, platform: &dyn Platform) -> Option<String> {

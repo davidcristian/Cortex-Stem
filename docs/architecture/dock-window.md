@@ -37,7 +37,12 @@ creation. It:
 
 Clicking the dock must not take the focus from the active app. The events
 thread ignores foreground reports for windows of Stem's own process, so the
-clicked app stays the active one for the engine.
+clicked app stays the active one for the engine. The same rule keeps the
+app behind the settings window the engine's active app. So when the
+engine's result for a click would minimise, the `primary_click` command
+asks the platform for the real foreground window. With a Stem window other than a
+dock in front, the click brings that app forward instead
+(`stem_service::over_own_window`).
 
 ## Click-through outside the panel
 

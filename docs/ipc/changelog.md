@@ -3,6 +3,10 @@
 This file lists every version of the [IPC contract](index.md), newest first. A section name links
 to the file that covers that section now.
 
+- **v1.27 (settings fixes):** No command, event or payload
+  changed its name or shape. `primary_click` brings the active app forward instead of minimising
+  it while Stem's settings window is in front of it (the [`primary_click` row](commands.md)).
+  `MockBackend` has no settings window in front of anything and is unchanged.
 - **v1.26 (fixes):** No command, event or payload type changed.
   [Keyboard entry](keyboard-entry.md): *Hide from Stem* no longer supersedes the window that the
   focus shortcut stored, just as *Pin to Stem* and *Unpin from Stem* do not, so Escape after

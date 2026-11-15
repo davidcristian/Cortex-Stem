@@ -420,7 +420,23 @@ impl DockService {
     /// with a dock per monitor and `showOnlyCurrentMonitor` on, the
     /// ones on its own monitor.
     pub fn primary_click(&self, item_key: &str, dock: &str) -> ServiceResult<()> {
+        self.primary_click_over(item_key, dock, || false)
+    }
+
+    /// [`Self::primary_click`] for a click while one of Stem's own windows
+    /// other than a dock may be in front (the settings window):
+    /// `own_window_in_front` says whether one is, and is asked only when the
+    /// click would minimise ([`over_own_window`]). The app layer can tell;
+    /// the engine cannot, since it never takes Stem's own windows for the
+    /// foreground.
+    pub fn primary_click_over(
+        &self,
+        item_key: &str,
+        dock: &str,
+        own_window_in_front: impl FnOnce() -> bool,
+    ) -> ServiceResult<()> {
         let action = self.inner.engine.lock().primary_action(item_key, dock);
+        let action = over_own_window(action, own_window_in_front);
         log::debug!("primary click on {item_key} in {dock:?}: {action:?}");
         match action {
             ItemAction::Launch(app_id) => self.launch_app(&app_id),
@@ -1043,6 +1059,30 @@ impl Inner {
     }
 }
 
+/// What a dock click does while one of Stem's own windows other than a dock
+/// may be in front. The engine never takes Stem's own windows for
+/// the foreground, so while the settings window is in front its active
+/// window is the app behind it: a click that would minimise that app as
+/// the active one (`behavior.clickActiveMinimizes`) brings it forward
+/// instead, as the stock taskbar does for a window that is not in front.
+/// `own_window_in_front` is asked only for such a click. A dock in front
+/// (the focus shortcut's session) is not one of those windows: Enter on the
+/// active app's item still minimises it. Every other action is unchanged.
+pub fn over_own_window(
+    action: ItemAction,
+    own_window_in_front: impl FnOnce() -> bool,
+) -> ItemAction {
+    match action {
+        ItemAction::MinimizeWindow(id) if own_window_in_front() => {
+            log::debug!(
+                "a Stem window other than a dock is in front: {id:?}, the active window behind it, comes forward instead of minimising"
+            );
+            ItemAction::ActivateWindow(id)
+        }
+        other => other,
+    }
+}
+
 fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
     payload
         .downcast_ref::<&str>()
@@ -1565,6 +1605,39 @@ mod tests {
     }
 
     #[test]
+    fn a_click_behind_our_own_window_activates_instead_of_minimising() {
+        let asked = std::cell::Cell::new(0);
+        let ask = |answer: bool| {
+            let asked = &asked;
+            move || {
+                asked.set(asked.get() + 1);
+                answer
+            }
+        };
+        let id = WindowId(7);
+        assert_eq!(
+            over_own_window(ItemAction::MinimizeWindow(id), ask(true)),
+            ItemAction::ActivateWindow(id)
+        );
+        assert_eq!(
+            over_own_window(ItemAction::MinimizeWindow(id), ask(false)),
+            ItemAction::MinimizeWindow(id)
+        );
+        assert_eq!(asked.get(), 2);
+        // Only a minimise asks; nothing else changes.
+        let app = AppId::for_app_user_model_id("Contoso.App!App");
+        for action in [
+            ItemAction::ActivateWindow(id),
+            ItemAction::Launch(app),
+            ItemAction::Shell(ShellAction::OpenStartMenu),
+            ItemAction::None,
+        ] {
+            assert_eq!(over_own_window(action.clone(), ask(true)), action);
+        }
+        assert_eq!(asked.get(), 2);
+    }
+
+    #[test]
     fn primary_click_minimises_active_and_activates_inactive() {
         let (service, platform, rx) = start();
         let state = wait_state(&rx, resolved);
@@ -1591,7 +1664,20 @@ mod tests {
                 .is_active
         );
 
-        // Now Code is active with a single window -> minimise.
+        // Code is active with a single window, but the settings window is
+        // in front of it (the engine still names Code active): the click
+        // brings Code forward instead of minimising it behind the settings.
+        platform.clear_calls();
+        service
+            .primary_click_over(&code_key, DOCK, || true)
+            .unwrap();
+        assert_eq!(
+            platform.calls(),
+            vec![MockCall::WindowAction(WindowId(4), WindowAction::Activate)]
+        );
+
+        // Code is active with a single window and nothing of ours is in
+        // front (or a dock is, the focus shortcut's session) -> minimise.
         platform.clear_calls();
         service.primary_click(&code_key, DOCK).unwrap();
         assert_eq!(
