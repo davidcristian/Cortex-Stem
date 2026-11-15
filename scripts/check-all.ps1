@@ -118,6 +118,14 @@ Run cargo @('clippy', '--workspace', '--all-targets', '--target', 'x86_64-pc-win
 # The diagnostic probes (feature `probes`) are not in the line above:
 # their examples need the feature (`required-features`), so lint them here.
 Run cargo @('clippy', '-p', 'stem-platform', '--all-targets', '--features', 'probes', '--target', 'x86_64-pc-windows-msvc', '--', '-D', 'warnings')
+# Their unit tests (module windows::probe) run only on a Windows host: the
+# module is Windows-only, and rung 3 runs without the feature.
+if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+    Run cargo @('test', '-p', 'stem-platform', '--features', 'probes', '--lib', 'windows::probe::')
+}
+else {
+    Write-Host '(probe unit tests skipped: they need a Windows host)'
+}
 
 $Install = -not $NoInstall
 if ($CI -and (Test-Path -LiteralPath 'node_modules')) {

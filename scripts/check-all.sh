@@ -89,6 +89,12 @@ cargo clippy --workspace --all-targets --target x86_64-pc-windows-msvc -- -D war
 # The diagnostic probes (feature `probes`) are not in the line above:
 # their examples need the feature (`required-features`), so lint them here.
 cargo clippy -p stem-platform --all-targets --features probes --target x86_64-pc-windows-msvc -- -D warnings
+# Their unit tests (module windows::probe) run only on a Windows host: the
+# module is Windows-only, and rung 3 runs without the feature.
+case "$(uname -s)" in
+  MINGW* | MSYS*) cargo test -p stem-platform --features probes --lib windows::probe:: ;;
+  *) echo "(probe unit tests skipped: they need a Windows host)" ;;
+esac
 
 if [[ $FRONTEND -eq 0 ]]; then
   echo "(frontend rungs 5-7 skipped: --no-frontend)"

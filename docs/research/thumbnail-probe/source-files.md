@@ -16,9 +16,13 @@ lint and test it:
   cargo clippy -p stem-platform --all-targets --features probes --target x86_64-pc-windows-msvc -- -D warnings
   ```
 
-  The pure parts (fit, crop, layout, table, window picking) have unit tests
-  that run on Windows:
+  On a Windows host the same step also runs the unit tests of the pure
+  parts (fit, crop, layout, table, window picking, the worker result line,
+  the early-input drain):
 
   ```text
-  cargo test -p stem-platform --features probes
+  cargo test -p stem-platform --features probes --lib windows::probe::
   ```
+
+  On other hosts the module is not compiled, and the scripts print that the
+  tests were skipped.
