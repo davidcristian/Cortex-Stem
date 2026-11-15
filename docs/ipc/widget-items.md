@@ -58,20 +58,29 @@ regional format. With an English display language and a 24-hour region, the page
 
 - `DockState.clockFormat: ClockFormat` is `{ locale: string | null, hour12: boolean | null }`:
   the user's regional format as Windows stores it.
-  - `locale` is `GetUserDefaultLocaleName` (a BCP 47 name such as `en-GB`).
+  - `locale` is `GetUserDefaultLocaleName` (a BCP 47 name such as `en-GB`), with an alternate
+    sort order removed (`de-DE_phoneb` becomes `de-DE`), because Intl rejects the underscore.
   - `hour12` is `false` when the user's short time format
     (`GetLocaleInfoEx(LOCALE_NAME_USER_DEFAULT, LOCALE_SSHORTTIME)`) uses `H` (24-hour) and
-    `true` when it uses `h`.
-  - Either field is `null` when Windows does not report it.
+    `true` when it uses `h`. It is read from the first `H` or `h` outside single quotes (quoted
+    text is literal). `LOCALE_SSHORTTIME` may be a list delimited by semicolons, so the first
+    hour letter is the one of its first entry, the preferred one.
+  - Either field is `null` when Windows does not report it, and `hour12` is also `null` when the
+    pattern has no hour letter.
 
   The engine stores the last `PlatformEvent::ClockFormatChanged(ClockFormat)`; until the first
   one both fields are `null`.
 - The platform side is `Platform::clock_format()`. The events thread reads it after the start
-  snapshot, and again on a `WM_SETTINGCHANGE` whose `lParam` is the string `intl`. It sends
-  `ClockFormatChanged` only when the reading differs from the last one sent.
+  snapshot (after the power reading). On a `WM_SETTINGCHANGE` whose `lParam` is the string
+  `intl`, it reads it at once and again 500 ms later. It sends `ClockFormatChanged` only when the
+  reading differs from the last one sent.
 - The page builds its `Intl.DateTimeFormat`s for the clock face, its title pill and its
-  accessible name with `locale` (when it is not `null`) and `hour12` (when it is not `null`). The
-  page falls back to its own locale when Intl rejects the name. A custom Windows pattern (literal
-  text, a seconds field) is not copied; only the hour cycle and the locale's order are used.
+  accessible name with `locale` (when it is not `null`). When `hour12` is not `null`, it adds
+  `hourCycle` `h12` for `true` and `h23` for `false`: Windows' `h` is 1 to 12 and `H` is 0 to
+  23, and Intl's `hour12: true` is 0 to 11 in some locales such as ja-JP. The page falls back to
+  its own locale when Intl rejects the name. A custom Windows pattern (literal text, a seconds
+  field, the hour's digits, Windows' AM/PM symbols) is not copied; only the hour cycle and the
+  locale's order are used.
 - `MockBackend`: `MockOptions.clockFormat` (default: both fields `null`) and
-  `setClockFormat(format)`, which emits a new state.
+  `setClockFormat(format)`, which emits a new state. The mock platform sends `ClockFormatChanged`
+  once at start, after its `PowerChanged`; its demo reading also has both fields `null`.
