@@ -26,6 +26,6 @@ Cortex-Stem/
 │                           linecap.mjs (run by `pnpm lint`).
 ├── docs/                   architecture/ (read before writing code), ipc/ (the IPC contract,
 │                           AGENTS.md §8), development/ (the detail behind AGENTS.md),
-│                           SETTINGS.md (generated), PLAN.md (milestones), adr/.
+│                           SETTINGS.md (generated, rung 3c), PLAN.md (milestones), adr/.
 └── .github/workflows/      CI (Linux checks, Windows build) and the release build.
 ```

@@ -132,6 +132,11 @@ jobs:
       - name: "4/7 clippy (Windows target: whole workspace incl. Tauri app)"
         run: cargo clippy --workspace --all-targets --target x86_64-pc-windows-msvc -- -D warnings
 
+      # The diagnostic probes (feature `probes`) are not in the line
+      # above: no workspace member turns the feature on.
+      - name: "4/7 clippy (Windows target: the diagnostic probes)"
+        run: cargo clippy -p stem-platform --all-targets --features probes --target x86_64-pc-windows-msvc -- -D warnings
+
       - name: "5/7 pnpm check"
         run: pnpm check
 
@@ -194,6 +199,12 @@ jobs:
 
       - name: pnpm install
         run: pnpm install --frozen-lockfile
+
+      # The thumbnail probe's own unit tests only exist on Windows
+      # (the module is Windows-only) and only with the feature, so neither
+      # the linux job nor the build below runs them.
+      - name: Probe unit tests (feature probes)
+        run: cargo test -p stem-platform --features probes --lib windows::probe::
 
       # The NSIS bundler downloads its toolset (NSIS and Tauri's plugin) from
       # GitHub releases into %LOCALAPPDATA%\tauri when it is not there yet.
