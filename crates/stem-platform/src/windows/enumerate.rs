@@ -8,9 +8,10 @@
 //!   later (`rules::recheck`, used by the events thread's re-checks);
 //!   [`query_moved_window`] is the same for a window that moved, with its
 //!   desktop answer supplied instead of asked.
-//! - [`is_taskbar_candidate`] is the pure eligibility rule (visible, not a
-//!   tool window, no owner unless `WS_EX_APPWINDOW`, not cloaked unless we
-//!   want to report it, has a title or is a known UWP frame, ...).
+//! - [`is_taskbar_candidate`] is the pure eligibility rule (visible; not a
+//!   tool window, not `WS_EX_NOACTIVATE` and unowned, unless
+//!   `WS_EX_APPWINDOW`; not cloaked unless we want to report it; has a
+//!   title or is a known UWP frame, ...).
 //! - [`window_app_user_model_id`] reads `PKEY_AppUserModel_ID` from the
 //!   window's property store (used for grouping and Store apps).
 //!
@@ -104,7 +105,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GA_ROOT, GW_OWNER, GWL_EXSTYLE, GetAncestor, GetClassNameW, GetWindow,
     GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
     GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, WINDOW_EX_STYLE,
-    WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+    WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
 };
 use windows::core::{BOOL, PWSTR};
 
@@ -388,6 +389,7 @@ fn probe(hwnd: HWND, own_pid: u32) -> Option<Probe> {
     let ex_style = WINDOW_EX_STYLE(unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) } as u32);
     facts.is_tool_window = ex_style.contains(WS_EX_TOOLWINDOW);
     facts.is_app_window = ex_style.contains(WS_EX_APPWINDOW);
+    facts.is_no_activate = ex_style.contains(WS_EX_NOACTIVATE);
     facts.owner = owner_of(hwnd);
     facts.cloak_flags = cloak_flags(hwnd);
     facts.title = window_title(hwnd);

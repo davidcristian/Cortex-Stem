@@ -51,7 +51,7 @@ pub enum Check {
 }
 
 /// `true` for the rejections a window can outgrow by itself while it starts
-/// (rule 3 `NotVisible`, rule 7 `Cloaked`); every other one is final.
+/// (rule 3 `NotVisible`, rule 8 `Cloaked`); every other one is final.
 pub fn is_transient(reason: Rejection) -> bool {
     matches!(reason, Rejection::NotVisible | Rejection::Cloaked)
 }
@@ -229,6 +229,7 @@ mod tests {
             title: "Untitled - Notepad".into(),
             is_tool_window: false,
             is_app_window: false,
+            is_no_activate: false,
             owner: Owner::None,
             cloak_flags: 0,
         }
@@ -259,6 +260,7 @@ mod tests {
             Rejection::NotVisible,
             Rejection::ShellClass,
             Rejection::ToolWindow,
+            Rejection::NoActivate,
             Rejection::Owned,
             Rejection::Cloaked,
             Rejection::EmptyTitle,

@@ -17,10 +17,19 @@
 //! | 3 | not `IsWindowVisible`                                         | reject `NotVisible` |
 //! | 4 | class is a shell class ([`SHELL_CLASSES`])                    | reject `ShellClass` |
 //! | 5 | `WS_EX_TOOLWINDOW` without `WS_EX_APPWINDOW`                  | reject `ToolWindow` |
-//! | 6 | has an owner, unless the owner is invisible and `WS_EX_APPWINDOW` is set | reject `Owned` |
-//! | 7 | cloaked for a reason other than the shell (see below), unless the class is [`UWP_FRAME_CLASS`] | reject `Cloaked` |
-//! | 8 | empty title, unless the class is [`UWP_FRAME_CLASS`]          | reject `EmptyTitle` |
-//! | 9 | otherwise                                                     | eligible |
+//! | 6 | `WS_EX_NOACTIVATE` without `WS_EX_APPWINDOW`                  | reject `NoActivate` |
+//! | 7 | has an owner (visible or hidden) without `WS_EX_APPWINDOW`    | reject `Owned` |
+//! | 8 | cloaked for a reason other than the shell (see below), unless the class is [`UWP_FRAME_CLASS`] | reject `Cloaked` |
+//! | 9 | empty title, unless the class is [`UWP_FRAME_CLASS`]          | reject `EmptyTitle` |
+//! | 10 | otherwise                                                    | eligible |
+//!
+//! `WS_EX_APPWINDOW` "forces a top-level window onto the taskbar when the
+//! window is visible" (Microsoft's Extended Window Styles), whoever owns it
+//! and whatever its other styles: a WinForms or WPF form with an owner and
+//! *ShowInTaskbar* has a taskbar button, so rules 5 to 7 do not apply to it
+//! (rules 8 and 9 still do). Without it, a tool window, a no-activate window
+//! ("does not appear on the taskbar by default") and an owned window have
+//! no button.
 //!
 //! Cloaking: `DWMWA_CLOAKED` reports *why* a window is cloaked. The shell
 //! cloaks windows that live on another virtual desktop ([`CLOAKED_SHELL`]);
@@ -95,6 +104,8 @@ pub struct WindowFacts {
     pub is_tool_window: bool,
     /// `WS_EX_APPWINDOW` is set.
     pub is_app_window: bool,
+    /// `WS_EX_NOACTIVATE` is set.
+    pub is_no_activate: bool,
     pub owner: Owner,
     /// `DWMWA_CLOAKED` flags (`0` when not cloaked or when DWM refused).
     pub cloak_flags: u32,
@@ -124,6 +135,7 @@ pub enum Rejection {
     NotVisible,
     ShellClass,
     ToolWindow,
+    NoActivate,
     Owned,
     Cloaked,
     EmptyTitle,
@@ -150,13 +162,18 @@ pub fn evaluate(facts: &WindowFacts) -> Result<(), Rejection> {
     if is_shell_class(&facts.class_name) {
         return Err(Rejection::ShellClass);
     }
-    if facts.is_tool_window && !facts.is_app_window {
-        return Err(Rejection::ToolWindow);
-    }
-    match facts.owner {
-        Owner::None => {}
-        Owner::Hidden if facts.is_app_window => {}
-        Owner::Hidden | Owner::Visible => return Err(Rejection::Owned),
+    // WS_EX_APPWINDOW asks for a button whatever the other styles and the
+    // owner say (module docs).
+    if !facts.is_app_window {
+        if facts.is_tool_window {
+            return Err(Rejection::ToolWindow);
+        }
+        if facts.is_no_activate {
+            return Err(Rejection::NoActivate);
+        }
+        if facts.owner != Owner::None {
+            return Err(Rejection::Owned);
+        }
     }
     if facts.is_cloaked() && !facts.is_shell_cloaked() && !facts.is_uwp_frame() {
         return Err(Rejection::Cloaked);
@@ -191,6 +208,7 @@ mod tests {
             title: "Untitled - Notepad".into(),
             is_tool_window: false,
             is_app_window: false,
+            is_no_activate: false,
             owner: Owner::None,
             cloak_flags: 0,
         }
@@ -277,6 +295,29 @@ mod tests {
     }
 
     #[test]
+    fn no_activate_windows_are_rejected_unless_app_window() {
+        // An overlay, an OSD, another launcher's panel: no taskbar button.
+        let overlay = WindowFacts {
+            is_no_activate: true,
+            title: "Overlay".into(),
+            ..notepad()
+        };
+        assert_eq!(evaluate(&overlay), Err(Rejection::NoActivate));
+        // "To force the window to appear on the taskbar, use WS_EX_APPWINDOW."
+        let forced = WindowFacts {
+            is_app_window: true,
+            ..overlay.clone()
+        };
+        assert_eq!(evaluate(&forced), Ok(()));
+        // A tool window that is also no-activate reports the tool window.
+        let tool = WindowFacts {
+            is_tool_window: true,
+            ..overlay
+        };
+        assert_eq!(evaluate(&tool), Err(Rejection::ToolWindow));
+    }
+
+    #[test]
     fn owned_windows_need_a_hidden_owner_and_app_window_style() {
         let dialog = WindowFacts {
             owner: Owner::Visible,
@@ -301,13 +342,25 @@ mod tests {
         };
         assert_eq!(evaluate(&opted_in), Ok(()));
 
-        // Visible owner + WS_EX_APPWINDOW: still owned, still rejected.
+        // Visible owner + WS_EX_APPWINDOW (a WinForms form shown with an
+        // owner and ShowInTaskbar): the style forces the button.
         let visible_owner_app = WindowFacts {
             owner: Owner::Visible,
             is_app_window: true,
             ..notepad()
         };
-        assert_eq!(evaluate(&visible_owner_app), Err(Rejection::Owned));
+        assert_eq!(evaluate(&visible_owner_app), Ok(()));
+        // It still needs a title and no cloak of its own.
+        let untitled = WindowFacts {
+            title: String::new(),
+            ..visible_owner_app.clone()
+        };
+        assert_eq!(evaluate(&untitled), Err(Rejection::EmptyTitle));
+        let cloaked = WindowFacts {
+            cloak_flags: CLOAKED_APP,
+            ..visible_owner_app
+        };
+        assert_eq!(evaluate(&cloaked), Err(Rejection::Cloaked));
     }
 
     #[test]
