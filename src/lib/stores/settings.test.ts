@@ -436,6 +436,48 @@ describe('SettingsStore', () => {
     expect(store.settings?.iconSize).toBe(80);
   });
 
+  it('fetches the document again after a save during which another change was announced', async () => {
+    const { backend, store } = await started();
+    store.edit((s) => {
+      s.iconSize = 60;
+    });
+    await vi.advanceTimersByTimeAsync(150);
+    expect(backend.pendingUpdates).toHaveLength(1);
+    // While the save is on its way the dock pins an app and the tray flips
+    // click-through: Rust announces both. The page, busy, shows the pin at
+    // once (the lists only Rust's commands change) but not the other
+    // field, which its own pending save would otherwise appear to undo.
+    const clickThrough = !backend.stored.behavior.clickThrough;
+    backend.stored.pinned.push(pin('d'));
+    backend.stored.behavior.clickThrough = clickThrough;
+    backend.emit('dock://settings', structuredClone(backend.stored));
+    expect(store.settings?.pinned.map((p) => p.id)).toEqual(['a', 'b', 'c', 'd']);
+    expect(store.settings?.behavior.clickThrough).toBe(!clickThrough);
+    backend.settleUpdate();
+    await tick();
+    await tick();
+    expect(backend.log.at(-1)).toBe('get_settings');
+    expect(store.settings?.pinned.map((p) => p.id)).toEqual(['a', 'b', 'c', 'd']);
+    expect(store.settings?.behavior.clickThrough).toBe(clickThrough);
+    expect(store.settings?.iconSize).toBe(60);
+    expect(store.status).toBe('saved');
+  });
+
+  it('does not fetch again for the echo of its own save', async () => {
+    const { backend, store } = await started();
+    store.edit((s) => {
+      s.iconSize = 60;
+    });
+    await vi.advanceTimersByTimeAsync(150);
+    // Rust's event for this very save arrives before the invoke resolves.
+    backend.emit('dock://settings', validateSettings({ ...backend.stored, iconSize: 60 }));
+    backend.settleUpdate();
+    await tick();
+    await tick();
+    expect(backend.log.filter((l) => l === 'get_settings')).toHaveLength(1);
+    expect(store.settings?.iconSize).toBe(60);
+  });
+
   it('reports a failed save and retries with the next edit', async () => {
     const { backend, store } = await started();
     backend.failNext = 'disk full';

@@ -8,7 +8,10 @@ to the file that covers that section now.
   it while Stem's settings window is in front of it (the [`primary_click` row](commands.md)).
   `MockBackend` has no settings window in front of anything and is unchanged. The tray's
   click-through toggle edits its one field in place (`DockService::modify_settings`), so it
-  cannot write back a copy read before another change either.
+  cannot write back a copy read before another change either. The settings page skips
+  `dock://settings` while an edit of its own is pending. Once nothing is pending, it fetches the
+  document again when a skipped event differed from what it shows (not for the echo of its own
+  save).
 - **v1.26 (fixes):** No command, event or payload type changed.
   [Keyboard entry](keyboard-entry.md): *Hide from Stem* no longer supersedes the window that the
   focus shortcut stored, just as *Pin to Stem* and *Unpin from Stem* do not, so Escape after

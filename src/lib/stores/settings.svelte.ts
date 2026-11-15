@@ -79,6 +79,13 @@ export class SettingsStore {
    * while busy, since the running request was sent; `null` if none did.
    */
   private latestLists: RustLists | null = null;
+  /**
+   * The latest `dock://settings` that arrived while busy and was not shown:
+   * a change made elsewhere meanwhile (a pin from the dock, the tray's
+   * click-through) unless it is the echo of our own save. Looked at once
+   * nothing is pending (`catchUp`).
+   */
+  private missed: Settings | null = null;
 
   constructor(
     readonly backend: Backend,
@@ -96,6 +103,7 @@ export class SettingsStore {
     this.subscriptions = [
       this.backend.on('dock://settings', (s) => {
         if (!this.busy) {
+          this.missed = null;
           this.settings = s;
           return;
         }
@@ -107,6 +115,9 @@ export class SettingsStore {
         // the next edit starts from them; and they are laid over the answer
         // of the request in flight, which may be older than this event (see
         // `withLatestLists`).
+        // What else changed meanwhile is fetched once nothing is pending
+        // (`catchUp`).
+        this.missed = s;
         const lists = listsOf(s);
         this.latestLists = lists;
         if (this.draft !== null) {
@@ -366,7 +377,43 @@ export class SettingsStore {
     this.inflight = null;
     if (this.draft !== null && this.timer === null) {
       this.flush();
+      return;
     }
+    this.catchUp();
+  }
+
+  /**
+   * Nothing is pending any more: when a `dock://settings` was skipped
+   * meanwhile and says something else than what the page shows, fetch the
+   * document again, so the page, and the next edit's copy, start from what
+   * Rust has. Rust keeps the pins whatever a save sends (v1.25), but a
+   * stale copy would still show the old ones, and would send back an old
+   * value of any other field changed elsewhere (the tray's click-through).
+   */
+  private catchUp(): void {
+    if (this.missed === null || this.busy) {
+      return;
+    }
+    const missed = this.missed;
+    this.missed = null;
+    if (this.settings !== null && JSON.stringify(missed) === JSON.stringify(this.settings)) {
+      return;
+    }
+    this.inflight = this.backend
+      .getSettings()
+      .then((fresh) => {
+        if (this.draft !== null) {
+          // An edit made meanwhile keeps its own values but shows the fresh pins.
+          this.draft = { ...this.draft, pinned: fresh.pinned };
+          this.settings = this.draft;
+        } else if (this.timer === null) {
+          this.settings = fresh;
+        }
+      })
+      .catch((err: unknown) => {
+        console.error('get_settings failed:', err);
+      })
+      .finally(() => this.finish());
   }
 
   private fail(err: unknown): void {
