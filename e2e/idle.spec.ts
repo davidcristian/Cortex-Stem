@@ -123,6 +123,11 @@ const EXPLORER_WINDOW = 1;
 const EXPLORER = `${APP_SLOT}[data-key="app:exe:c:/windows/explorer.exe"]`;
 /** The clock item, shown with `items.clock`. */
 const CLOCK = '.slot[data-kind="clock"]';
+/** The battery item, shown with `items.battery` on the demo's laptop. */
+const BATTERY = '.slot[data-kind="battery"]';
+/** A live timer the probe takes as once a minute because it is due on a minute of the wall clock. */
+const MINUTE_TIMER =
+  /^timeout \d+ ms from .*, every 60000 ms \(due on a minute of the wall clock\)$/;
 
 /** What the pages expose in mock mode (`src/lib/ipc/demo.ts`; structural, for `page.evaluate`). */
 interface DemoWindow {
@@ -1015,23 +1020,46 @@ test.describe('the dock page goes quiet once it has settled', () => {
   }) => {
     await expectQuiet(browser, [
       {
-        name: 'the clock item on: its tick once a minute',
+        name: 'the clock and battery items on: the clock ticks once a minute, the battery is still',
         setup: async (page) => {
-          await patchSettings(page, { items: { clock: true } });
+          await patchSettings(page, { items: { clock: true, battery: true } });
           const clock = page.locator(CLOCK);
           await expect(clock).toBeVisible();
           await expect(clock.locator('text.time')).toHaveText(/\d/);
+          await expect(page.locator(BATTERY).locator('text.percent')).toHaveText(/^\d+%$/);
+          // The page coming back into view (after a sleep) reads the time
+          // again and re-arms the tick in place of the pending one.
+          await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
           expect(await settle(page)).toEqual([]);
           // The clock aims its tick at the next minute of the wall clock
           // (`setTimeout(tick, msUntilNextMinute(now))`, a delay under a
-          // minute every time): the timer is live, and the rule takes it as
+          // minute every time): one timer is live, and the rule takes it as
           // once a minute, so the window below must be quiet with it.
-          const live = (await liveTimers(page)).join('\n');
-          expect(live).toMatch(
-            /^timeout \d+ ms from .*, every 60000 ms \(due on a minute of the wall clock\)$/m,
-          );
+          const live = await liveTimers(page);
+          const minute = live.filter((t) => MINUTE_TIMER.test(t));
+          expect(minute, live.join('\n')).toHaveLength(1);
           if (await isDevBuild(page)) {
-            expect(live).toMatch(/from .*DockItem\.svelte.*\(due on a minute of the wall clock\)/);
+            expect(minute[0]).toMatch(/from .*DockItem\.svelte/);
+          }
+        },
+      },
+      {
+        name: 'the clock item on, then off again: its timer goes with it',
+        setup: async (page) => {
+          await patchSettings(page, { items: { clock: true } });
+          await expect(page.locator(CLOCK).locator('text.time')).toHaveText(/\d/);
+          expect((await liveTimers(page)).filter((t) => MINUTE_TIMER.test(t))).toHaveLength(1);
+          await patchSettings(page, { items: { clock: false } });
+          // Gone once it has shrunk away and unmounted.
+          await expect(page.locator(CLOCK)).toHaveCount(0);
+          expect(await settle(page)).toEqual([]);
+          const live = await liveTimers(page);
+          expect(
+            live.filter((t) => MINUTE_TIMER.test(t)),
+            live.join('\n'),
+          ).toEqual([]);
+          if (await isDevBuild(page)) {
+            expect(live.filter((t) => t.includes('DockItem.svelte'))).toEqual([]);
           }
         },
       },

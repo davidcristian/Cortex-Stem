@@ -48,7 +48,9 @@ Scenarios:
 - after a hover ends (bottom and left edges);
 - after a launch bounce, a toast, a drag-reorder and an attention wiggle
   end;
-- the clock item on, and a timeout set again each minute;
+- the clock and battery items on (with the page coming back into view: one
+  clock timer is left), the clock switched on and off again (none of its
+  timers is left), and a timeout set again each minute;
 - auto-hide shown under a resting pointer, slid out, and brought back from
   the strip.
 
