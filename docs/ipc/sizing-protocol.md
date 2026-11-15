@@ -47,3 +47,24 @@ so that the app layer and the page use the same positions.
   move nothing.
 - Auto-hide slides the panel towards its edge; the reveal strip lies along the window's edge side
   ([Hit region](hit-region.md)).
+
+## Fitting the edge (v1.28)
+
+A dock with many items on a short edge (a left dock on a 1080p screen with every fixed item on,
+or a small monitor) can be longer than its window. Like the macOS dock, the page then draws it
+smaller instead of cutting off its ends:
+
+- The page's **fitted size** is `Settings.iconSize` when the panel at rest, plus the most that
+  magnification can add to its length, fits in the viewport's length along the edge with 8 CSS
+  px to spare at each end. Otherwise it is the largest whole CSS px size, not below 16, for which
+  that holds. At 16 the panel may still overflow, and then its ends are cut off. Everything that
+  scales with the icon size (tiles, gaps, separators, dots, the magnification peak, the drag and
+  file-drop gaps) uses the fitted size.
+- The page computes the fitted size again when the viewport's length, the items, `iconSize`,
+  magnification or `position` change, without an animation. It never does so while a drag is in
+  progress (the drag finishes at the size it started with).
+- Every geometry report (`set_dock_content_size`, `set_dock_hit_region`, `set_dock_panel_rect`)
+  describes the panel as drawn, at the fitted size; Rust handles these reports like any other.
+- `Settings.iconSize` keeps the user's value. The dock's root element has `data-fitted` while
+  the fitted size is smaller, for tests and for `dock.css`.
+- `MockBackend` needs nothing extra for this; its viewport is the browser's.

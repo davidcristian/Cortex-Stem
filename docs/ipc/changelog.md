@@ -3,6 +3,9 @@
 This file lists every version of the [IPC contract](index.md), newest first. A section name links
 to the file that covers that section now.
 
+- **v1.28 (fitting the edge):** The page draws the dock at a smaller fitted icon size when it
+  would not fit its edge. No command, event or payload changed. New section
+  [Fitting the edge](sizing-protocol.md#fitting-the-edge-v128).
 - **v1.27 (settings fixes):** One new event, `dock://settings-closing`; no command or payload
   changed its name or shape. `primary_click` brings the active app forward instead of minimising
   it while Stem's settings window is in front of it (the [`primary_click` row](commands.md)).
