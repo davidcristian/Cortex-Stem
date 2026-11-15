@@ -148,9 +148,9 @@ impl Viewport {
 }
 
 /// How far (CSS px) two viewports may differ and still count as one, and how
-/// far a panel may reach past its viewport's top or bottom edge: the UI
-/// rounds the panel outwards to whole CSS px, and a client area of whole
-/// physical px is fractional in CSS px.
+/// far a panel may reach past any side of its viewport: the UI rounds the
+/// panel outwards to whole CSS px, and a client area of whole physical px is
+/// fractional in CSS px.
 const VIEWPORT_SLACK: f64 = 1.5;
 
 /// Whether the resting panel `css`, reported while the window's viewport
@@ -159,12 +159,18 @@ const VIEWPORT_SLACK: f64 = 1.5;
 /// and shrinks with one edge fixed (a drag; a new content size), which
 /// moves the panel within the viewport, so the old rect is stale until the
 /// UI measures again. A window that only moved keeps its panel. And only
-/// when the panel lies within the viewport's height, which a report measured
-/// before a resize but handled after it does not. Pure.
+/// when the panel lies within the viewport on both axes: a report measured
+/// before a shrink but handled after it puts the panel below the viewport's
+/// bottom on `bottom` and past its right side on `right`, the two
+/// edges whose fixed side is not the window's origin. A panel longer than
+/// its window along the edge does not fit either: material there would
+/// stick out of what the window shows of the panel. Pure.
 pub fn panel_fits(css: Rect, measured_in: Viewport, now: Viewport) -> bool {
     let same_size = (measured_in.width - now.width).abs() <= VIEWPORT_SLACK
         && (measured_in.height - now.height).abs() <= VIEWPORT_SLACK;
-    let inside = f64::from(css.y) >= -VIEWPORT_SLACK
+    let inside = f64::from(css.x) >= -VIEWPORT_SLACK
+        && f64::from(css.right()) <= now.width + VIEWPORT_SLACK
+        && f64::from(css.y) >= -VIEWPORT_SLACK
         && f64::from(css.bottom()) <= now.height + VIEWPORT_SLACK;
     same_size && inside
 }
@@ -750,6 +756,61 @@ mod tests {
 
     #[test]
     fn a_window_that_grew_or_shrank_has_no_material_until_the_ui_reports_the_panel_again() {
+        // A row longer than its window: material would stick out of it.
+        assert!(!panel_fits(Rect::new(-40, 16, 2600, 64), rest, rest));
+
+        // A right dock: a column 8 css from the window's right side.
+        let right = Viewport {
+            width: 150.0,
+            height: 928.0,
+        };
+        assert!(panel_fits(Rect::new(78, 144, 64, 640), right, right));
+        // Measured in a wider viewport (the drag's), handled after the drop:
+        // inside the height, past the right side.
+        assert!(!panel_fits(Rect::new(1572, 144, 64, 640), right, right));
+        assert!(!panel_fits(Rect::new(-8, 144, 64, 640), right, right));
+    }
+
+    #[test]
+    fn a_right_dock_has_no_material_from_a_report_measured_before_the_drop() {
+        // A right dock at 1.5x: the window at rest is 225 x 1392 px (150 x
+        // 928 css) against the work area's right side at 2560, its panel
+        // 64 x 640 css, 8 css from the window's right side.
+        let rest = Some(Viewport::of((225, 1392), 1.5));
+        let at_rest = Some(((2335, 0), Rect::new(78, 144, 64, 640), 1.5));
+        let resting = DockBackdrop {
+            rect: Rect::new(2452, 216, 96, 960),
+            ..backdrop_at_rest()
+        };
+        let mut facts = Facts {
+            inputs: Some(acrylic_inputs()),
+            handle: Some(DOCK),
+            measured_in: rest,
+            ..Facts::default()
+        };
+        assert!(!facts.panel_converted(at_rest, rest));
+        assert_eq!(facts.step().send, Some((DOCK, Some(resting))));
+
+        // The drag grows the window to the work area's width with its right
+        // side fixed; the UI reports the panel in the grown viewport.
+        let grown = Some(Viewport::of((2560, 1392), 1.5));
+        let in_grown = Rect::new(1634, 144, 64, 640);
+        facts.measured_in = grown;
+        assert!(!facts.panel_converted(Some(((0, 0), in_grown, 1.5)), grown));
+        assert!(matches!(facts.step().send, Some((DOCK, Some(_)))));
+
+        // The drop shrinks the window back, and a report the UI measured in
+        // the grown viewport is handled after the shrink: its viewport is
+        // read then, so it has the size of the viewport now, but the panel
+        // lies 1500 css past the window's right side. Converted, it would put
+        // the material about 2450 px right of the window, off the monitor.
+        facts.measured_in = rest;
+        assert!(facts.panel_converted(Some(((2335, 0), in_grown, 1.5)), rest));
+        assert_eq!(facts.step().send, Some((DOCK, None)));
+
+        // The UI measures the panel in the short viewport again.
+        assert!(!facts.panel_converted(at_rest, rest));
+        assert_eq!(facts.step().send, Some((DOCK, Some(resting))));
         let mut facts = shown();
         // The drag grows the window to the work area (1392 px) with its
         // bottom edge fixed; the stored rect is from the short viewport and
