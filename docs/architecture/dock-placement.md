@@ -73,8 +73,15 @@ while it waits.
 
 The shell's notifications reach the dock window's subclass, which queues
 them for the thread. A moved band is requested again, at most 8 times
-within 2 s and then not for 10 s. `TaskbarCreated` registers the bar again
-after an Explorer restart.
+within 2 s and then not for 10 s; a band moved during that pause is
+requested when the pause ends. `TaskbarCreated` registers the bar again
+after an Explorer restart. The subclass lets both messages through UIPI, so
+an elevated Stem receives them from Explorer. A band that could not be
+taken (no shell, `ABM_NEW` failed, a result that is not a band on the
+monitor) is requested again after 1 s, 5 s, 30 s, then every minute, while
+the window still needs it. What the thread sends and reports is decided by
+`stem_platform::rules::appbar::Bars`, a state machine that its tests run
+against a scripted shell.
 
 An auto-hiding or hidden dock, a closed window, a position change (until
 the page reports for the new edge) and the quit release the band. The

@@ -81,10 +81,12 @@ reserves for an AppBar). It sends every `SHAppBarMessage` of the dock
 windows' AppBars, in order: `ABM_NEW`; `ABM_QUERYPOS` and `ABM_SETPOS` once
 a window's requests have not changed for 250 ms; `ABM_REMOVE`;
 `ABM_ACTIVATE`; `ABM_WINDOWPOSCHANGED`. It handles the shell notifications
-that the dock windows' subclass queues for it, and reports each granted
-band through a sink. Nothing on the main thread waits for this thread,
-except the release at quit, which is bounded and keeps dispatching sent
-messages while it waits.
+that the dock windows' subclass queues for it. It requests a band it could
+not get again after 1 s, 5 s, 30 s, then every minute, and reports each
+granted band through a sink. Every decision is made by
+`rules::appbar::Bars`, which is pure and tested. Nothing on the main thread
+waits for this thread, except the release at quit, which is bounded and
+keeps dispatching sent messages while it waits.
 
 ## The icon cache thread
 

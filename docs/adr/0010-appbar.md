@@ -87,7 +87,11 @@ or in a command handler (the Windows engineering rules in `AGENTS.md`).
   set only when the result differs from the band last requested, which ends
   the ordinary exchange between bars at once; a bound
   (`rules::appbar::RequeryGuard`: 8 repositions in 2 s, then 10 s of
-  ignoring) stops two bars that would keep moving each other.
+  ignoring) stops two bars that would keep moving each other. The pause
+  ends by itself: when a notification during the pause found the band
+  moved, the bar queries once more when the pause ends and follows the band
+  if it is still elsewhere, so it never stays on a stale band because the
+  shell sent no further notification after the pause.
   `ABN_FULLSCREENAPP` is a debug line only (fullscreen has its own detection);
   `ABN_WINDOWARRANGE` a trace line. `WM_ACTIVATE` and `WM_WINDOWPOSCHANGED`
   become `ABM_ACTIVATE` and `ABM_WINDOWPOSCHANGED` (one per window per
@@ -98,6 +102,22 @@ or in a command handler (the Windows engineering rules in `AGENTS.md`).
   maximised window on the monitor, and the reports come in bursts (an
   icon-size slider, a DPI change, a panel rect still laid out for the old
   edge for a frame). Releases do not wait.
+- **Reports.** The band the shell granted goes to the app layer after
+  every request the platform applied, even one that changed nothing: a
+  window that requests another edge and comes back within the settle has
+  dropped the band it had in the app layer, and needs the report to get it
+  back. Notifications report only a band that differs from the last report.
+- **Retry.** A band that could not be taken (no tray window, `ABM_NEW`
+  failing twice, or an `ABM_SETPOS` result that is not a band on the
+  request's monitor, which is given back at once) is reported as none and
+  requested again after 1 s, 5 s, 30 s and then every minute
+  (`rules::appbar::Retry`), for as long as the window still requests it;
+  a band taken, another request, a release or `TaskbarCreated` starts the
+  delays over. The app layer does not request it again itself: without the
+  retry, a display change during the request could leave the dock without a
+  band for the rest of the session. Repeated failures cost at most one
+  `ABM_SETPOS` and one `ABM_REMOVE` a minute; the first failure in a row is
+  a warning in the log, the later ones debug lines.
 
 ### Threads
 
@@ -136,6 +156,32 @@ or in a command handler (the Windows engineering rules in `AGENTS.md`).
   sent the message; nothing in Microsoft's documentation ties the call to
   the window's own thread. Assumes that registrations made from
   `stem-appbar` behave like any other.
+- Every decision `stem-appbar` makes (which message to send for which
+  window, when to wait, retry or requery, what to report) is in
+  `rules::appbar::Bars`, a state machine over an `AppBarShell` trait (one
+  method per message, plus whether the tray exists). The thread implements
+  the trait with `SHAppBarMessage` and only holds the queue and the clock;
+  the tests script the trait (a taskbar that moves the band, failed calls,
+  bad results, a missing shell), so the bookkeeping is proven on every host
+  and only the messages themselves are left to test on Windows.
+
+### An elevated Stem (UIPI)
+
+Explorer runs at medium integrity. When Stem runs elevated (*Run as
+administrator*), User Interface Privilege Isolation drops the messages a
+lower-integrity process sends or posts to Stem's windows from `WM_USER`
+up, registered messages included, unless the window lets them through.
+Both the AppBar callback message (`WM_APP + 0x17`) and `TaskbarCreated` are
+in that range: an elevated dock would keep its band but never receive
+`ABN_POSCHANGED` (the band would not follow the taskbar's auto-hide or other
+bars) nor re-register after an Explorer restart. The `SHAppBarMessage`
+calls themselves go from the higher level to the lower one and are not
+filtered. So `dock_window::prepare` lets exactly those two messages through
+on each dock window (`ChangeWindowMessageFilterEx(MSGFLT_ALLOW)`,
+`appbar::allow_shell_messages`), at any integrity level: at medium
+integrity it only lets a low-integrity process send them as well, which
+costs at most a bounded requery. A refusal is a debug line; the dock then
+behaves as described above while elevated.
 
 ### After a crash
 
@@ -188,11 +234,13 @@ marker** for its bands:
   over a maximised window's bottom rows, as it grows over the taskbar.
 - Every `ABM_SETPOS` and `ABM_REMOVE` resizes the maximised windows on that
   monitor; the settle, the release-only-on-change bookkeeping in the app
-  layer and the requery guard keep that to one per real change.
+  layer and the requery guard keep that to one per real change, and a
+  shell that keeps returning an unusable band costs at most one of each a
+  minute (the retry).
 - The mock platform records registrations (`MockCall::SetDockAppBar`,
   `MockPlatform::app_bars`) and grants the band on its scripted work area's
-  edge at once, so demo runs exercise the whole app-layer flow without
-  touching the desktop.
+  edge at once, after every request as the real platform reports, so demo
+  runs exercise the whole app-layer flow without touching the desktop.
 - Win32 behaviour that cannot be proven off Windows gets a manual test on
   Windows: the taskbar visible and hidden, each edge, a maximised window,
   a position change, auto-hide toggled, two monitors, an Explorer restart,
