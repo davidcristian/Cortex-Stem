@@ -43,6 +43,7 @@ import type { PowerStatus } from '$lib/ipc/generated/PowerStatus';
 import type { RawWindow } from '$lib/ipc/generated/RawWindow';
 import type { Rect } from '$lib/ipc/generated/Rect';
 import type { RecycleBinState } from '$lib/ipc/generated/RecycleBinState';
+import type { ScrollDirection } from '$lib/ipc/generated/ScrollDirection';
 import type { Settings } from '$lib/ipc/generated/Settings';
 import type { ShellAction } from '$lib/ipc/generated/ShellAction';
 import type { ThemeInfo } from '$lib/ipc/generated/ThemeInfo';
@@ -181,12 +182,14 @@ export function batteryTitle(power: PowerStatus): string {
 
 /**
  * A side effect the mock would have performed on a real OS (mirror of
- * `MockCall`), or a pin request (`pinTarget`, `reorderPinned`: what the UI
- * asked to pin and in which order, so tests can tell one request from
- * several).
+ * `MockCall`), or a request worth telling apart (`pinTarget`,
+ * `reorderPinned`: what the UI asked to pin and in which order, so tests
+ * can tell one request from several; `scrollItem`: every wheel
+ * notch the page sent, whatever it did).
  */
 export type MockCall =
   | { type: 'windowAction'; windowId: WindowId; action: WindowAction }
+  | { type: 'scrollItem'; itemKey: string; direction: ScrollDirection }
   | { type: 'pinTarget'; target: LaunchTarget }
   | { type: 'reorderPinned'; order: AppId[] }
   | { type: 'launch'; target: LaunchTarget }
@@ -324,6 +327,7 @@ export function defaultSettings(): Settings {
       clickThrough: true,
       toggleShortcut: 'Ctrl+Alt+D',
       focusShortcut: 'Ctrl+Alt+Shift+D',
+      scrollAction: 'none',
     },
     pinned: [],
     hiddenApps: [],
@@ -958,6 +962,10 @@ export type ItemAction =
   | { type: 'shell'; action: ShellAction }
   | { type: 'none' };
 
+/** `ScrollEffect`: what one wheel notch over an item does. */
+export type ScrollEffect =
+  { type: 'activate'; windowId: WindowId } | { type: 'nothing' } | { type: 'unknownItem' };
+
 function fixedItem(
   kind: DockItemKind,
   key: string,
@@ -1438,6 +1446,41 @@ class Engine {
     return { type: 'activate', windowId: windows[(activePos + 1) % windows.length]! };
   }
 
+  /**
+   * `DockEngine::scroll_action`: one wheel notch `direction` over
+   * `itemKey` in the dock window `dock`. A key with no item is
+   * `unknownItem`, whatever the setting; with `cycleWindows`, an app item
+   * with windows on that dock activates the window after (`next`) or
+   * before (`previous`) the one in front, wrapping around, or the first
+   * (`next`) or the last (`previous`) when none of them is in front;
+   * anything else is `nothing`.
+   */
+  scrollAction(itemKey: string, dock: string, direction: ScrollDirection): ScrollEffect {
+    const item = this.snapshot().items.find((i) => i.key === itemKey);
+    if (item === undefined) {
+      return { type: 'unknownItem' };
+    }
+    if (this.settings.behavior.scrollAction === 'none') {
+      return { type: 'nothing' };
+    }
+    if (item.kind !== 'app' || item.appId === null) {
+      return { type: 'nothing' };
+    }
+    const windows = this.windowsOnDock(item.appId, dock);
+    const count = windows.length;
+    if (count === 0) {
+      return { type: 'nothing' };
+    }
+    const front = this.foreground === null ? -1 : windows.indexOf(this.foreground);
+    let index: number;
+    if (front === -1) {
+      index = direction === 'next' ? 0 : count - 1;
+    } else {
+      index = direction === 'next' ? (front + 1) % count : (front + count - 1) % count;
+    }
+    return { type: 'activate', windowId: windows[index]! };
+  }
+
   // --- internals
 
   private allocSeq(): number {
@@ -1704,6 +1747,31 @@ export class MockBackend implements Backend {
           this.doShellAction(action.action);
           return;
         case 'none':
+          throw `unknown dock item: ${itemKey}`;
+      }
+    });
+  }
+
+  /**
+   * `scroll_item`, in this page's dock window (`pageLabel`):
+   * recorded, then what the engine decides (`Engine.scrollAction`): with
+   * `cycleWindows` the chosen demo window is activated and becomes the
+   * foreground one; otherwise nothing. An unknown key rejects with the
+   * Rust error's words. The service's 150 ms gate is not mirrored: every
+   * notch the page sends acts, so a test does not depend on its timing.
+   */
+  scrollItem(itemKey: string, direction: ScrollDirection): Promise<void> {
+    return this.command(() => {
+      this.record({ type: 'scrollItem', itemKey, direction });
+      const effect = this.engine.scrollAction(itemKey, this.pageLabel, direction);
+      switch (effect.type) {
+        case 'activate':
+          this.log(`scroll ${direction} over ${itemKey}: activate ${effect.windowId}`);
+          this.doWindowAction(effect.windowId, 'activate');
+          return;
+        case 'nothing':
+          return;
+        case 'unknownItem':
           throw `unknown dock item: ${itemKey}`;
       }
     });

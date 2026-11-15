@@ -166,3 +166,16 @@ describe('TauriBackend hidden apps (docs/ipc/hidden-apps.md, v1.23)', () => {
     ]);
   });
 });
+
+describe('TauriBackend scrolling over an item (docs/ipc/scrolling-over-an-item.md, v1.24)', () => {
+  it('sends scroll_item with the item key and the direction', async () => {
+    const backend = new TauriBackend();
+    const before = invokeMock.mock.calls.length;
+    await backend.scrollItem('app:exe:c:/windows/notepad.exe', 'next');
+    await backend.scrollItem('app:exe:c:/windows/notepad.exe', 'previous');
+    expect(invokeMock.mock.calls.slice(before)).toEqual([
+      ['scroll_item', { itemKey: 'app:exe:c:/windows/notepad.exe', direction: 'next' }],
+      ['scroll_item', { itemKey: 'app:exe:c:/windows/notepad.exe', direction: 'previous' }],
+    ]);
+  });
+});

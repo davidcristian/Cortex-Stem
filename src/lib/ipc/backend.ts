@@ -18,6 +18,7 @@ import type { IconKey } from '$lib/ipc/generated/IconKey';
 import type { LaunchTarget } from '$lib/ipc/generated/LaunchTarget';
 import type { MonitorInfo } from '$lib/ipc/generated/MonitorInfo';
 import type { Rect } from '$lib/ipc/generated/Rect';
+import type { ScrollDirection } from '$lib/ipc/generated/ScrollDirection';
 import type { Settings } from '$lib/ipc/generated/Settings';
 import type { ShellAction } from '$lib/ipc/generated/ShellAction';
 import type { ThemeInfo } from '$lib/ipc/generated/ThemeInfo';
@@ -104,6 +105,16 @@ export interface Backend {
   getMonitors(): Promise<MonitorInfo[]>;
   /** The engine decides: launch / activate / minimise / cycle / shell action. */
   primaryClick(itemKey: string): Promise<void>;
+  /**
+   * One wheel notch over an item of this dock window
+   * (docs/ipc/scrolling-over-an-item.md, v1.24): `next` for the wheel
+   * turned towards the user, `previous` away. Rust decides what it does:
+   * with `behavior.scrollAction = cycleWindows` it brings the item's next
+   * or previous window to the front, at most once per dock window every
+   * 150 ms; otherwise nothing. The page sends it only while the setting is
+   * not `none`. An unknown key rejects, as for `primaryClick`.
+   */
+  scrollItem(itemKey: string, direction: ScrollDirection): Promise<void>;
   windowAction(windowId: WindowId, action: WindowAction): Promise<void>;
   /** Start a new instance; Rust emits `dock://item-bounce`. */
   launchApp(appId: AppId): Promise<void>;

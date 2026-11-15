@@ -17,6 +17,7 @@ import type { IconKey } from '$lib/ipc/generated/IconKey';
 import type { LaunchTarget } from '$lib/ipc/generated/LaunchTarget';
 import type { MonitorInfo } from '$lib/ipc/generated/MonitorInfo';
 import type { Rect } from '$lib/ipc/generated/Rect';
+import type { ScrollDirection } from '$lib/ipc/generated/ScrollDirection';
 import type { Settings } from '$lib/ipc/generated/Settings';
 import type { ShellAction } from '$lib/ipc/generated/ShellAction';
 import type { ThemeInfo } from '$lib/ipc/generated/ThemeInfo';
@@ -139,6 +140,10 @@ export class TauriBackend implements Backend {
 
   primaryClick(itemKey: string): Promise<void> {
     return invoke<void>('primary_click', { itemKey });
+  }
+
+  scrollItem(itemKey: string, direction: ScrollDirection): Promise<void> {
+    return invoke<void>('scroll_item', { itemKey, direction });
   }
 
   windowAction(windowId: WindowId, action: WindowAction): Promise<void> {

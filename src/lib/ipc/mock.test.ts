@@ -560,6 +560,90 @@ describe('click semantics (mirror of DockEngine::primary_action)', () => {
   });
 });
 
+describe('scrolling over an item (docs/ipc/scrolling-over-an-item.md; mirror of DockEngine::scroll_action)', () => {
+  /** A fast backend with `behavior.scrollAction` set. */
+  async function scrolling(action: Settings['behavior']['scrollAction']): Promise<MockBackend> {
+    const b = fast();
+    const settings = await b.getSettings();
+    settings.behavior.scrollAction = action;
+    await b.updateSettings(settings);
+    return b;
+  }
+  const activations = (b: MockBackend): number[] =>
+    b.calls.flatMap((c) =>
+      c.type === 'windowAction' && c.action === 'activate' ? [c.windowId] : [],
+    );
+
+  it('is off by default: every notch is recorded and nothing else happens', async () => {
+    const b = fast();
+    expect((await b.getSettings()).behavior.scrollAction).toBe('none');
+    const before = await b.getDockState();
+    await b.scrollItem(app(FIREFOX), 'next');
+    await b.scrollItem(app(FIREFOX), 'previous');
+    expect(b.calls).toEqual([
+      { type: 'scrollItem', itemKey: app(FIREFOX), direction: 'next' },
+      { type: 'scrollItem', itemKey: app(FIREFOX), direction: 'previous' },
+    ]);
+    expect((await b.getDockState()).foreground).toBe(before.foreground);
+    // An unknown key still rejects, as for a click.
+    await expect(b.scrollItem('bogus', 'next')).rejects.toBe('unknown dock item: bogus');
+  });
+
+  it('with cycleWindows, next and previous move the foreground through the app’s windows and wrap', async () => {
+    const b = await scrolling('cycleWindows');
+    const states = recordStates(b);
+    // Firefox: 2 in front, 3 minimised. Next restores 3, next again wraps to 2.
+    await b.scrollItem(app(FIREFOX), 'next');
+    let state = await b.getDockState();
+    expect(state.foreground).toBe(3);
+    expect(item(state, app(FIREFOX)).windows.map((w) => w.isMinimized)).toEqual([false, false]);
+    await b.scrollItem(app(FIREFOX), 'next');
+    expect((await b.getDockState()).foreground).toBe(2);
+    // Previous from the first wraps to the last.
+    await b.scrollItem(app(FIREFOX), 'previous');
+    expect((await b.getDockState()).foreground).toBe(3);
+    await b.scrollItem(app(FIREFOX), 'previous');
+    state = await b.getDockState();
+    expect(state.foreground).toBe(2);
+    expect(item(state, app(FIREFOX)).isActive).toBe(true);
+    expect(activations(b)).toEqual([3, 2, 3, 2]);
+    expect(states.at(-1)?.foreground).toBe(2);
+
+    // Not in front: next is the first window, previous the last.
+    await b.scrollItem(app(CODE), 'previous');
+    expect((await b.getDockState()).foreground).toBe(4);
+    await b.scrollItem(app(FIREFOX), 'previous');
+    expect((await b.getDockState()).foreground).toBe(3);
+    await b.scrollItem(app(CODE), 'next');
+    await b.scrollItem(app(FIREFOX), 'next');
+    expect(activations(b).slice(4)).toEqual([4, 3, 4, 2]);
+  });
+
+  it('does nothing over fixed items, separators and pinned apps without windows', async () => {
+    const b = await scrolling('cycleWindows');
+    for (const key of [
+      'fixed:launcher',
+      'fixed:recycle-bin',
+      'sep:1',
+      app(NOTEPAD),
+      app(SETTINGS),
+    ]) {
+      await b.scrollItem(key, 'next');
+      await b.scrollItem(key, 'previous');
+    }
+    expect(b.calls.every((c) => c.type === 'scrollItem')).toBe(true);
+    expect(b.calls).toHaveLength(10);
+    expect((await b.getDockState()).foreground).toBe(2);
+    // Keys of items the dock does not show reject: unknown, a fixed item
+    // that is off, a hidden app's.
+    await expect(b.scrollItem('fixed:task-view', 'next')).rejects.toMatch(/unknown dock item/);
+    await expect(b.scrollItem('app:exe:c:/nope.exe', 'next')).rejects.toMatch(/unknown dock item/);
+    await b.hideApp(CODE);
+    await expect(b.scrollItem(app(CODE), 'next')).rejects.toMatch(/unknown dock item/);
+    expect(activations(b)).toEqual([]);
+  });
+});
+
 describe('pins (mirror of stem-service pin/unpin/reorder)', () => {
   it('pin moves a running app into the pinned group, reorder and unpin move it around', async () => {
     const b = fast();
@@ -2063,6 +2147,33 @@ describe('two monitors', () => {
       windowId: 9,
       action: 'activate',
     });
+  });
+
+  it('a scroll cycles only the windows the page’s own dock lists', async () => {
+    const second = await notepadOnBoth(DISPLAY3, true);
+    const settings = await second.getSettings();
+    settings.behavior.scrollAction = 'cycleWindows';
+    await second.updateSettings(settings);
+    second.pushWindow({ ...notepadOn(10, DISPLAY3), title: 'Notepad 10' });
+    second.calls.length = 0;
+    // Here: 7 and 10; window 9, on the primary, is skipped.
+    await second.scrollItem(app(NOTEPAD), 'next');
+    await second.scrollItem(app(NOTEPAD), 'next');
+    await second.scrollItem(app(NOTEPAD), 'next');
+    await second.scrollItem(app(NOTEPAD), 'previous');
+    expect(second.calls.flatMap((c) => (c.type === 'windowAction' ? [c.windowId] : []))).toEqual([
+      7, 10, 7, 10,
+    ]);
+
+    // With the setting off every window takes part, in first-seen order.
+    settings.behavior.showOnlyCurrentMonitor = false;
+    await second.updateSettings(settings);
+    second.calls.length = 0;
+    await second.scrollItem(app(NOTEPAD), 'next');
+    await second.scrollItem(app(NOTEPAD), 'next');
+    expect(second.calls.flatMap((c) => (c.type === 'windowAction' ? [c.windowId] : []))).toEqual([
+      9, 7,
+    ]);
   });
 });
 

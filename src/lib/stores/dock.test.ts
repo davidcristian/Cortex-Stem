@@ -92,6 +92,7 @@ class FakeBackend implements Backend {
   }
 
   async primaryClick(): Promise<void> {}
+  async scrollItem(): Promise<void> {}
   async windowAction(): Promise<void> {}
   async launchApp(): Promise<void> {}
   async pinApp(): Promise<void> {}
