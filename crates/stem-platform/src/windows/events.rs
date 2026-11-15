@@ -83,8 +83,20 @@
 //!   `PBT_APMPOWERSTATUSCHANGE` or `PBT_APMRESUMEAUTOMATIC` re-reads
 //!   `power::current` and emits `PowerChanged` only when the reading differs
 //!   from the last one emitted (`power::ChangeFilter`); the first reading is
-//!   emitted right after the start snapshot. The procedure answers `TRUE`
-//!   and reads nothing behind `lParam`. Each registration is a guard
+//!   emitted right after the start snapshot. The procedure answers `TRUE`.
+//!   For a `PBT_POWERSETTINGCHANGE` it copies one value out of `lParam` (a
+//!   `POWERBROADCAST_SETTING`, valid only during the call; at most
+//!   [`POWER_SETTING_DATA_MAX`] bytes of data are looked at): the battery
+//!   saver state of a `GUID_POWER_SAVING_STATUS` notification
+//!   (`power::notified_saver`), posted with the code. From then on the last
+//!   such value takes the place of `SystemStatusFlag` in every reading
+//!   (`power::with_notified_saver`): Microsoft documents
+//!   `PBT_APMPOWERSTATUSCHANGE` for power-source and battery-level changes
+//!   only, so nothing is known to follow a saver toggle that would correct
+//!   a `SystemStatusFlag` read too early. Debug lines:
+//!   `GUID_POWER_SAVING_STATUS: battery saver on|off` per notification, and
+//!   `SystemStatusFlag says battery saver …` when a reading's flag
+//!   disagrees with it. Each registration is a guard
 //!   ([`PowerNotification`]), unregistered on this thread before the window
 //!   is destroyed. Debug line per emission: `power: <reading> (<cause>)`.
 //! - A second thread (`dock-recycle-bin`, [`RecycleBinPoller`]) polls
@@ -221,7 +233,8 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Power::{
-    HPOWERNOTIFY, RegisterPowerSettingNotification, UnregisterPowerSettingNotification,
+    HPOWERNOTIFY, POWERBROADCAST_SETTING, RegisterPowerSettingNotification,
+    UnregisterPowerSettingNotification,
 };
 use windows::Win32::System::SystemServices::{
     GUID_ACDC_POWER_SOURCE, GUID_BATTERY_PERCENTAGE_REMAINING, GUID_POWER_SAVING_STATUS,
@@ -304,8 +317,15 @@ const MSG_DISPLAYCHANGE: u32 = WM_APP + 5;
 /// A top-level window moved or resized; `lParam` = its `HWND`.
 const MSG_LOCATIONCHANGE: u32 = WM_APP + 6;
 /// A `WM_POWERBROADCAST` that may change the power reading;
-/// `wParam` = the `PBT_*` code.
+/// `wParam` = the `PBT_*` code, `lParam` = the battery-saver state a
+/// `GUID_POWER_SAVING_STATUS` notification carried ([`saver_to_lparam`]).
 const MSG_POWERCHANGE: u32 = WM_APP + 7;
+
+/// The most bytes of a `POWERBROADCAST_SETTING`'s data the window procedure
+/// looks at. The one value it reads is a `DWORD`; a larger
+/// `DataLength` is cut to this, which [`power::notified_saver`] then rejects
+/// as not a `DWORD`.
+const POWER_SETTING_DATA_MAX: usize = 16;
 
 /// The power settings the hidden window is registered for, with
 /// their names for the log.
@@ -813,6 +833,9 @@ struct ThreadState {
     last_theme: Option<ThemeInfo>,
     /// The power readings already emitted.
     power: power::ChangeFilter,
+    /// The battery-saver state of the last `GUID_POWER_SAVING_STATUS`
+    /// notification; `None` before the first.
+    notified_saver: Option<bool>,
     _hooks: Vec<WinEventHook>,
     /// Before `_window`: unregistered while the window still exists.
     _power_notifications: Vec<PowerNotification>,
@@ -862,6 +885,7 @@ impl ThreadState {
             switch_timer: None,
             last_theme: None,
             power: power::ChangeFilter::default(),
+            notified_saver: None,
             _hooks: hooks,
             _power_notifications: power_notifications,
             _window: window,
@@ -941,7 +965,16 @@ impl ThreadState {
                 self.schedule_fullscreen_check();
             }
             MSG_LOCATIONCHANGE => self.on_location_change(hwnd),
-            MSG_POWERCHANGE => self.refresh_power(power_broadcast_name(msg.wParam.0 as u32)),
+            MSG_POWERCHANGE => {
+                if let Some(on) = saver_from_lparam(msg.lParam) {
+                    log::debug!(
+                        "GUID_POWER_SAVING_STATUS: battery saver {}",
+                        if on { "on" } else { "off" }
+                    );
+                    self.notified_saver = Some(on);
+                }
+                self.refresh_power(power_broadcast_name(msg.wParam.0 as u32));
+            }
             WM_TIMER => self.on_timer(msg.wParam.0),
             _ => {}
         }
@@ -1422,12 +1455,23 @@ impl ThreadState {
         }
     }
 
-    /// Read the power status and emit `PowerChanged` when it is the
-    /// first reading or differs from the last one emitted; `cause` names
-    /// what asked, for the log. A failed read is logged and emits nothing.
+    /// Read the power status, with battery saver as the last
+    /// `GUID_POWER_SAVING_STATUS` notification said once one has arrived,
+    /// and emit `PowerChanged` when it is the first reading or differs from
+    /// the last one emitted; `cause` names what asked, for the log. A failed
+    /// read is logged and emits nothing.
     fn refresh_power(&mut self, cause: &str) {
         match power::current() {
-            Ok(status) => {
+            Ok(read) => {
+                let status = power::with_notified_saver(read, self.notified_saver);
+                if status.saver != read.saver {
+                    log::debug!(
+                        "SystemStatusFlag says battery saver {}, the last \
+                         GUID_POWER_SAVING_STATUS notification {}; using the notification",
+                        if read.saver { "on" } else { "off" },
+                        if status.saver { "on" } else { "off" }
+                    );
+                }
                 if self.power.observe(status) {
                     log::debug!("power: {status:?} ({cause})");
                     self.emit(PlatformEvent::PowerChanged(status));
@@ -1469,6 +1513,62 @@ fn power_broadcast_cause(code: u32) -> Option<&'static str> {
 /// [`power_broadcast_cause`] for a code the window procedure posted.
 fn power_broadcast_name(code: u32) -> &'static str {
     power_broadcast_cause(code).unwrap_or("WM_POWERBROADCAST")
+}
+
+/// `MSG_POWERCHANGE`'s `lParam` for the battery-saver state a notification
+/// carried: 0 for none (every other broadcast and setting), 1 for
+/// off, 2 for on.
+fn saver_to_lparam(saver: Option<bool>) -> LPARAM {
+    LPARAM(match saver {
+        None => 0,
+        Some(false) => 1,
+        Some(true) => 2,
+    })
+}
+
+/// The inverse of [`saver_to_lparam`]; any other value is none.
+fn saver_from_lparam(lparam: LPARAM) -> Option<bool> {
+    match lparam.0 {
+        1 => Some(false),
+        2 => Some(true),
+        _ => None,
+    }
+}
+
+/// The battery-saver state a `PBT_POWERSETTINGCHANGE` carries:
+/// `power::notified_saver` of the `POWERBROADCAST_SETTING` behind `lparam`,
+/// copied out while the window procedure runs; `None` for a NULL `lparam`
+/// and for every other setting. Reads the header and at most
+/// [`POWER_SETTING_DATA_MAX`] bytes of the data, without assuming alignment.
+///
+/// # Safety
+///
+/// `lparam` is NULL or points at a readable `POWERBROADCAST_SETTING` whose
+/// `DataLength` bytes of data follow at `Data`, as the `lParam` of a
+/// `WM_POWERBROADCAST` with `PBT_POWERSETTINGCHANGE` does while it is being
+/// handled.
+unsafe fn power_setting_saver(lparam: LPARAM) -> Option<bool> {
+    let base = lparam.0 as *const u8;
+    if base.is_null() {
+        return None;
+    }
+    // The fields' addresses, by the structure's own offsets; no reference to
+    // the structure is made, and nothing assumes its alignment.
+    let field = |offset: usize| base.wrapping_add(offset);
+    let guid = field(core::mem::offset_of!(POWERBROADCAST_SETTING, PowerSetting));
+    let length = field(core::mem::offset_of!(POWERBROADCAST_SETTING, DataLength));
+    let data = field(core::mem::offset_of!(POWERBROADCAST_SETTING, Data));
+    // SAFETY: the caller guarantees a readable header, so the GUID's bytes
+    // are readable; read unaligned.
+    let guid = unsafe { guid.cast::<windows::core::GUID>().read_unaligned() };
+    // SAFETY: as above, for the length field.
+    let length = unsafe { length.cast::<u32>().read_unaligned() };
+    let length = (length as usize).min(POWER_SETTING_DATA_MAX);
+    // SAFETY: the caller guarantees `DataLength` readable bytes at `Data`;
+    // `length` is no more than that, the bytes are `u8` (no alignment), and
+    // the slice is dropped before this function returns.
+    let data = unsafe { core::slice::from_raw_parts(data, length) };
+    power::notified_saver(&guid, data)
 }
 
 /// Post a thread message to the current thread's own queue. Used from the
@@ -1574,12 +1674,21 @@ unsafe extern "system" fn event_wndproc(
             LRESULT(0)
         }
         // The power source, the battery's charge, battery saver or a
-        // resume. lParam (a POWERBROADCAST_SETTING for a setting change) is
-        // only valid during this call and is not read: the loop asks for the
-        // whole status again. TRUE is the documented answer to a processed
-        // broadcast.
+        // resume. The loop asks for the whole status again; lParam (a
+        // POWERBROADCAST_SETTING for a setting change) is only valid during
+        // this call, so the one value taken from it, battery saver's new
+        // state, is copied out here and posted with the code. TRUE is the
+        // documented answer to a processed broadcast.
         WM_POWERBROADCAST if power_broadcast_cause(wparam.0 as u32).is_some() => {
-            post_to_self(MSG_POWERCHANGE, wparam, LPARAM(0));
+            let saver = if wparam.0 as u32 == PBT_POWERSETTINGCHANGE {
+                // SAFETY: for PBT_POWERSETTINGCHANGE, lParam is the
+                // POWERBROADCAST_SETTING the system passes with this call
+                // (with its DataLength bytes of data), valid while it runs.
+                unsafe { power_setting_saver(lparam) }
+            } else {
+                None
+            };
+            post_to_self(MSG_POWERCHANGE, wparam, saver_to_lparam(saver));
             LRESULT(1)
         }
         m if SHELL_HOOK_MESSAGE.get() == Some(&m) => {
@@ -1640,5 +1749,71 @@ mod tests {
         assert_eq!(*POWER_SETTINGS[0].0, GUID_BATTERY_PERCENTAGE_REMAINING);
         assert_eq!(*POWER_SETTINGS[1].0, GUID_ACDC_POWER_SOURCE);
         assert_eq!(*POWER_SETTINGS[2].0, GUID_POWER_SAVING_STATUS);
+    }
+
+    #[test]
+    fn the_posted_battery_saver_state_survives_the_lparam() {
+        for saver in [None, Some(false), Some(true)] {
+            assert_eq!(saver_from_lparam(saver_to_lparam(saver)), saver);
+        }
+        // What every other post carries, and anything unexpected, is none.
+        assert_eq!(saver_from_lparam(LPARAM(0)), None);
+        assert_eq!(saver_from_lparam(LPARAM(3)), None);
+        assert_eq!(saver_from_lparam(LPARAM(-1)), None);
+    }
+
+    /// A `POWERBROADCAST_SETTING` for `setting` with `length` in its
+    /// `DataLength` and `data` at `Data`, written field by field through the
+    /// structure's own offsets into a byte buffer, one byte in (so at no
+    /// particular alignment), at least as large as the structure.
+    fn power_setting(setting: windows::core::GUID, length: u32, data: &[u8]) -> Vec<u8> {
+        let header = core::mem::size_of::<POWERBROADCAST_SETTING>();
+        let at = core::mem::offset_of!(POWERBROADCAST_SETTING, Data);
+        let mut buffer = vec![0u8; 1 + header.max(at + data.len())];
+        let guid_at = 1 + core::mem::offset_of!(POWERBROADCAST_SETTING, PowerSetting);
+        let guid = buffer[guid_at..guid_at + core::mem::size_of::<windows::core::GUID>()]
+            .as_mut_ptr()
+            .cast::<windows::core::GUID>();
+        // SAFETY: `guid` points at a GUID's worth of bytes of `buffer`;
+        // written unaligned.
+        unsafe { guid.write_unaligned(setting) };
+        let length_at = 1 + core::mem::offset_of!(POWERBROADCAST_SETTING, DataLength);
+        buffer[length_at..length_at + 4].copy_from_slice(&length.to_ne_bytes());
+        buffer[1 + at..1 + at + data.len()].copy_from_slice(data);
+        buffer
+    }
+
+    fn saver_of(buffer: &[u8]) -> Option<bool> {
+        // SAFETY: `buffer` holds a whole POWERBROADCAST_SETTING after its
+        // first byte, with at least the data its length field names when
+        // that is a DWORD's (`power_setting`), alive for the call; a longer
+        // length is cut to POWER_SETTING_DATA_MAX, which the buffer holds.
+        unsafe { power_setting_saver(LPARAM(buffer[1..].as_ptr() as isize)) }
+    }
+
+    #[test]
+    fn the_window_procedure_reads_battery_saver_out_of_the_setting() {
+        let on = power_setting(GUID_POWER_SAVING_STATUS, 4, &1u32.to_ne_bytes());
+        assert_eq!(saver_of(&on), Some(true));
+        let off = power_setting(GUID_POWER_SAVING_STATUS, 4, &0u32.to_ne_bytes());
+        assert_eq!(saver_of(&off), Some(false));
+        // The other registered settings carry no battery-saver state.
+        let ac = power_setting(GUID_ACDC_POWER_SOURCE, 4, &1u32.to_ne_bytes());
+        assert_eq!(saver_of(&ac), None);
+        let percent = power_setting(GUID_BATTERY_PERCENTAGE_REMAINING, 4, &1u32.to_ne_bytes());
+        assert_eq!(saver_of(&percent), None);
+        // A length that is not a DWORD's says nothing; a huge one is cut to
+        // POWER_SETTING_DATA_MAX before anything is read.
+        let short = power_setting(GUID_POWER_SAVING_STATUS, 1, &[1]);
+        assert_eq!(saver_of(&short), None);
+        let huge = power_setting(
+            GUID_POWER_SAVING_STATUS,
+            u32::MAX,
+            &[1; POWER_SETTING_DATA_MAX],
+        );
+        assert_eq!(saver_of(&huge), None);
+        // NULL is none.
+        // SAFETY: NULL is allowed and checked first.
+        assert_eq!(unsafe { power_setting_saver(LPARAM(0)) }, None);
     }
 }

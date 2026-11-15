@@ -19,13 +19,24 @@
 //! `PBT_APMPOWERSTATUSCHANGE`, `PBT_APMRESUMEAUTOMATIC`) and reports a
 //! reading only when it differs from the last one it reported
 //! ([`ChangeFilter`]).
+//!
+//! Battery saver has its own source too: a `GUID_POWER_SAVING_STATUS`
+//! notification carries the new state as its data ([`notified_saver`]).
+//! Once one has arrived, the events thread puts its value in place of
+//! `SystemStatusFlag` in every reading ([`with_notified_saver`]).
+//! Microsoft documents `PBT_APMPOWERSTATUSCHANGE` for power-source and
+//! battery-level changes only, so a flag that is not yet updated when the
+//! notification is handled would otherwise be dropped as "unchanged", with
+//! nothing known to come later and correct it.
 
 use stem_core::PowerStatus;
 use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
+use windows::Win32::System::SystemServices::GUID_POWER_SAVING_STATUS;
 use windows::Win32::System::WindowsProgramming::{
     AC_LINE_ONLINE, BATTERY_FLAG_CHARGING, BATTERY_FLAG_NO_BATTERY, BATTERY_FLAG_UNKNOWN,
     BATTERY_PERCENTAGE_UNKNOWN,
 };
+use windows::core::GUID;
 
 use crate::PlatformResult;
 
@@ -89,6 +100,29 @@ pub fn from_system(status: &SYSTEM_POWER_STATUS) -> PowerStatus {
     }
 }
 
+/// The battery-saver state a `PBT_POWERSETTINGCHANGE` notification for
+/// `setting` delivers with `data` (its `POWERBROADCAST_SETTING::Data`):
+/// for `GUID_POWER_SAVING_STATUS` the data is a `DWORD`, 0 for off and 1
+/// for on (any other non-zero value is read as on). `None` for every other
+/// setting and for data that is not four bytes long.
+pub fn notified_saver(setting: &GUID, data: &[u8]) -> Option<bool> {
+    if *setting != GUID_POWER_SAVING_STATUS {
+        return None;
+    }
+    let dword: [u8; 4] = data.try_into().ok()?;
+    Some(u32::from_ne_bytes(dword) != 0)
+}
+
+/// `status` with `saver` taken from the last `GUID_POWER_SAVING_STATUS`
+/// notification, when one has arrived ([`notified_saver`]); the other
+/// fields are the reading's.
+pub fn with_notified_saver(status: PowerStatus, notified: Option<bool>) -> PowerStatus {
+    PowerStatus {
+        saver: notified.unwrap_or(status.saver),
+        ..status
+    }
+}
+
 /// The events thread's change filter: a reading is reported when it is the
 /// first or differs from the last one reported.
 #[derive(Debug, Default)]
@@ -110,6 +144,9 @@ impl ChangeFilter {
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
+    use windows::Win32::System::SystemServices::{
+        GUID_ACDC_POWER_SOURCE, GUID_BATTERY_PERCENTAGE_REMAINING,
+    };
 
     use super::*;
 
@@ -267,6 +304,65 @@ mod tests {
         );
         // Off is 0.
         assert!(!from_system(&status(0, 2, 18, 0)).saver);
+    }
+
+    #[test]
+    fn a_power_saving_status_notification_carries_battery_saver_as_a_dword() {
+        let on = 1u32.to_ne_bytes();
+        let off = 0u32.to_ne_bytes();
+        assert_eq!(notified_saver(&GUID_POWER_SAVING_STATUS, &on), Some(true));
+        assert_eq!(notified_saver(&GUID_POWER_SAVING_STATUS, &off), Some(false));
+        // Anything but 0 is on.
+        assert_eq!(
+            notified_saver(&GUID_POWER_SAVING_STATUS, &2u32.to_ne_bytes()),
+            Some(true)
+        );
+        // Data of another size is not a DWORD and says nothing.
+        for data in [
+            &[][..],
+            &[1][..],
+            &[1, 0][..],
+            &[1, 0, 0, 0, 0, 0, 0, 0][..],
+        ] {
+            assert_eq!(
+                notified_saver(&GUID_POWER_SAVING_STATUS, data),
+                None,
+                "{data:?}"
+            );
+        }
+        // The other registered settings carry no battery-saver state: the
+        // AC/DC source's 1 is "on battery", the percent's 1 is 1 %.
+        assert_eq!(notified_saver(&GUID_ACDC_POWER_SOURCE, &on), None);
+        assert_eq!(
+            notified_saver(&GUID_BATTERY_PERCENTAGE_REMAINING, &on),
+            None
+        );
+    }
+
+    #[test]
+    fn a_notified_battery_saver_state_takes_the_place_of_the_flag() {
+        let read = power(true, Some(40), false, false, false);
+        // Nothing notified yet: the reading as it is.
+        assert_eq!(with_notified_saver(read, None), read);
+        // A notification wins over a flag that still says the other thing,
+        // and nothing else changes.
+        assert_eq!(
+            with_notified_saver(read, Some(true)),
+            power(true, Some(40), false, false, true)
+        );
+        let flag_on = power(true, Some(40), true, true, true);
+        assert_eq!(
+            with_notified_saver(flag_on, Some(false)),
+            power(true, Some(40), true, true, false)
+        );
+        // Agreeing values change nothing.
+        assert_eq!(with_notified_saver(flag_on, Some(true)), flag_on);
+        // Without a battery too (battery saver is reported there as well).
+        let desktop = power(false, None, false, true, false);
+        assert_eq!(
+            with_notified_saver(desktop, Some(true)),
+            power(false, None, false, true, true)
+        );
     }
 
     #[test]
