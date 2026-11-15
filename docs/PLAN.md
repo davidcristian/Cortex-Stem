@@ -86,6 +86,8 @@ without failures.
 - Bursts of window events are coalesced: title and location changes per
   window, and the service sends at most one state update per 16 ms. Icons
   are cached on disk across sessions (`crates/stem-service/src/icon_cache.rs`).
+  The budgets and the measured times are in
+  [architecture/performance.md](architecture/performance.md).
 - Elevated windows appear with their name and icon. When Windows blocks an
   action on one (minimise, restore, close), the dock shows a notice.
 

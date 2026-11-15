@@ -1,6 +1,7 @@
 # Icons
 
-This file describes how the dock's icons are loaded, sized and cached.
+This file describes how the dock's icons are loaded and sized, and the disk cache that keeps
+them across sessions.
 
 The platform returns PNG bytes for an `IconKey` at a requested size. The UI
 requests them with `get_icon` and caches them. Keys are namespaced:
@@ -52,4 +53,44 @@ cached in memory per (key, size). The platform does not cache `hwnd:`
 results: HWND values are recycled (which is why the key contains the
 process id), and a window may change its icon. The UI's per-key cache
 covers the session.
-There is no disk cache.
+
+## Disk cache (`stem_service::icon_cache`)
+
+In front of the platform, `DockService::icon_png` keeps PNGs across sessions
+in `<local app data>/dev.davidcristian.stem/icons/`. The app layer passes
+the directory. There is none under the mock platform, and without one every
+icon comes from the platform.
+
+The cache stores only keys whose bitmap is a pure function of one file:
+`exe:` and `file:` keys of an absolute path to a PE image. These
+always go to the platform:
+
+- `hwnd:` keys (a live window);
+- `shell:` keys (the Recycle Bin's states change on their own);
+- `aumid:` keys (the key has no version, and the service cannot see the
+  package's version);
+- `file:` keys of shortcuts and documents (their icon follows a target or a
+  file association).
+
+One file per (key, size), named `<FNV-1a 64 hex>.icon`, holds the key, the
+size, the version of Stem that wrote it, the source file's length and
+modification time (read before the load and checked after it), and the
+PNG, with a checksum. A read compares all of them with the file as it is
+now. So a changed exe, an updated package (whose exe path contains its
+version) or another version of Stem misses. A missing, unreadable, corrupt
+or foreign entry is a miss, never an error; a corrupt one is deleted.
+
+A bitmap that the platform's memory cache returns for a file that changed
+since this session first loaded it is not written, because it may be the
+old one. The next start loads the new icon.
+
+Writes go through the `stem-icon-cache` thread
+([Threads](threads.md#the-icon-cache-thread)). They are atomic: a temp file,
+then a rename, with no `fsync`. A partly written entry fails its checksum.
+Bounds: 4096 files or 64 MiB, least recently used evicted first.
+A hit refreshes its file's modification time when that time is more
+than an hour old, so recency is kept across restarts. PNGs over 1 MiB and
+keys over 4 KiB are not cached. At shutdown one `info` line counts the
+session's hits, misses, bypassed requests, writes, failures, drops and
+evictions. The uninstaller's *Delete the application data* option removes
+the folder with the rest of `%LOCALAPPDATA%\dev.davidcristian.stem`.

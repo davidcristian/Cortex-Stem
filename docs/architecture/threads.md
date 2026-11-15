@@ -15,6 +15,7 @@ which work may run on which thread.
 | `stem-recycle` | platform | one per `delete_to_recycle_bin`: a COM single-threaded apartment (STA) that runs `IFileOperation` with the shell's own dialogs (their message loops run here); returns the result to the waiting caller and ends |
 | `dock-empty-recycle-bin` | platform | one per `ShellAction::EmptyRecycleBin`: an STA that runs `SHEmptyRecycleBinW` with the shell's confirmation |
 | `stem-recycle-bin-refresh` | service | one per `delete_to_recycle_bin`, after the platform call: one `recycle_bin()` query, queued for the worker as `RecycleBinChanged`, so the bin's icon updates at once instead of at the next 5 s poll |
+| `stem-icon-cache` | service | with a cache directory: writes and evicts the disk icon cache's entries from a bounded queue (see *The icon cache thread* below) |
 | WebView2 threads | WebView2 | rendering |
 
 Rules: Win32 work that needs a message loop or a COM STA runs on a thread
@@ -70,3 +71,14 @@ the foreground path still report the window. `HSHELL_WINDOWDESTROYED` and
 removals are idempotent. Every received event of either source is logged
 once at trace with its name, so a trace log can be counted per source. The
 full table is in `windows/events.rs`, section *Sources*.
+
+## The icon cache thread
+
+With a cache directory, `stem-icon-cache` scans the disk icon cache at
+start: it builds the index, deletes stray temp files and evicts entries
+over the bounds. It then writes entries (temp file, then rename), evicts
+the least recently used ones past 4096 files or 64 MiB, and saves the
+recency of hits. Its jobs come from a bounded queue of 256 jobs. When the
+queue is full the job is dropped, and the caller never waits. At shutdown
+it works through its whole queue. Reads happen on the thread that called
+`get_icon`.

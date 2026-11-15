@@ -15,7 +15,8 @@ the records in `docs/adr/` give the reasons for the main decisions.
   which work runs where.
 - [identity.md](identity.md): how windows and pins are grouped into apps, and how an app
   gets its name.
-- [icons.md](icons.md): how icons are loaded, sized and cached.
+- [icons.md](icons.md): how icons are loaded and sized, and the disk cache in front of the
+  platform.
 - [dock-window.md](dock-window.md): the dock's native window, its flags and focus,
   click-through outside the panel and how it stays topmost.
 - [dock-placement.md](dock-placement.md): where each dock window is placed, one window per
@@ -31,7 +32,7 @@ the records in `docs/adr/` give the reasons for the main decisions.
   ones that belong to it.
 - [error-handling.md](error-handling.md): the error type of each layer and how a crash is
   reported.
-- [performance.md](performance.md): the performance budgets.
+- [performance.md](performance.md): the performance budgets and measured times.
 - [security.md](security.md): what the webview and Stem's commands may do.
 - [development-hosts.md](development-hosts.md): how the Windows-only product is developed
   and checked.
