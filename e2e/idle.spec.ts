@@ -43,8 +43,9 @@
  * few windows' time, not one per scenario. Controls show that the probe
  * sees busy work: a synthetic frame loop with an interval, a 10 s polling
  * chain that never fires in the window, an idle-callback loop, and the
- * attention wiggle, which runs until the window is activated by
- * design.
+ * attention wiggle. The wiggle runs until the window is activated,
+ * by design, so it cannot go quiet; it is held to the bound it keeps
+ * instead (compositor only: no layout, script or callbacks).
  *
  * Vite's dev client (`/@vite/client`, a 30 s WebSocket ping interval) is
  * served only by the dev server these tests run against, not with the
@@ -96,6 +97,12 @@ const SCRIPT_BUDGET_MS = 3;
  * for loaded hosts.
  */
 const TASK_BUDGET_MS = 25;
+/**
+ * Style recalculations a running attention wiggle may cost in a window.
+ * Measured: 1 over 3 s and 1 over 9 s, so not one per 2 s iteration; a
+ * main-thread animation would cost one a frame (about 180).
+ */
+const WIGGLE_STYLE_RECALCS = 2;
 
 const APP_SLOT = '.slot[data-kind="app"]';
 const PINNED = '.slot[data-pinned="true"]';
@@ -884,18 +891,35 @@ test.describe('the dock page goes quiet once it has settled', () => {
       {
         name: 'after an attention wiggle ends (the window activated)',
         setup: async (page, measureNow) => {
-          // Busy by design while the app asks for attention: an
-          // infinite CSS animation, which the probe must see.
+          // Busy by design while the app asks for attention, for as
+          // long as the window is not activated: an infinite CSS animation,
+          // which the probe must see.
           await page.evaluate((id) => {
             (window as unknown as DemoWindow).__dockMock?.pushAttention(id, true);
           }, EXPLORER_WINDOW);
           await expect(page.locator(EXPLORER)).toHaveAttribute('data-attention', 'true');
-          const wiggling = await measureNow(CONTROL_WATCH);
+          const wiggling = await measureNow(BUSY_WATCH);
+          console.info(summary('the attention wiggle while it runs', wiggling));
           // (Svelte scopes the keyframes' name: "svelte-<hash>-wiggle".)
           expect(wiggling.unsettled.join('; ')).toMatch(/CSS animation "[\w-]*wiggle"/);
-          expect(wiggling.running.join('; ')).toMatch(
-            /CSS animation "[\w-]*wiggle" on div\.wiggler/,
-          );
+          expect(wiggling.running).toHaveLength(1);
+          expect(wiggling.running[0]).toMatch(/^CSS animation "[\w-]*wiggle" on div\.wiggler/);
+          // The bound it keeps: the compositor plays a transform, and the
+          // main thread does nothing for it. No layout, no script, no frame,
+          // timer or idle callback, the task budget of a settled page, and
+          // at most WIGGLE_STYLE_RECALCS style recalculations a window.
+          const bound = 'the running wiggle keeps its bound';
+          expect.soft(wiggling.layouts, bound).toBe(0);
+          expect.soft(wiggling.styleRecalcs, bound).toBeLessThanOrEqual(WIGGLE_STYLE_RECALCS);
+          expect.soft(wiggling.scriptMs, bound).toBeLessThanOrEqual(SCRIPT_BUDGET_MS);
+          expect.soft(wiggling.taskMs, bound).toBeLessThanOrEqual(TASK_BUDGET_MS);
+          expect.soft(wiggling.delta, bound).toEqual({
+            frames: {},
+            timers: [],
+            timerCallbacks: [],
+            idleCallbacks: 0,
+          });
+          expect.soft(wiggling.repeaters, bound).toEqual([]);
           // Switched to without the dock (Alt+Tab): the flag clears.
           await page.evaluate((id) => {
             (window as unknown as DemoWindow).__dockMock?.pushForeground(id);
