@@ -73,12 +73,23 @@ always go to the platform:
   file association).
 
 One file per (key, size), named `<FNV-1a 64 hex>.icon`, holds the key, the
-size, the version of Stem that wrote it, the source file's length and
+size, the id of the Stem build that wrote it, the source file's length and
 modification time (read before the load and checked after it), and the
-PNG, with a checksum. A read compares all of them with the file as it is
-now. So a changed exe, an updated package (whose exe path contains its
-version) or another version of Stem misses. A missing, unreadable, corrupt
-or foreign entry is a miss, never an error; a corrupt one is deleted.
+PNG, with a checksum. A read compares all of them with the running build
+and with the file as it is now. So a changed exe, an updated package (whose
+exe path contains its version) or another build of Stem misses. A missing,
+unreadable, corrupt or foreign entry is a miss, never an error; a corrupt
+one is deleted.
+
+The build id is the crate version plus the length and modification time of
+the running `stem.exe` (`icon_cache::build_id`). The crate version alone
+does not change when the icon pipeline in `stem-platform` changes. With the
+executable's length and time in the id, every new `stem.exe` (rebuild,
+install, update) misses every entry once, instead of serving the bitmaps
+of an older pipeline. A development build and the installed one share the
+folder and replace each other's entries, which costs one start without
+cache hits per switch. A `stem.exe` whose length and modification time
+cannot be read runs without the cache.
 
 A bitmap that the platform's memory cache returns for a file that changed
 since this session first loaded it is not written, because it may be the

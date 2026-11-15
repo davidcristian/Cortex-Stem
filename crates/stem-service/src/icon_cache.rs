@@ -26,10 +26,18 @@
 //! again after; a read compares them with the file as it is now, so a
 //! replaced or updated exe misses. A packaged app's exe also has the
 //! package version in its path (`WindowsApps\<name>_<version>_…`), so an
-//! updated package is a new key. Entries also store the producing crate
-//! version (`CARGO_PKG_VERSION`): an entry written by another version of
-//! Stem misses, so a change to the icon pipeline never meets old bitmaps
-//! after an update.
+//! updated package is a new key. Entries also store the build of Stem that
+//! wrote them ([`build_id`]: the crate version and the running executable's
+//! length and modification time), and a read accepts only the running
+//! build's. The version number alone would not do: it has stayed `0.1.0`
+//! while the icon pipeline in `stem-platform` changed,
+//! and the service cannot see that crate's changes. So every new `stem.exe`
+//! (a rebuild, an install, an update) starts cold once and never meets an
+//! older pipeline's bitmaps. A development build and the installed one share
+//! the folder (both are `dev.davidcristian.stem`) and replace each other's
+//! entries, so each switch between them costs one cold start. When the
+//! running executable cannot be stamped, [`DiskIconCache::open`] fails and
+//! the service runs without the cache.
 //!
 //! The platform's memory cache does not notice a file that changes while
 //! Stem runs, so a bitmap it returns for a file whose stamp differs from the
@@ -41,7 +49,7 @@
 //! named `<16 hex digits>.icon` (FNV-1a 64 of the key and the size; the
 //! entry repeats both, so a collision is a miss, never a wrong icon). An
 //! entry is, little-endian: the magic `STEMICON`, the format version (u32),
-//! the producer version, the key (each a u32 length and bytes), the
+//! the build id, the key (each a u32 length and bytes), the
 //! requested size (u32), the source length and modification time (u64
 //! each, the time in nanoseconds since the Unix epoch), the PNG (u32 length
 //! and bytes) and a 64-bit checksum of everything before it. Writes are
@@ -113,13 +121,13 @@ pub const TOUCH_PERSIST_AFTER: Duration = Duration::from_secs(60 * 60);
 
 const MAGIC: &[u8; 8] = b"STEMICON";
 const FORMAT_VERSION: u32 = 1;
-const PRODUCER: &str = env!("CARGO_PKG_VERSION");
+const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 const ENTRY_EXTENSION: &str = ".icon";
 const TEMP_EXTENSION: &str = ".tmp";
 const NAME_DIGITS: usize = 16;
 const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
 /// The largest entry a read accepts: the payload bound plus room for the
-/// header, the key and the producer.
+/// header, the key and the build id.
 const MAX_ENTRY_BYTES: usize = MAX_PAYLOAD_BYTES + MAX_KEY_BYTES + 256;
 /// How long [`DiskIconCache::flush`] waits for the writer at most.
 const FLUSH_TIMEOUT: Duration = Duration::from_secs(10);
@@ -228,6 +236,26 @@ impl Stamp {
     }
 }
 
+/// What identifies the build of Stem that writes and reads entries: the
+/// crate version and the length and modification time of the running
+/// executable, `<version>+<length>.<nanoseconds>`. Every rebuild or install
+/// of `stem.exe` changes it, including a change to the icon pipeline in
+/// another crate that the version number does not show. An error when the
+/// executable cannot be found or stamped.
+pub fn build_id() -> io::Result<String> {
+    let exe = std::env::current_exe()?;
+    let stamp = Stamp::of(&exe).ok_or_else(|| {
+        io::Error::other(format!(
+            "the running executable {} cannot be stamped",
+            exe.display()
+        ))
+    })?;
+    Ok(format!(
+        "{CRATE_VERSION}+{}.{}",
+        stamp.len, stamp.modified_ns
+    ))
+}
+
 /// The file whose contents alone decide `key`'s bitmap, if there is one;
 /// `None` for every key that must not be cached (see the module docs).
 pub fn source_file(key: &IconKey) -> Option<&Path> {
@@ -272,6 +300,8 @@ enum Lookup {
 #[derive(Debug)]
 pub struct DiskIconCache {
     dir: PathBuf,
+    /// The build id ([`build_id`]) this cache writes and accepts.
+    producer: String,
     tx: Sender<Job>,
     writer: Mutex<Option<JoinHandle<()>>>,
     counters: Arc<Counters>,
@@ -284,25 +314,32 @@ pub struct DiskIconCache {
 
 impl DiskIconCache {
     /// Open (creating it if needed) the cache in `dir` with the default
-    /// bounds and start its writer.
+    /// bounds and start its writer. Fails when the directory cannot be
+    /// created or the running build cannot be identified ([`build_id`]).
     pub fn open(dir: impl Into<PathBuf>) -> io::Result<Self> {
         Self::open_with_limits(dir, CacheLimits::default())
     }
 
     pub fn open_with_limits(dir: impl Into<PathBuf>, limits: CacheLimits) -> io::Result<Self> {
-        let dir = dir.into();
+        Self::open_as(dir.into(), limits, build_id()?)
+    }
+
+    /// [`DiskIconCache::open_with_limits`] for the build `producer`.
+    fn open_as(dir: PathBuf, limits: CacheLimits, producer: String) -> io::Result<Self> {
         fs::create_dir_all(&dir)?;
         let (tx, rx) = crossbeam_channel::bounded(QUEUE_CAPACITY);
         let counters = Arc::new(Counters::default());
         let writer = {
             let dir = dir.clone();
+            let producer = producer.clone();
             let counters = Arc::clone(&counters);
             std::thread::Builder::new()
                 .name("stem-icon-cache".into())
-                .spawn(move || writer_loop(&dir, limits, &rx, &counters))?
+                .spawn(move || writer_loop(&dir, limits, &producer, &rx, &counters))?
         };
         Ok(Self {
             dir,
+            producer,
             tx,
             writer: Mutex::new(Some(writer)),
             counters,
@@ -432,7 +469,7 @@ impl DiskIconCache {
             );
             return Lookup::Corrupt;
         };
-        if entry.producer != PRODUCER.as_bytes()
+        if entry.producer != self.producer.as_bytes()
             || entry.key != key.0.as_bytes()
             || entry.size != size
             || entry.stamp != stamp
@@ -627,7 +664,13 @@ impl Index {
     }
 }
 
-fn writer_loop(dir: &Path, limits: CacheLimits, rx: &Receiver<Job>, counters: &Counters) {
+fn writer_loop(
+    dir: &Path,
+    limits: CacheLimits,
+    producer: &str,
+    rx: &Receiver<Job>,
+    counters: &Counters,
+) {
     let mut index = Index::scan(dir);
     let evicted = index.evict(dir, limits, None);
     counters.evictions.fetch_add(evicted, Ordering::Relaxed);
@@ -644,7 +687,7 @@ fn writer_loop(dir: &Path, limits: CacheLimits, rx: &Receiver<Job>, counters: &C
                 png,
             } => {
                 let started = Instant::now();
-                let bytes = encode(PRODUCER, &key.0, size, stamp, &png);
+                let bytes = encode(producer, &key.0, size, stamp, &png);
                 temp_seq += 1;
                 let temp = temp_name(&name, temp_seq);
                 match write_atomic(dir, &name, &temp, &bytes) {
@@ -997,11 +1040,12 @@ pub(crate) mod tests {
             modified_ns: 1_700_000_000_123_456_789,
         };
         let payload = png(7, 61);
-        let bytes = encode(PRODUCER, "exe:C:/x.exe", 96, stamp, &payload);
+        let build = "0.1.0+123456.1700000000000000000";
+        let bytes = encode(build, "exe:C:/x.exe", 96, stamp, &payload);
         assert_eq!(
             decode(&bytes),
             Some(Decoded {
-                producer: PRODUCER.as_bytes(),
+                producer: build.as_bytes(),
                 key: b"exe:C:/x.exe",
                 size: 96,
                 stamp,
@@ -1020,7 +1064,55 @@ pub(crate) mod tests {
         longer.push(0);
         assert_eq!(decode(&longer), None);
         // A payload that is not a PNG is refused even with a good checksum.
-        assert_eq!(decode(&encode(PRODUCER, "k", 1, stamp, b"GIF89a..")), None);
+        assert_eq!(decode(&encode(build, "k", 1, stamp, b"GIF89a..")), None);
+    }
+
+    #[test]
+    fn entries_carry_the_running_build_and_another_build_misses() {
+        let id = build_id().unwrap();
+        let exe = Stamp::of(&std::env::current_exe().unwrap()).unwrap();
+        assert_eq!(
+            id,
+            format!("{CRATE_VERSION}+{}.{}", exe.len, exe.modified_ns)
+        );
+
+        let root = TempDir::new("build");
+        let key = root.exe("app.exe", b"MZ");
+        let dir = cache_dir(&root);
+        {
+            let cache = DiskIconCache::open(&dir).unwrap();
+            cache
+                .get_or_load(&key, 48, || Ok(Some(png(1, 100))))
+                .unwrap();
+            cache.flush();
+        }
+        let bytes = fs::read(dir.join(entry_name(&key, 48))).unwrap();
+        assert_eq!(decode(&bytes).unwrap().producer, id.as_bytes());
+
+        // Another stem.exe of the same version (rebuilt, installed,
+        // updated) misses and writes its own bitmap.
+        let loader = Loader::new();
+        {
+            let other = DiskIconCache::open_as(
+                dir.clone(),
+                CacheLimits::default(),
+                format!("{CRATE_VERSION}+1.2"),
+            )
+            .unwrap();
+            let got = other
+                .get_or_load(&key, 48, || loader.answer(Ok(Some(png(2, 100)))))
+                .unwrap();
+            assert_eq!(got, Some(png(2, 100)));
+            other.flush();
+        }
+        assert_eq!(loader.calls(), 1);
+        // And the running build misses that one in turn.
+        let cache = DiskIconCache::open(&dir).unwrap();
+        let got = cache
+            .get_or_load(&key, 48, || loader.answer(Ok(Some(png(3, 100)))))
+            .unwrap();
+        assert_eq!(got, Some(png(3, 100)));
+        assert_eq!(loader.calls(), 2);
     }
 
     #[test]
@@ -1281,10 +1373,20 @@ pub(crate) mod tests {
 
         let mut flipped = bytes.clone();
         flipped[bytes.len() / 2] ^= 0xff;
-        let other_key = encode(PRODUCER, "exe:C:/other.exe", 48, stamp, &png(5, 300));
-        let other_size = encode(PRODUCER, &key.0, 96, stamp, &png(5, 300));
+        let build = build_id().unwrap();
+        let other_key = encode(&build, "exe:C:/other.exe", 48, stamp, &png(5, 300));
+        let other_size = encode(&build, &key.0, 96, stamp, &png(5, 300));
         let other_version = encode("0.0.0-old", &key.0, 48, stamp, &png(5, 300));
-        let cases: [(&str, Vec<u8>, bool); 7] = [
+        // What the cache's first version wrote: the crate version alone.
+        let version_only = encode(CRATE_VERSION, &key.0, 48, stamp, &png(5, 300));
+        let other_build = encode(
+            &format!("{CRATE_VERSION}+1.2"),
+            &key.0,
+            48,
+            stamp,
+            &png(5, 300),
+        );
+        let cases: [(&str, Vec<u8>, bool); 9] = [
             ("empty", Vec::new(), true),
             ("truncated", bytes[..bytes.len() - 3].to_vec(), true),
             ("flipped", flipped, true),
@@ -1292,6 +1394,8 @@ pub(crate) mod tests {
             ("another key's", other_key, false),
             ("another size's", other_size, false),
             ("another version's", other_version, false),
+            ("a version-only producer's", version_only, false),
+            ("another build's", other_build, false),
         ];
         for (what, contents, corrupt) in cases {
             fs::write(&file, &contents).unwrap();
@@ -1385,7 +1489,7 @@ pub(crate) mod tests {
         let root = TempDir::new("bytes");
         let one = u64::try_from(
             encode(
-                PRODUCER,
+                &build_id().unwrap(),
                 "exe:",
                 48,
                 Stamp {
