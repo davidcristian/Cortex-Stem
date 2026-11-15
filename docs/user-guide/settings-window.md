@@ -40,8 +40,11 @@ _Corner radius_, _Backdrop_, _Tooltips_ and _Bounce on launch_ are the
   right under the pointer grows to _Maximum scale_, and _Range_ is the
   number of neighbouring icons on each side that grow too.
 - _Backdrop_ offers _Blur (built in)_ (`css`). _Acrylic (not yet available)_
-  and _Mica (not yet available)_ are greyed out. Stem keeps `acrylic` or
-  `mica` if the file has it, but the panel still uses the blur.
+  and _Mica (not yet available)_ are greyed out. With `acrylic` or `mica`
+  written into the file, Stem draws an experimental native material behind
+  the primary dock's panel on Windows 11 22H2 or later. Secondary docks,
+  older Windows builds and a contrast theme keep the blur. Saving from the
+  settings window keeps the value.
 - _Bounce on launch_ bounces the icon of an app you started from the dock
   while the app is starting.
 - _Theme_ sets the colours of the dock and the settings window. _Use
