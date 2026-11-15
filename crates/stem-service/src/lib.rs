@@ -57,7 +57,7 @@ mod perf_tests;
 mod reidentify;
 pub mod store;
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -67,10 +67,11 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use parking_lot::Mutex;
+use stem_core::engine::ScrollEffect;
 use stem_core::{
     AppId, AppIdentity, DockEngine, DockItem, DockState, EngineInput, IconKey, ItemAction,
-    LaunchTarget, MonitorId, MonitorInfo, PlatformEvent, Rect, Settings, SettingsError,
-    ShellAction, ThemeInfo, WindowAction, WindowId,
+    LaunchTarget, MonitorId, MonitorInfo, PlatformEvent, Rect, ScrollDirection, Settings,
+    SettingsError, ShellAction, ThemeInfo, WindowAction, WindowId,
 };
 use stem_platform::{Platform, PlatformError};
 use thiserror::Error;
@@ -96,6 +97,45 @@ pub const STATE_EMIT_INTERVAL: Duration = Duration::from_millis(16);
 
 /// Delay before the single retry of a failed identity resolution.
 pub const IDENTITY_RETRY_DELAY: Duration = Duration::from_secs(2);
+
+/// Shortest time between two activations the wheel over one dock window's
+/// items may cause (`docs/ipc/scrolling-over-an-item.md`): a fast
+/// spin moves one window per interval, not one per notch.
+pub const SCROLL_INTERVAL: Duration = Duration::from_millis(150);
+
+/// The gate of [`DockService::scroll_item`]: at most one activation
+/// per dock window (by label) every [`SCROLL_INTERVAL`]. Pure: the caller
+/// passes the time, so the rule is tested without waiting.
+#[derive(Debug, Default)]
+pub struct ScrollGate {
+    /// When each dock window last let a scroll activate a window; only the
+    /// ones less than [`SCROLL_INTERVAL`] ago are kept.
+    last: HashMap<String, Instant>,
+}
+
+impl ScrollGate {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Whether a scroll in the dock window `dock` may activate a window at
+    /// `now`. Yes when the dock's last admitted one is at least
+    /// [`SCROLL_INTERVAL`] old (or there is none), and `now` becomes its
+    /// last; no when it is younger (a `now` before it counts as younger),
+    /// and the gate is left as it was, so a dropped scroll does not push
+    /// the next admitted one further away. Each dock window has its own
+    /// gate. Entries that have run out are dropped on every call, so the
+    /// labels of closed dock windows do not pile up.
+    pub fn admit(&mut self, dock: &str, now: Instant) -> bool {
+        self.last
+            .retain(|_, at| now.saturating_duration_since(*at) < SCROLL_INTERVAL);
+        if self.last.contains_key(dock) {
+            return false;
+        }
+        self.last.insert(dock.to_owned(), now);
+        true
+    }
+}
 
 /// Something the UI should hear about.
 #[derive(Debug, Clone, PartialEq)]
@@ -177,6 +217,8 @@ struct Inner {
     stopping: AtomicBool,
     /// The disk icon cache in front of `platform.icon_png`, if any.
     icon_cache: Option<DiskIconCache>,
+    /// `scroll_item`'s 150 ms gate per dock window.
+    scroll_gate: Mutex<ScrollGate>,
 }
 
 impl std::fmt::Debug for Inner {
@@ -253,6 +295,7 @@ impl DockService {
             resolve_tx,
             stopping: AtomicBool::new(false),
             icon_cache,
+            scroll_gate: Mutex::new(ScrollGate::new()),
         });
 
         let worker = {
@@ -372,6 +415,66 @@ impl DockService {
             ItemAction::Shell(action) => Ok(self.inner.platform.shell_action(action)?),
             ItemAction::None => Err(ServiceError::UnknownItem(item_key.to_owned())),
         }
+    }
+
+    /// One wheel notch `direction` over `item_key` in the dock window `dock`
+    /// (its label; `docs/ipc/scrolling-over-an-item.md`). With
+    /// `behavior.scrollAction = cycleWindows` and an app item with windows
+    /// on that dock, the engine picks the next or previous one
+    /// (`DockEngine::scroll_action`) and it is activated
+    /// (`WindowAction::Activate`, which restores a minimised one), unless
+    /// that dock window's gate ([`ScrollGate`]) let one through less than
+    /// [`SCROLL_INTERVAL`] ago: then the notch is dropped. Returns the
+    /// window activated, or `None` when the notch did nothing (the setting
+    /// is `none`, a fixed item, a separator, no windows there, dropped by
+    /// the gate). An unknown key, a hidden app's among them, is
+    /// [`ServiceError::UnknownItem`], as for [`Self::primary_click`]; a
+    /// failed activation is the platform's error, and still counts for the
+    /// gate.
+    pub fn scroll_item(
+        &self,
+        item_key: &str,
+        dock: &str,
+        direction: ScrollDirection,
+    ) -> ServiceResult<Option<WindowId>> {
+        self.scroll_item_at(item_key, dock, direction, Instant::now())
+    }
+
+    /// [`Self::scroll_item`] at the time `now` (tests pass their own).
+    fn scroll_item_at(
+        &self,
+        item_key: &str,
+        dock: &str,
+        direction: ScrollDirection,
+        now: Instant,
+    ) -> ServiceResult<Option<WindowId>> {
+        let effect = self
+            .inner
+            .engine
+            .lock()
+            .scroll_action(item_key, dock, direction);
+        let id = match effect {
+            ScrollEffect::Activate(id) => id,
+            ScrollEffect::Nothing => {
+                log::debug!("scroll {direction:?} over {item_key} in {dock:?}: nothing to do");
+                return Ok(None);
+            }
+            ScrollEffect::UnknownItem => {
+                return Err(ServiceError::UnknownItem(item_key.to_owned()));
+            }
+        };
+        if !self.inner.scroll_gate.lock().admit(dock, now) {
+            log::debug!(
+                "scroll {direction:?} over {item_key} in {dock:?}: dropped, less than \
+                 {SCROLL_INTERVAL:?} after the last one"
+            );
+            return Ok(None);
+        }
+        log::debug!("scroll {direction:?} over {item_key} in {dock:?}: activating {id:?}");
+        self.inner
+            .platform
+            .window_action(id, WindowAction::Activate)?;
+        Ok(Some(id))
     }
 
     /// The item `item_key` as the dock window `dock` lists it, which its
@@ -2560,6 +2663,224 @@ mod tests {
         assert_eq!(saves.load(Ordering::SeqCst), 1);
         let saved = Settings::from_json(&doc.document().unwrap()).unwrap();
         assert_eq!(saved.pinned, expected);
+        service.shutdown();
+    }
+
+    // ----- scrolling over an item ---------------------------------------------------
+
+    /// `ms` milliseconds after `start`.
+    fn after(start: Instant, ms: u64) -> Instant {
+        start + Duration::from_millis(ms)
+    }
+
+    #[test]
+    fn the_scroll_gate_lets_one_activation_per_dock_window_through_every_150_ms() {
+        assert_eq!(SCROLL_INTERVAL, Duration::from_millis(150));
+        let t0 = Instant::now();
+        let mut gate = ScrollGate::new();
+        assert!(gate.admit(DOCK, t0));
+        assert!(!gate.admit(DOCK, after(t0, 1)));
+        assert!(!gate.admit(DOCK, after(t0, 149)));
+        // Another dock window has a gate of its own.
+        assert!(gate.admit("dock-DISPLAY3", after(t0, 100)));
+        assert!(!gate.admit("dock-DISPLAY3", after(t0, 140)));
+        // The dropped scrolls did not move the gate: 150 ms after the one
+        // admitted, not after the last one dropped.
+        assert!(gate.admit(DOCK, after(t0, 150)));
+        assert!(!gate.admit("dock-DISPLAY3", after(t0, 249)));
+        assert!(gate.admit("dock-DISPLAY3", after(t0, 250)));
+        // A time before the last admission (two threads racing) is too soon.
+        assert!(!gate.admit(DOCK, t0));
+        assert!(gate.admit(DOCK, after(t0, 300)));
+    }
+
+    #[test]
+    fn a_fast_spin_moves_one_window_per_interval_not_one_per_notch() {
+        // A notch every 16 ms (a free-spinning wheel) for about a second.
+        let t0 = Instant::now();
+        let mut gate = ScrollGate::new();
+        let admitted: Vec<u64> = (0..=62u64)
+            .map(|n| n * 16)
+            .filter(|&ms| gate.admit(DOCK, after(t0, ms)))
+            .collect();
+        assert_eq!(admitted, [0, 160, 320, 480, 640, 800, 960]);
+    }
+
+    #[test]
+    fn the_scroll_gate_forgets_dock_windows_whose_interval_has_run_out() {
+        let t0 = Instant::now();
+        let mut gate = ScrollGate::new();
+        for n in 0..10 {
+            assert!(gate.admit(&format!("dock-{n}"), t0));
+        }
+        assert_eq!(gate.last.len(), 10);
+        assert!(gate.admit(DOCK, after(t0, 150)));
+        assert_eq!(gate.last.keys().collect::<Vec<_>>(), [DOCK]);
+    }
+
+    #[test]
+    fn a_scroll_activates_the_next_or_previous_window_at_most_once_per_interval() {
+        use ScrollDirection::{Next, Previous};
+        let (service, platform, rx) = start();
+        let state = wait_state(&rx, resolved);
+        let firefox = item_titled(&state, "firefox").unwrap().key.clone();
+        let code = item_titled(&state, "Code").unwrap().key.clone();
+        let separator = state
+            .items
+            .iter()
+            .find(|i| i.kind == DockItemKind::Separator)
+            .unwrap()
+            .key
+            .clone();
+        let second_dock = "dock-DISPLAY3";
+        let t0 = Instant::now();
+
+        // `none`, the default: nothing happens, but an unknown key rejects.
+        assert_eq!(
+            service.settings().behavior.scroll_action,
+            stem_core::settings::ScrollAction::None
+        );
+        assert_eq!(
+            service.scroll_item_at(&firefox, DOCK, Next, t0).unwrap(),
+            None
+        );
+        assert!(matches!(
+            service.scroll_item_at("bogus", DOCK, Next, t0),
+            Err(ServiceError::UnknownItem(_))
+        ));
+        assert_eq!(platform.calls(), vec![]);
+
+        let mut settings = service.settings();
+        settings.behavior.scroll_action = stem_core::settings::ScrollAction::CycleWindows;
+        service.update_settings(settings).unwrap();
+        // The engine has it once the worker reports the settings.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match rx.recv_deadline(deadline) {
+                Ok(ServiceEvent::Settings(s))
+                    if s.behavior.scroll_action
+                        == stem_core::settings::ScrollAction::CycleWindows =>
+                {
+                    break;
+                }
+                Ok(_) => {}
+                Err(e) => panic!("no settings event: {e}"),
+            }
+        }
+
+        // Firefox: window 2 in front, 3 minimised. Next restores 3.
+        let at = |ms| after(t0, ms);
+        assert_eq!(
+            service.scroll_item_at(&firefox, DOCK, Next, at(0)).unwrap(),
+            Some(WindowId(3))
+        );
+        wait_state(&rx, |s| s.foreground == Some(WindowId(3)));
+        // Too soon on the same dock window, whatever the item: dropped.
+        assert_eq!(
+            service.scroll_item_at(&code, DOCK, Next, at(100)).unwrap(),
+            None
+        );
+        // Another dock window has its own gate: next from 3 wraps to 2.
+        assert_eq!(
+            service
+                .scroll_item_at(&firefox, second_dock, Next, at(100))
+                .unwrap(),
+            Some(WindowId(2))
+        );
+        wait_state(&rx, |s| s.foreground == Some(WindowId(2)));
+        // 150 ms after its last one: previous from 2 wraps to 3.
+        assert_eq!(
+            service
+                .scroll_item_at(&firefox, DOCK, Previous, at(150))
+                .unwrap(),
+            Some(WindowId(3))
+        );
+        wait_state(&rx, |s| s.foreground == Some(WindowId(3)));
+        // Fixed items and separators do nothing, and do not arm the gate.
+        assert_eq!(
+            service
+                .scroll_item_at("fixed:launcher", DOCK, Next, at(300))
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            service
+                .scroll_item_at(&separator, DOCK, Next, at(300))
+                .unwrap(),
+            None
+        );
+        // Code's one window is not in front: either way activates it.
+        assert_eq!(
+            service
+                .scroll_item_at(&code, DOCK, Previous, at(300))
+                .unwrap(),
+            Some(WindowId(4))
+        );
+        assert!(matches!(
+            service.scroll_item_at("bogus", DOCK, Next, at(600)),
+            Err(ServiceError::UnknownItem(_))
+        ));
+        assert_eq!(
+            platform.calls(),
+            vec![
+                MockCall::WindowAction(WindowId(3), WindowAction::Activate),
+                MockCall::WindowAction(WindowId(2), WindowAction::Activate),
+                MockCall::WindowAction(WindowId(3), WindowAction::Activate),
+                MockCall::WindowAction(WindowId(4), WindowAction::Activate),
+            ]
+        );
+        service.shutdown();
+    }
+
+    #[test]
+    fn a_scroll_on_a_dock_per_monitor_cycles_only_the_windows_on_its_monitor() {
+        let (service, platform, rx) = start();
+        let state = wait_state(&rx, resolved);
+        let firefox = item_titled(&state, "firefox").unwrap().clone();
+        let second_dock = "dock-DISPLAY3";
+        let second = MonitorId(r"\\.\DISPLAY3".into());
+
+        // Firefox's window 3 goes to the second monitor; 2, in front, stays.
+        let mut moved = platform
+            .windows()
+            .unwrap()
+            .into_iter()
+            .find(|w| w.id == WindowId(3))
+            .unwrap();
+        moved.monitor = Some(second.clone());
+        platform.push(PlatformEvent::WindowUpdated(moved));
+        let mut settings = service.settings();
+        settings.monitors = stem_core::settings::MonitorMode::All;
+        settings.behavior.show_only_current_monitor = true;
+        settings.behavior.scroll_action = stem_core::settings::ScrollAction::CycleWindows;
+        service.update_settings(settings).unwrap();
+        service.set_dock_panel(DOCK, Some(demo_monitor_id()), None);
+        service.set_dock_panel(second_dock, Some(second), None);
+        wait_state(&rx, |s| s.docks.len() == 2);
+
+        // The primary's dock lists 2 alone, in front: activated again. The
+        // second dock lists 3 alone: activated, not 2.
+        let t0 = Instant::now();
+        platform.clear_calls();
+        assert_eq!(
+            service
+                .scroll_item_at(&firefox.key, DOCK, ScrollDirection::Next, t0)
+                .unwrap(),
+            Some(WindowId(2))
+        );
+        assert_eq!(
+            service
+                .scroll_item_at(&firefox.key, second_dock, ScrollDirection::Previous, t0)
+                .unwrap(),
+            Some(WindowId(3))
+        );
+        assert_eq!(
+            platform.calls(),
+            vec![
+                MockCall::WindowAction(WindowId(2), WindowAction::Activate),
+                MockCall::WindowAction(WindowId(3), WindowAction::Activate),
+            ]
+        );
         service.shutdown();
     }
 }

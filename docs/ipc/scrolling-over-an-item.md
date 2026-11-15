@@ -18,7 +18,8 @@ This file describes what a notch of the mouse wheel over a dock item does.
     last. The activation is `WindowAction::Activate`, which restores a minimised window.
   - Anything else (no windows, a fixed item, a separator, `none`) does nothing and resolves. An
     unknown key rejects as `primary_click` does.
-  - Rust lets at most one activation per dock window through every 150 ms. A scroll that comes
-    sooner is dropped, so a fast spin of the wheel moves one window, not ten.
+  - Rust lets at most one activation per dock window through every 150 ms
+    (`stem_service::SCROLL_INTERVAL`). A scroll that comes sooner is dropped, so a fast spin of
+    the wheel moves one window, not ten.
 - `MockBackend` records `scrollItem` and, with `cycleWindows`, makes the chosen demo window the
   foreground window.
