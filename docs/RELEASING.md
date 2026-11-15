@@ -53,6 +53,9 @@ release unchanged.
 Neither the installer nor `stem.exe` is code-signed. SmartScreen may stop the
 installer with "Windows protected your PC" until the file has a reputation;
 the user then chooses _More info_ → _Run anyway_. The release notes say so.
+Where Smart App Control is on, it can block the unsigned files, with no
+option to run them. [docs/code-signing/](code-signing/index.md) describes what
+signing needs, and what it changes and does not change.
 
 The installer is per-user (`installMode: currentUser`). It installs to
 `%LOCALAPPDATA%\Stem` and never asks for administrator rights.
@@ -103,8 +106,13 @@ Stem has neither. Each needs the following.
   `release.yml`; and a `latest.json` manifest uploaded with the installer.
   The maintainer generates the key pair (`pnpm tauri signer generate`) and
   keeps the private key safe: without it, existing installations can no
-  longer update.
+  longer update. This key is not a code-signing certificate; see
+  [code-signing/updater-key.md](code-signing/updater-key.md).
 - **Code signing.** An Authenticode code-signing certificate, used by the
   bundler (`bundle.windows.signCommand` or `certificateThumbprint`) in the
   same `tauri build` step, so that `stem.exe` and the installer are signed
   before the workflow attaches them to the draft.
+  [docs/code-signing/](code-signing/index.md) compares the options (Microsoft Artifact
+  Signing, an OV certificate, SignPath Foundation), describes what SmartScreen
+  shows before and after signing, and sketches the configuration file, the
+  secrets and the `release.yml` steps.

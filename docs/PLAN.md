@@ -139,9 +139,11 @@ notes on code signing.
   was not a panic is only logged.
 - The README has screenshots, and the user guide has an
   [FAQ](user-guide/faq.md).
+- [docs/code-signing/](code-signing/index.md) has the notes on code signing. The
+  installer and `stem.exe` are unsigned.
 
 **Planned.** Installer improvements, the updater (`tauri-plugin-updater` and its
-signing keys), notes on code signing, and the v0.1.0 release.
+signing keys), and the v0.1.0 release.
 
 **Exit criterion.** v0.1.0 is published on GitHub Releases.
 

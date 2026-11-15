@@ -227,6 +227,7 @@ The [FAQ](docs/user-guide/faq.md) in the user guide answers common questions abo
 | [docs/ipc/](docs/ipc/index.md) | The contract between Rust and the page: every command and event |
 | [docs/PLAN.md](docs/PLAN.md) | The milestones and the non-goals |
 | [docs/RELEASING.md](docs/RELEASING.md) | How a release is built, and what the installer and the uninstaller do |
+| [docs/code-signing/](docs/code-signing/index.md) | The options for signing `stem.exe` and the installer, and what SmartScreen shows |
 | [docs/adr/](docs/adr/) | The architecture decisions, one record each |
 | [docs/research/backdrop/](docs/research/backdrop/index.md) | Acrylic or Mica behind the dock panel: the options |
 | [docs/research/jump-lists/](docs/research/jump-lists/index.md) | Jump lists and recent documents in the dock's menu |
