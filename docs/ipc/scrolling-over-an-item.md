@@ -8,9 +8,15 @@ This file describes what a notch of the mouse wheel over a dock item does.
   `previous` for the wheel turned away.
   - The page adds up `deltaY` per item in pixels (`deltaMode` line × 40, page × the viewport's
     height) and sends one command per 100 px, at most ten per event (the rest are dropped). It
-    keeps what is left under 100 px for the next event.
-  - The count starts again over another item, over no item, and when the pointer leaves the
-    panel. An event that goes more sideways than up or down counts for nothing.
+    keeps what is left under 100 px for the next event. Travel within 0.5 px of a whole notch
+    counts as that notch.
+  - An event of at least 30 px on its own is one notch even when it is shorter than 100 px, and
+    leaves nothing over. The reason: Chromium on Windows makes a wheel notch Windows' *lines to
+    scroll at a time* × 100/3 px (33⅓ px at one line; taken from Chromium's source), so each
+    notch is one command whatever that setting is (v1.26).
+  - The count starts again over another item, over no item, when the pointer leaves the panel,
+    and for an event in the other direction. An event that goes more sideways than up or down
+    counts for nothing.
   - The page sends nothing while `scrollAction` is `none` or while an item is being dragged, and
     never for a horizontal wheel. It calls `preventDefault` only when it sends, and only on a
     cancelable event.

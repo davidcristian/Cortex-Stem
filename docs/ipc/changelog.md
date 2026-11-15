@@ -11,7 +11,10 @@ to the file that covers that section now.
   `hide_app`, `unhide_app` and `reset_settings` change ([Hidden apps](hidden-apps.md)). So a save
   from the settings page that reaches Rust after a hide or pin from the dock no longer undoes it.
   `MockBackend` does the same and gains `loadSettings`, a test hook for a whole document as the
-  settings file gives one at start.
+  settings file gives one at start. [Scrolling over an item](scrolling-over-an-item.md): a wheel
+  event of 30 px or more is at least one notch, travel within 0.5 px of a notch counts as one,
+  and a turn the other way drops the rest. So one notch is one `scroll_item` whatever Windows'
+  *lines to scroll at a time* is; that setting had made a notch 33⅓ or 66⅔ px instead of 100.
 - **v1.25 (the clock's regional format):** `DockState.clockFormat: ClockFormat { locale, hour12
   }` from the new `PlatformEvent::ClockFormatChanged`: the clock follows the Windows regional
   format instead of the display language. New subsection

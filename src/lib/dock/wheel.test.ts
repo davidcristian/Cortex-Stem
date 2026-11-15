@@ -4,7 +4,9 @@ import {
   isVertical,
   LINE_PX,
   MAX_NOTCHES_PER_EVENT,
+  NOTCH_EVENT_PX,
   NOTCH_PX,
+  NOTCH_SLACK_PX,
   wheelPixels,
   WheelNotches,
   type WheelInput,
@@ -72,15 +74,90 @@ describe('WheelNotches (docs/ipc/scrolling-over-an-item.md)', () => {
       out.push(...notches.add(wheel('app:a', 12.5)));
     }
     expect(out).toEqual(['next', 'next', 'next']);
-    // The rest counts towards the next notch either way.
+    // The rest counts towards the next notch the same way.
     expect(notches.add(wheel('app:a', 25))).toEqual(['next']);
-    expect(notches.add(wheel('app:a', -60))).toEqual([]);
-    expect(notches.add(wheel('app:a', -40))).toEqual(['previous']);
+    for (let i = 0; i < 3; i++) {
+      expect(notches.add(wheel('app:a', -25))).toEqual([]);
+    }
+    expect(notches.add(wheel('app:a', -25))).toEqual(['previous']);
     // Back and forth below a notch sends nothing.
     for (let i = 0; i < 10; i++) {
-      expect(notches.add(wheel('app:a', 90))).toEqual([]);
-      expect(notches.add(wheel('app:a', -90))).toEqual([]);
+      expect(notches.add(wheel('app:a', 29))).toEqual([]);
+      expect(notches.add(wheel('app:a', -29))).toEqual([]);
     }
+  });
+
+  it('drops the rest when the travel turns the other way', () => {
+    const notches = new WheelNotches();
+    for (let i = 0; i < 3; i++) {
+      expect(notches.add(wheel('app:a', 20))).toEqual([]);
+    }
+    // The 60 px down are not taken off the way up: 100 px up are a notch.
+    for (let i = 0; i < 4; i++) {
+      expect(notches.add(wheel('app:a', -20))).toEqual([]);
+    }
+    expect(notches.add(wheel('app:a', -20))).toEqual(['previous']);
+    // Nor are 80 px up taken off the way down.
+    for (let i = 0; i < 4; i++) {
+      expect(notches.add(wheel('app:a', -20))).toEqual([]);
+    }
+    for (let i = 0; i < 4; i++) {
+      expect(notches.add(wheel('app:a', 20))).toEqual([]);
+    }
+    expect(notches.add(wheel('app:a', 20))).toEqual(['next']);
+  });
+
+  /**
+   * One notch of a wheel in Chromium on Windows: lines to scroll at a time
+   * × 100/3 px, in single precision (`web_input_event_builders_win.cc`).
+   */
+  const notchAt = (lines: number): number => Math.fround(lines * Math.fround(100 / 3));
+
+  it('turns every notch of a wheel into one, whatever Windows’ lines to scroll at a time', () => {
+    expect(NOTCH_EVENT_PX).toBe(30);
+    expect(notchAt(1)).toBeGreaterThan(NOTCH_EVENT_PX);
+    expect(notchAt(3)).toBe(NOTCH_PX);
+    for (const lines of [1, 2, 3]) {
+      const notches = new WheelNotches();
+      const down: string[] = [];
+      for (let i = 0; i < 6; i++) {
+        down.push(...notches.add(wheel('app:a', notchAt(lines))));
+      }
+      expect(down, `${lines} lines, down`).toEqual(Array(6).fill('next'));
+      // Straight back: each notch up is one too, from the first.
+      const up: string[] = [];
+      for (let i = 0; i < 6; i++) {
+        up.push(...notches.add(wheel('app:a', -notchAt(lines))));
+      }
+      expect(up, `${lines} lines, up`).toEqual(Array(6).fill('previous'));
+    }
+    // More lines: at least one per notch (the service lets one activation
+    // through per 150 ms, so an event's extra ones move nothing).
+    const notches = new WheelNotches();
+    for (let i = 0; i < 6; i++) {
+      expect(notches.add(wheel('app:a', notchAt(4))).length).toBeGreaterThanOrEqual(1);
+    }
+    expect(notches.add(wheel('app:a', -notchAt(10)))).toEqual(Array(3).fill('previous'));
+  });
+
+  it('counts travel just under a whole notch as one, for single-precision deltas', () => {
+    expect(NOTCH_SLACK_PX).toBe(0.5);
+    const notches = new WheelNotches();
+    // Three single-precision thirds of 100 px add up to 99.999996 px.
+    const third = Math.fround(100 / 3);
+    expect(third + third + third).toBeLessThan(NOTCH_PX);
+    const step = third / 2;
+    for (let i = 0; i < 5; i++) {
+      expect(notches.add(wheel('app:a', step))).toEqual([]);
+    }
+    expect(notches.add(wheel('app:a', step))).toEqual(['next']);
+    // Nothing is left over, not even the 0.000004 px.
+    for (let i = 0; i < 3; i++) {
+      expect(notches.add(wheel('app:a', 25))).toEqual([]);
+    }
+    // 99.25 px is short of the slack; 99.5 px is a notch.
+    expect(notches.add(wheel('app:a', 24.25))).toEqual([]);
+    expect(notches.add(wheel('app:a', 0.25))).toEqual(['next']);
   });
 
   it('counts lines and pages in pixels', () => {
@@ -95,29 +172,39 @@ describe('WheelNotches (docs/ipc/scrolling-over-an-item.md)', () => {
 
   it('starts again over another item and over none', () => {
     const notches = new WheelNotches();
-    expect(notches.add(wheel('app:a', 60))).toEqual([]);
-    // 60 + 60 would be a notch over one item; these are two.
-    expect(notches.add(wheel('app:b', 60))).toEqual([]);
-    expect(notches.add(wheel('app:b', 40))).toEqual(['next']);
-    expect(notches.add(wheel('app:b', 60))).toEqual([]);
-    expect(notches.add(wheel(null, 60))).toEqual([]);
-    expect(notches.add(wheel('app:b', 60))).toEqual([]);
-    expect(notches.add(wheel('app:b', 40))).toEqual(['next']);
+    /** Three 25 px steps over `key`, which complete no notch. */
+    const threeQuarters = (key: string | null): void => {
+      for (let i = 0; i < 3; i++) {
+        expect(notches.add(wheel(key, 25)), String(key)).toEqual([]);
+      }
+    };
+    threeQuarters('app:a');
+    // 75 + 25 would be a notch over one item; these are two.
+    threeQuarters('app:b');
+    expect(notches.add(wheel('app:b', 25))).toEqual(['next']);
+    threeQuarters('app:b');
+    threeQuarters(null);
+    threeQuarters('app:b');
+    expect(notches.add(wheel('app:b', 25))).toEqual(['next']);
     // `reset` forgets the rest too.
-    expect(notches.add(wheel('app:b', 90))).toEqual([]);
+    threeQuarters('app:b');
     notches.reset();
-    expect(notches.add(wheel('app:b', 90))).toEqual([]);
-    expect(notches.add(wheel('app:b', 10))).toEqual(['next']);
+    threeQuarters('app:b');
+    expect(notches.add(wheel('app:b', 25))).toEqual(['next']);
   });
 
   it('ignores a horizontal wheel and keeps the rest across it', () => {
     const notches = new WheelNotches();
     expect(notches.add(wheel('app:a', 0, PIXEL, 100))).toEqual([]);
     expect(notches.add(wheel('app:a', 0, PIXEL, -500))).toEqual([]);
-    expect(notches.add(wheel('app:a', 50))).toEqual([]);
-    // Mostly sideways: a swipe's vertical jitter does not count.
+    expect(notches.add(wheel('app:a', 25))).toEqual([]);
+    expect(notches.add(wheel('app:a', 25))).toEqual([]);
+    // Mostly sideways: a swipe's vertical jitter does not count, not even
+    // as a turn the other way.
     expect(notches.add(wheel('app:a', 40, PIXEL, 120))).toEqual([]);
-    expect(notches.add(wheel('app:a', 50))).toEqual(['next']);
+    expect(notches.add(wheel('app:a', -40, PIXEL, 120))).toEqual([]);
+    expect(notches.add(wheel('app:a', 25))).toEqual([]);
+    expect(notches.add(wheel('app:a', 25))).toEqual(['next']);
     // A diagonal that goes as far down as sideways is vertical.
     expect(notches.add(wheel('app:a', 100, PIXEL, -100))).toEqual(['next']);
   });
@@ -125,9 +212,11 @@ describe('WheelNotches (docs/ipc/scrolling-over-an-item.md)', () => {
   it('yields at most ten notches per event and keeps only the rest below one', () => {
     const notches = new WheelNotches();
     expect(MAX_NOTCHES_PER_EVENT).toBe(10);
-    expect(notches.add(wheel('app:a', 1e9 + 30))).toHaveLength(10);
-    expect(notches.add(wheel('app:a', 60))).toEqual([]);
-    expect(notches.add(wheel('app:a', 10))).toEqual(['next']);
+    expect(notches.add(wheel('app:a', 1e9 + 20))).toHaveLength(10);
+    for (let i = 0; i < 3; i++) {
+      expect(notches.add(wheel('app:a', 25))).toEqual([]);
+    }
+    expect(notches.add(wheel('app:a', 5))).toEqual(['next']);
     expect(notches.add(wheel('app:a', -5, PAGE))).toEqual(Array(10).fill('previous'));
     expect(notches.add(wheel('app:a', Number.NaN))).toEqual([]);
     expect(notches.add(wheel('app:a', 100))).toEqual(['next']);

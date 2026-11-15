@@ -913,7 +913,8 @@
 
   // The wheel over an item (docs/ipc/scrolling-over-an-item.md):
   // one listener on the panel. `wheel.ts` adds the vertical travel up per
-  // item and says when a notch (100 px) is complete; each one is a
+  // item and says when a notch is complete (100 px, or one event of 30 px
+  // or more, whatever Windows' lines to scroll at a time); each one is a
   // `scroll_item`, and Rust decides what it does (cycle the item's windows,
   // at most once per 150 ms). Nothing is counted or sent while the setting
   // is `none`, and the page's default handling is only prevented for an

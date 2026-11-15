@@ -1337,7 +1337,8 @@ test.describe('hidden apps on the dock', () => {
 
 test.describe('scrolling over an item', () => {
   // At 1x Playwright's `mouse.wheel(0, 100)` arrives as `deltaY` 100, one
-  // notch; at the suite's 2x it arrives halved.
+  // notch; at the suite's 2x it arrives halved (50 px, which an event of
+  // 30 px or more also makes one notch, IPC v1.26).
   test.use({ deviceScaleFactor: 1 });
   const FIREFOX_SLOT = `${APP_SLOT}[data-key="app:exe:c:/program files/mozilla firefox/firefox.exe"]`;
   const NOTEPAD_SLOT = `${APP_SLOT}[data-key="app:exe:c:/windows/notepad.exe"]`;
@@ -1463,6 +1464,33 @@ test.describe('scrolling over an item', () => {
     expect(await callCount(page)).toBeGreaterThan(0);
     expect(await scrolls(page)).toHaveLength(7);
     expect(await foregroundId(page)).toBe(4);
+  });
+
+  test('with Windows at one line to scroll (33⅓ px a notch) each notch moves one window, the first one back too', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openDock(page);
+    await patchSettings(page, { behavior: { scrollAction: 'cycleWindows' } });
+    const firefox = page.locator(FIREFOX_SLOT);
+    await firefox.hover();
+    expect(await foregroundId(page)).toBe(2);
+    // What Chromium on Windows gives one notch at one line: 100/3 px in
+    // single precision.
+    const oneLine = Math.fround(100 / 3);
+    await page.mouse.wheel(0, oneLine);
+    await expect.poll(() => foregroundId(page)).toBe(3);
+    await page.mouse.wheel(0, oneLine);
+    await expect.poll(() => foregroundId(page)).toBe(2);
+    await page.mouse.wheel(0, -oneLine);
+    await expect.poll(() => foregroundId(page)).toBe(3);
+    const key = await firefox.getAttribute('data-key');
+    expect(await scrolls(page)).toEqual([
+      { itemKey: key, direction: 'next' },
+      { itemKey: key, direction: 'next' },
+      { itemKey: key, direction: 'previous' },
+    ]);
+    expect(await activated(page)).toEqual([3, 2, 3]);
   });
 });
 

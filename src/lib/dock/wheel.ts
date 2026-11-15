@@ -10,17 +10,37 @@
  * height for 2 (pages). Every 100 px is one notch, `next` for a positive
  * `deltaY` (the wheel turned towards the user, a touchpad scroll that would
  * move a page down), `previous` for a negative one; the rest is kept for
- * the next event, so a touchpad's small steps add up to notches too. The rest
- * belongs to one item: over another item, or over none, the count starts
- * again. An event that goes more sideways than up or down (a tilt wheel,
- * Shift and the wheel, a sideways swipe) is not a vertical scroll and
- * counts for nothing.
+ * the next event, so a touchpad's small steps add up to notches too.
+ *
+ * A notch of a real wheel is not always 100 px: Chromium on Windows (so
+ * WebView2) makes it Windows' *lines to scroll at a time* × 100/3 px, in
+ * single precision, which is 100 only at the default of three lines. So an
+ * event that travels at least 30 px on its own is one notch even when it
+ * is shorter (33⅓ px at one line, 66⅔ at two), and then leaves no rest; a
+ * total within half a pixel of a notch counts as one (three single-
+ * precision thirds add up to just under 100). A touchpad's steps are mostly
+ * smaller than 30 px and still add up.
+ *
+ * The rest belongs to one item and one direction: over another item, over
+ * none, or for an event the other way, the count starts again. An event
+ * that goes more sideways than up or down (a tilt wheel, Shift and the
+ * wheel, a sideways swipe) is not a vertical scroll and counts for nothing.
  */
 
 import type { ScrollDirection } from '$lib/ipc/generated/ScrollDirection';
 
 /** Vertical travel per notch, in CSS px: one `scroll_item` each. */
 export const NOTCH_PX = 100;
+
+/**
+ * An event whose own vertical travel is at least this many CSS px is one
+ * notch at least: a wheel notch at Windows' one line to scroll (33⅓ px,
+ * the least it can be) or more.
+ */
+export const NOTCH_EVENT_PX = 30;
+
+/** Travel this close under a whole number of notches counts as that many (single-precision deltas). */
+export const NOTCH_SLACK_PX = 0.5;
 
 /** CSS px per line for `WheelEvent.DOM_DELTA_LINE`. */
 export const LINE_PX = 40;
@@ -70,7 +90,10 @@ export function isVertical(deltaX: number, deltaY: number): boolean {
 /** Adds wheel travel up and turns it into notches; one per dock page. */
 export class WheelNotches {
   private key: string | null = null;
-  /** Travel since the last notch over `key`, in CSS px (−100 < rest < 100). */
+  /**
+   * Travel since the last notch over `key`, in CSS px, in one direction
+   * (−100 < rest < 100).
+   */
   private rest = 0;
 
   /**
@@ -91,14 +114,28 @@ export class WheelNotches {
     if (!isVertical(input.deltaX, input.deltaY)) {
       return [];
     }
-    this.rest += wheelPixels(input.deltaY, input.deltaMode, input.pageHeight);
-    const whole = Math.trunc(this.rest / NOTCH_PX);
+    const px = wheelPixels(input.deltaY, input.deltaMode, input.pageHeight);
+    if (px === 0) {
+      return [];
+    }
+    // A turn the other way starts again: what was left the old way is not
+    // taken off the first notch back.
+    if (Math.sign(px) !== Math.sign(this.rest)) {
+      this.rest = 0;
+    }
+    this.rest += px;
+    const travel = Math.abs(this.rest);
+    let whole = Math.trunc((travel + NOTCH_SLACK_PX) / NOTCH_PX);
+    if (whole === 0 && Math.abs(px) >= NOTCH_EVENT_PX) {
+      whole = 1;
+    }
     if (whole === 0) {
       return [];
     }
-    this.rest -= whole * NOTCH_PX;
-    const count = Math.min(Math.abs(whole), MAX_NOTCHES_PER_EVENT);
-    return Array.from({ length: count }, () => (whole > 0 ? 'next' : 'previous'));
+    const direction: ScrollDirection = px > 0 ? 'next' : 'previous';
+    this.rest = Math.sign(px) * Math.max(0, travel - whole * NOTCH_PX);
+    const count = Math.min(whole, MAX_NOTCHES_PER_EVENT);
+    return Array.from({ length: count }, () => direction);
   }
 
   /** Forget the item and the rest (the setting went off, the pointer left). */
