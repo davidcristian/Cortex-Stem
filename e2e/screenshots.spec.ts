@@ -6520,9 +6520,12 @@ test.describe('fitting the dock to its edge', () => {
     await expect.poll(() => transformOf(2)).toBe('');
   });
 
-  test('a file dragged over a fitted dock opens a gap one fitted slot long', async ({ page }) => {
+  test('a file drag while fitted: a gap one fitted slot long, the size held until the pin has landed', async ({
+    page,
+  }) => {
     await openFitted(page, 'left');
     const icon = await drawnSize(page);
+    const keys = await pinnedKeys(page);
     const a = centreOf(await box(page.locator(PINNED).nth(1)));
     const b = centreOf(await box(page.locator(PINNED).nth(2)));
     const between = { x: a.x, y: (a.y + b.y) / 2 };
@@ -6532,10 +6535,37 @@ test.describe('fitting the dock to its edge', () => {
     await expect(gap).toHaveCount(1);
     await expect.poll(async () => Math.round((await box(gap)).height)).toBe(icon + SLOT_GAP);
     expect(Math.round((await box(gap)).width)).toBe(icon);
-    // The drag holds the size while the gap is open.
+    expect(
+      await gap.evaluate((el) => (el.previousElementSibling as HTMLElement | null)?.dataset.key),
+    ).toBe(keys[1]);
+
+    // A new app while the gap is open would fit smaller; the drag keeps its size.
+    await page.evaluate((w) => {
+      (window as unknown as DemoWindow).__dockMock?.pushWindow(w);
+    }, PAINT_WINDOW);
+    await expect(page.locator(PAINT_SLOT)).toHaveCount(1);
+    await expect.poll(() => runningAnimations(page)).toBe(0);
+    expect(fittedFor(600, await counts(page))).toBeLessThan(icon);
     expect(await drawnSize(page)).toBe(icon);
-    await fileDrag(page, { type: 'leave' });
+    expect(Math.round((await box(gap)).height)).toBe(icon + SLOT_GAP);
+
+    // Dropped in the gap: the program is pinned there, and once it has
+    // landed the hold is gone and the fit follows the two new items.
+    const at = centreOf(await box(gap));
+    await fileDrag(page, { type: 'over', position: at });
+    await fileDrag(page, { type: 'drop', paths: [EXE_PATH], position: at });
+    const id = `app:exe:${EXE_PATH.replace(/\\/g, '/').toLowerCase()}`;
+    await expect.poll(() => pinnedKeys(page)).toEqual([keys[0], keys[1], id, ...keys.slice(2)]);
     await expect(gap).toHaveCount(0);
+    await expect.poll(() => runningAnimations(page)).toBe(0);
+    const after = fittedFor(600, await counts(page));
+    expect(after).toBeLessThan(icon);
+    await expect.poll(() => drawnSize(page)).toBe(after);
+    await expect(page.locator(`${STAGE}[data-fitted]`)).toHaveCount(1);
+    await expect
+      .poll(async () => (await lastPanelRect(page)) ?? null)
+      .toEqual(restRect(await box(page.locator(PANEL))));
+    expect((await lastPanelRect(page))!.width).toBe(after + 2 * PANEL_PADDING);
   });
 
   // A change of position to the other axis (docs/ipc/sizing-protocol.md,
