@@ -93,7 +93,11 @@
 //! report naming another edge than the one the window was placed on last
 //! ([`DockWindowState::stale_for`]) was measured before the page saw a
 //! position change: it is dropped (one `debug` line), and the page's next
-//! reports, laid out for the new edge, are applied as usual. The panel rect
+//! reports, laid out for the new edge, are applied as usual. One exception:
+//! a content size for the edge in effect, while the window is not on it
+//! (its move there failed), is taken and moves the window there
+//! ([`DockWindowState::take_content`]), so a failed move does not leave the
+//! dock dropping every report until an unrelated placement. The panel rect
 //! also carries the viewport it is relative to ([`PanelReport`]): every
 //! conversion re-anchors it to the window's viewport of the moment
 //! ([`reanchor_panel`], the page's own layout: anchored to the edge side,
@@ -213,13 +217,30 @@ impl DockWindowState {
     }
 
     /// Take a `set_dock_content_size` measured for `content.edge`, unless it
-    /// is stale ([`Self::stale_for`]; `Err` with the window's edge).
-    fn take_content(&mut self, content: DockContent) -> Result<(), DockPosition> {
-        if let Some(placed) = self.stale_for(content.edge) {
-            return Err(placed);
+    /// is stale ([`Self::stale_for`]; `Err` with the window's edge) and
+    /// `in_effect`, the edge the windows are laid out for ([`dock_edge`]),
+    /// is not its edge either. A report for the edge in effect is never
+    /// stale: the page measured it after it saw the position change. The
+    /// window is not on that edge yet only when its move there failed
+    /// ([`on_position_setting`] logs it; a getter or a resize failed) or has
+    /// not run yet: `Ok(Some(placed))`, and the [`layout`] that follows the
+    /// report is the move, retried. Without that, every report for the edge
+    /// in effect would be dropped until an unrelated placement (a monitor or
+    /// DPI change) moved the window. `Ok(None)` for a report on the window's
+    /// edge.
+    fn take_content(
+        &mut self,
+        content: DockContent,
+        in_effect: DockPosition,
+    ) -> Result<Option<DockPosition>, DockPosition> {
+        let stale = self.stale_for(content.edge);
+        if let Some(placed) = stale {
+            if content.edge != in_effect {
+                return Err(placed);
+            }
         }
         self.content = Some(content);
-        Ok(())
+        Ok(stale)
     }
 
     /// Take a `set_dock_hit_region` measured for `edge`, unless it is stale
@@ -888,8 +909,13 @@ fn log_stale(label: &str, report: &str, edge: DockPosition, placed: DockPosition
 /// across that edge becomes the window's thickness, and the window is laid
 /// on the edge in effect of its own monitor's work area, as long as the
 /// work area along it ([`layout`]). A report measured for another edge than
-/// the window's is dropped ([`DockWindowState::take_content`]).
-/// Called from the `set_dock_content_size` command, on the main thread.
+/// the window's is dropped ([`DockWindowState::take_content`]),
+/// unless it names the edge in effect: then the window's move to that edge
+/// failed or is still to come, and this layout is the move (logged). The
+/// page's first report for a new edge always includes a content size (it
+/// sends one after every position change), before its hit region and panel
+/// rect, so those are taken once this layout placed the window. Called from
+/// the `set_dock_content_size` command, on the main thread.
 pub fn apply_content_size(
     app: &AppHandle,
     window: &WebviewWindow,
@@ -903,11 +929,16 @@ pub fn apply_content_size(
         height,
         edge,
     };
-    let taken = app
-        .try_state::<DockGeometry>()
-        .and_then(|geometry| geometry.update(window.label(), |dock| dock.take_content(content)));
+    let in_effect = dock_edge(app);
+    let taken = app.try_state::<DockGeometry>().and_then(|geometry| {
+        geometry.update(window.label(), |dock| dock.take_content(content, in_effect))
+    });
     match taken {
-        Some(Ok(())) => {}
+        Some(Ok(None)) => {}
+        Some(Ok(Some(placed))) => log::info!(
+            "dock window {:?}: a content size for the {edge:?} edge while the window is still on the {placed:?} edge; moving it there",
+            window.label()
+        ),
         Some(Err(placed)) => {
             log_stale(window.label(), "a content size", edge, placed);
             return Ok(());
@@ -922,7 +953,7 @@ pub fn apply_content_size(
         None => Vec::new(),
     };
     let monitor = monitor_of(app, window.label(), &monitors);
-    layout(window, monitor.as_ref(), dock_edge(app), Some(content))
+    layout(window, monitor.as_ref(), in_effect, Some(content))
 }
 
 /// Argument check for `set_dock_hit_region` (`docs/ipc/hit-region.md`):
@@ -3309,7 +3340,7 @@ mod tests {
             height: 135.0,
             edge: Bottom,
         };
-        assert_eq!(dock.take_content(bottom_size), Err(Left));
+        assert_eq!(dock.take_content(bottom_size, Left), Err(Left));
         assert_eq!(dock.content, None);
         let panel = Rect::new(960, 16, 640, 64);
         let envelope = Rect::new(900, 0, 760, 80);
@@ -3329,7 +3360,7 @@ mod tests {
             height: 800.0,
             edge: Left,
         };
-        assert_eq!(dock.take_content(left_size), Ok(()));
+        assert_eq!(dock.take_content(left_size, Left), Ok(None));
         assert_eq!(dock.content, Some(left_size));
         let column = Rect::new(8, 400, 64, 640);
         let column_envelope = Rect::new(8, 340, 110, 760);
@@ -3344,7 +3375,7 @@ mod tests {
         assert_eq!((dock.panel, dock.reserve_css), (Some(left_panel), Some(72)));
 
         // A late one from the bottom edge changes none of them.
-        assert_eq!(dock.take_content(bottom_size), Err(Left));
+        assert_eq!(dock.take_content(bottom_size, Left), Err(Left));
         assert_eq!(dock.take_panel(bottom_panel), Err(Left));
         assert_eq!(dock.take_hit_region(panel, envelope, Bottom), Err(Left));
         assert_eq!(dock.content, Some(left_size));
@@ -3354,9 +3385,65 @@ mod tests {
         // Before its first placement a window takes any edge.
         let mut fresh = DockWindowState::default();
         assert_eq!(fresh.stale_for(Bottom), None);
-        assert_eq!(fresh.take_content(bottom_size), Ok(()));
+        assert_eq!(fresh.take_content(bottom_size, Left), Ok(None));
         assert_eq!(dock.stale_for(Left), None);
         assert_eq!(dock.stale_for(Bottom), Some(Left));
+    }
+
+    #[test]
+    fn a_content_size_for_the_edge_in_effect_retries_a_failed_move() {
+        use DockPosition::{Bottom, Left, Top};
+        // The position became `left`, but the window's move there failed: it
+        // is still on the bottom edge, with what its page reported there.
+        let bottom_size = DockContent {
+            width: 1300.0,
+            height: 135.0,
+            edge: Bottom,
+        };
+        let mut dock = DockWindowState {
+            edge: Some(Bottom),
+            content: Some(bottom_size),
+            ..DockWindowState::default()
+        };
+        // The page's hit region and panel rect for the left edge do not
+        // belong to a window on the bottom edge: dropped, as before.
+        let column = Rect::new(8, 400, 64, 640);
+        let column_envelope = Rect::new(8, 340, 110, 760);
+        let left_panel = PanelReport {
+            rect: column,
+            edge: Left,
+            viewport: css(150.0, 1440.0),
+        };
+        assert_eq!(
+            dock.take_hit_region(column, column_envelope, Left),
+            Err(Bottom)
+        );
+        assert_eq!(dock.take_panel(left_panel), Err(Bottom));
+        // Its content size for the left edge, the edge in effect, is taken,
+        // with the edge the window is still on: the layout that follows is
+        // the move, retried.
+        let left_size = DockContent {
+            width: 135.0,
+            height: 800.0,
+            edge: Left,
+        };
+        assert_eq!(dock.take_content(left_size, Left), Ok(Some(Bottom)));
+        assert_eq!(dock.content, Some(left_size));
+        // A late report from an edge that is neither stays dropped.
+        let top_size = DockContent {
+            edge: Top,
+            ..bottom_size
+        };
+        assert_eq!(dock.take_content(top_size, Left), Err(Bottom));
+        assert_eq!(dock.content, Some(left_size));
+        // Once that layout has placed the window (`place` remembers the
+        // edge), the left edge's other reports are taken and the bottom
+        // edge's are the stale ones.
+        dock.edge = Some(Left);
+        assert_eq!(dock.take_hit_region(column, column_envelope, Left), Ok(()));
+        assert_eq!(dock.take_panel(left_panel), Ok(Some(72)));
+        assert_eq!(dock.take_content(bottom_size, Left), Err(Left));
+        assert_eq!(dock.take_content(left_size, Left), Ok(None));
     }
 
     #[test]
