@@ -158,6 +158,7 @@ Where Stem keeps its files:
 | ----------------------- | ----------------------------------------------------------------------------------- |
 | Settings                | `%APPDATA%\dev.davidcristian.stem\settings.json`                                    |
 | Log                     | `%LOCALAPPDATA%\dev.davidcristian.stem\logs\stem.log`                               |
+| Icon cache              | `%LOCALAPPDATA%\dev.davidcristian.stem\icons\`                                      |
 | Taskbar and crash notes | `%LOCALAPPDATA%\dev.davidcristian.stem\` (`taskbar.json`, `crash.json`, `run.json`) |
 
 **Quitting.** Right-click the tray icon → _Quit_, or right-click the dock → _Quit Stem_.
@@ -173,8 +174,8 @@ the details.
 **Uninstalling.** Quit Stem first (tray → _Quit_), so it puts your taskbar setting back. Then
 remove Stem from Windows Settings → Apps → Installed apps. The uninstaller also removes Stem's
 startup entry. Its _Delete the application data_ box, unticked by default, deletes both
-`dev.davidcristian.stem` folders: the settings, the log, the notes and WebView2's data. Leave it
-unticked to keep your settings.
+`dev.davidcristian.stem` folders: the settings, the log, the icon cache, the
+notes and WebView2's data. Leave it unticked to keep your settings.
 
 ## Build from source
 

@@ -84,7 +84,7 @@ A release build writes the generated script to
   application data_ box, cleared by default. When it is ticked, the
   uninstaller deletes `%APPDATA%\dev.davidcristian.stem` (settings) and
   `%LOCALAPPDATA%\dev.davidcristian.stem`
-  (logs, the taskbar and crash markers, and WebView2's data).
+  (logs, the icon cache, the taskbar and crash markers, and WebView2's data).
   When it is clear, both folders stay, and a Stem installed later reads the
   same settings. An update run (`/UPDATE`, the switch Tauri's updater passes)
   never deletes them.

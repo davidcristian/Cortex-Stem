@@ -34,8 +34,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use stem_core::{AppFolder, Settings};
 use stem_platform::{Platform, create_platform, is_mock};
 use stem_service::{
-    DockService, FileSettingsStore, MemorySettingsStore, ServiceError, ServiceEvent, ServiceResult,
-    SettingsStore,
+    DockService, FileSettingsStore, MemorySettingsStore, ServiceError, ServiceEvent,
+    ServiceOptions, ServiceResult, SettingsStore,
 };
 use tauri::{AppHandle, Emitter, Manager, RunEvent};
 use tauri_plugin_log::{RotationStrategy, Target, TargetKind};
@@ -163,7 +163,10 @@ pub fn run() {
             panic_test();
             log::info!("platform: {}", platform.name());
 
-            let (service, settings_file) = start_service(platform, store)?;
+            let options = ServiceOptions {
+                icon_cache_dir: icon_cache_dir(app.handle(), platform.as_ref()),
+            };
+            let (service, settings_file) = start_service(platform, store, &options)?;
             let service = Arc::new(service);
             forward_events(app.handle().clone(), &service);
             app.manage(AppService(Arc::clone(&service)));
@@ -234,20 +237,40 @@ fn settings_store(app: &AppHandle, platform: &dyn Platform) -> Option<FileSettin
     }
 }
 
+/// The disk icon cache lives in `<app local data dir>/icons`
+/// (`%LOCALAPPDATA%\dev.davidcristian.stem\icons`). `None` under the
+/// mock platform (a demo run never touches the real profile; its keys are
+/// never cached anyway) or on a host without that directory, which leaves
+/// every icon to the platform.
+fn icon_cache_dir(app: &AppHandle, platform: &dyn Platform) -> Option<PathBuf> {
+    if is_mock(platform) {
+        return None;
+    }
+    match app.path().app_local_data_dir() {
+        Ok(dir) => Some(dir.join("icons")),
+        Err(e) => {
+            log::warn!("no app local data dir ({e}); icons will not be cached on disk");
+            None
+        }
+    }
+}
+
 /// Start the service, never failing because of the settings *file*:
 /// - no file yet: write the defaults first so users can find and edit it;
 /// - unreadable or invalid file: keep it as `settings.json.broken`, write
 ///   fresh defaults and start with them;
 /// - unreadable directory: run with an in-memory store for this session.
 ///
-/// Also returns the settings file the service ended up with (`None` for the
-/// in-memory store), for `AppPaths`.
+/// `options` (the icon cache directory) apply whichever store it ends up
+/// with. Also returns the settings file the service ended up with (`None`
+/// for the in-memory store), for `AppPaths`.
 fn start_service(
     platform: Arc<dyn Platform>,
     store: Option<FileSettingsStore>,
+    options: &ServiceOptions,
 ) -> ServiceResult<(DockService, Option<PathBuf>)> {
     let Some(file) = store else {
-        return in_memory(platform);
+        return in_memory(platform, options);
     };
     let path = file.path().to_path_buf();
     log::info!("settings file: {}", path.display());
@@ -256,7 +279,11 @@ fn start_service(
     // `DockService::start` loads and parses the document before it touches
     // the platform, so a settings error leaves the platform unstarted and a
     // second attempt is safe.
-    match DockService::start(Arc::clone(&platform), Box::new(file.clone())) {
+    match DockService::start_with(
+        Arc::clone(&platform),
+        Box::new(file.clone()),
+        options.clone(),
+    ) {
         Err(ServiceError::Settings(e)) => {
             let broken = file.path().with_extension("json.broken");
             log::error!(
@@ -267,19 +294,20 @@ fn start_service(
             match std::fs::rename(file.path(), &broken) {
                 Ok(()) => {
                     write_defaults_if_missing(&file);
-                    DockService::start(platform, Box::new(file)).map(|s| (s, Some(path)))
+                    DockService::start_with(platform, Box::new(file), options.clone())
+                        .map(|s| (s, Some(path)))
                 }
                 Err(io) => {
                     log::error!(
                         "could not move the broken settings file ({io}); settings will not persist this session"
                     );
-                    in_memory(platform)
+                    in_memory(platform, options)
                 }
             }
         }
         Err(ServiceError::Store(e)) => {
             log::error!("settings cannot be read ({e}); settings will not persist this session");
-            in_memory(platform)
+            in_memory(platform, options)
         }
         other => other.map(|s| (s, Some(path))),
     }
@@ -287,8 +315,16 @@ fn start_service(
 
 /// The service over an in-memory store: nothing is saved, so there is no
 /// settings file to report.
-fn in_memory(platform: Arc<dyn Platform>) -> ServiceResult<(DockService, Option<PathBuf>)> {
-    DockService::start(platform, Box::new(MemorySettingsStore::default())).map(|s| (s, None))
+fn in_memory(
+    platform: Arc<dyn Platform>,
+    options: &ServiceOptions,
+) -> ServiceResult<(DockService, Option<PathBuf>)> {
+    DockService::start_with(
+        platform,
+        Box::new(MemorySettingsStore::default()),
+        options.clone(),
+    )
+    .map(|s| (s, None))
 }
 
 fn write_defaults_if_missing(file: &FileSettingsStore) {

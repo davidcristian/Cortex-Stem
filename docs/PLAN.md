@@ -84,7 +84,8 @@ without failures.
   `End` move between items. Each item has `role="button"` and an
   `aria-label`.
 - Bursts of window events are coalesced: title and location changes per
-  window, and the service sends at most one state update per 16 ms.
+  window, and the service sends at most one state update per 16 ms. Icons
+  are cached on disk across sessions (`crates/stem-service/src/icon_cache.rs`).
 - Elevated windows appear with their name and icon. When Windows blocks an
   action on one (minimise, restore, close), the dock shows a notice.
 
@@ -93,8 +94,8 @@ Window thumbnails have been researched, not built.
 (live pictures of a window, drawn by DWM, the Desktop Window Manager) into
 the dock window.
 
-**Planned.** A disk icon cache, a measurement of idle CPU, and window
-previews on hover, drawn with DWM thumbnails.
+**Planned.** A measurement of idle CPU, and window previews on hover, drawn
+with DWM thumbnails.
 
 **Exit criterion.** Everything above works on a setup with two monitors at
 different DPI.
