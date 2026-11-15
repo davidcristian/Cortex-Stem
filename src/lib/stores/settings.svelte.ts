@@ -9,6 +9,9 @@
  * draft. Pin commands, *Show* for a hidden app and the reset go
  * through their own IPC commands; they wait for pending edits first so a
  * stale full document can never overwrite what the command just changed.
+ * The pins and hidden apps, which only those commands change (from this
+ * page or the dock), are taken from every `dock://settings`, even while an
+ * edit is pending or a request is running.
  */
 
 import type { SvelteMap } from 'svelte/reactivity';
@@ -28,6 +31,11 @@ import { ReactiveIconCache } from './reactive-icon-cache';
 import { describeError } from './toasts.svelte';
 
 export type SaveStatus = 'loading' | 'saved' | 'saving' | 'error';
+
+/** The parts of `Settings` that only Rust's commands change (pins, hidden apps). */
+type RustLists = Pick<Settings, 'pinned' | 'hiddenApps'>;
+
+const listsOf = (s: Settings): RustLists => ({ pinned: s.pinned, hiddenApps: s.hiddenApps });
 
 export class SettingsStore {
   /** What the page renders: the persisted document, or the draft while an edit is pending. */
@@ -64,6 +72,11 @@ export class SettingsStore {
   private timer: ReturnType<typeof setTimeout> | null = null;
   /** The save or command currently running; nothing else starts until it settles. */
   private inflight: Promise<void> | null = null;
+  /**
+   * The pins and hidden apps of the last `dock://settings` that arrived
+   * while busy, since the running request was sent; `null` if none did.
+   */
+  private latestLists: RustLists | null = null;
 
   constructor(
     readonly backend: Backend,
@@ -80,15 +93,24 @@ export class SettingsStore {
     this.started = true;
     this.subscriptions = [
       this.backend.on('dock://settings', (s) => {
-        // While an edit of ours is pending, its own result is the newer truth.
         if (!this.busy) {
           this.settings = s;
-        } else if (this.draft !== null) {
-          // Except for the pins and hidden apps, which only Rust's commands
-          // change (the dock's menu, a drop): the pending edit takes
-          // the current ones, so its save does not undo what the dock did.
-          this.draft = { ...this.draft, pinned: s.pinned, hiddenApps: s.hiddenApps };
+          return;
+        }
+        // While an edit of ours is pending or running, its own result is the
+        // newer truth, except for the pins and hidden apps, which only Rust's
+        // commands change (the dock's menu, a drop). Those are taken
+        // at once: into the pending edit, so its save does not undo what the
+        // dock did, or into what is shown, so the next edit starts from them;
+        // and they are laid over the answer of the request in flight, which
+        // may be older than this event (see `withLatestLists`).
+        const lists = listsOf(s);
+        this.latestLists = lists;
+        if (this.draft !== null) {
+          this.draft = { ...this.draft, ...lists };
           this.settings = this.draft;
+        } else if (this.settings !== null) {
+          this.settings = { ...this.settings, ...lists };
         }
       }),
       this.backend.on('dock://theme', (t) => {
@@ -236,10 +258,11 @@ export class SettingsStore {
     await this.settle();
     this.status = 'saving';
     this.error = null;
+    this.latestLists = null;
     this.inflight = this.backend
       .resetSettings()
       .then((saved) => {
-        this.settings = saved;
+        this.settings = this.withLatestLists(saved);
         this.status = 'saved';
       })
       .catch((err: unknown) => this.fail(err))
@@ -256,12 +279,14 @@ export class SettingsStore {
     }
     const draft = this.draft;
     this.draft = null;
+    // The draft already carries the lists of every event so far.
+    this.latestLists = null;
     this.inflight = this.backend
       .updateSettings(draft)
       .then((saved) => {
         // A newer draft, if any, brings its own authoritative value.
         if (this.draft === null) {
-          this.settings = saved;
+          this.settings = this.withLatestLists(saved);
           this.status = 'saved';
         }
       })
@@ -298,19 +323,39 @@ export class SettingsStore {
     this.status = 'saving';
     this.error = null;
     this.inflight = run()
-      .then(() => this.backend.getSettings())
+      .then(() => {
+        // What `get_settings` answers is at least as new as any event so far.
+        this.latestLists = null;
+        return this.backend.getSettings();
+      })
       .then((fresh) => {
+        const current = this.withLatestLists(fresh);
         if (this.draft !== null) {
-          this.draft = { ...this.draft, pinned: fresh.pinned, hiddenApps: fresh.hiddenApps };
+          this.draft = { ...this.draft, ...listsOf(current) };
           this.settings = this.draft;
         } else {
-          this.settings = fresh;
+          this.settings = current;
           this.status = 'saved';
         }
       })
       .catch((err: unknown) => this.fail(err))
       .finally(() => this.finish());
     await this.inflight;
+  }
+
+  /**
+   * `doc` (the answer of a request) with the pins and hidden apps of an
+   * event that arrived while the request ran. Rust emits `dock://settings`
+   * after every change, in the order of the changes, each with the whole
+   * current document, but an answer and an event travel apart: the event
+   * of a change the dock made just after this request (a hide from its
+   * menu) can arrive before the answer, which then lacks it. Were
+   * the answer shown as it is, the next edit would send the stale lists and
+   * undo the dock's change. An event that is instead older than the answer
+   * is always followed by a newer one, which puts the lists right again.
+   */
+  private withLatestLists(doc: Settings): Settings {
+    return this.latestLists === null ? doc : { ...doc, ...this.latestLists };
   }
 
   private finish(): void {

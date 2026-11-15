@@ -588,6 +588,82 @@ describe('SettingsStore', () => {
     expect(sent[0]?.hiddenApps).toEqual([{ id: 'x', name: 'X' }]);
   });
 
+  /** The dock's menu hides `id` in Rust, which emits the new document. */
+  const dockHides = (backend: FakeBackend, id: string): void => {
+    backend.stored.hiddenApps = [...backend.stored.hiddenApps, { id, name: id.toUpperCase() }];
+    backend.emit('dock://settings', structuredClone(backend.stored));
+  };
+
+  /** Records every document `update_settings` is sent from now on. */
+  const captureSent = (backend: FakeBackend): Settings[] => {
+    const sent: Settings[] = [];
+    const update = backend.updateSettings.bind(backend);
+    backend.updateSettings = (s: Settings) => {
+      sent.push(structuredClone(s));
+      return update(s);
+    };
+    return sent;
+  };
+
+  it("a hide whose event overtakes a running save's answer is kept, and the next edit sends it", async () => {
+    const { backend, store } = await started();
+    store.edit((s) => {
+      s.iconSize = 60;
+    });
+    await vi.advanceTimersByTimeAsync(150);
+    expect(backend.pendingUpdates).toHaveLength(1);
+    // Rust saves the page's document and answers; the dock hides x right
+    // after, and that event reaches the page before the answer does.
+    backend.settleUpdate();
+    dockHides(backend, 'x');
+    expect(store.settings?.hiddenApps).toEqual([{ id: 'x', name: 'X' }]);
+    expect(store.settings?.iconSize).toBe(60);
+    await tick();
+    // The answer (from before the hide) does not take the list back.
+    expect(store.status).toBe('saved');
+    expect(store.settings?.iconSize).toBe(60);
+    expect(store.settings?.hiddenApps).toEqual([{ id: 'x', name: 'X' }]);
+    const sent = captureSent(backend);
+    store.edit((s) => {
+      s.iconSize = 70;
+    });
+    await vi.advanceTimersByTimeAsync(150);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.iconSize).toBe(70);
+    expect(sent[0]?.hiddenApps).toEqual([{ id: 'x', name: 'X' }]);
+  });
+
+  it("a hide whose event overtakes a command's refetch is kept", async () => {
+    const { backend, store } = await started();
+    const get = backend.getSettings.bind(backend);
+    let hideDuringGet = true;
+    backend.getSettings = async () => {
+      const fresh = await get();
+      if (hideDuringGet) {
+        hideDuringGet = false;
+        dockHides(backend, 'x');
+      }
+      return fresh;
+    };
+    await store.unpinApp('b');
+    expect(store.settings?.pinned.map((p) => p.id)).toEqual(['a', 'c']);
+    expect(store.settings?.hiddenApps).toEqual([{ id: 'x', name: 'X' }]);
+    expect(store.status).toBe('saved');
+  });
+
+  it("a hide whose event overtakes the reset's answer is kept", async () => {
+    const { backend, store } = await started();
+    const reset = backend.resetSettings.bind(backend);
+    backend.resetSettings = async () => {
+      const defaults = await reset();
+      dockHides(backend, 'x');
+      return defaults;
+    };
+    await store.reset();
+    expect(store.settings).toEqual({ ...defaultSettings(), hiddenApps: [{ id: 'x', name: 'X' }] });
+    expect(store.status).toBe('saved');
+  });
+
   it('a failed command is reported', async () => {
     const { backend, store } = await started();
     backend.failNext = 'app "x" is not pinned';
