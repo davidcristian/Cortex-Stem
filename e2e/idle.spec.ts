@@ -877,6 +877,28 @@ test.describe('the dock page goes quiet once it has settled', () => {
       hoverScenario('bottom'),
       hoverScenario('left'),
       {
+        // A settings change under a resting pointer works the scales
+        // out again, once, and nothing repeats after it.
+        name: 'magnification on, the pointer resting on an icon through a settings change',
+        setup: async (page) => {
+          await page.locator(APP_SLOT).nth(3).hover();
+          await expect.poll(() => scaleOf(page, 3)).toBeGreaterThan(1.5);
+          // As Rust reports it: a `dock://settings` and no new state, since
+          // the items stay the same (the mock would send one).
+          await page.evaluate(() => {
+            (window as unknown as { __dockMock: Record<string, unknown> }).__dockMock.emitState =
+              () => undefined;
+          });
+          await patchSettings(page, { iconSize: 56, magnification: { maxScale: 1.3 } });
+          await page.evaluate(() => {
+            delete (window as unknown as { __dockMock: Record<string, unknown> }).__dockMock
+              .emitState;
+          });
+          await expect.poll(() => scaleOf(page, 3)).toBeLessThanOrEqual(1.3);
+          await expect(page.locator('.tooltip')).toHaveCount(1);
+        },
+      },
+      {
         name: 'after a launch bounce ends',
         setup: async (page) => {
           // Notepad: pinned, not running; a middle click launches it.

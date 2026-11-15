@@ -204,6 +204,28 @@ function patchSettings(page: Page, patch: SettingsPatch): Promise<void> {
   }, patch);
 }
 
+/**
+ * Change some settings the way Rust reports a change that leaves the items
+ * as they are: a `dock://settings` and no `dock://state` (stem-core's
+ * engine does not count `SettingsChanged` as a change of the snapshot
+ * then). The mock sends a new state after every settings change, which
+ * would hide a page that only reacts to its items.
+ */
+async function patchSettingsAlone(page: Page, patch: SettingsPatch): Promise<void> {
+  await page.evaluate(() => {
+    // The mock's own method, shadowed on the instance for this one change.
+    (window as unknown as { __dockMock: Record<string, unknown> }).__dockMock.emitState = () =>
+      undefined;
+  });
+  try {
+    await patchSettings(page, patch);
+  } finally {
+    await page.evaluate(() => {
+      delete (window as unknown as { __dockMock: Record<string, unknown> }).__dockMock.emitState;
+    });
+  }
+}
+
 /** Running animations anywhere in the page (CSS animations and transitions, Web Animations). */
 function runningAnimations(page: Page): Promise<number> {
   return page.evaluate(
@@ -923,6 +945,57 @@ test.describe('dock in mock mode', () => {
     await expect
       .poll(async () => (await iconPairs(page))[3])
       .toMatchObject({ shown: [96], magnifiedAttr: false });
+  });
+
+  test('magnification follows a settings change under a resting pointer', async ({ page }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openDock(page);
+    // The pointer rests at the fourth icon's centre from here on.
+    const box = (await page.locator(APP_SLOT).nth(3).boundingBox())!;
+    const pointer = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    await page.mouse.move(pointer.x, pointer.y);
+    await expect.poll(() => scaleOf(page, 3)).toBeGreaterThan(1.5);
+    // Two slots away, inside the default range of 3 icons.
+    expect(await scaleOf(page, 1)).toBeGreaterThan(1);
+
+    // A lower maximum, the pointer still: the icon under it follows at once.
+    // (Rust sends no new state for these changes: the items stay the same.)
+    await patchSettingsAlone(page, { magnification: { maxScale: 1.25 } });
+    await expect.poll(() => scaleOf(page, 3)).toBeLessThanOrEqual(1.25);
+    expect(await scaleOf(page, 3)).toBeGreaterThan(1.1);
+    // A range of one icon: the slot two away goes back to rest.
+    await patchSettingsAlone(page, { magnification: { rangeIcons: 1 } });
+    await expect.poll(() => scaleOf(page, 1)).toBe(1);
+    expect(await scaleOf(page, 3)).toBeGreaterThan(1.1);
+    // A larger icon size moves every slot: the largest scale is still the
+    // one of the slot under the pointer.
+    const before = await page.locator(APP_SLOT).first().boundingBox();
+    await patchSettingsAlone(page, { iconSize: 64 });
+    await expect
+      .poll(async () => (await page.locator(APP_SLOT).first().boundingBox())?.width)
+      .toBeGreaterThan(before!.width);
+    await expect
+      .poll(() =>
+        page.evaluate(
+          ([selector, x]) => {
+            const slots = Array.from(document.querySelectorAll<HTMLElement>(selector));
+            const scales = slots.map((el) => Number(el.style.getPropertyValue('--scale') || '1'));
+            const under = slots.findIndex((el) => {
+              const r = el.getBoundingClientRect();
+              return x >= r.left && x < r.right;
+            });
+            return under !== -1 && scales[under] === Math.max(...scales) && scales[under]! > 1;
+          },
+          [APP_SLOT, pointer.x] as const,
+        ),
+      )
+      .toBe(true);
+    // Off: everything back at rest, the rest bitmaps shown.
+    await patchSettingsAlone(page, { magnification: { enabled: false } });
+    await expect.poll(() => scaleOf(page, 3)).toBe(1);
+    await expect
+      .poll(async () => (await iconPairs(page)).every((pair) => !pair.magnifiedAttr))
+      .toBe(true);
   });
 
   test('twenty apps', async ({ page }) => {

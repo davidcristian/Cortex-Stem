@@ -479,6 +479,20 @@
     }
   });
 
+  // A layout change under a resting pointer: a settings change (the
+  // icon size, the magnification, the preset) moves and resizes the slots,
+  // but no pointer event says so, and the scales would stay where the old
+  // layout put them. One frame works them out again from where the pointer
+  // last was (it reads the new layout); nothing repeats.
+  $effect(() => {
+    void settings;
+    void slotPx;
+    void magnify;
+    if (hovering) {
+      scheduleFrame();
+    }
+  });
+
   function scheduleFrame(): void {
     if (frame === 0) {
       frame = requestAnimationFrame(applyMagnification);
