@@ -65,14 +65,16 @@ theme's solid colours, in every theme.
 
 ## Behaviour
 
-_Clicking the active app minimises it_, _Show only windows on the current
-desktop_, _Show only windows on the dock's monitor_, _Running indicators_,
-_Click through outside the dock_, _Toggle the dock_ and _Focus the dock_ are the
-[`behavior`](../SETTINGS.md#behavior) keys. _Auto-hide_ and _Auto-hide delay_
-are the [`autoHide`](../SETTINGS.md#autohide) keys.
+_Clicking the active app minimises it_, _Scrolling over an app_, _Show only
+windows on the current desktop_, _Show only windows on the dock's monitor_,
+_Running indicators_, _Click through outside the dock_, _Toggle the dock_ and
+_Focus the dock_ are the [`behavior`](../SETTINGS.md#behavior) keys. _Auto-hide_
+and _Auto-hide delay_ are the [`autoHide`](../SETTINGS.md#autohide) keys.
 
 - _Clicking the active app minimises it_: see
   [Clicking an app](clicking-an-app.md).
+- _Scrolling over an app_: _Does nothing_ (the default) or _Cycles its
+  windows_. See [Scrolling over an app](scrolling-over-an-app.md).
 - _Show only windows on the current desktop_ is on by default. It leaves out
   windows on other virtual desktops. Pinned apps stay on the dock.
 - _Show only windows on the dock's monitor_ applies only with a dock on every
