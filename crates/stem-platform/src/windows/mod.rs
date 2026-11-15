@@ -16,7 +16,8 @@
 //! - `theme`       accent colour, light/dark, contrast
 //! - `recycle_bin` SHQueryRecycleBin, open, empty; recycle files
 //! - `appbar`      SHAppBarMessage space reservation (a thread)
-//! - `shell`       Start menu, Task View, Show Desktop
+//! - `shell`       Start menu, Task View, Show Desktop; Settings pages
+//! - `power`       power source, battery, battery saver
 //! - `dock_window` extended styles + subclass of our own windows
 //! - `hit_test`    cursor-tracking thread for the hit region
 //! - `taskbar`     the stock taskbar's auto-hide state
@@ -38,6 +39,7 @@ pub mod icons;
 pub mod identity;
 pub mod launch;
 pub mod monitors;
+pub mod power;
 #[cfg(feature = "probes")]
 pub mod probe;
 pub mod recycle_bin;
@@ -51,8 +53,8 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use stem_core::{
-    AppIdentity, IconKey, LaunchTarget, MonitorInfo, RawWindow, RecycleBinState, ShellAction,
-    ThemeInfo, WindowAction, WindowId,
+    AppIdentity, IconKey, LaunchTarget, MonitorInfo, PowerStatus, RawWindow, RecycleBinState,
+    ShellAction, ThemeInfo, WindowAction, WindowId,
 };
 
 use crate::{
@@ -161,6 +163,10 @@ impl Platform for WindowsPlatform {
 
     fn shell_action(&self, action: ShellAction) -> PlatformResult<()> {
         shell::perform(action)
+    }
+
+    fn power_status(&self) -> PlatformResult<PowerStatus> {
+        power::current()
     }
 
     fn taskbar_auto_hide(&self) -> PlatformResult<bool> {

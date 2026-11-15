@@ -34,7 +34,7 @@ the main thread nor the async runtime's workers are held.
 
 `stem-platform-events` creates a hidden top-level window and runs its
 message loop. The window is top-level, not message-only, because broadcasts
-such as `WM_SETTINGCHANGE` and `WM_DISPLAYCHANGE` do
+such as `WM_SETTINGCHANGE`, `WM_DISPLAYCHANGE` and `WM_POWERBROADCAST` do
 not reach message-only windows. The thread installs the `SetWinEventHook`
 hooks and the shell hook, keeps its timers, and posts `PlatformEvent`s.
 

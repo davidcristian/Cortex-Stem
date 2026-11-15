@@ -74,6 +74,19 @@
 //!   window whose event was missed or whose answer was taken mid-switch is
 //!   put right; any snapshot resets the detector. Debug line: `desktop
 //!   switch settled; re-enumerating`.
+//! - Power: the hidden window is registered
+//!   (`RegisterPowerSettingNotification`, `DEVICE_NOTIFY_WINDOW_HANDLE`)
+//!   for `GUID_BATTERY_PERCENTAGE_REMAINING`, `GUID_ACDC_POWER_SOURCE` and
+//!   `GUID_POWER_SAVING_STATUS`; a registration that fails is logged at
+//!   `warn` and the others stay (the `PBT_APMPOWERSTATUSCHANGE` broadcast
+//!   still arrives). `WM_POWERBROADCAST` with `PBT_POWERSETTINGCHANGE`,
+//!   `PBT_APMPOWERSTATUSCHANGE` or `PBT_APMRESUMEAUTOMATIC` re-reads
+//!   `power::current` and emits `PowerChanged` only when the reading differs
+//!   from the last one emitted (`power::ChangeFilter`); the first reading is
+//!   emitted right after the start snapshot. The procedure answers `TRUE`
+//!   and reads nothing behind `lParam`. Each registration is a guard
+//!   ([`PowerNotification`]), unregistered on this thread before the window
+//!   is destroyed. Debug line per emission: `power: <reading> (<cause>)`.
 //! - A second thread (`dock-recycle-bin`, [`RecycleBinPoller`]) polls
 //!   `recycle_bin::query` every [`RECYCLE_BIN_POLL`] and emits
 //!   `RecycleBinChanged` on change. `SHQueryRecycleBinW(NULL)` walks every
@@ -85,13 +98,16 @@
 //! # Design
 //!
 //! One OS thread (`stem-platform-events`) owns everything: a hidden window,
-//! the WinEvent hooks, the timers and the message loop. All of it is released
-//! on that thread, in reverse order, when the loop exits (RAII guards:
-//! [`WinEventHook`], [`EventWindow`], [`ThreadTimer`]).
+//! the WinEvent hooks, the power-setting registrations, the timers and the
+//! message loop. All of it is released on that thread, in reverse order, when
+//! the loop exits (RAII guards: [`WinEventHook`], [`PowerNotification`],
+//! [`EventWindow`], [`ThreadTimer`]).
 //!
 //! **Hidden top-level window instead of a message-only window.**
-//! `WM_SETTINGCHANGE`, `WM_DISPLAYCHANGE`, `WM_THEMECHANGED` and
-//! `WM_DWMCOLORIZATIONCOLORCHANGED` are broadcasts to *top-level* windows, and
+//! `WM_SETTINGCHANGE`, `WM_DISPLAYCHANGE`, `WM_THEMECHANGED`,
+//! `WM_DWMCOLORIZATIONCOLORCHANGED` and `WM_POWERBROADCAST`
+//! (`PBT_APMPOWERSTATUSCHANGE`, the resume codes) are broadcasts to
+//! *top-level* windows, and
 //! message-only windows (`HWND_MESSAGE` parent) are documented not to receive
 //! broadcasts. The window is therefore an ordinary top-level window that is
 //! never shown (`WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE`, 0×0). It belongs to
@@ -201,31 +217,40 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TryRecvError, bounded};
 use stem_core::{MonitorId, PlatformEvent, RawWindow, RecycleBinState, ThemeInfo, WindowId};
 use windows::Win32::Foundation::{
-    ERROR_CLASS_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM,
+    ERROR_CLASS_ALREADY_EXISTS, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Power::{
+    HPOWERNOTIFY, RegisterPowerSettingNotification, UnregisterPowerSettingNotification,
+};
+use windows::Win32::System::SystemServices::{
+    GUID_ACDC_POWER_SOURCE, GUID_BATTERY_PERCENTAGE_REMAINING, GUID_POWER_SAVING_STATUS,
+};
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Accessibility::{
     HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent, WINEVENTPROC,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CHILDID_SELF, CreateWindowExW, DefWindowProcW, DeregisterShellHookWindow, DestroyWindow,
-    DispatchMessageW, EVENT_OBJECT_CLOAKED, EVENT_OBJECT_CREATE, EVENT_OBJECT_DESTROY,
-    EVENT_OBJECT_HIDE, EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_NAMECHANGE, EVENT_OBJECT_SHOW,
-    EVENT_OBJECT_UNCLOAKED, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZEEND,
-    EVENT_SYSTEM_MINIMIZESTART, GA_ROOT, GetAncestor, GetForegroundWindow, GetMessageW,
-    HSHELL_ACCESSIBILITYSTATE, HSHELL_ACTIVATESHELLWINDOW, HSHELL_APPCOMMAND, HSHELL_ENDTASK,
-    HSHELL_GETMINRECT, HSHELL_HIGHBIT, HSHELL_LANGUAGE, HSHELL_MONITORCHANGED, HSHELL_REDRAW,
-    HSHELL_SYSMENU, HSHELL_TASKMAN, HSHELL_WINDOWACTIVATED, HSHELL_WINDOWCREATED,
-    HSHELL_WINDOWDESTROYED, HSHELL_WINDOWREPLACED, HSHELL_WINDOWREPLACING, KillTimer, MSG,
-    OBJID_WINDOW, PostThreadMessageW, RegisterClassExW, RegisterShellHookWindow,
+    CHILDID_SELF, CreateWindowExW, DEVICE_NOTIFY_WINDOW_HANDLE, DefWindowProcW,
+    DeregisterShellHookWindow, DestroyWindow, DispatchMessageW, EVENT_OBJECT_CLOAKED,
+    EVENT_OBJECT_CREATE, EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, EVENT_OBJECT_LOCATIONCHANGE,
+    EVENT_OBJECT_NAMECHANGE, EVENT_OBJECT_SHOW, EVENT_OBJECT_UNCLOAKED, EVENT_SYSTEM_FOREGROUND,
+    EVENT_SYSTEM_MINIMIZEEND, EVENT_SYSTEM_MINIMIZESTART, GA_ROOT, GetAncestor,
+    GetForegroundWindow, GetMessageW, HSHELL_ACCESSIBILITYSTATE, HSHELL_ACTIVATESHELLWINDOW,
+    HSHELL_APPCOMMAND, HSHELL_ENDTASK, HSHELL_GETMINRECT, HSHELL_HIGHBIT, HSHELL_LANGUAGE,
+    HSHELL_MONITORCHANGED, HSHELL_REDRAW, HSHELL_SYSMENU, HSHELL_TASKMAN, HSHELL_WINDOWACTIVATED,
+    HSHELL_WINDOWCREATED, HSHELL_WINDOWDESTROYED, HSHELL_WINDOWREPLACED, HSHELL_WINDOWREPLACING,
+    KillTimer, MSG, OBJID_WINDOW, PBT_APMPOWERSTATUSCHANGE, PBT_APMRESUMEAUTOMATIC,
+    PBT_POWERSETTINGCHANGE, PostThreadMessageW, RegisterClassExW, RegisterShellHookWindow,
     RegisterWindowMessageW, SPI_SETWORKAREA, SetTimer, TranslateMessage, UnregisterClassW,
     WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_APP, WM_DISPLAYCHANGE,
-    WM_DWMCOLORIZATIONCOLORCHANGED, WM_QUIT, WM_SETTINGCHANGE, WM_THEMECHANGED, WM_TIMER,
-    WNDCLASSEXW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
+    WM_DWMCOLORIZATIONCOLORCHANGED, WM_POWERBROADCAST, WM_QUIT, WM_SETTINGCHANGE, WM_THEMECHANGED,
+    WM_TIMER, WNDCLASSEXW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
 };
 
-use super::{actions, enumerate, fullscreen, monitors, recycle_bin, theme, util, virtual_desktop};
+use super::{
+    actions, enumerate, fullscreen, monitors, power, recycle_bin, theme, util, virtual_desktop,
+};
 use crate::rules::events::{
     self as rules, DesktopSwitchDetector, Intent, TitleDebouncer, TopLevel,
 };
@@ -278,6 +303,20 @@ const MSG_THEMECHANGE: u32 = WM_APP + 4;
 const MSG_DISPLAYCHANGE: u32 = WM_APP + 5;
 /// A top-level window moved or resized; `lParam` = its `HWND`.
 const MSG_LOCATIONCHANGE: u32 = WM_APP + 6;
+/// A `WM_POWERBROADCAST` that may change the power reading;
+/// `wParam` = the `PBT_*` code.
+const MSG_POWERCHANGE: u32 = WM_APP + 7;
+
+/// The power settings the hidden window is registered for, with
+/// their names for the log.
+const POWER_SETTINGS: [(&windows::core::GUID, &str); 3] = [
+    (
+        &GUID_BATTERY_PERCENTAGE_REMAINING,
+        "GUID_BATTERY_PERCENTAGE_REMAINING",
+    ),
+    (&GUID_ACDC_POWER_SOURCE, "GUID_ACDC_POWER_SOURCE"),
+    (&GUID_POWER_SAVING_STATUS, "GUID_POWER_SAVING_STATUS"),
+];
 
 const CLASS_NAME: &str = "DockPlatformEvents";
 const WINDOW_TITLE: &str = "Stem platform events";
@@ -543,6 +582,58 @@ impl Drop for WinEventHook {
     }
 }
 
+/// A `RegisterPowerSettingNotification` of the hidden window;
+/// unregistered on drop, on the events thread, before the window goes.
+struct PowerNotification {
+    handle: HPOWERNOTIFY,
+    name: &'static str,
+}
+
+impl PowerNotification {
+    /// Register `hwnd` for every setting of [`POWER_SETTINGS`]; the ones that
+    /// fail are logged and left out.
+    fn register_all(hwnd: HWND) -> Vec<Self> {
+        let mut registered = Vec::with_capacity(POWER_SETTINGS.len());
+        for (guid, name) in POWER_SETTINGS {
+            // SAFETY: `hwnd` is a live window owned by this thread, passed as
+            // the recipient handle DEVICE_NOTIFY_WINDOW_HANDLE asks for; the
+            // GUID is a static the call only reads.
+            let result = unsafe {
+                RegisterPowerSettingNotification(HANDLE(hwnd.0), guid, DEVICE_NOTIFY_WINDOW_HANDLE)
+            };
+            match result {
+                Ok(handle) => registered.push(Self { handle, name }),
+                Err(e) => log::warn!(
+                    "RegisterPowerSettingNotification({name}) failed: {e}; the power status \
+                     broadcast still updates the battery"
+                ),
+            }
+        }
+        log::debug!(
+            "power settings registered: {}",
+            registered
+                .iter()
+                .map(|n| n.name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        registered
+    }
+}
+
+impl Drop for PowerNotification {
+    fn drop(&mut self) {
+        // SAFETY: the handle came from a successful
+        // RegisterPowerSettingNotification and is unregistered once.
+        if let Err(e) = unsafe { UnregisterPowerSettingNotification(self.handle) } {
+            log::debug!(
+                "UnregisterPowerSettingNotification({}) failed: {e}",
+                self.name
+            );
+        }
+    }
+}
+
 /// The hidden window that receives broadcasts and shell-hook messages.
 struct EventWindow {
     hwnd: HWND,
@@ -686,8 +777,8 @@ enum Report {
 }
 
 /// Everything the loop owns. Field order is drop order: the timers, then
-/// hooks, then the window, then the virtual desktop manager, then the COM
-/// apartment last.
+/// hooks, then the power-setting registrations, then the window, then the
+/// virtual desktop manager, then the COM apartment last.
 struct ThreadState {
     sink: EventSink,
     thread_id: u32,
@@ -720,7 +811,11 @@ struct ThreadState {
     /// The [`DESKTOP_SWITCH_SETTLE`] timer, while a snapshot is pending.
     switch_timer: Option<ThreadTimer>,
     last_theme: Option<ThemeInfo>,
+    /// The power readings already emitted.
+    power: power::ChangeFilter,
     _hooks: Vec<WinEventHook>,
+    /// Before `_window`: unregistered while the window still exists.
+    _power_notifications: Vec<PowerNotification>,
     _window: EventWindow,
     /// This thread's `IVirtualDesktopManager` slot: released here,
     /// before the apartment it was created in.
@@ -735,6 +830,7 @@ impl ThreadState {
         // manager itself is created by the first query.
         let desktops = virtual_desktop::ThreadManager::enable();
         let window = EventWindow::create()?;
+        let power_notifications = PowerNotification::register_all(window.hwnd);
         let mut hooks = Vec::with_capacity(rules::HOOK_RANGES.len() + 1);
         for &(min, max) in rules::HOOK_RANGES {
             hooks.push(WinEventHook::install(min, max)?);
@@ -765,7 +861,9 @@ impl ThreadState {
             switch: DesktopSwitchDetector::default(),
             switch_timer: None,
             last_theme: None,
+            power: power::ChangeFilter::default(),
             _hooks: hooks,
+            _power_notifications: power_notifications,
             _window: window,
             _desktops: desktops,
             _com: com,
@@ -781,8 +879,9 @@ impl ThreadState {
     }
 
     /// Same order as the mock platform (monitors, theme, windows,
-    /// foreground), minus the recycle bin, which the poll thread emits; then
-    /// the first fullscreen verdict, so the engine starts right.
+    /// foreground, power), minus the recycle bin, which the poll thread
+    /// emits; the first fullscreen verdict comes before the power
+    /// reading, so the engine starts right.
     fn emit_initial(&mut self) {
         self.emit_monitors();
         self.refresh_theme(true);
@@ -791,6 +890,7 @@ impl ThreadState {
             actions::foreground_window(),
         ));
         self.check_fullscreen();
+        self.refresh_power("start");
     }
 
     fn run(&mut self) {
@@ -841,6 +941,7 @@ impl ThreadState {
                 self.schedule_fullscreen_check();
             }
             MSG_LOCATIONCHANGE => self.on_location_change(hwnd),
+            MSG_POWERCHANGE => self.refresh_power(power_broadcast_name(msg.wParam.0 as u32)),
             WM_TIMER => self.on_timer(msg.wParam.0),
             _ => {}
         }
@@ -1321,6 +1422,23 @@ impl ThreadState {
         }
     }
 
+    /// Read the power status and emit `PowerChanged` when it is the
+    /// first reading or differs from the last one emitted; `cause` names
+    /// what asked, for the log. A failed read is logged and emits nothing.
+    fn refresh_power(&mut self, cause: &str) {
+        match power::current() {
+            Ok(status) => {
+                if self.power.observe(status) {
+                    log::debug!("power: {status:?} ({cause})");
+                    self.emit(PlatformEvent::PowerChanged(status));
+                } else {
+                    log::trace!("power unchanged ({cause})");
+                }
+            }
+            Err(e) => log::warn!("GetSystemPowerStatus failed ({cause}): {e}"),
+        }
+    }
+
     /// Emit `ThemeChanged` when the theme differs from the last one emitted
     /// (or always, when `force`). Errors are skipped: the theme module is
     /// another task's and may still be a stub.
@@ -1335,6 +1453,22 @@ impl ThreadState {
             Err(e) => log::debug!("theme unavailable: {e}"),
         }
     }
+}
+
+/// The `PBT_*` codes of `WM_POWERBROADCAST` that re-read the power status,
+/// by name; `None` for the others (suspend, the older APM codes).
+fn power_broadcast_cause(code: u32) -> Option<&'static str> {
+    match code {
+        PBT_POWERSETTINGCHANGE => Some("PBT_POWERSETTINGCHANGE"),
+        PBT_APMPOWERSTATUSCHANGE => Some("PBT_APMPOWERSTATUSCHANGE"),
+        PBT_APMRESUMEAUTOMATIC => Some("PBT_APMRESUMEAUTOMATIC"),
+        _ => None,
+    }
+}
+
+/// [`power_broadcast_cause`] for a code the window procedure posted.
+fn power_broadcast_name(code: u32) -> &'static str {
+    power_broadcast_cause(code).unwrap_or("WM_POWERBROADCAST")
 }
 
 /// Post a thread message to the current thread's own queue. Used from the
@@ -1439,11 +1573,72 @@ unsafe extern "system" fn event_wndproc(
             post_to_self(MSG_DISPLAYCHANGE, WPARAM(0), LPARAM(0));
             LRESULT(0)
         }
+        // The power source, the battery's charge, battery saver or a
+        // resume. lParam (a POWERBROADCAST_SETTING for a setting change) is
+        // only valid during this call and is not read: the loop asks for the
+        // whole status again. TRUE is the documented answer to a processed
+        // broadcast.
+        WM_POWERBROADCAST if power_broadcast_cause(wparam.0 as u32).is_some() => {
+            post_to_self(MSG_POWERCHANGE, wparam, LPARAM(0));
+            LRESULT(1)
+        }
         m if SHELL_HOOK_MESSAGE.get() == Some(&m) => {
             post_to_self(MSG_SHELLHOOK, wparam, lparam);
             LRESULT(0)
         }
         // SAFETY: forwarding the arguments we were given to the default procedure.
         _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        PBT_APMQUERYSUSPEND, PBT_APMRESUMECRITICAL, PBT_APMRESUMESUSPEND, PBT_APMSUSPEND,
+    };
+
+    use super::*;
+
+    #[test]
+    fn the_power_broadcasts_that_re_read_the_status_are_the_contracts_three() {
+        assert_eq!(
+            power_broadcast_cause(PBT_POWERSETTINGCHANGE),
+            Some("PBT_POWERSETTINGCHANGE")
+        );
+        assert_eq!(
+            power_broadcast_cause(PBT_APMPOWERSTATUSCHANGE),
+            Some("PBT_APMPOWERSTATUSCHANGE")
+        );
+        assert_eq!(
+            power_broadcast_cause(PBT_APMRESUMEAUTOMATIC),
+            Some("PBT_APMRESUMEAUTOMATIC")
+        );
+        // Going to sleep, and the resume codes that follow the automatic
+        // one, re-read nothing; the window procedure default-handles them.
+        for code in [
+            PBT_APMSUSPEND,
+            PBT_APMQUERYSUSPEND,
+            PBT_APMRESUMESUSPEND,
+            PBT_APMRESUMECRITICAL,
+        ] {
+            assert_eq!(power_broadcast_cause(code), None, "{code:#x}");
+            assert_eq!(power_broadcast_name(code), "WM_POWERBROADCAST");
+        }
+    }
+
+    #[test]
+    fn the_power_settings_are_the_three_the_contract_names() {
+        let names: Vec<&str> = POWER_SETTINGS.iter().map(|(_, name)| *name).collect();
+        assert_eq!(
+            names,
+            [
+                "GUID_BATTERY_PERCENTAGE_REMAINING",
+                "GUID_ACDC_POWER_SOURCE",
+                "GUID_POWER_SAVING_STATUS",
+            ]
+        );
+        assert_eq!(*POWER_SETTINGS[0].0, GUID_BATTERY_PERCENTAGE_REMAINING);
+        assert_eq!(*POWER_SETTINGS[1].0, GUID_ACDC_POWER_SOURCE);
+        assert_eq!(*POWER_SETTINGS[2].0, GUID_POWER_SAVING_STATUS);
     }
 }
