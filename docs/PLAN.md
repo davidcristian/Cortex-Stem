@@ -120,9 +120,11 @@ right and top positions.
   the user's own state back. After a crash the taskbar stays hidden until
   Stem starts again: the next start puts it back, or keeps it hidden while
   the setting is on. Stem keeps the user's state in `taskbar.json` until then.
+- _Reserve screen space_ (`system.reserveScreenSpace`) registers each dock
+  window as an AppBar. It applies only while
+  auto-hide is off (`autoHide.mode` is `off`).
 
-**Planned.** Screen space reserved for the dock as an AppBar, and the left,
-right and top positions.
+**Planned.** The left, right and top positions.
 
 **Exit criterion.** None.
 

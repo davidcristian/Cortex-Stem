@@ -20,7 +20,8 @@ and an in-memory settings store (`MemorySettingsStore`). `src-tauri` only:
 - forwards `ServiceEvent`s as Tauri events;
 - wires the plugins (single-instance, logging, autostart, global shortcut)
   and the tray icon, and applies the settings that belong to the shell
-  (autostart, hiding the taskbar, the toggle shortcut, click-through);
+  (autostart, hiding the taskbar, reserving screen space, the toggle shortcut,
+  click-through);
 - reports a crash of the previous run at the next start.
 
 ## Consequences

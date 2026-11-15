@@ -86,6 +86,17 @@
 //! reports a rect laid out for the new edge ([`forget_edge_layout`]), and
 //! neither monitor nor rect once the window is closed.
 //!
+//! Reserve screen space (`appbar`): while a dock window holds a band
+//! the shell reserved for it as an AppBar, [`layout`] puts the window's
+//! edge side on the band's edge side
+//! (`stem_platform::rules::appbar::window_rect`) instead of on the work
+//! area's edge (which is the band's far side once it is reserved); the
+//! window keeps its thickness and length rule otherwise. Every placement
+//! ([`place`]), show, hide and panel report asks `appbar::sync` whether the
+//! band must change ([`app_bar_inputs`]); a new band lays the window out
+//! again ([`relayout_later`]); a window that closes gives its band back
+//! first (`appbar::forget`).
+//!
 //! The settings window (`settings`) is an ordinary decorated window,
 //! created on demand and destroyed when closed. Its native title bar follows
 //! the *Theme* setting (`settings.theme`): set when the window is
@@ -97,6 +108,7 @@ use std::fmt::Write as _;
 use parking_lot::Mutex;
 use stem_core::settings::{DockPosition, MonitorMode, ThemeMode};
 use stem_core::{MonitorId, MonitorInfo, Rect, Settings};
+use stem_platform::rules::appbar::{across, reserved_thickness, window_rect};
 use stem_platform::{DockWindowOptions, HitRegion, NativeWindowHandle, PlatformError};
 use stem_service::DockService;
 use tauri::{
@@ -149,6 +161,14 @@ pub struct DockWindowState {
     /// The resting panel of the latest `set_dock_panel_rect`,
     /// converted again whenever the window moves or is shown.
     panel_css: Option<Rect>,
+    /// From that panel's far side to the window's edge side, CSS px, as the
+    /// viewport was when the page reported it: the thickness of the
+    /// band *Reserve screen space* asks for, scaled when the request is
+    /// made (`appbar::request_for`). Taken at the report rather than at
+    /// each placement, so a window that grows for a drag (whose page
+    /// reports the panel's new place only afterwards) never asks for a
+    /// thicker band meanwhile. Dropped with the panel rect.
+    reserve_css: Option<i32>,
     /// The window's scale factor as last seen (at creation, then on every
     /// `ScaleFactorChanged`), so the log line of a change can say what it
     /// changed from.
@@ -544,6 +564,7 @@ fn close_dock_window(app: &AppHandle, service: &DockService, label: &str) {
     if let Some(flags) = app.try_state::<DockAutoHidden>() {
         flags.0.lock().remove(label);
     }
+    crate::appbar::forget(app, label);
     match app.get_webview_window(label) {
         Some(window) => {
             if let Err(e) = window.destroy() {
@@ -634,7 +655,7 @@ fn monitor_id_of(app: &AppHandle, label: &str) -> Option<MonitorId> {
 }
 
 /// The dock windows that exist, the primary's first.
-fn dock_windows(app: &AppHandle) -> Vec<WebviewWindow> {
+pub(crate) fn dock_windows(app: &AppHandle) -> Vec<WebviewWindow> {
     let labels = app
         .try_state::<DockGeometry>()
         .map(|geometry| geometry.labels())
@@ -781,15 +802,39 @@ pub fn validate_panel_rect(rect: Rect) -> Result<(), String> {
 /// Remember the UI's resting panel (CSS px, viewport-relative) and hand it
 /// to the service in physical screen pixels, with the window's
 /// label and monitor; no rect goes instead while the window is
-/// hidden. Runs on the main thread.
+/// hidden. The panel's distance to the window's edge side is the band
+/// *Reserve screen space* asks for (`appbar::sync`). Runs on the
+/// main thread.
 pub fn apply_dock_panel(app: &AppHandle, window: &WebviewWindow, rect: Rect) -> Result<(), String> {
     let service = app
         .try_state::<crate::AppService>()
         .ok_or_else(|| "service not available".to_owned())?;
+    let viewport = viewport_css(window);
     if let Some(geometry) = app.try_state::<DockGeometry>() {
-        geometry.update(window.label(), |dock| dock.panel_css = Some(rect));
+        geometry.update(window.label(), |dock| {
+            dock.panel_css = Some(rect);
+            dock.reserve_css = dock
+                .edge
+                .zip(viewport)
+                .map(|(edge, viewport)| reserved_thickness(viewport, rect, edge));
+        });
     }
-    push_dock_panel(app, &service.0, window, rect)
+    let pushed = push_dock_panel(app, &service.0, window, rect);
+    crate::appbar::sync(app, window);
+    pushed
+}
+
+/// The window's viewport in CSS px (its client size over its scale
+/// factor, rounded), the space of the page's rects; `None` when the
+/// window cannot say.
+fn viewport_css(window: &WebviewWindow) -> Option<(i32, i32)> {
+    let size = window.inner_size().ok()?;
+    let scale = window
+        .scale_factor()
+        .ok()
+        .filter(|s| s.is_finite() && *s > 0.0)?;
+    let css = |px: u32| (f64::from(px) / scale).round().min(f64::from(i32::MAX)) as i32;
+    Some((css(size.width), css(size.height)))
 }
 
 /// The service call behind [`apply_dock_panel`]: CSS px → physical screen
@@ -930,6 +975,9 @@ fn on_position_setting(app: &AppHandle, edge: DockPosition) {
         let monitors = service.0.monitors();
         for window in windows {
             forget_edge_layout(&handle, &service.0, window.label());
+            // The band on the old edge goes now, before the window moves;
+            // the new edge's comes with the page's first panel report there.
+            crate::appbar::sync(&handle, &window);
             if let Err(e) = relayout_dock(&handle, &window, &monitors) {
                 log::warn!(
                     "dock window {:?} could not be moved to the {edge:?} edge: {e}",
@@ -962,6 +1010,7 @@ fn forget_edge_layout(app: &AppHandle, service: &DockService, label: &str) {
     };
     let forgotten = geometry.update(label, |dock| {
         dock.hit_region_css = None;
+        dock.reserve_css = None;
         dock.panel_css.take().map(|_| dock.monitor.clone())
     });
     if let Some(Some(monitor)) = forgotten {
@@ -1235,6 +1284,61 @@ fn post_to_main_thread(app: &AppHandle, f: impl FnOnce() + Send + 'static) {
     }));
 }
 
+/// The shell granted the dock window `label` a new band
+/// (`appbar`): lay the window out again at the next turn of the main
+/// thread's loop, which puts it on the band ([`layout`]). Any thread.
+pub(crate) fn relayout_later(app: &AppHandle, label: &str) {
+    let handle = app.clone();
+    let label = label.to_owned();
+    post_to_main_thread(app, move || {
+        let Some(window) = handle.get_webview_window(&label) else {
+            log::debug!("dock window {label:?} is gone before it could go onto its band");
+            return;
+        };
+        let monitors = handle
+            .try_state::<crate::AppService>()
+            .map_or_else(Vec::new, |service| service.0.monitors());
+        if let Err(e) = relayout_dock(&handle, &window, &monitors) {
+            log::warn!("dock window {label:?} could not be placed on its band: {e}");
+        }
+    });
+}
+
+/// What decides the band the dock window asks for
+/// (`appbar::request_for`): whether it is shown, the bounds of the monitor
+/// and the edge it was placed on, the edge in effect, the panel's distance
+/// to its edge side from the page's latest report, and its scale. Main
+/// thread (the getters are window calls).
+pub(crate) fn app_bar_inputs(
+    app: &AppHandle,
+    window: &WebviewWindow,
+    enabled: bool,
+) -> crate::appbar::BarInputs {
+    let dock = app
+        .try_state::<DockGeometry>()
+        .and_then(|geometry| geometry.dock(window.label()))
+        .unwrap_or_default();
+    let monitor = dock.monitor.as_ref().and_then(|id| {
+        app.try_state::<crate::AppService>().and_then(|service| {
+            service
+                .0
+                .monitors()
+                .into_iter()
+                .find(|m| &m.id == id)
+                .map(|m| m.bounds)
+        })
+    });
+    crate::appbar::BarInputs {
+        enabled,
+        visible: window.is_visible().unwrap_or(false),
+        monitor,
+        placed: dock.edge,
+        edge: dock_edge(app),
+        reserve_css: dock.reserve_css,
+        scale: window.scale_factor().unwrap_or(1.0),
+    }
+}
+
 /// Size and place a dock window on the edge in effect ([`dock_edge`]) of its
 /// own monitor's work area from what is remembered for it: [`layout`] with
 /// its UI's latest content size, or none before the first report. The one
@@ -1293,9 +1397,13 @@ fn dock_edge(app: &AppHandle) -> DockPosition {
 /// own view of the window's monitor while none is known): the rect
 /// [`relayout_rect`] gives from `content`, the UI's latest content size, or
 /// before its first report (`None`) from the window's current size and the
-/// edge it was placed on last. Every path that sizes or moves a dock window
-/// comes here (creation, the content size, [`relayout_dock`]); [`place`]
-/// applies the rect.
+/// edge it was placed on last. While the shell has reserved a band for the
+/// window on that edge of that monitor (`appbar::granted_band`),
+/// the window keeps that rect's thickness but goes with its edge side on
+/// the band's edge side, as long as the band
+/// (`stem_platform::rules::appbar::window_rect`). Every path that sizes or
+/// moves a dock window comes here (creation, the content size,
+/// [`relayout_dock`]); [`place`] applies the rect.
 fn layout(
     window: &WebviewWindow,
     monitor: Option<&MonitorInfo>,
@@ -1323,6 +1431,19 @@ fn layout(
         size,
         placed,
     );
+    let band = monitor
+        .and_then(|m| crate::appbar::granted_band(window.app_handle(), window.label(), edge, m));
+    let rect = match band {
+        Some(band) => {
+            let on_band = window_rect(band, edge, across(rect, edge));
+            log::debug!(
+                "dock window {:?}: {rect:?} moved onto the band {band:?} the shell reserved -> {on_band:?}",
+                window.label()
+            );
+            on_band
+        }
+        None => rect,
+    };
     match content {
         Some(content) => {
             let (width, height) = content.on_edge(edge);
@@ -1363,8 +1484,9 @@ fn window_scale(window: &WebviewWindow, monitor: Option<&MonitorInfo>) -> f64 {
 /// the edge for its next placement as soon as the window has its new size
 /// (the size alone says which side is the thickness, [`thickness_of`], so
 /// a move that fails after the resize still leaves the right pair); then
-/// redo the panel conversion for its new place. Every placement of
-/// a dock window ends here.
+/// redo the panel conversion for its new place and let `appbar`
+/// follow (a new monitor or scale changes the band). Every
+/// placement of a dock window ends here.
 fn place(window: &WebviewWindow, edge: DockPosition, rect: Rect) -> tauri::Result<()> {
     let current = current_rect(window);
     let target = (rect.width, rect.height);
@@ -1390,6 +1512,7 @@ fn place(window: &WebviewWindow, edge: DockPosition, rect: Rect) -> tauri::Resul
         remember_edge(window, edge);
     }
     sync_dock_panel(window, Some((rect.x, rect.y)));
+    crate::appbar::sync(window.app_handle(), window);
     Ok(())
 }
 
@@ -1800,6 +1923,8 @@ pub fn toggle_dock(app: &AppHandle) {
                         .0
                         .set_dock_panel(&label, monitor_id_of(app, &label), None);
                 }
+                // A hidden dock reserves no screen space.
+                crate::appbar::sync(app, &window);
             }),
             Toggle::Show => show_dock_window(&window),
             Toggle::Reveal if window.is_visible().unwrap_or(true) => {
@@ -1814,11 +1939,13 @@ pub fn toggle_dock(app: &AppHandle) {
     }
 }
 
-/// Show a hidden dock window and give the engine its panel back.
+/// Show a hidden dock window, give the engine its panel back and ask the
+/// shell for its band again.
 fn show_dock_window(window: &WebviewWindow) -> tauri::Result<()> {
     window.show().inspect(|()| {
         log::debug!("dock window {:?} shown", window.label());
         sync_dock_panel(window, None);
+        crate::appbar::sync(window.app_handle(), window);
     })
 }
 
@@ -1842,6 +1969,7 @@ pub fn reveal_all(app: &AppHandle) {
             log::warn!("reveal {label}: {e}");
         } else if label.starts_with(DOCK_LABEL) {
             sync_dock_panel(&window, None);
+            crate::appbar::sync(app, &window);
         }
     }
 }

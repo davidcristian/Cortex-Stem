@@ -6,8 +6,8 @@
 //! - forwards `ServiceEvent`s as Tauri events (`docs/ipc/events.md`),
 //! - wires plugins (single-instance, logging, autostart, global shortcut)
 //!   and the tray icon, and applies the settings that belong to the shell
-//!   (`autostart`, `taskbar`, `shortcut`, click-through in `windows`, the
-//!   tray's check mark),
+//!   (`autostart`, `taskbar`, `appbar`, `shortcut`, click-through in
+//!   `windows`, the tray's check mark),
 //! - reports a crash of the previous run at the next start (`crash`),
 //! - knows where its own files are (`AppPaths`) for the settings page's
 //!   About section.
@@ -18,6 +18,7 @@
 //! code) is refused unless [`request_quit`] was called (tray *Quit* or the
 //! `quit` command).
 
+mod appbar;
 mod autostart;
 mod commands;
 mod crash;
@@ -178,8 +179,12 @@ pub fn run() {
             app.manage(windows::DockGeometry::default());
             app.manage(windows::DockAutoHidden::default());
             app.manage(windows::SettingsWindowTheme::default());
+            app.manage(appbar::AppBars::default());
             menus::init(app.handle())?;
 
+            // Before the dock windows: their first panel reports ask for
+            // the bands.
+            appbar::init(app.handle(), &service.settings());
             windows::create_dock_windows(app.handle(), &service)?;
             if let Err(e) = tray::create(app.handle()) {
                 log::error!("tray icon unavailable: {e}");
@@ -205,7 +210,10 @@ pub fn run() {
             }
             RunEvent::Exit => {
                 log::info!("exiting");
-                // Before the service goes: the restore talks to the platform.
+                // Before the service goes: both talk to the platform. The
+                // bands first, so the shell has no bar of ours to notify
+                // when the taskbar's auto-hide changes back.
+                appbar::on_exit(app);
                 taskbar::on_exit(app);
                 // After the restore: a clean exit is one that got this far.
                 crash::on_exit();
@@ -495,6 +503,9 @@ fn forward_events(app: AppHandle, service: &DockService) {
                 // report is read for the edge it was laid out for.
                 let emitted = app.emit(events::SETTINGS, settings);
                 windows::on_settings_changed(&app, settings);
+                // After `windows`: a position change moves the windows
+                // first, and the bands follow them.
+                appbar::on_settings_changed(&app, settings);
                 emitted
             }
             ServiceEvent::Theme(theme) => app.emit(events::THEME, theme),

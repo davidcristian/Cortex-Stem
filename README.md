@@ -120,7 +120,7 @@ flowchart TB
     CORE -->|"DockState · ItemAction"| SVC
     SVC -->|"launch · window_action · identify_*"| PLAT
     PLAT -->|"PlatformEvent"| SVC
-    APP -->|"window styles · hit region"| PLAT
+    APP -->|"window styles · hit region · AppBar"| PLAT
     PLAT <--> WIN
 ```
 

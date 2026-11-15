@@ -121,9 +121,10 @@ Against it:
   messages do not include them. Which icons are promoted is the user's
   setting, in an undocumented key; Stem would need its own rule for which
   icons to show.
-- **Its own traffic.** Stem's tray icon (`src-tauri/src/tray.rs`) and its
-  taskbar calls (`windows/taskbar.rs`) would go through Stem's own window,
-  from another thread of the same process.
+- **Its own traffic.** Stem's tray icon (`src-tauri/src/tray.rs`), its
+  taskbar calls (`windows/taskbar.rs`) and its app-bar calls
+  (`windows/appbar.rs`) would go through Stem's own window, from other
+  threads of the same process.
 - **Testing.** Each of these behaviours exists only at run time on
   Windows: a dozen manual tests that no check on Linux can replace, to be
   run again after every Windows feature update.
@@ -147,7 +148,7 @@ that reach the real tray. No z-order competition, no second window.
 Stem would handle the tray and app-bar messages itself, without
 forwarding, and keep Explorer's tray from receiving them. Everything in D
 applies, and more. Stem becomes the app-bar server (work area and edges
-for every app bar in the session). It must
+for every app bar in the session, the dock's own included). It must
 rebuild the clock and calendar, quick settings, the notification centre,
 the input switcher and *Show Desktop*, and Windows offers no way to host
 those surfaces. The notification listener API requires a capability in a
