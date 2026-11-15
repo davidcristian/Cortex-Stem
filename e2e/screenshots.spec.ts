@@ -2192,6 +2192,39 @@ test.describe('clock and battery', () => {
     });
   }
 
+  test('on a left dock the clock’s title pill wraps into even lines, with no lone day period', async ({
+    page,
+  }) => {
+    await page.clock.setFixedTime(NOW);
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await page.setViewportSize({ width: 360, height: 900 });
+    await openDock(page, 'mock=1&position=left');
+    await patchSettings(page, { items: { clock: true } });
+    const clock = page.locator(CLOCK);
+    await expect(clock).toBeVisible();
+    await expect.poll(() => runningAnimations(page)).toBe(0);
+    await clock.hover();
+    const pill = page.locator('.tooltip');
+    await expect(pill).toHaveText(FULL);
+    // The width of each line the pill's text is laid out in, top to bottom.
+    const lines = await pill.evaluate((el) => {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const widths = new Map<number, number>();
+      for (const rect of range.getClientRects()) {
+        const top = Math.round(rect.top);
+        widths.set(top, (widths.get(top) ?? 0) + rect.width);
+      }
+      return [...widths.entries()].sort((a, b) => a[0] - b[0]).map(([, width]) => width);
+    });
+    expect(lines).toHaveLength(2);
+    // Greedy wrapping would fill the first line and leave "10:42 AM" (or a
+    // lone "AM", where Intl spaces it with a breaking space) on the second.
+    expect(Math.min(...lines) / Math.max(...lines)).toBeGreaterThan(0.6);
+    expect(await computed(pill, 'text-wrap-style')).toBe('balance');
+    await page.screenshot({ path: `${OUT}/dock-clock-pill-left.png` });
+  });
+
   test('the clock turns over at the minute and catches up when the page is shown again', async ({
     page,
   }) => {

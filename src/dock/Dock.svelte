@@ -3020,6 +3020,12 @@
     width: max-content;
     max-width: var(--pill-max);
     white-space: normal;
+    /* Lines of even length: a 12-hour clock's title leaves no lone "AM"
+       on its last line. After `white-space`, which resets it. The
+       box keeps the width of the longest line greedy wrapping would have
+       made, so the shorter balanced lines are centred in it. */
+    text-wrap: balance;
+    text-align: center;
   }
 
   .dock-stage[data-edge='left'] .dock-panel :global(.slot .tooltip) {
