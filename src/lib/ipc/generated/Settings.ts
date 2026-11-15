@@ -4,6 +4,7 @@ import type { AutoHide } from "./AutoHide";
 import type { Behavior } from "./Behavior";
 import type { DockPosition } from "./DockPosition";
 import type { FixedItems } from "./FixedItems";
+import type { HiddenApp } from "./HiddenApp";
 import type { Magnification } from "./Magnification";
 import type { MonitorMode } from "./MonitorMode";
 import type { PinnedApp } from "./PinnedApp";
@@ -68,6 +69,17 @@ behavior: Behavior,
  * the first stays.
  */
 pinned: Array<PinnedApp>, 
+/**
+ * Apps the dock does not show while they run. *Hide from Stem* in a
+ * running app's menu adds one, and *Show* on the settings page removes
+ * it. A listed app gets no item on any dock, but its windows still
+ * count for everything else: the foreground window, fullscreen
+ * detection and the overlap test of auto-hide. A pinned app is never
+ * hidden, so an entry whose id is pinned is dropped. Entries whose id is
+ * empty or only whitespace are dropped too, and of several entries with
+ * the same id only the first stays.
+ */
+hiddenApps: Array<HiddenApp>, 
 /**
  * Windows integration: start at sign-in, the stock taskbar, reserved
  * screen space and the log file.

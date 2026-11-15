@@ -28,7 +28,7 @@ use crate::model::{
     ShellAction, ThemeInfo, UserCss, WindowAction, WindowId, WindowInfo,
 };
 use crate::settings::{
-    Appearance, AutoHide, AutoHideMode, Backdrop, Behavior, DockPosition, FixedItems,
+    Appearance, AutoHide, AutoHideMode, Backdrop, Behavior, DockPosition, FixedItems, HiddenApp,
     Magnification, MonitorMode, PinnedApp, Settings, SystemIntegration, ThemeMode, ThemePreset,
 };
 
@@ -99,6 +99,7 @@ exported_types! {
     Behavior,
     DockPosition,
     FixedItems,
+    HiddenApp,
     Magnification,
     MonitorMode,
     PinnedApp,

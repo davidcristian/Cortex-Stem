@@ -7,7 +7,8 @@
 //! Ordering rules for the snapshot (left to right):
 //! 1. fixed left items (launcher, task view, show desktop), then a separator;
 //! 2. pinned apps in the user's order, each showing its running windows;
-//! 3. a separator, then running apps that are not pinned, in first-seen order;
+//! 3. a separator, then running apps that are not pinned, in first-seen order,
+//!    except the ones `Settings::hidden_apps` lists;
 //! 4. a separator, then the fixed trailing items (quick settings,
 //!    notification center, battery, clock, the Recycle Bin last).
 //!
@@ -41,6 +42,10 @@
 //! - `power` is the platform's last reading, stored as is and part
 //!   of the snapshot whatever the settings say; it also decides whether the
 //!   battery item exists (only with a system battery) and its title;
+//! - a hidden app (`Settings::hidden_apps`) only loses its item: its
+//!   windows are tracked as before, so the foreground, fullscreen and
+//!   overlap facts and its identity are unchanged, and a click on its key
+//!   does nothing. A pinned app is never hidden, whatever the list says;
 //! - `overlapped` is the one thing the engine derives from window
 //!   rects: whether a window of another process covers a dock's resting
 //!   panel ([`crate::overlap`]), per panel. It is recomputed only after an
@@ -319,6 +324,22 @@ impl DockEngine {
             item.needs_attention = item.windows.iter().any(|w| w.needs_attention);
         }
         Some(item)
+    }
+
+    /// The name the item of `app_id` shows, or would show were it not
+    /// hidden: its resolved display name, else the title of its
+    /// first-seen tracked window (shown or not). `None` when the engine
+    /// knows nothing of the app: no identity and no window. A pin's label is
+    /// not consulted; the caller decides what a pinned app is called.
+    pub fn app_name(&self, app_id: &AppId) -> Option<String> {
+        if let Some(identity) = self.identities.get(app_id) {
+            return Some(identity.display_name.clone());
+        }
+        self.windows
+            .values()
+            .filter(|t| app_id_for(&t.raw) == *app_id)
+            .min_by_key(|t| t.seq)
+            .map(|t| t.raw.title.clone())
     }
 
     /// Apps (pinned or running) with no identity yet, regardless of whether
@@ -652,10 +673,14 @@ impl DockEngine {
             pinned_items.push(self.app_item(&pin.id, true, pin.label.as_deref(), &windows));
         }
 
-        // 3. Running, unpinned apps.
+        // 3. Running, unpinned apps, but the hidden ones. The pins
+        // above took their windows first, so a pinned id that is also
+        // listed as hidden still has its item.
         let mut running_items = Vec::new();
         for id in &self.running_order {
-            if let Some(windows) = by_app.remove(id) {
+            if let Some(windows) = by_app.remove(id)
+                && !s.is_hidden(id)
+            {
                 running_items.push(self.app_item(id, false, None, &windows));
             }
         }
@@ -790,7 +815,9 @@ impl DockEngine {
     /// - an app whose window is active is minimised (if configured), otherwise
     ///   activated;
     /// - an app with several windows cycles: the window after the active one,
-    ///   or the first one. Only the windows that dock lists take part.
+    ///   or the first one. Only the windows that dock lists take part;
+    /// - a hidden, unpinned app has no item, so a click on its key
+    ///   (a page that has not seen the new state yet) does nothing.
     pub fn primary_action(&self, item_key: &str, dock: &str) -> ItemAction {
         match item_key {
             "fixed:launcher" => return ItemAction::Shell(ShellAction::OpenStartMenu),
@@ -807,6 +834,9 @@ impl DockEngine {
         let Some(app_id) = item_key.strip_prefix("app:").map(|s| AppId(s.to_owned())) else {
             return ItemAction::None;
         };
+        if self.settings.is_hidden(&app_id) && !self.settings.is_pinned(&app_id) {
+            return ItemAction::None;
+        }
         let windows = self.windows_on_dock(&app_id, dock);
         if windows.is_empty() {
             let launchable = self.settings.is_pinned(&app_id)
@@ -3423,5 +3453,186 @@ mod tests {
         engine.apply(updated(win(1, NOTEPAD, "A")));
         assert!(engine.windows_on_dock(&notepad, DOCK).is_empty());
         assert_eq!(engine.windows_of(&notepad), every);
+    }
+
+    // ----- hidden apps -------------------------------------------------------------
+
+    fn hidden(exe: &str, name: &str) -> crate::settings::HiddenApp {
+        crate::settings::HiddenApp {
+            id: exe_id(exe),
+            name: name.into(),
+        }
+    }
+
+    #[test]
+    fn a_hidden_app_has_no_item_and_comes_back_when_shown() {
+        let mut settings = minimal_settings();
+        settings.pinned = vec![pin(r"C:\p.exe")];
+        let mut engine = DockEngine::new(settings.clone());
+        engine.apply(added(win(1, r"C:\a.exe", "A")));
+        engine.apply(added(win(2, r"C:\b.exe", "B")));
+        engine.apply(added(win(3, r"C:\a.exe", "A2")));
+        assert_eq!(
+            keys(&engine.snapshot()),
+            vec![
+                "app:exe:c:/p.exe",
+                "sep:1",
+                "app:exe:c:/a.exe",
+                "app:exe:c:/b.exe"
+            ]
+        );
+
+        // Hide A: its item goes (one bump), B keeps its place.
+        settings.hidden_apps = vec![hidden(r"C:\a.exe", "A")];
+        let r = engine.snapshot().revision;
+        let out = engine.apply(EngineInput::SettingsChanged(settings.clone()));
+        assert!(out.changed);
+        assert_eq!(engine.snapshot().revision, r + 1);
+        assert_eq!(
+            keys(&engine.snapshot()),
+            vec!["app:exe:c:/p.exe", "sep:1", "app:exe:c:/b.exe"]
+        );
+
+        // A second window of A brings no item either, and changes nothing
+        // the snapshot shows.
+        let out = engine.apply(added(win(4, r"C:\a.exe", "A3")));
+        assert!(!out.changed);
+        assert_eq!(
+            keys(&engine.snapshot()),
+            vec!["app:exe:c:/p.exe", "sep:1", "app:exe:c:/b.exe"]
+        );
+
+        // With B hidden too, no running group is left and so no separator.
+        settings.hidden_apps.push(hidden(r"C:\b.exe", "B"));
+        engine.apply(EngineInput::SettingsChanged(settings.clone()));
+        assert_eq!(keys(&engine.snapshot()), vec!["app:exe:c:/p.exe"]);
+
+        // Shown again: A is back where first-seen order puts it, with all
+        // its windows, the one added while hidden included.
+        settings.hidden_apps = vec![hidden(r"C:\b.exe", "B")];
+        assert!(
+            engine
+                .apply(EngineInput::SettingsChanged(settings.clone()))
+                .changed
+        );
+        let state = engine.snapshot();
+        assert_eq!(
+            keys(&state),
+            vec!["app:exe:c:/p.exe", "sep:1", "app:exe:c:/a.exe"]
+        );
+        assert_eq!(ids(&state.items[2].windows), vec![1, 3, 4]);
+        settings.hidden_apps.clear();
+        engine.apply(EngineInput::SettingsChanged(settings));
+        assert_eq!(
+            keys(&engine.snapshot()),
+            vec![
+                "app:exe:c:/p.exe",
+                "sep:1",
+                "app:exe:c:/a.exe",
+                "app:exe:c:/b.exe"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_hidden_apps_windows_stay_tracked() {
+        let mut settings = minimal_settings();
+        settings.hidden_apps = vec![hidden(r"C:\a.exe", "A")];
+        let mut engine = DockEngine::new(settings);
+        engine.apply(monitors(vec![monitor(PRIMARY, true, 0)]));
+        engine.apply(panel(Some(PANEL)));
+        engine.apply(added(framed(1, r"C:\a.exe", OVER)));
+        engine.apply(added(win(2, r"C:\b.exe", "B")));
+        let a = exe_id(r"C:\a.exe");
+
+        // No item, but the window is known: its frame over the panel
+        // overlaps the dock, and it can be the foreground window, with no
+        // item active for it.
+        assert_eq!(keys(&engine.snapshot()), vec!["app:exe:c:/b.exe"]);
+        assert!(engine.window(WindowId(1)).is_some());
+        assert_eq!(engine.windows_of(&a), vec![WindowId(1)]);
+        assert!(is_overlapped(&engine, PRIMARY));
+        assert!(engine.apply(foreground(Some(1))).changed);
+        let state = engine.snapshot();
+        assert_eq!(state.foreground, Some(WindowId(1)));
+        assert!(state.items.iter().all(|i| !i.is_active));
+
+        // Fullscreen is the platform's verdict, whoever's window it is.
+        engine.apply(fullscreen_on(Some(PRIMARY)));
+        assert!(is_fullscreen(&engine, PRIMARY));
+
+        // Its identity is still asked for, and a click on its key (from a
+        // page a state behind) does nothing.
+        assert!(engine.unresolved_apps().contains(&a));
+        assert_eq!(
+            engine.primary_action("app:exe:c:/a.exe", DOCK),
+            ItemAction::None
+        );
+        assert_eq!(engine.dock_item("app:exe:c:/a.exe", DOCK), None);
+
+        // Its window closing changes the overlap like any other.
+        engine.apply(removed(1));
+        assert!(!is_overlapped(&engine, PRIMARY));
+        assert_eq!(engine.snapshot().foreground, None);
+    }
+
+    #[test]
+    fn a_pinned_app_is_never_hidden_even_by_an_unvalidated_list() {
+        let mut settings = minimal_settings();
+        settings.pinned = vec![pin(r"C:\p.exe")];
+        // Not validated: the engine itself keeps the pin.
+        settings.hidden_apps = vec![hidden(r"C:\p.exe", "P")];
+        let mut engine = DockEngine::new(settings);
+        engine.apply(added(win(1, r"C:\p.exe", "P")));
+        let state = engine.snapshot();
+        assert_eq!(keys(&state), vec!["app:exe:c:/p.exe"]);
+        assert!(state.items[0].pinned);
+        assert_eq!(ids(&state.items[0].windows), vec![1]);
+        assert_eq!(
+            engine.primary_action("app:exe:c:/p.exe", DOCK),
+            ItemAction::ActivateWindow(WindowId(1))
+        );
+    }
+
+    #[test]
+    fn a_hidden_app_has_no_item_on_any_dock() {
+        let mut engine = two_docks(false, true);
+        let mut settings = engine.settings().clone();
+        settings.hidden_apps = vec![hidden(NOTEPAD, "Notepad")];
+        engine.apply(EngineInput::SettingsChanged(settings));
+        for dock in [DOCK, SECOND_DOCK] {
+            assert_eq!(engine.dock_item(NOTEPAD_KEY, dock), None, "{dock}");
+            assert_eq!(
+                engine.primary_action(NOTEPAD_KEY, dock),
+                ItemAction::None,
+                "{dock}"
+            );
+        }
+        assert!(engine.snapshot().items.is_empty());
+        // Still tracked on both monitors.
+        assert_eq!(
+            engine.windows_on_dock(&exe_id(NOTEPAD), SECOND_DOCK),
+            vec![WindowId(2)]
+        );
+    }
+
+    #[test]
+    fn app_name_is_the_identity_else_the_first_windows_title() {
+        let mut engine = DockEngine::new(minimal_settings());
+        let a = exe_id(r"C:\a.exe");
+        assert_eq!(engine.app_name(&a), None, "unknown app");
+        engine.apply(added(cloaked(win(2, r"C:\a.exe", "first, cloaked"))));
+        engine.apply(added(win(1, r"C:\a.exe", "second")));
+        // First seen, shown or not (a lower window id does not matter).
+        assert_eq!(engine.app_name(&a).as_deref(), Some("first, cloaked"));
+        engine.apply(EngineInput::IdentityResolved {
+            app_id: a.clone(),
+            identity: identity(&a, "App A", "icon:a"),
+        });
+        assert_eq!(engine.app_name(&a).as_deref(), Some("App A"));
+        // The identity outlives the windows.
+        engine.apply(removed(1));
+        engine.apply(removed(2));
+        assert_eq!(engine.app_name(&a).as_deref(), Some("App A"));
     }
 }

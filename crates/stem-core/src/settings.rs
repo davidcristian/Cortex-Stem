@@ -74,6 +74,15 @@ pub struct Settings {
     /// whitespace are dropped, and of several entries with the same id only
     /// the first stays.
     pub pinned: Vec<PinnedApp>,
+    /// Apps the dock does not show while they run. *Hide from Stem* in a
+    /// running app's menu adds one, and *Show* on the settings page removes
+    /// it. A listed app gets no item on any dock, but its windows still
+    /// count for everything else: the foreground window, fullscreen
+    /// detection and the overlap test of auto-hide. A pinned app is never
+    /// hidden, so an entry whose id is pinned is dropped. Entries whose id is
+    /// empty or only whitespace are dropped too, and of several entries with
+    /// the same id only the first stays.
+    pub hidden_apps: Vec<HiddenApp>,
     /// Windows integration: start at sign-in, the stock taskbar, reserved
     /// screen space and the log file.
     pub system: SystemIntegration,
@@ -93,6 +102,7 @@ impl Default for Settings {
             items: FixedItems::default(),
             behavior: Behavior::default(),
             pinned: Vec::new(),
+            hidden_apps: Vec::new(),
             system: SystemIntegration::default(),
         }
     }
@@ -126,9 +136,11 @@ impl Settings {
     }
 
     /// Clamp every numeric field into its supported range, replace
-    /// non-finite floats with their defaults, and drop invalid pins (blank or
-    /// duplicate ids; the first occurrence stays). Idempotent: validating a
-    /// validated document changes nothing.
+    /// non-finite floats with their defaults, drop invalid pins (blank or
+    /// duplicate ids; the first occurrence stays), and drop hidden apps that
+    /// are pinned, have a blank id or repeat an id (the first
+    /// occurrence stays). Idempotent: validating a validated document changes
+    /// nothing.
     pub fn validate(&mut self) {
         self.icon_size = self.icon_size.clamp(24, 128);
         self.magnification.max_scale = finite_or(
@@ -144,6 +156,13 @@ impl Settings {
         let mut seen = std::collections::HashSet::new();
         self.pinned
             .retain(|p| !p.id.as_str().trim().is_empty() && seen.insert(p.id.clone()));
+        // After the pins, which take precedence: a pinned app is never hidden.
+        let pinned: std::collections::HashSet<AppId> =
+            self.pinned.iter().map(|p| p.id.clone()).collect();
+        let mut seen = std::collections::HashSet::new();
+        self.hidden_apps.retain(|h| {
+            !h.id.as_str().trim().is_empty() && !pinned.contains(&h.id) && seen.insert(h.id.clone())
+        });
     }
 
     /// Whether replacing `self` by `other` changes where the dock windows
@@ -243,6 +262,28 @@ impl Settings {
         let before = self.pinned.len();
         self.pinned.retain(|p| &p.id != id);
         self.pinned.len() != before
+    }
+
+    /// Whether `id` is listed in [`Settings::hidden_apps`].
+    pub fn is_hidden(&self, id: &AppId) -> bool {
+        self.hidden_apps.iter().any(|h| &h.id == id)
+    }
+
+    /// Hide an app. Returns `false` (and changes nothing) if it is
+    /// already hidden or pinned: a pinned app is never hidden.
+    pub fn hide(&mut self, app: HiddenApp) -> bool {
+        if self.is_hidden(&app.id) || self.is_pinned(&app.id) {
+            return false;
+        }
+        self.hidden_apps.push(app);
+        true
+    }
+
+    /// Show a hidden app again. Returns `false` if it was not hidden.
+    pub fn unhide(&mut self, id: &AppId) -> bool {
+        let before = self.hidden_apps.len();
+        self.hidden_apps.retain(|h| &h.id != id);
+        self.hidden_apps.len() != before
     }
 
     /// Reorder pins to match `order`. Ids not in `order` keep their relative
@@ -580,6 +621,22 @@ pub struct PinnedApp {
     pub launch: LaunchTarget,
 }
 
+/// An app the dock does not show while it runs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub struct HiddenApp {
+    /// The id Stem gives the app's windows, in one of the forms of
+    /// `pinned[].id`, or `class:` followed by the window class name in
+    /// lower case for an app known only by its window class
+    /// (`AppId::for_window_class`).
+    pub id: AppId,
+    /// The app's display name when it was hidden. The settings page lists
+    /// the app by this name.
+    #[serde(default)]
+    pub name: String,
+}
+
 /// Windows integration settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -759,6 +816,17 @@ mod tests {
                     p
                 })
                 .collect(),
+            // The same small id pool as the pins, so hidden ids that are
+            // also pinned, blank or repeated come up often.
+            hidden_apps: (0..rng.below(6))
+                .map(|_| HiddenApp {
+                    id: AppId(
+                        rng.pick(&["", " ", "a", "b", "d", "exe:c:/x.exe", "aumid:Y!App"])
+                            .to_owned(),
+                    ),
+                    name: rng.pick(&["", "Name", "Other"]).to_owned(),
+                })
+                .collect(),
             system: SystemIntegration {
                 autostart: rng.bool(),
                 hide_windows_taskbar: rng.bool(),
@@ -781,6 +849,20 @@ mod tests {
         dedup.sort_unstable();
         dedup.dedup();
         assert_eq!(dedup.len(), ids.len(), "duplicate pin ids in {ids:?}");
+        let hidden: Vec<&str> = s.hidden_apps.iter().map(|h| h.id.as_str()).collect();
+        assert!(hidden.iter().all(|id| !id.trim().is_empty()));
+        assert!(
+            hidden.iter().all(|id| !ids.contains(id)),
+            "pinned ids {ids:?} hidden in {hidden:?}"
+        );
+        let mut dedup = hidden.clone();
+        dedup.sort_unstable();
+        dedup.dedup();
+        assert_eq!(
+            dedup.len(),
+            hidden.len(),
+            "duplicate hidden ids in {hidden:?}"
+        );
     }
 
     #[test]
@@ -986,6 +1068,104 @@ mod tests {
         assert_eq!(s.pinned[0].label.as_deref(), Some("first"));
     }
 
+    fn hidden(id: &str, name: &str) -> HiddenApp {
+        HiddenApp {
+            id: AppId(id.to_owned()),
+            name: name.to_owned(),
+        }
+    }
+
+    fn hidden_ids(s: &Settings) -> Vec<&str> {
+        s.hidden_apps.iter().map(|h| h.id.as_str()).collect()
+    }
+
+    #[test]
+    fn hidden_apps_are_empty_unless_written_and_round_trip() {
+        assert!(Settings::default().hidden_apps.is_empty());
+
+        // A file written before the field existed keeps its pins and hides
+        // nothing.
+        let old = Settings::from_json(
+            r#"{"pinned": [{"id": "exe:c:/a.exe", "launch": {"kind": "uri", "uri": "a:"}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(old.pinned.len(), 1);
+        assert!(old.hidden_apps.is_empty());
+
+        // camelCase key, `{ id, name }` entries; a hand-written entry without
+        // a name loads with an empty one, one without an id does not load.
+        let s = Settings::from_json(
+            r#"{"hiddenApps": [{"id": "exe:c:/b.exe", "name": "B"}, {"id": "aumid:C!App"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            s.hidden_apps,
+            vec![hidden("exe:c:/b.exe", "B"), hidden("aumid:C!App", "")]
+        );
+        let json = s.to_json_pretty();
+        assert!(json.contains(r#""hiddenApps""#), "{json}");
+        assert!(json.contains(r#""name": "B""#), "{json}");
+        assert_eq!(Settings::from_json(&json).unwrap(), s);
+        assert!(matches!(
+            Settings::from_json(r#"{"hiddenApps": [{"name": "B"}]}"#),
+            Err(SettingsError::Parse(_))
+        ));
+    }
+
+    #[test]
+    fn validate_drops_pinned_blank_and_repeated_hidden_apps() {
+        let mut s = Settings {
+            pinned: vec![pin("a"), pin("a"), pin("b")],
+            hidden_apps: vec![
+                hidden("c", "first"),
+                hidden("a", "pinned"),
+                hidden(" \t", "blank"),
+                hidden("", "empty"),
+                hidden("d", "D"),
+                hidden("c", "second"),
+                hidden("b", "pinned too"),
+            ],
+            ..Default::default()
+        };
+        s.validate();
+        assert_eq!(hidden_ids(&s), vec!["c", "d"]);
+        assert_eq!(s.hidden_apps[0].name, "first");
+        // A name is kept as written, empty included.
+        let mut s = Settings {
+            hidden_apps: vec![hidden("e", "")],
+            ..Default::default()
+        };
+        s.validate();
+        assert_eq!(s.hidden_apps, vec![hidden("e", "")]);
+    }
+
+    #[test]
+    fn hide_and_unhide_never_touch_a_pin() {
+        let mut s = Settings {
+            pinned: vec![pin("a")],
+            ..Default::default()
+        };
+        assert!(!s.hide(hidden("a", "A")), "a pinned app is never hidden");
+        assert!(s.hidden_apps.is_empty());
+        assert!(s.hide(hidden("b", "B")));
+        assert!(!s.hide(hidden("b", "B again")), "already hidden");
+        assert!(s.is_hidden(&AppId("b".into())));
+        assert!(!s.is_hidden(&AppId("a".into())));
+        assert_eq!(s.hidden_apps, vec![hidden("b", "B")]);
+        assert!(s.unhide(&AppId("b".into())));
+        assert!(!s.unhide(&AppId("b".into())), "not hidden any more");
+        assert!(!s.unhide(&AppId("a".into())));
+        assert!(s.hidden_apps.is_empty());
+        assert_eq!(s.pinned, vec![pin("a")]);
+
+        // Pinning a hidden app and validating shows it again as a pin.
+        assert!(s.hide(hidden("c", "C")));
+        assert!(s.pin(pin("c")));
+        s.validate();
+        assert!(!s.is_hidden(&AppId("c".into())));
+        assert!(s.is_pinned(&AppId("c".into())));
+    }
+
     #[test]
     fn validate_replaces_non_finite_floats_with_defaults() {
         for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
@@ -1053,6 +1233,7 @@ mod tests {
         restyled.appearance.theme = ThemePreset::Minimal;
         restyled.items.launcher = false;
         restyled.pinned.push(pin("a"));
+        restyled.hidden_apps.push(hidden("b", "B"));
         assert!(!base.diff_requires_window_rebuild(&restyled));
 
         let mut moved = base.clone();

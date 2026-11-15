@@ -16,6 +16,7 @@ export type { DockItemKind } from "./DockItemKind";
 export type { DockPosition } from "./DockPosition";
 export type { DockState } from "./DockState";
 export type { FixedItems } from "./FixedItems";
+export type { HiddenApp } from "./HiddenApp";
 export type { IconKey } from "./IconKey";
 export type { LaunchTarget } from "./LaunchTarget";
 export type { Magnification } from "./Magnification";
