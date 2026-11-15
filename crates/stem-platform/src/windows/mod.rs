@@ -8,7 +8,7 @@
 //! - `util`        shared helpers (handles, strings, errors, COM)
 //! - `enumerate`   which windows qualify, and their `RawWindow` facts
 //! - `events`      WinEvent hook + message loop thread
-//! - `actions`     activate / minimise / restore / close
+//! - `actions`     activate / minimise / restore / close; focus a dock
 //! - `monitors`    monitors, work areas, DPI
 //! - `icons`       HICON/exe/UWP icons -> PNG, with cache
 //! - `identity`    display names, AUMIDs, .lnk resolution
@@ -274,6 +274,12 @@ impl Platform for WindowsPlatform {
             }
         }
         Ok(())
+    }
+
+    /// The foreground activation chain on the dock window itself, which keeps
+    /// `WS_EX_NOACTIVATE` (`actions`, *Focusing a dock window*).
+    fn focus_dock_window(&self, handle: NativeWindowHandle) -> PlatformResult<()> {
+        actions::focus_dock_window(handle)
     }
 
     fn foreground_native_window(&self) -> Option<NativeWindowHandle> {

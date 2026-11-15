@@ -63,6 +63,11 @@
 //!   dock's backdrop window, if it has one, is restacked under it
 //!   ([`super::backdrop::restack`]; it posts, and so does the
 //!   successful re-assert above);
+//! - `WM_ACTIVATE`: one debug line per activation change, since
+//!   the focus shortcut makes the dock the foreground window
+//!   (`actions::focus_dock_window`; the style stays on, nothing here
+//!   changes for it); an activation by a click would mean `MA_NOACTIVATE`
+//!   was not honoured and says so. Then forwarded like below;
 //! - the AppBar messages (`appbar`): the shell's callback
 //!   (`appbar::CALLBACK_MESSAGE`, answered 0), `WM_ACTIVATE`,
 //!   `WM_WINDOWPOSCHANGED` and `TaskbarCreated` are handed to `appbar`,
@@ -104,10 +109,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
     EnumChildWindows, GW_HWNDPREV, GWL_EXSTYLE, GetClassNameW, GetForegroundWindow, GetWindow,
     GetWindowLongPtrW, HWND_TOPMOST, IsWindow, IsWindowVisible, KillTimer, MA_NOACTIVATE,
     PostMessageW, STYLESTRUCT, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    SWP_NOZORDER, SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, WINDOW_EX_STYLE,
-    WINDOWPOS, WM_ACTIVATE, WM_APP, WM_CREATE, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_NULL,
-    WM_PARENTNOTIFY, WM_STYLECHANGING, WM_TIMER, WM_WINDOWPOSCHANGED, WS_EX_LAYERED,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+    SWP_NOZORDER, SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, WA_CLICKACTIVE,
+    WA_INACTIVE, WINDOW_EX_STYLE, WINDOWPOS, WM_ACTIVATE, WM_APP, WM_CREATE, WM_MOUSEACTIVATE,
+    WM_NCDESTROY, WM_NULL, WM_PARENTNOTIFY, WM_STYLECHANGING, WM_TIMER, WM_WINDOWPOSCHANGED,
+    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
 };
 use windows::core::BOOL;
 
@@ -456,6 +461,7 @@ fn on_message(
             Some(LRESULT(0))
         }
         WM_ACTIVATE => {
+            log_activation(state, wparam, lparam);
             appbar::on_activate(hwnd, wparam);
             None
         }
@@ -483,6 +489,33 @@ fn on_message(
             None
         }
         _ => None,
+    }
+}
+
+/// Say in the log when the dock window became the foreground window
+/// and when it stopped being it. The low word of
+/// `wParam` is `WA_INACTIVE`, `WA_ACTIVE` or `WA_CLICKACTIVE`; `lParam` is
+/// the window on the other side of the change (the one activated when the
+/// dock is deactivated, the one deactivated otherwise), possibly NULL.
+fn log_activation(state: &SubclassState, wparam: WPARAM, lparam: LPARAM) {
+    let how = (wparam.0 & 0xFFFF) as u32;
+    let other = lparam.0;
+    if how == WA_INACTIVE {
+        log::debug!(
+            "dock window {:#x}: deactivated; {other:#x} is activated",
+            state.handle
+        );
+    } else if how == WA_CLICKACTIVE {
+        // `WM_MOUSEACTIVATE` answers `MA_NOACTIVATE`, so this is unexpected.
+        log::debug!(
+            "dock window {:#x}: activated by a click (unexpected for a no-activate window); {other:#x} is deactivated",
+            state.handle
+        );
+    } else {
+        log::debug!(
+            "dock window {:#x}: activated; {other:#x} is deactivated",
+            state.handle
+        );
     }
 }
 

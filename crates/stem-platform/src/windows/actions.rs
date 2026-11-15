@@ -9,6 +9,9 @@
 //!   (`PostMessageW(WM_CLOSE)` — never `DestroyWindow`).
 //! - [`foreground_window`] returns the current foreground window if it is a
 //!   taskbar candidate (see `enumerate::is_taskbar_candidate`).
+//! - [`focus_dock_window`] (the focus shortcut) brings one of our own
+//!   dock windows to the foreground through the same strategies as
+//!   `Activate` (below), so that it gets the keyboard focus.
 //! - Returns `WindowNotFound` for dead handles, never panics.
 //!
 //! Activation strategy (first success wins; the winning step is logged at
@@ -35,6 +38,25 @@
 //! `AllowSetForegroundWindow` only grants the right to *another* process and
 //! does not help a caller that lacks it, so it is not part of the chain.
 //! Nothing here sends a synchronous message to the target process.
+//!
+//! Focusing a dock window. The dock is `WS_EX_NOACTIVATE`: a click
+//! never activates it (`dock_window`'s subclass answers `WM_MOUSEACTIVATE`
+//! with `MA_NOACTIVATE`), and the system never activates it on its own.
+//! The style does not stand in the way of a program that asks: Microsoft's
+//! documentation of `WS_EX_NOACTIVATE` names `SetForegroundWindow` and
+//! `SetActiveWindow` as the way to activate such a window, and the native
+//! context menus already rely on it (muda calls `SetForegroundWindow` on the
+//! dock before `TrackPopupMenu`). So [`focus_dock_window`] keeps the
+//! style and runs the chain above on the dock's own window: the press of
+//! the focus shortcut (`WM_HOTKEY`) makes Stem the process that received
+//! the last input event, so step 2 is expected to succeed; a key released
+//! in between (the input then went to the app in front) leaves the
+//! `AttachThreadInput` step. The activation (`WM_ACTIVATE`, answered by
+//! `DefWindowProc` with `SetFocus` on the dock window) reaches the window's
+//! own thread, where wry hands the focus on to the WebView2 controller
+//! (`MoveFocus` on `WM_SETFOCUS`). The style stays on throughout, so once
+//! another window takes the foreground the dock is an ordinary
+//! non-activating dock again, with nothing to restore.
 //!
 //! Elevated windows. The dock runs at medium integrity, so UIPI
 //! refuses everything here that posts to a higher-integrity window:
@@ -65,7 +87,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use super::{enumerate, util};
-use crate::{PlatformError, PlatformResult};
+use crate::{NativeWindowHandle, PlatformError, PlatformResult};
 
 pub fn perform(id: WindowId, action: WindowAction) -> PlatformResult<()> {
     let hwnd = util::hwnd(id);
@@ -146,36 +168,65 @@ fn activate(id: WindowId, hwnd: HWND) -> PlatformResult<()> {
         // below is still worth trying, and the failure is reported once.
         log::debug!("activate {id:?}: ShowWindowAsync(SW_RESTORE) refused: {e}; going on");
     }
-    if is_foreground(hwnd) {
-        log::debug!("activate {id:?}: already foreground");
+    if bring_to_foreground(hwnd, &format!("activate {id:?}")) {
         return Ok(());
     }
-
-    if set_foreground(hwnd) {
-        log::debug!("activate {id:?}: SetForegroundWindow");
-        return Ok(());
-    }
-    log::debug!("activate {id:?}: SetForegroundWindow refused; trying AttachThreadInput");
-    if activate_with_attached_input(hwnd) {
-        log::debug!("activate {id:?}: AttachThreadInput");
-        return Ok(());
-    }
-    log::debug!("activate {id:?}: AttachThreadInput refused; trying the ALT key trick");
-    if activate_with_alt_trick(hwnd) {
-        log::debug!("activate {id:?}: ALT key trick");
-        return Ok(());
-    }
-    if is_foreground(hwnd) {
-        log::debug!("activate {id:?}: every call refused but the window is foreground");
-        return Ok(());
-    }
-    // Debug, not warn: the error goes back to the command layer, which logs
-    // and shows the failure once.
-    log::debug!("activate {id:?}: every activation strategy was refused");
     Err(PlatformError::Other(format!(
         "could not bring window {} to the foreground",
         id.0
     )))
+}
+
+/// Give the keyboard focus to our own dock window `handle`: make it
+/// the foreground window through the activation strategies of `Activate`
+/// (see the module docs, *Focusing a dock window*). The window must belong
+/// to this process; it is never restored or shown here (the app layer
+/// shows a hidden dock first). Called off the dock window's thread (the
+/// app layer's blocking pool): the activation reaches that thread as a
+/// message.
+pub fn focus_dock_window(handle: NativeWindowHandle) -> PlatformResult<()> {
+    let hwnd = HWND(handle.0 as *mut core::ffi::c_void);
+    if !is_window(hwnd) {
+        return Err(PlatformError::WindowNotFound(WindowId(handle.0 as u64)));
+    }
+    if bring_to_foreground(hwnd, &format!("focus dock window {:#x}", handle.0)) {
+        return Ok(());
+    }
+    Err(PlatformError::Other(format!(
+        "could not bring dock window {:#x} to the foreground",
+        handle.0
+    )))
+}
+
+/// The strategies of the module docs, first success wins: `true` when
+/// `hwnd` is the foreground window afterwards. Each step is logged at debug
+/// as `<what>: <strategy>`; a total refusal too, at debug: the caller
+/// returns the error, and the command layer reports it once.
+fn bring_to_foreground(hwnd: HWND, what: &str) -> bool {
+    if is_foreground(hwnd) {
+        log::debug!("{what}: already foreground");
+        return true;
+    }
+    if set_foreground(hwnd) {
+        log::debug!("{what}: SetForegroundWindow");
+        return true;
+    }
+    log::debug!("{what}: SetForegroundWindow refused; trying AttachThreadInput");
+    if activate_with_attached_input(hwnd) {
+        log::debug!("{what}: AttachThreadInput");
+        return true;
+    }
+    log::debug!("{what}: AttachThreadInput refused; trying the ALT key trick");
+    if activate_with_alt_trick(hwnd) {
+        log::debug!("{what}: ALT key trick");
+        return true;
+    }
+    if is_foreground(hwnd) {
+        log::debug!("{what}: every call refused but the window is foreground");
+        return true;
+    }
+    log::debug!("{what}: every activation strategy was refused");
+    false
 }
 
 /// Hold ALT down (extended key, no scan code) across the call and release

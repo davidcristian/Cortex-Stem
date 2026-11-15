@@ -355,9 +355,29 @@ pub trait Platform: Send + Sync + 'static {
         Err(PlatformError::Unsupported("dock backdrop"))
     }
 
+    /// Give the keyboard focus to the dock window `handle` (the focus
+    /// shortcut): make it the foreground window, which a `no_activate`
+    /// window never becomes by a click, through the activation path of
+    /// [`Platform::window_action`]'s `Activate` (the foreground fallbacks
+    /// included). The window keeps its `no_activate` behaviour: a click on
+    /// it still activates nothing, and once another window takes the
+    /// foreground it is an ordinary dock again. The press of a global
+    /// shortcut gives the process the right to take the foreground; called
+    /// at any other moment the OS may refuse. `handle` must be a window
+    /// [`Platform::prepare_dock_window`] prepared, visible. Fails with
+    /// [`PlatformError::WindowNotFound`] for a window that is gone, and
+    /// when every strategy was refused. Bounded but not instant (the
+    /// fallbacks touch other threads' input state): never call it on the
+    /// UI thread. Optional; the default reports it unsupported.
+    fn focus_dock_window(&self, _handle: NativeWindowHandle) -> PlatformResult<()> {
+        Err(PlatformError::Unsupported("keyboard focus"))
+    }
+
     /// The native window that currently has the foreground, if any. Captured
     /// before a native popup menu is shown on a `no_activate` dock window so
-    /// that [`Platform::finish_popup`] can hand the foreground back.
+    /// that [`Platform::finish_popup`] can hand the foreground back; also
+    /// what tells the app layer whether a dock window has the keyboard
+    /// focus.
     fn foreground_native_window(&self) -> Option<NativeWindowHandle> {
         None
     }
@@ -459,5 +479,11 @@ mod tests {
             }
         }
         assert!(!is_mock(&Real));
+        // A platform that does not implement the focus shortcut says so,
+        // naming the feature, instead of pretending it worked.
+        assert!(matches!(
+            Real.focus_dock_window(NativeWindowHandle(0x1234)),
+            Err(PlatformError::Unsupported("keyboard focus"))
+        ));
     }
 }

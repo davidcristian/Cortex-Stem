@@ -84,6 +84,8 @@ pub enum MockCall {
     SetDockAppBar(NativeWindowHandle, Option<AppBarRequest>),
     /// `release_app_bars`.
     ReleaseAppBars,
+    /// `focus_dock_window` with this window.
+    FocusDockWindow(NativeWindowHandle),
 }
 
 #[derive(Debug, Default)]
@@ -486,6 +488,15 @@ impl Platform for MockPlatform {
         backdrop: Option<DockBackdrop>,
     ) -> PlatformResult<()> {
         self.record(MockCall::SetDockBackdrop(handle, backdrop));
+        Ok(())
+    }
+
+    /// Recorded only: a mock run has no foreground to give, so the call
+    /// succeeds and nothing else changes (the scripted foreground window
+    /// stays what it was, like the real events thread, which ignores
+    /// foreground reports for our own windows).
+    fn focus_dock_window(&self, handle: NativeWindowHandle) -> PlatformResult<()> {
+        self.record(MockCall::FocusDockWindow(handle));
         Ok(())
     }
 }
@@ -906,6 +917,20 @@ mod tests {
                 MockCall::SetDockBackdrop(dock, None),
             ]
         );
+    }
+
+    #[test]
+    fn focus_dock_window_is_recorded_and_leaves_the_foreground_alone() {
+        let p = MockPlatform::with_demo_scenario();
+        let before = p.foreground_window().unwrap();
+        assert!(before.is_some());
+        let dock = NativeWindowHandle(0x4321);
+        p.focus_dock_window(dock).unwrap();
+        assert_eq!(p.calls(), vec![MockCall::FocusDockWindow(dock)]);
+        assert_eq!(p.foreground_window().unwrap(), before);
+        // The mock has no native foreground window to report either, so the
+        // app layer never takes a mock dock for the focused one.
+        assert_eq!(p.foreground_native_window(), None);
     }
 
     #[test]
