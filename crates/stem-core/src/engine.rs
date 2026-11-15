@@ -849,15 +849,16 @@ fn overlap_facts(raw: &RawWindow) -> (bool, bool, bool, u32, Option<Rect>) {
     )
 }
 
-/// The battery item's title and accessible name: `Battery 73 %`,
-/// then `, charging` while charging or `, plugged in` on AC power without
-/// charging, then `, battery saver on` while battery saver is on. Without a
-/// known percent the first part is `Battery` alone (`Battery, charging`).
+/// The battery item's title and accessible name (docs/ipc/widget-items.md
+/// "Clock and battery items"): `Battery 73 %`, then `, charging` while
+/// charging or `, plugged in` on AC power without charging, then `, battery
+/// saver on` while battery saver is on; `Battery` alone, whatever else is
+/// known, while the percent is not known.
 fn battery_title(power: &PowerStatus) -> String {
-    let mut title = match power.percent {
-        Some(percent) => format!("Battery {percent} %"),
-        None => "Battery".to_owned(),
+    let Some(percent) = power.percent else {
+        return "Battery".to_owned();
     };
+    let mut title = format!("Battery {percent} %");
     if power.charging {
         title.push_str(", charging");
     } else if power.on_ac {
@@ -2853,10 +2854,13 @@ mod tests {
             // Charging without AC (a system that reports it so) still says
             // charging.
             ((Some(50), true, false, false), "Battery 50 %, charging"),
+            // Without a known percent the title is `Battery` alone, as the
+            // contract says, whatever the rest of the reading is.
             ((None, false, false, false), "Battery"),
-            ((None, true, true, false), "Battery, charging"),
-            ((None, false, true, false), "Battery, plugged in"),
-            ((None, false, false, true), "Battery, battery saver on"),
+            ((None, true, true, false), "Battery"),
+            ((None, false, true, false), "Battery"),
+            ((None, false, false, true), "Battery"),
+            ((None, true, true, true), "Battery"),
         ];
         for ((percent, charging, on_ac, saver), expected) in cases {
             let status = PowerStatus {
