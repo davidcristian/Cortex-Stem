@@ -37,19 +37,26 @@
 //!   for the worker;
 //! - listeners run on whichever thread produced the event (the worker for
 //!   state, settings, theme and monitors; the caller for `Bounce`). A
-//!   panicking listener is logged and isolated; it does not stop the worker.
+//!   panicking listener is logged and isolated; it does not stop the worker;
+//! - with a cache directory ([`ServiceOptions::icon_cache_dir`])
+//!   [`DockService::icon_png`] reads icons through the disk cache
+//!   ([`icon_cache`]) on the caller's thread, and one **writer thread**
+//!   (`stem-icon-cache`) writes and evicts its entries.
 //!
 //! [`DockService::shutdown`] stops the platform, sends `Shutdown` to both
 //! threads and joins them. The worker flushes the inputs that were queued
 //! before the shutdown message and emits a final `State` if anything changed.
+//! The icon cache's writer then finishes its queue and stops.
 
 #![forbid(unsafe_code)]
 
+pub mod icon_cache;
 mod reidentify;
 pub mod store;
 
 use std::collections::VecDeque;
 use std::panic::AssertUnwindSafe;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 use std::thread::JoinHandle;
@@ -65,7 +72,19 @@ use stem_core::{
 use stem_platform::{Platform, PlatformError};
 use thiserror::Error;
 
+pub use icon_cache::DiskIconCache;
 pub use store::{FileSettingsStore, MemorySettingsStore, SettingsStore, StoreError};
+
+/// How [`DockService::start_with`] sets the service up beyond the platform
+/// and the settings store. The default is what [`DockService::start`] uses.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ServiceOptions {
+    /// Directory of the disk icon cache (the app passes
+    /// `<local app data>/dev.davidcristian.stem/icons`). `None`, or a
+    /// directory that cannot be created, means no disk cache: every icon
+    /// comes from the platform.
+    pub icon_cache_dir: Option<PathBuf>,
+}
 
 /// Minimum spacing between two `State` notifications (≈ 60 per second).
 /// Inputs that arrive inside the window are drained and folded into the
@@ -149,6 +168,8 @@ struct Inner {
     /// Set by `shutdown`; the identity thread stops before its next
     /// platform call instead of working through its queue.
     stopping: AtomicBool,
+    /// The disk icon cache in front of `platform.icon_png`, if any.
+    icon_cache: Option<DiskIconCache>,
 }
 
 impl std::fmt::Debug for Inner {
@@ -171,16 +192,43 @@ pub struct DockService {
 
 impl DockService {
     /// Load settings, start the threads and the platform, and begin
-    /// processing events.
+    /// processing events, with the default [`ServiceOptions`] (no disk
+    /// icon cache).
     pub fn start(
         platform: Arc<dyn Platform>,
         store: Box<dyn SettingsStore>,
+    ) -> ServiceResult<Self> {
+        Self::start_with(platform, store, ServiceOptions::default())
+    }
+
+    /// [`DockService::start`] with `options`. The settings are loaded (and
+    /// may fail) before anything else is set up, so a settings error leaves
+    /// nothing running and a second attempt is safe.
+    pub fn start_with(
+        platform: Arc<dyn Platform>,
+        store: Box<dyn SettingsStore>,
+        options: ServiceOptions,
     ) -> ServiceResult<Self> {
         let settings = match store.load()? {
             Some(json) => Settings::from_json(&json)?,
             None => Settings::default(),
         };
         log::info!("settings loaded from {}", store.location());
+        let icon_cache = options
+            .icon_cache_dir
+            .and_then(|dir| match DiskIconCache::open(&dir) {
+                Ok(cache) => {
+                    log::info!("icon cache: {}", dir.display());
+                    Some(cache)
+                }
+                Err(e) => {
+                    log::warn!(
+                        "no icon cache at {} ({e}); icons are extracted again at every start",
+                        dir.display()
+                    );
+                    None
+                }
+            });
 
         let (worker_tx, worker_rx) = crossbeam_channel::unbounded::<WorkerMsg>();
         let (resolve_tx, resolve_rx) = crossbeam_channel::unbounded::<ResolveMsg>();
@@ -197,6 +245,7 @@ impl DockService {
             worker_tx,
             resolve_tx,
             stopping: AtomicBool::new(false),
+            icon_cache,
         });
 
         let worker = {
@@ -444,13 +493,26 @@ impl DockService {
         Ok(())
     }
 
+    /// `key`'s icon as PNG bytes whose longer edge is at most `size`, from
+    /// the disk icon cache when the service has one and holds a valid entry
+    /// (see [`icon_cache`] for which keys are cached and when an
+    /// entry is valid), else from the platform. Blocks the calling thread
+    /// for as long as the platform's extraction takes on a miss; never on
+    /// a cache write.
     pub fn icon_png(&self, key: &IconKey, size: u32) -> ServiceResult<Option<Vec<u8>>> {
-        Ok(self.inner.platform.icon_png(key, size)?)
+        let platform = &self.inner.platform;
+        let png = match &self.inner.icon_cache {
+            Some(cache) => cache.get_or_load(key, size, || platform.icon_png(key, size))?,
+            None => platform.icon_png(key, size)?,
+        };
+        Ok(png)
     }
 
     /// Stop the platform and both threads, and wait for them. Inputs queued
     /// before this call are still applied and a final `State` is emitted if
-    /// they changed anything. Idempotent; called on drop as well.
+    /// they changed anything. The icon cache's writer then finishes the
+    /// writes it has queued and stops (icons are still served afterwards,
+    /// without being written). Idempotent; called on drop as well.
     ///
     /// Blocks until listeners that are currently running have returned, so
     /// do not call it while holding anything a listener waits for.
@@ -461,6 +523,9 @@ impl DockService {
         let _ = self.inner.worker_tx.send(WorkerMsg::Shutdown);
         join_thread("dock-identity", &self.resolver);
         join_thread("stem-service", &self.worker);
+        if let Some(cache) = &self.inner.icon_cache {
+            cache.shutdown();
+        }
     }
 }
 
