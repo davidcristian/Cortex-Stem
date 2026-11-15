@@ -119,10 +119,12 @@ impl AppPaths {
     }
 }
 
-/// Event names, as documented in `docs/ipc/events.md`. All but `SHOW`, `FOCUS`,
-/// `RELEASE_FOCUS` and `USER_CSS` forward a `ServiceEvent`; the first
-/// three come from the shell itself (`windows::toggle_dock`,
-/// `windows::on_focus_shortcut`), `USER_CSS` from `reload_user_css`.
+/// Event names, as documented in `docs/ipc/events.md`. All but `SHOW`,
+/// `FOCUS`, `RELEASE_FOCUS`, `USER_CSS` and `SETTINGS_CLOSING` forward a
+/// `ServiceEvent`; the first three come from the shell itself
+/// (`windows::toggle_dock`, `windows::on_focus_shortcut`), `USER_CSS` from
+/// `reload_user_css`, `SETTINGS_CLOSING` from the settings window's close
+/// request (`windows::open_settings_window`).
 pub mod events {
     pub const STATE: &str = "dock://state";
     pub const SETTINGS: &str = "dock://settings";
@@ -139,6 +141,9 @@ pub mod events {
     pub const RELEASE_FOCUS: &str = "dock://release-focus";
     /// To every dock window: `dock.css` was read again.
     pub const USER_CSS: &str = "dock://user-css";
+    /// To the settings window: it is closing; send any edit still held
+    /// back now (`windows::on_settings_close_requested`).
+    pub const SETTINGS_CLOSING: &str = "dock://settings-closing";
 }
 
 /// File name (without extension) of the log file in the app log dir.

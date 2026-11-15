@@ -256,6 +256,7 @@ describe('SettingsStore', () => {
       'on:dock://settings',
       'on:dock://theme',
       'on:dock://state',
+      'on:dock://settings-closing',
       'get_settings',
       'get_theme',
       'get_dock_state',
@@ -714,6 +715,29 @@ describe('SettingsStore', () => {
     await store.unpinApp('x');
     expect(store.status).toBe('error');
     expect(store.error).toBe('app "x" is not pinned');
+  });
+
+  it('sends a pending edit at once when the window is closing', async () => {
+    const { backend, store } = await started();
+    store.edit((s) => {
+      s.iconSize = 60;
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(backend.pendingUpdates).toHaveLength(0);
+    // Rust hid the window and destroys it 250 ms later; the 150 ms debounce
+    // must not decide whether the edit makes it.
+    backend.emit('dock://settings-closing', null);
+    await tick();
+    expect(backend.log.filter((l) => l.startsWith('update_settings'))).toEqual([
+      'update_settings:60',
+    ]);
+    backend.settleUpdate();
+    await tick();
+    expect(store.status).toBe('saved');
+    // Nothing pending: the event sends nothing.
+    backend.emit('dock://settings-closing', null);
+    await tick();
+    expect(backend.log.filter((l) => l.startsWith('update_settings'))).toHaveLength(1);
   });
 
   it('stop() cancels a pending save and unsubscribes', async () => {

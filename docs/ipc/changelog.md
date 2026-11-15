@@ -3,7 +3,7 @@
 This file lists every version of the [IPC contract](index.md), newest first. A section name links
 to the file that covers that section now.
 
-- **v1.27 (settings fixes):** No command, event or payload
+- **v1.27 (settings fixes):** One new event, `dock://settings-closing`; no command or payload
   changed its name or shape. `primary_click` brings the active app forward instead of minimising
   it while Stem's settings window is in front of it (the [`primary_click` row](commands.md)).
   `MockBackend` has no settings window in front of anything and is unchanged. The tray's
@@ -11,7 +11,10 @@ to the file that covers that section now.
   cannot write back a copy read before another change either. The settings page skips
   `dock://settings` while an edit of its own is pending. Once nothing is pending, it fetches the
   document again when a skipped event differed from what it shows (not for the echo of its own
-  save).
+  save). New event `dock://settings-closing`: a close request hides the settings window and tells
+  its page, which sends what it still held back (a debounced edit, a typed value that its blur
+  commits); Rust destroys the window 250 ms later. `MockBackend.requestSettingsClose` emits the
+  event for tests.
 - **v1.26 (fixes):** No command, event or payload type changed.
   [Keyboard entry](keyboard-entry.md): *Hide from Stem* no longer supersedes the window that the
   focus shortcut stored, just as *Pin to Stem* and *Unpin from Stem* do not, so Escape after

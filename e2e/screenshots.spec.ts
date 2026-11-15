@@ -3661,6 +3661,34 @@ test.describe('settings window', () => {
     await page.screenshot({ path: `${OUT}/settings-light.png` });
   });
 
+  test('closing the window sends what it still held back: a typed shortcut and a debounced edit', async ({
+    page,
+  }) => {
+    await openSettings(page);
+    const close = (): Promise<void> =>
+      page.evaluate(() => {
+        (
+          window as unknown as { __dockMock?: { requestSettingsClose: () => void } }
+        ).__dockMock?.requestSettingsClose();
+      });
+
+    // Typed but neither Enter nor a click elsewhere: the field still has the focus.
+    const field = page.locator('input#toggle-shortcut');
+    await field.fill('Ctrl+Alt+K');
+    await expect(field).toBeFocused();
+    expect((await page.evaluate(SETTINGS_MOCK))?.behavior.toggleShortcut).toBe('Ctrl+Alt+D');
+    await close();
+    await expect
+      .poll(async () => (await page.evaluate(SETTINGS_MOCK))?.behavior.toggleShortcut)
+      .toBe('Ctrl+Alt+K');
+
+    // A switch flipped just before the close goes too, without the debounce.
+    const tooltips = page.locator('#tooltips');
+    await tooltips.click();
+    await close();
+    expect((await page.evaluate(SETTINGS_MOCK))?.appearance.tooltips).toBe(false);
+  });
+
   test('edits apply live and come back validated from the backend', async ({ page }) => {
     await page.emulateMedia({ colorScheme: 'dark' });
     await openSettings(page);

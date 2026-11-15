@@ -19,6 +19,13 @@ continues with them. A file that cannot be read at all (no permission), or
 a rejected file that cannot be renamed, leaves the session on an in-memory
 store.
 
+The settings page sends an edit 150 ms after the last one, and a typed
+value when its field loses the focus. So that closing the window loses
+neither, a close request hides the settings window, sends its page
+`dock://settings-closing` (the page commits the focused field and saves at
+once), and destroys the window 250 ms later
+(`windows::on_settings_close_requested` in `src-tauri/src/windows.rs`).
+
 `system.fileLogging` is read once at startup; a change applies after a
 restart. `STEM_PLATFORM=mock` uses an in-memory store, so demo runs never
 touch a real profile.

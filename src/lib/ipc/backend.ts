@@ -59,6 +59,11 @@ export interface BackendEvents {
    * read the user's `dock.css` again; the page replaces its `<style>`.
    */
   'dock://user-css': UserCss;
+  /**
+   * To the settings window: it was asked to close and is hidden;
+   * Rust destroys it a moment later. Send any edit still held back now.
+   */
+  'dock://settings-closing': null;
 }
 
 export type BackendEvent = keyof BackendEvents;

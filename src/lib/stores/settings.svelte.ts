@@ -133,6 +133,9 @@ export class SettingsStore {
       this.backend.on('dock://state', (s) => {
         this.applyState(s);
       }),
+      this.backend.on('dock://settings-closing', () => {
+        void this.closing();
+      }),
     ];
     const [settings, theme, state, info] = await Promise.allSettled([
       this.backend.getSettings(),
@@ -194,6 +197,20 @@ export class SettingsStore {
       this.timer = null;
     }
     this.started = false;
+  }
+
+  /**
+   * The window is closing (`dock://settings-closing`): Rust has
+   * hidden it and destroys it a moment later. What the page still holds
+   * back goes now: a typed value in the focused field (its blur commits
+   * it; a text field commits only on Enter or blur) and the debounced
+   * draft, sent at once instead of after the debounce.
+   */
+  async closing(): Promise<void> {
+    if (typeof document !== 'undefined' && document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+    await this.settle();
   }
 
   /** An edit is pending or a save/command is running. */

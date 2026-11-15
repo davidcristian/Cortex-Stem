@@ -2319,6 +2319,15 @@ export class MockBackend implements Backend {
   }
 
   /**
+   * The settings window was asked to close: what Rust tells its
+   * page before it destroys it (`dock://settings-closing`). Playwright's
+   * way to close the settings page without losing what it holds back.
+   */
+  requestSettingsClose(): void {
+    this.emit('dock://settings-closing', null);
+  }
+
+  /**
    * Put the dock on `position` the way a settings change does
    * (validated, `dock://settings` to whoever listens): the browser demo's
    * and Playwright's way to show each edge. The dock page calls it at load
