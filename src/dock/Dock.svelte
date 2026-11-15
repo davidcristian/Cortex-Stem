@@ -938,7 +938,12 @@
     if (key === null || notches.length === 0) {
       return;
     }
-    e.preventDefault();
+    // Chromium lets only the first event of a wheel gesture block: when
+    // that one sent nothing (a touchpad's first small step), the rest come
+    // uncancelable, and trying would only log an intervention.
+    if (e.cancelable) {
+      e.preventDefault();
+    }
     const title = items.find((i) => i.key === key)?.title ?? key;
     for (const direction of notches) {
       void backend.scrollItem(key, direction).catch(report(title));

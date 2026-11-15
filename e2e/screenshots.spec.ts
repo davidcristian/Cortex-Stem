@@ -1317,6 +1317,137 @@ test.describe('hidden apps on the dock', () => {
   });
 });
 
+test.describe('scrolling over an item', () => {
+  // At 1x Playwright's `mouse.wheel(0, 100)` arrives as `deltaY` 100, one
+  // notch; at the suite's 2x it arrives halved.
+  test.use({ deviceScaleFactor: 1 });
+  const FIREFOX_SLOT = `${APP_SLOT}[data-key="app:exe:c:/program files/mozilla firefox/firefox.exe"]`;
+  const NOTEPAD_SLOT = `${APP_SLOT}[data-key="app:exe:c:/windows/notepad.exe"]`;
+  const CODE_SLOT = `${APP_SLOT}[data-key="${CODE_KEY}"]`;
+  const START_SLOT = '.slot[data-key="fixed:launcher"]';
+
+  /** The mock's foreground window. */
+  const foregroundId = (page: Page): Promise<number | null> =>
+    page.evaluate(
+      async () =>
+        (await (window as unknown as DemoWindow).__dockMock!.getDockState()).foreground ?? null,
+    );
+  /** Every `scroll_item` the page sent so far: key and direction. */
+  const scrolls = (page: Page): Promise<Array<{ itemKey: unknown; direction: unknown }>> =>
+    page.evaluate(() =>
+      ((window as unknown as DemoWindow).__dockMock?.calls ?? [])
+        .filter((c) => c.type === 'scrollItem')
+        .map((c) => ({ itemKey: c.itemKey, direction: c.direction })),
+    );
+  /** Every window the mock activated so far, in order. */
+  const activated = (page: Page): Promise<unknown[]> =>
+    page.evaluate(() =>
+      ((window as unknown as DemoWindow).__dockMock?.calls ?? [])
+        .filter((c) => c.type === 'windowAction' && c.action === 'activate')
+        .map((c) => c.windowId),
+    );
+  /**
+   * Whether the page called `preventDefault` on each wheel event so far:
+   * read on the window, after the panel's listener has run.
+   */
+  const prevented = (page: Page): Promise<boolean[]> =>
+    page.evaluate(
+      () => (window as unknown as { __wheelPrevented?: boolean[] }).__wheelPrevented ?? [],
+    );
+
+  test('a wheel over Firefox cycles its windows with "cycle windows" and does nothing with "none"', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openDock(page);
+    await page.evaluate(() => {
+      const w = window as unknown as { __wheelPrevented?: boolean[] };
+      w.__wheelPrevented = [];
+      window.addEventListener('wheel', (e) => w.__wheelPrevented!.push(e.defaultPrevented));
+    });
+    const firefox = page.locator(FIREFOX_SLOT);
+    // Firefox: window 2 in front, window 3 minimised (its second dot dimmed).
+    await expect(firefox).toHaveAttribute('data-active', 'true');
+    expect(await foregroundId(page)).toBe(2);
+
+    // `none`, the default: the wheel sends nothing and is left alone.
+    await firefox.hover();
+    await page.mouse.wheel(0, 100);
+    await page.mouse.wheel(0, -100);
+    await expect.poll(() => prevented(page)).toEqual([false, false]);
+    expect(await callCount(page)).toBeGreaterThan(0);
+    expect(await scrolls(page)).toEqual([]);
+    expect(await foregroundId(page)).toBe(2);
+
+    await patchSettings(page, { behavior: { scrollAction: 'cycleWindows' } });
+    await firefox.hover();
+    // Towards the user: the next window, the minimised 3, comes to the front.
+    await page.mouse.wheel(0, 100);
+    await expect.poll(() => foregroundId(page)).toBe(3);
+    await expect(firefox).toHaveAttribute('data-active', 'true');
+    await expect(firefox.locator('.dots')).not.toHaveClass(/dim/);
+    // Again: around to 2. Away: back to 3.
+    await page.mouse.wheel(0, 100);
+    await expect.poll(() => foregroundId(page)).toBe(2);
+    await page.mouse.wheel(0, -100);
+    await expect.poll(() => foregroundId(page)).toBe(3);
+    // A touchpad's small steps add up to one notch; a sideways swipe is none.
+    for (let i = 0; i < 4; i++) {
+      await page.mouse.wheel(0, 25);
+    }
+    await expect.poll(() => foregroundId(page)).toBe(2);
+    await page.mouse.wheel(120, 0);
+    await page.mouse.wheel(-120, 30);
+    const firefoxKey = await firefox.getAttribute('data-key');
+    await expect
+      .poll(() => scrolls(page))
+      .toEqual([
+        { itemKey: firefoxKey, direction: 'next' },
+        { itemKey: firefoxKey, direction: 'next' },
+        { itemKey: firefoxKey, direction: 'previous' },
+        { itemKey: firefoxKey, direction: 'next' },
+      ]);
+    // `preventDefault` only for the events that sent a notch.
+    await expect
+      .poll(() => prevented(page))
+      .toEqual([false, false, true, true, true, false, false, false, true, false, false]);
+    await page.screenshot({ path: `${OUT}/dock-scroll-cycle.png` });
+
+    // Over Code (one window, not in front): it comes to the front.
+    await page.locator(CODE_SLOT).hover();
+    await page.mouse.wheel(0, -100);
+    await expect.poll(() => foregroundId(page)).toBe(4);
+    await expect(page.locator(CODE_SLOT)).toHaveAttribute('data-active', 'true');
+    await expect(firefox).not.toHaveAttribute('data-active', 'true');
+
+    // Over Start and over a pinned app without windows: sent, and Rust (here
+    // the mock) does nothing; nothing is launched.
+    await page.locator(START_SLOT).hover();
+    await page.mouse.wheel(0, 100);
+    await page.locator(NOTEPAD_SLOT).hover();
+    await page.mouse.wheel(0, 100);
+    await expect.poll(async () => (await scrolls(page)).length).toBe(7);
+    expect((await scrolls(page)).slice(5)).toEqual([
+      { itemKey: 'fixed:launcher', direction: 'next' },
+      { itemKey: 'app:exe:c:/windows/notepad.exe', direction: 'next' },
+    ]);
+    expect(await callsOfType(page, 'launch')).toBe(0);
+    expect(await activated(page)).toEqual([3, 2, 3, 2, 4]);
+    expect(await foregroundId(page)).toBe(4);
+
+    // Back to `none`: nothing is sent any more.
+    await patchSettings(page, { behavior: { scrollAction: 'none' } });
+    await firefox.hover();
+    await page.mouse.wheel(0, 100);
+    await page.mouse.wheel(0, 100);
+    await expect.poll(async () => (await prevented(page)).length).toBe(16);
+    expect((await prevented(page)).slice(11)).toEqual([true, true, true, false, false]);
+    expect(await callCount(page)).toBeGreaterThan(0);
+    expect(await scrolls(page)).toHaveLength(7);
+    expect(await foregroundId(page)).toBe(4);
+  });
+});
+
 test.describe('theme sync', () => {
   const PANEL = '.dock-panel';
 
@@ -3479,6 +3610,37 @@ test.describe('settings window', () => {
 
     await page.locator('#auto-hide').scrollIntoViewIfNeeded();
     await page.screenshot({ path: `${OUT}/settings-autohide.png` });
+  });
+
+  test('scrolling over an app has its row under the click row, off by default; a choice is saved', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openSettings(page);
+    const saved = async (): Promise<string | undefined> =>
+      (await page.evaluate(SETTINGS_MOCK))?.behavior.scrollAction;
+    const select = page.locator('#scroll-action');
+    await expect(page.locator('label[for="scroll-action"]')).toHaveText('Scrolling over an app');
+    await expect(select).toHaveValue('none');
+    await expect(select.locator('option')).toHaveText(['Does nothing', 'Cycles its windows']);
+    await expect(page.locator('#scroll-action-description')).toContainText(
+      'each notch of the wheel over an app',
+    );
+    // In the Behaviour section, right after the click row.
+    const rows = await page
+      .locator('section[aria-labelledby="h-behaviour"] label[for]')
+      .evaluateAll((labels) => labels.map((l) => l.getAttribute('for')));
+    expect(rows.indexOf('scroll-action')).toBe(rows.indexOf('click-active-minimizes') + 1);
+
+    await select.selectOption('cycleWindows');
+    await expect.poll(saved).toBe('cycleWindows');
+    await expect(page.locator('.status')).toHaveText('Saved');
+    await select.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: `${OUT}/settings-scroll.png` });
+
+    await select.selectOption('none');
+    await expect.poll(saved).toBe('none');
+    await expect(select).toHaveValue('none');
   });
 
   test('the toggle shortcut applies on Enter and on blur, Escape reverts', async ({ page }) => {
