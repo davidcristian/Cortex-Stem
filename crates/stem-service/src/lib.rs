@@ -46,7 +46,8 @@
 //! [`DockService::shutdown`] stops the platform, sends `Shutdown` to both
 //! threads and joins them. The worker flushes the inputs that were queued
 //! before the shutdown message and emits a final `State` if anything changed.
-//! The icon cache's writer then finishes its queue and stops.
+//! The icon cache's writer then finishes its queue and stops, waited for at
+//! most [`icon_cache::SHUTDOWN_WAIT`].
 
 #![forbid(unsafe_code)]
 
@@ -512,9 +513,11 @@ impl DockService {
 
     /// Stop the platform and both threads, and wait for them. Inputs queued
     /// before this call are still applied and a final `State` is emitted if
-    /// they changed anything. The icon cache's writer then finishes the
-    /// writes it has queued and stops (icons are still served afterwards,
-    /// without being written). Idempotent; called on drop as well.
+    /// they changed anything. The icon cache's writer then works through
+    /// the writes it has queued and stops, within a bound
+    /// ([`icon_cache::SHUTDOWN_WAIT`]; what does not fit is dropped and
+    /// misses at the next start). Icons are still served afterwards,
+    /// without being written. Idempotent; called on drop as well.
     ///
     /// Blocks until listeners that are currently running have returned, so
     /// do not call it while holding anything a listener waits for.

@@ -80,5 +80,7 @@ over the bounds. It then writes entries (temp file, then rename), evicts
 the least recently used ones past 4096 files or 64 MiB, and saves the
 recency of hits. Its jobs come from a bounded queue of 256 jobs. When the
 queue is full the job is dropped, and the caller never waits. At shutdown
-it works through its whole queue. Reads happen on the thread that called
-`get_icon`.
+(on the main thread, at `RunEvent::Exit`) it works through its queue for at
+most 400 ms and drops the rest. Shutdown waits for it at most 500 ms; a
+writer still stuck after that is left to finish on its own. Reads happen on
+the thread that called `get_icon`.

@@ -88,7 +88,11 @@
 //! queue is full the job is dropped, never waited for, so a miss costs its
 //! caller one extra `metadata` and a copy of the PNG. The writer scans the
 //! directory when it starts (indexing entries, deleting stray temp files,
-//! evicting down to the bounds) and drains its queue on shutdown.
+//! evicting down to the bounds). [`DiskIconCache::shutdown`] runs on the
+//! app's main thread at quit and is bounded: the writer works through its
+//! queue for at most [`SHUTDOWN_DRAIN`] and drops the rest (a later miss),
+//! and shutdown waits for it at most [`SHUTDOWN_WAIT`]; a writer stuck in a
+//! file operation is left to finish it on its own, with a warning.
 //!
 //! **Logging.** One `debug` line per disk hit (`icon <key>: <size> px from
 //! the disk cache`, the counterpart of the platform's one line per real
@@ -112,7 +116,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crossbeam_channel::{Receiver, Sender, TrySendError};
+use crossbeam_channel::{Receiver, RecvTimeoutError, SendTimeoutError, Sender, TrySendError};
 use parking_lot::Mutex;
 use stem_core::IconKey;
 use stem_platform::PlatformResult;
@@ -134,6 +138,13 @@ pub const QUEUE_CAPACITY: usize = 256;
 /// A hit refreshes its file's modification time (the recency a restart
 /// sees) only when that time is at least this old.
 pub const TOUCH_PERSIST_AFTER: Duration = Duration::from_secs(60 * 60);
+/// How long [`DiskIconCache::shutdown`] lets the writer work through the
+/// jobs queued before it; it drops the rest (each a miss at the next
+/// start). About 100–400 writes at the 1–4 ms one takes.
+pub const SHUTDOWN_DRAIN: Duration = Duration::from_millis(400);
+/// The longest [`DiskIconCache::shutdown`] blocks its caller (the app's
+/// main thread at quit) waiting for the writer to stop.
+pub const SHUTDOWN_WAIT: Duration = Duration::from_millis(500);
 
 const MAGIC: &[u8; 8] = b"STEMICON";
 const FORMAT_VERSION: u32 = 1;
@@ -188,6 +199,9 @@ pub struct CacheStats {
     pub write_failures: u64,
     /// Jobs dropped because the writer's queue was full.
     pub dropped: u64,
+    /// Writes still queued when shutdown's drain budget
+    /// ([`SHUTDOWN_DRAIN`]) ran out, dropped instead of written.
+    pub abandoned: u64,
     /// Entries deleted to stay within the bounds.
     pub evictions: u64,
     /// Time the writer spent encoding and writing entries, in total.
@@ -205,6 +219,7 @@ struct Counters {
     writes: AtomicU64,
     write_failures: AtomicU64,
     dropped: AtomicU64,
+    abandoned: AtomicU64,
     evictions: AtomicU64,
     write_nanos: AtomicU64,
     entries: AtomicU64,
@@ -226,6 +241,7 @@ impl Counters {
             writes: get(&self.writes),
             write_failures: get(&self.write_failures),
             dropped: get(&self.dropped),
+            abandoned: get(&self.abandoned),
             evictions: get(&self.evictions),
             write_nanos: get(&self.write_nanos),
             entries: get(&self.entries),
@@ -313,6 +329,9 @@ enum Job {
     },
     Flush(Sender<()>),
     Shutdown,
+    /// Hold the writer up for a while, as a stuck file operation would.
+    #[cfg(test)]
+    Stall(Duration),
 }
 
 /// What this session already did with a cacheable (key, size).
@@ -336,7 +355,7 @@ enum Lookup {
 }
 
 /// The disk icon cache; see the module docs. Dropping it shuts the writer
-/// down after it has drained its queue.
+/// down as [`DiskIconCache::shutdown`] does.
 #[derive(Debug)]
 pub struct DiskIconCache {
     dir: PathBuf,
@@ -344,6 +363,11 @@ pub struct DiskIconCache {
     producer: String,
     tx: Sender<Job>,
     writer: Mutex<Option<JoinHandle<()>>>,
+    /// Disconnects when the writer's thread ends (it holds the sender).
+    writer_stopped: Receiver<()>,
+    /// Set by `shutdown`: from then on the writer drops the jobs it takes
+    /// instead of doing them.
+    drain_until: Arc<Mutex<Option<Instant>>>,
     counters: Arc<Counters>,
     /// What this session did with each cacheable (key, size) it answered;
     /// see the module docs, "Within a session".
@@ -366,20 +390,29 @@ impl DiskIconCache {
     fn open_as(dir: PathBuf, limits: CacheLimits, producer: String) -> io::Result<Self> {
         fs::create_dir_all(&dir)?;
         let (tx, rx) = crossbeam_channel::bounded(QUEUE_CAPACITY);
+        let (stopped_tx, writer_stopped) = crossbeam_channel::bounded::<()>(0);
         let counters = Arc::new(Counters::default());
+        let drain_until = Arc::new(Mutex::new(None));
         let writer = {
             let dir = dir.clone();
             let producer = producer.clone();
             let counters = Arc::clone(&counters);
+            let drain_until = Arc::clone(&drain_until);
             std::thread::Builder::new()
                 .name("stem-icon-cache".into())
-                .spawn(move || writer_loop(&dir, limits, &producer, &rx, &counters))?
+                .spawn(move || {
+                    // Dropped when this thread ends, however it ends.
+                    let _stopped = stopped_tx;
+                    writer_loop(&dir, limits, &producer, &rx, &counters, &drain_until);
+                })?
         };
         Ok(Self {
             dir,
             producer,
             tx,
             writer: Mutex::new(Some(writer)),
+            writer_stopped,
+            drain_until,
             counters,
             seen: Mutex::new(HashMap::new()),
         })
@@ -547,28 +580,61 @@ impl DiskIconCache {
         }
     }
 
-    /// Wait (at most [`FLUSH_TIMEOUT`]) until the writer has done every job
-    /// queued before this call.
+    /// Wait (at most [`FLUSH_TIMEOUT`] in all) until the writer has done
+    /// every job queued before this call.
     pub fn flush(&self) {
+        let deadline = Instant::now() + FLUSH_TIMEOUT;
         let (done_tx, done_rx) = crossbeam_channel::bounded(1);
-        if self.tx.send(Job::Flush(done_tx)).is_ok() {
-            let _ = done_rx.recv_timeout(FLUSH_TIMEOUT);
+        if self.tx.send_deadline(Job::Flush(done_tx), deadline).is_ok() {
+            let _ = done_rx.recv_deadline(deadline);
         }
     }
 
-    /// Let the writer finish its queue, stop it and log the session's
-    /// counters. Idempotent; called on drop as well.
+    /// Stop the writer and log the session's counters, blocking for at
+    /// most [`SHUTDOWN_WAIT`] (it runs on the app's main thread at quit).
+    /// The writer works through the jobs queued before this call for at
+    /// most [`SHUTDOWN_DRAIN`] and drops the rest (counted as `abandoned`;
+    /// each costs a miss at the next start). A writer that has not stopped
+    /// by [`SHUTDOWN_WAIT`] (a file operation held up, by a file system
+    /// filter say) is left to finish that operation on its own, drops what
+    /// is left and ends; a warning says so. Reads keep working afterwards;
+    /// nothing more is written. Idempotent; called on drop as well.
     pub fn shutdown(&self) {
         let Some(writer) = self.writer.lock().take() else {
             return;
         };
-        let _ = self.tx.send(Job::Shutdown);
-        if writer.join().is_err() {
-            log::error!("stem-icon-cache thread panicked");
+        let started = Instant::now();
+        *self.drain_until.lock() = Some(started + SHUTDOWN_DRAIN);
+        let wait_until = started + SHUTDOWN_WAIT;
+        // A full queue makes the send wait for the writer to take a job;
+        // a writer that is gone (it panicked) has stopped.
+        let sent = !matches!(
+            self.tx.send_deadline(Job::Shutdown, wait_until),
+            Err(SendTimeoutError::Timeout(_))
+        );
+        // Nothing is ever sent on this channel: it disconnects when the
+        // writer's thread ends.
+        let stopped = sent
+            && !matches!(
+                self.writer_stopped.recv_deadline(wait_until),
+                Err(RecvTimeoutError::Timeout)
+            );
+        if stopped {
+            if writer.join().is_err() {
+                log::error!("stem-icon-cache thread panicked");
+            }
+        } else {
+            // Whatever it still holds is dropped as soon as it is free.
+            *self.drain_until.lock() = Some(Instant::now());
+            log::warn!(
+                "icon cache: the writer did not stop within {} ms; leaving it to finish on its own (what it has queued is not written)",
+                SHUTDOWN_WAIT.as_millis()
+            );
+            drop(writer);
         }
         let s = self.stats();
         log::info!(
-            "icon cache: {} hits, {} repeats, {} misses, {} bypassed, {} written ({} failed, {} dropped, {} µs writing), {} evicted; {} entries, {} bytes in {}",
+            "icon cache: {} hits, {} repeats, {} misses, {} bypassed, {} written ({} failed, {} dropped, {} abandoned at quit, {} µs writing), {} evicted; {} entries, {} bytes in {}",
             s.hits,
             s.repeats,
             s.misses,
@@ -576,6 +642,7 @@ impl DiskIconCache {
             s.writes,
             s.write_failures,
             s.dropped,
+            s.abandoned,
             s.write_nanos / 1000,
             s.evictions,
             s.entries,
@@ -729,6 +796,7 @@ fn writer_loop(
     producer: &str,
     rx: &Receiver<Job>,
     counters: &Counters,
+    drain_until: &Mutex<Option<Instant>>,
 ) {
     let mut index = Index::scan(dir);
     let evicted = index.evict(dir, limits, None);
@@ -737,7 +805,13 @@ fn writer_loop(
     let mut temp_seq: u64 = 0;
 
     for job in rx {
+        // Past shutdown's drain budget, file work is dropped, not done.
+        let out_of_time = drain_until
+            .lock()
+            .is_some_and(|until| Instant::now() >= until);
         match job {
+            Job::Write { .. } if out_of_time => Counters::bump(&counters.abandoned),
+            Job::Touch { .. } | Job::Remove { .. } if out_of_time => {}
             Job::Write {
                 name,
                 key,
@@ -785,6 +859,8 @@ fn writer_loop(
                 let _ = done.send(());
             }
             Job::Shutdown => break,
+            #[cfg(test)]
+            Job::Stall(pause) => std::thread::sleep(pause),
         }
         publish(&index, counters);
     }
@@ -1816,8 +1892,10 @@ pub(crate) mod tests {
 
     #[test]
     fn shutdown_drains_the_queue_and_later_misses_still_answer() {
+        // Few enough writes to fit the drain budget on a loaded machine.
+        const KEYS: usize = 8;
         let root = TempDir::new("shutdown");
-        let keys: Vec<IconKey> = (0..20)
+        let keys: Vec<IconKey> = (0..KEYS)
             .map(|i| root.exe(&format!("app{i}.exe"), b"MZ"))
             .collect();
         let cache = DiskIconCache::open(cache_dir(&root)).unwrap();
@@ -1828,8 +1906,9 @@ pub(crate) mod tests {
         }
         cache.shutdown();
         cache.shutdown();
-        assert_eq!(cache.stats().writes, 20);
-        assert_eq!(entries(&cache_dir(&root)).len(), 20);
+        let stats = cache.stats();
+        assert_eq!((stats.writes, stats.abandoned), (KEYS as u64, 0));
+        assert_eq!(entries(&cache_dir(&root)).len(), KEYS);
         // After shutdown reads still work; nothing more is written.
         let extra = root.exe("extra.exe", b"MZ");
         assert_eq!(
@@ -1846,6 +1925,56 @@ pub(crate) mod tests {
             Some(png(0, 2000))
         );
         cache.flush();
-        assert_eq!(entries(&cache_dir(&root)).len(), 20);
+        assert_eq!(entries(&cache_dir(&root)).len(), KEYS);
+    }
+
+    #[test]
+    fn shutdown_waits_for_a_stuck_writer_only_so_long_and_its_queue_is_dropped() {
+        let root = TempDir::new("stuck");
+        let keys: Vec<IconKey> = (0..5)
+            .map(|i| root.exe(&format!("app{i}.exe"), b"MZ"))
+            .collect();
+        let cache = DiskIconCache::open(cache_dir(&root)).unwrap();
+        cache.flush();
+        // A file operation held up for 3 s (a file system filter, say),
+        // with writes queued behind it.
+        cache.tx.send(Job::Stall(Duration::from_secs(3))).unwrap();
+        for (i, key) in keys.iter().enumerate() {
+            cache
+                .get_or_load(key, 48, || Ok(Some(png(i as u8, 200))))
+                .unwrap();
+        }
+        let started = Instant::now();
+        cache.shutdown();
+        let took = started.elapsed();
+        assert!(
+            took >= SHUTDOWN_WAIT && took < Duration::from_millis(2000),
+            "shutdown took {took:?}"
+        );
+        // Reads still answer while the writer is stuck.
+        assert_eq!(
+            cache
+                .get_or_load(&keys[0], 48, || Ok(Some(png(0, 200))))
+                .unwrap(),
+            Some(png(0, 200))
+        );
+
+        // Once free, the writer drops what was queued instead of writing
+        // it, and ends.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while cache.stats().abandoned < 5 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let stats = cache.stats();
+        assert_eq!((stats.abandoned, stats.writes), (5, 0));
+        assert!(entries(&cache_dir(&root)).is_empty());
+        let deadline = Instant::now() + Duration::from_secs(30);
+        assert!(
+            !matches!(
+                cache.writer_stopped.recv_deadline(deadline),
+                Err(RecvTimeoutError::Timeout)
+            ),
+            "the writer never ended"
+        );
     }
 }

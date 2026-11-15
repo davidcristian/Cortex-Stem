@@ -392,7 +392,9 @@ fn perf_icon_requests_hit_the_disk_cache_after_a_restart() {
         let cold = time_each(&keys, |k| {
             service.icon_png(k, size).unwrap();
         });
-        // `shutdown` drains the writer's queue.
+        // `flush` waits for the writer's queue (`shutdown` would drop what
+        // outlasts its drain budget on a loaded machine).
+        service.inner.icon_cache.as_ref().unwrap().flush();
         service.shutdown();
         let written = cache_stats(&service);
         assert_eq!(platform.icon_calls(), APPS);
@@ -521,6 +523,7 @@ fn perf_real_extraction_against_a_disk_hit_on_windows() {
                 .get_or_load(k, size, || platform.icon_png(k, size))
                 .unwrap();
         });
+        cache.flush();
         cache.shutdown();
         let written = cache.stats();
         assert_eq!(written.writes, keys.len() as u64);
