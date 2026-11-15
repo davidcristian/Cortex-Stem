@@ -105,7 +105,10 @@
   /**
    * The same on `left` and `right`, where the title pill sits beside
    * the icon: 10 px to the pill, which wraps at `PILL_MAX_WIDTH`, plus room
-   * for its shadow.
+   * for its shadow. Kept with tooltips off too: the failure toasts rest in
+   * the same room beside the panel (docs/ipc/sizing-protocol.md §Layout on
+   * each edge), and with `HEADROOM` instead they would get 63 px at the
+   * default icon size.
    */
   const SIDE_HEADROOM = 240;
   /** The widest a title pill gets beside the icons of a vertical dock before it wraps (CSS px). */
