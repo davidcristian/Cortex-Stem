@@ -12,8 +12,9 @@
 //! shapes and serde attributes that the settings types use, and panics on
 //! any other shape in a type reachable from `Settings`. A new shape
 //! therefore needs a deliberate change here instead of producing a wrong
-//! page. The other tests check the page's claims (ranges, allowed values,
-//! required keys) against the real deserialisation.
+//! page. The other tests check the page's claims (defaults, ranges, allowed
+//! values, required keys, unreadable values) against the real
+//! deserialisation.
 
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -391,11 +392,17 @@ fn has_serde(serde: &[String], key: &str) -> bool {
     serde.iter().any(|e| serde_key(e) == key)
 }
 
+/// The serde entries the generator models with a value (`key = "..."`).
+/// Every other entry it models is a bare word: `default = "path"` is not
+/// `default`, because the function returns the default.
+const SERDE_WITH_VALUE: [&str; 2] = ["rename_all", "tag"];
+
 /// Panics on a serde attribute entry the generator does not model.
 fn check_serde(serde: &[String], allowed: &[&str], what: &str) {
     for entry in serde {
+        let key = serde_key(entry);
         assert!(
-            allowed.contains(&serde_key(entry)),
+            allowed.contains(&key) && entry.contains('=') == SERDE_WITH_VALUE.contains(&key),
             "{what}: #[serde({entry})] is not modelled by \
              crates/stem-core/tests/settings_reference.rs; teach it what the \
              attribute does to the JSON before relying on the reference"
@@ -1200,6 +1207,16 @@ fn settings_reference_is_up_to_date() {
 }
 
 #[test]
+#[should_panic(expected = "is not modelled")]
+fn a_serde_default_function_is_not_taken_for_a_plain_default() {
+    check_serde(
+        &[r#"default = "default_true""#.to_owned()],
+        &["default"],
+        "a field",
+    );
+}
+
+#[test]
 fn the_reference_is_deterministic() {
     let items = parse_items();
     assert_eq!(render(&generate(&items)), render(&generate(&items)));
@@ -1278,6 +1295,54 @@ fn documented_ranges_are_what_validation_clamps_to() {
     }
 }
 
+#[test]
+fn a_missing_key_takes_its_default_and_an_unknown_key_is_ignored() {
+    // The page's Default column outside arrays is `Settings::default()`.
+    let defaults = serde_json::to_value(Settings::default()).expect("json");
+    assert_eq!(
+        load(&Value::Object(Map::new())),
+        Ok(defaults.clone()),
+        "an empty file does not load as the defaults"
+    );
+    let mut paths = Vec::new();
+    collect_paths(&defaults, &mut Vec::new(), &mut paths);
+    for path in &paths {
+        let mut doc = defaults.clone();
+        remove(&mut doc, path);
+        assert_eq!(
+            load(&doc),
+            Ok(defaults.clone()),
+            "{}: a file without the key does not load its documented default",
+            path.join(".")
+        );
+    }
+    let objects = std::iter::once(Vec::new()).chain(
+        paths
+            .into_iter()
+            .filter(|path| lookup(&defaults, &keys_of(path)).is_object()),
+    );
+    for path in objects {
+        let mut doc = defaults.clone();
+        let object = keys_of(&path)
+            .iter()
+            .fold(&mut doc, |value, key| &mut value[*key]);
+        object
+            .as_object_mut()
+            .expect("an object")
+            .insert("notAStemKey".to_owned(), Value::from(1));
+        assert_eq!(
+            load(&doc),
+            Ok(defaults.clone()),
+            "an unknown key in `{}` is not ignored",
+            path.join(".")
+        );
+    }
+}
+
+fn keys_of(path: &[String]) -> Vec<&str> {
+    path.iter().map(String::as_str).collect()
+}
+
 /// The values the page's introduction calls unreadable, for a key whose
 /// default is `default`; `listed` when the page lists the key's values.
 fn unreadable_values(default: &Value, listed: bool) -> Vec<Value> {
@@ -1312,7 +1377,7 @@ fn values_the_page_calls_unreadable_do_not_load() {
     collect_paths(&defaults, &mut Vec::new(), &mut paths);
     let mut checked = 0;
     for path in paths {
-        let keys: Vec<&str> = path.iter().map(String::as_str).collect();
+        let keys = keys_of(&path);
         let listed = reference
             .values
             .iter()
@@ -1397,6 +1462,12 @@ fn minimal(items: &[Item], ty: &str, variant: usize) -> Value {
 #[test]
 fn required_keys_of_array_entries_are_required_and_the_rest_optional() {
     let items = parse_items();
+    let reference = generate(&items);
+    let rows: Vec<&Row> = reference
+        .sections
+        .iter()
+        .flat_map(|section| &section.rows)
+        .collect();
     let root = find(&items, ROOT, ROOT);
     let Shape::Struct(root_fields) = &root.shape else {
         panic!("{ROOT} is not a struct");
@@ -1448,6 +1519,26 @@ fn required_keys_of_array_entries_are_required_and_the_rest_optional() {
                 Some(1),
                 "{array_key}: the minimal entry was dropped: {doc}"
             );
+            // Every key the entry loads with is documented, and an optional
+            // key the file left out loads as the page's Default column says.
+            let loaded_entry = &loaded[&array_key][0];
+            let mut loaded_paths = Vec::new();
+            collect_paths(loaded_entry, &mut Vec::new(), &mut loaded_paths);
+            for path in loaded_paths {
+                let key = format!("{array_key}[].{}", path.join("."));
+                let row = rows
+                    .iter()
+                    .find(|row| row.key == key)
+                    .unwrap_or_else(|| panic!("{key}: loaded, but the page has no row for it"));
+                if row.default != "required" {
+                    let value = lookup(loaded_entry, &keys_of(&path));
+                    assert_eq!(
+                        code(value),
+                        row.default,
+                        "{key}: left out, it loads as {value}, not as the documented default"
+                    );
+                }
+            }
             // Dropping any required key, at any depth, must fail the load.
             let mut paths = Vec::new();
             collect_paths(&entry, &mut Vec::new(), &mut paths);
