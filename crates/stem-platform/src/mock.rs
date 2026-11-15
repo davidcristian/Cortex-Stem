@@ -13,7 +13,7 @@ use stem_core::{
 };
 
 use crate::{
-    AppBarGrant, AppBarRequest, AppBarSink, DockWindowOptions, EventSink, HitRegion,
+    AppBarGrant, AppBarRequest, AppBarSink, DockBackdrop, DockWindowOptions, EventSink, HitRegion,
     NativeWindowHandle, Platform, PlatformError, PlatformResult, rules,
 };
 
@@ -67,6 +67,8 @@ pub enum MockCall {
     Shell(ShellAction),
     PrepareDockWindow(NativeWindowHandle, DockWindowOptions),
     SetDockHitRegion(NativeWindowHandle, Option<HitRegion>),
+    /// `set_dock_backdrop` with these arguments.
+    SetDockBackdrop(NativeWindowHandle, Option<DockBackdrop>),
     /// `taskbar_auto_hide` was read; recorded so tests can check
     /// that the live state is read before it is set.
     TaskbarAutoHide,
@@ -476,6 +478,16 @@ impl Platform for MockPlatform {
         s.app_bars.clear();
         Ok(())
     }
+
+    /// Recorded only: a browser or a mock run has no compositor material.
+    fn set_dock_backdrop(
+        &self,
+        handle: NativeWindowHandle,
+        backdrop: Option<DockBackdrop>,
+    ) -> PlatformResult<()> {
+        self.record(MockCall::SetDockBackdrop(handle, backdrop));
+        Ok(())
+    }
 }
 
 fn identity_for(raw: &RawWindow) -> AppIdentity {
@@ -869,6 +881,27 @@ mod tests {
                 MockCall::SetDockAppBar(b, Some(elsewhere)),
                 MockCall::SetDockAppBar(a, None),
                 MockCall::ReleaseAppBars,
+            ]
+        );
+    }
+
+    #[test]
+    fn set_dock_backdrop_records_every_call_in_order() {
+        let p = MockPlatform::new();
+        let dock = NativeWindowHandle(0x1234);
+        let acrylic = DockBackdrop {
+            rect: Rect::new(800, 1300, 960, 96),
+            corner_radius: 33,
+            material: crate::BackdropMaterial::Acrylic,
+            dark: true,
+        };
+        p.set_dock_backdrop(dock, Some(acrylic)).unwrap();
+        p.set_dock_backdrop(dock, None).unwrap();
+        assert_eq!(
+            p.calls(),
+            vec![
+                MockCall::SetDockBackdrop(dock, Some(acrylic)),
+                MockCall::SetDockBackdrop(dock, None),
             ]
         );
     }

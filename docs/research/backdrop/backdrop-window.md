@@ -99,7 +99,8 @@ What the window needs (the prototype must prove each point):
   `WM_NCACTIVATE`, `WM_NCHITTEST` and `WM_MOUSEACTIVATE`; nothing blocks.
   The dock subclass works the same way. But the threading rule in
   `AGENTS.md` puts windows that need a message loop on a platform thread,
-  so the ADR must record the exception.
+  so the ADR must record the exception. The prototype runs the window on a
+  thread of its own instead.
 
 Assessment:
 

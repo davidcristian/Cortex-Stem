@@ -23,9 +23,11 @@
 //! - `fullscreen`  does the foreground window own the screen
 //! - `dialog`      native message boxes (the crash report)
 //! - `virtual_desktop` which virtual desktop a window is on
+//! - `backdrop`    native backdrop window under a dock (prototype)
 
 pub mod actions;
 pub mod appbar;
+pub mod backdrop;
 pub mod dialog;
 pub mod dock_window;
 pub mod enumerate;
@@ -54,18 +56,20 @@ use stem_core::{
 };
 
 use crate::{
-    AppBarRequest, AppBarSink, DockWindowOptions, EventSink, HitRegion, NativeWindowHandle,
-    Platform, PlatformError, PlatformResult,
+    AppBarRequest, AppBarSink, DockBackdrop, DockWindowOptions, EventSink, HitRegion,
+    NativeWindowHandle, Platform, PlatformError, PlatformResult,
 };
 
 /// The real platform. Cheap to construct; `start` spins up the event thread;
 /// the hit-test thread starts lazily on the first `set_dock_hit_region`, the
-/// AppBar thread on the first `set_dock_app_bar` that asks for a band.
+/// AppBar thread on the first `set_dock_app_bar` that asks for a band, the
+/// backdrop thread on the first `set_dock_backdrop` with a backdrop.
 #[derive(Debug, Default)]
 pub struct WindowsPlatform {
     hook: Mutex<Option<events::EventHookThread>>,
     hit_test: Mutex<Option<hit_test::HitTestThread>>,
     app_bars: Mutex<Option<appbar::AppBarThread>>,
+    backdrop: Mutex<Option<backdrop::BackdropThread>>,
     icons: icons::IconCache,
 }
 
@@ -100,6 +104,9 @@ impl Platform for WindowsPlatform {
         let app_bars = self.app_bars.lock().take();
         if let Some(app_bars) = app_bars {
             app_bars.stop();
+        }
+        if let Some(backdrops) = self.backdrop.lock().take() {
+            backdrops.stop();
         }
     }
 
@@ -232,6 +239,37 @@ impl Platform for WindowsPlatform {
             None => {
                 if let Some(tracker) = guard.as_ref() {
                     tracker.untrack(handle);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// `Some`: hand the request to the backdrop thread (spawned on the
+    /// first one, without waiting for it); `None`: hide the window, if the
+    /// thread has one. A build without `DWMWA_SYSTEMBACKDROP_TYPE` logs that
+    /// once and does nothing (the backdrop is a prototype).
+    fn set_dock_backdrop(
+        &self,
+        handle: NativeWindowHandle,
+        backdrop: Option<DockBackdrop>,
+    ) -> PlatformResult<()> {
+        let mut guard = self.backdrop.lock();
+        match backdrop {
+            Some(wanted) => {
+                if !backdrop::supported() {
+                    return Ok(());
+                }
+                if guard.is_none() {
+                    *guard = Some(backdrop::BackdropThread::start()?);
+                }
+                if let Some(thread) = guard.as_ref() {
+                    thread.set(handle, Some(wanted));
+                }
+            }
+            None => {
+                if let Some(thread) = guard.as_ref() {
+                    thread.set(handle, None);
                 }
             }
         }

@@ -9,14 +9,15 @@ This page lists what the [backdrop research](index.md) leaves to build.
   ([Assumptions](assumptions.md)) through steps 2 to 15 of the
   [manual test plan](manual-test-plan.md).
 - **An ADR (next free number): backdrop window.** It records
-  [option 6](backdrop-window.md) or the decision not to ship, the z-order rule, the shape, and the main-thread
-  exception to the threading rule in `AGENTS.md`. It is written once the
-  prototype's test results are in.
-- **Backdrop window in the platform.**
-  `Platform::set_dock_backdrop` takes rect, radius, material and
+  [option 6](backdrop-window.md) or the decision not to ship, the z-order rule, the shape, and the thread the
+  window runs on (the main thread would be an exception to the threading
+  rule in `AGENTS.md`). It is written once the prototype's test results
+  are in.
+- **Backdrop window for every dock.** The platform part exists in the
+  prototype: `Platform::set_dock_backdrop` takes rect, radius, material and
   theme (or `None`), the dock subclass and its topmost re-assert restack
   the backdrop, the mock records the calls, and other platforms return
-  `Unsupported`.
+  `Unsupported`. No dock sends its panel to it yet.
 - **Live panel box and effective backdrop (IPC change).** The UI reports
   the live panel box while it changes and `null` during the slide. Rust
   reports the effective backdrop from a pure `stem-core` rule. Both

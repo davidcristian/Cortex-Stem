@@ -145,6 +145,32 @@ pub struct AppBarGrant {
 /// not call back into [`Platform::set_dock_app_bar`] synchronously.
 pub type AppBarSink = Arc<dyn Fn(NativeWindowHandle, Option<AppBarGrant>) + Send + Sync + 'static>;
 
+/// The system material of a backdrop window (a prototype,
+/// `docs/research/backdrop/backdrop-window.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BackdropMaterial {
+    /// Desktop Acrylic: blurs whatever is behind the window.
+    Acrylic,
+    /// Mica: tinted by the desktop wallpaper.
+    Mica,
+}
+
+/// What the native backdrop window under a dock window shows (a
+/// prototype). Platform-local on purpose: the prototype changes neither the
+/// IPC contract nor `stem-core`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DockBackdrop {
+    /// The dock's panel at rest, in **physical pixels of the virtual
+    /// desktop**, rounded inwards: the material must never stick out of the
+    /// panel.
+    pub rect: Rect,
+    /// The panel's corner radius in physical pixels.
+    pub corner_radius: u32,
+    pub material: BackdropMaterial,
+    /// The dark variant of the material (the dock's effective theme).
+    pub dark: bool,
+}
+
 /// The OS seam. Every method is synchronous and may be called from any
 /// thread; implementations must be internally thread-safe and must not block
 /// for long (bounded timeouts, see `docs/development/windows-rules.md`).
@@ -312,6 +338,21 @@ pub trait Platform: Send + Sync + 'static {
         _region: Option<HitRegion>,
     ) -> PlatformResult<()> {
         Err(PlatformError::Unsupported("click-through"))
+    }
+
+    /// Show a native backdrop window with `backdrop`'s material, shape and
+    /// place directly under the dock window `handle` in the z-order, or
+    /// hide it (`None`): the backdrop prototype. A later call replaces the
+    /// earlier one; an unchanged one costs nothing. Must return quickly and
+    /// never block: the window lives on a thread owned by the platform. A
+    /// host whose compositor has no such material logs that once and does
+    /// nothing. Optional; the default reports it unsupported.
+    fn set_dock_backdrop(
+        &self,
+        _handle: NativeWindowHandle,
+        _backdrop: Option<DockBackdrop>,
+    ) -> PlatformResult<()> {
+        Err(PlatformError::Unsupported("dock backdrop"))
     }
 
     /// The native window that currently has the foreground, if any. Captured

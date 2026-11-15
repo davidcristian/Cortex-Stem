@@ -59,7 +59,10 @@
 //!   write, so re-asserting never reorders the dock among other topmost
 //!   windows (menus, the taskbar's flyouts) when it does not have to;
 //! - `WM_WINDOWPOSCHANGED` without `SWP_NOZORDER`: logged at trace with the
-//!   insert-after handle, so an outside z-order change can be dated;
+//!   insert-after handle, so an outside z-order change can be dated, and the
+//!   dock's backdrop window, if it has one, is restacked under it
+//!   ([`super::backdrop::restack`]; it posts, and so does the
+//!   successful re-assert above);
 //! - the AppBar messages (`appbar`): the shell's callback
 //!   (`appbar::CALLBACK_MESSAGE`, answered 0), `WM_ACTIVATE`,
 //!   `WM_WINDOWPOSCHANGED` and `TaskbarCreated` are handed to `appbar`,
@@ -470,6 +473,7 @@ fn on_message(
                         pos.hwndInsertAfter.0 as isize,
                         pos.flags.0
                     );
+                    super::backdrop::restack(hwnd);
                 }
             }
             None
@@ -502,12 +506,16 @@ fn ensure_topmost(hwnd: HWND, state: &SubclassState, why: &str) {
         )
     };
     match result {
-        Ok(()) => log::debug!(
-            "dock window {:#x}: re-asserted HWND_TOPMOST on {why}; it was below {:#x} ({})",
-            state.handle,
-            above.0 as isize,
-            class_name(above)
-        ),
+        Ok(()) => {
+            log::debug!(
+                "dock window {:#x}: re-asserted HWND_TOPMOST on {why}; it was below {:#x} ({})",
+                state.handle,
+                above.0 as isize,
+                class_name(above)
+            );
+            // The backdrop window stays where it was in the band.
+            super::backdrop::restack(hwnd);
+        }
         Err(e) => log::warn!(
             "dock window {:#x}: SetWindowPos(HWND_TOPMOST) on {why} failed: {e}",
             state.handle
