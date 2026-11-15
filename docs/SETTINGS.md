@@ -21,8 +21,8 @@ first and remove it afterwards with `Remove-Item Env:STEM_UPDATE_SETTINGS_REFERE
 The check scripts (`scripts/check-all.sh` and `scripts/check-all.ps1`) and
 CI fail while the page is out of date.
 
-The [user guide](user-guide/settings-window.md) says where the file lives, how the
-settings window names each setting, and how the dock behaves.
+The [user guide](user-guide/settings-window.md) says where the file lives,
+which part of the settings window sets each key, and how the dock behaves.
 
 A dotted key such as `magnification.maxScale` is the `maxScale` key inside the
 `magnification` object, and `pinned[]` stands for each entry of the `pinned`

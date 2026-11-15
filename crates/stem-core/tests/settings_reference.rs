@@ -1077,8 +1077,8 @@ fn render(reference: &Reference) -> String {
          The check scripts (`scripts/check-all.sh` and `scripts/check-all.ps1`) and\n\
          CI fail while the page is out of date.\n\
          \n\
-         The [user guide](user-guide/settings-window.md) says where the file lives, how the\n\
-         settings window names each setting, and how the dock behaves.\n\
+         The [user guide](user-guide/settings-window.md) says where the file lives,\n\
+         which part of the settings window sets each key, and how the dock behaves.\n\
          \n\
          A dotted key such as `magnification.maxScale` is the `maxScale` key inside the\n\
          `magnification` object, and `pinned[]` stands for each entry of the `pinned`\n\
