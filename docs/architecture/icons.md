@@ -111,6 +111,18 @@ A disk hit refreshes its file's modification time when that time is more
 than an hour old, so recency is kept across restarts. PNGs over 1 MiB and
 keys over 4 KiB are not cached. At shutdown one `info` line counts the
 session's hits, repeats, misses, bypassed requests, writes, failures,
-drops and evictions. The uninstaller's *Delete the application data*
-option removes the folder with the rest of
+drops, writes abandoned at quit and evictions. The uninstaller's *Delete
+the application data* option removes the folder with the rest of
 `%LOCALAPPDATA%\dev.davidcristian.stem`.
+
+## Known limitation of the disk cache
+
+The platform does not report which chain produced a bitmap. So for a PE
+image whose resources it cannot read (the mapping failed, no icon group, a
+malformed directory), the shell fallback's bitmap is cached like a
+`PE resources` one: the generic exe icon, the shell's resampling, or the
+result of the next fallback after an `E_PENDING`. It stays cached until the
+exe changes, another build runs or the entry is evicted. The platform's
+debug line per load names the chain, so the log of a start without cache
+hits shows which entries these are. Writing only `PE resources` results
+needs that information from the platform.

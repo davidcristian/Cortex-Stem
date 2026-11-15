@@ -6,7 +6,8 @@
 //! dock's icons from disk instead of extracting every one again.
 //!
 //! **What is cached.** Only keys whose bitmap is a pure function of one file
-//! on disk ([`source_file`]): `exe:<path>` and `file:<path>` where `path` is
+//! on disk ([`source_file`]; but see the limitation below): `exe:<path>`
+//! and `file:<path>` where `path` is
 //! absolute, not a network path, and names a PE image (`.exe`, `.dll`,
 //! `.scr`; `stem_platform::rules::icons::is_pe_image_path`), whose icon the
 //! platform reads from the file's own resources. Everything else goes
@@ -25,6 +26,21 @@
 //!   a share that went offline blocks for the redirector's timeout, which
 //!   the request would then pay again in the platform. A share mapped to a
 //!   drive letter cannot be told from a local disk here and is cached.
+//!
+//! **Known limitation: fallback bitmaps.** The platform's answer does not
+//! say which of its chains produced it. For a PE image whose resources it
+//! cannot read (the mapping fails, no `RT_GROUP_ICON`, a malformed
+//! directory) it falls back to the shell: `IShellItemImageFactory`, then
+//! `PrivateExtractIconsW`, then `SHGetFileInfoW`. That bitmap depends on the
+//! shell as well as on the file (the shell's generic exe icon, its own
+//! resampling, an `E_PENDING` retry that failed over), yet it is cached
+//! like a `PE resources` one, until the exe changes, another build of Stem
+//! runs or the entry is evicted; without this cache it lasts one session. The
+//! platform's debug line for each real load names the chain (`via PE
+//! resources`, `via IShellItemImageFactory`, …), which tells such entries
+//! apart in a cold start's log. Writing only `PE resources` results needs a
+//! platform signal (the platform's memory cache would have to keep the
+//! chain with the bytes).
 //!
 //! **Validity.** Each entry stores the source file's length and modification
 //! time ([`Stamp`]), taken before the platform loaded the bitmap and checked
