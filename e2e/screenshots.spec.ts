@@ -2325,7 +2325,7 @@ test.describe('clock and battery', () => {
       const range = document.createRange();
       range.selectNodeContents(el);
       const widths = new Map<number, number>();
-      for (const rect of range.getClientRects()) {
+      for (const rect of Array.from(range.getClientRects())) {
         const top = Math.round(rect.top);
         widths.set(top, (widths.get(top) ?? 0) + rect.width);
       }
