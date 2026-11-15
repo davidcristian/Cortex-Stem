@@ -15,13 +15,17 @@ autostart: boolean,
  */
 hideWindowsTaskbar: boolean, 
 /**
- * Register as an AppBar (an application desktop toolbar: Windows takes
- * a band at the dock's screen edge out of the work area, as it does for
- * the stock taskbar), so that maximised windows end at the dock instead
- * of going under it.
+ * Register each dock window as an AppBar (an application desktop
+ * toolbar: Windows takes a band at the dock's screen edge out of the
+ * work area, as it does for the stock taskbar), so that maximised
+ * windows end at the dock instead of going under it. This works only
+ * while `autoHide.mode` is `off`: an auto-hiding dock reserves
+ * nothing. A change applies at once.
  */
 reserveScreenSpace: boolean, 
 /**
- * Write a log file in the app data directory.
+ * Write a log file, `stem.log`, in Stem's `logs` folder under
+ * `%LOCALAPPDATA%`. Stem reads this setting when it starts, so a change
+ * applies after a restart.
  */
 fileLogging: boolean, };

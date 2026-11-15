@@ -43,8 +43,8 @@ pub struct Settings {
     /// supports. A document with a lower version is upgraded when it loads,
     /// and a document with a higher version is unreadable.
     pub version: u32,
-    /// Screen edge the dock is on. A change closes the dock windows and
-    /// opens new ones.
+    /// Screen edge the dock is on. A change applies at once: the dock
+    /// windows move to the new edge.
     pub position: DockPosition,
     /// Base icon size in CSS pixels, before magnification (24..=128).
     pub icon_size: u32,
@@ -267,11 +267,13 @@ fn finite_or(value: f32, fallback: f32) -> f32 {
 pub enum DockPosition {
     /// Bottom edge, as a row centred on it (the default).
     Bottom,
-    /// Left edge, as a column.
+    /// Left edge, as a column centred on it. Magnified icons grow towards
+    /// the middle of the screen, and the name tooltips appear beside them.
     Left,
-    /// Right edge, as a column.
+    /// Right edge, as a column centred on it. Magnified icons grow towards
+    /// the middle of the screen, and the name tooltips appear beside them.
     Right,
-    /// Top edge.
+    /// Top edge, as a row centred on it.
     Top,
 }
 
@@ -370,9 +372,17 @@ pub enum Backdrop {
     /// and on every dock.
     Css,
     /// The acrylic material of DWM (the Desktop Window Manager, which draws
-    /// the windows on screen) behind the window, on Windows 11.
+    /// the windows on screen) behind the panel. Experimental, and the
+    /// settings page does not offer it. On Windows 11 22H2 or later, a
+    /// native window under the primary dock's panel shows the material (a
+    /// prototype). On older Windows versions, under a contrast theme and on
+    /// every secondary dock, the panel draws the `css` backdrop instead.
     Acrylic,
-    /// The mica material of DWM behind the window, on Windows 11.
+    /// The mica material of DWM behind the panel. Experimental, and the
+    /// settings page does not offer it. On Windows 11 22H2 or later, a
+    /// native window under the primary dock's panel shows the material (a
+    /// prototype). On older Windows versions, under a contrast theme and on
+    /// every secondary dock, the panel draws the `css` backdrop instead.
     Mica,
 }
 
@@ -524,12 +534,16 @@ pub struct SystemIntegration {
     /// Windows' own *Automatically hide the taskbar* option. Turning this
     /// off, or quitting Stem, sets that option back to what it was.
     pub hide_windows_taskbar: bool,
-    /// Register as an AppBar (an application desktop toolbar: Windows takes
-    /// a band at the dock's screen edge out of the work area, as it does for
-    /// the stock taskbar), so that maximised windows end at the dock instead
-    /// of going under it.
+    /// Register each dock window as an AppBar (an application desktop
+    /// toolbar: Windows takes a band at the dock's screen edge out of the
+    /// work area, as it does for the stock taskbar), so that maximised
+    /// windows end at the dock instead of going under it. This works only
+    /// while `autoHide.mode` is `off`: an auto-hiding dock reserves
+    /// nothing. A change applies at once.
     pub reserve_screen_space: bool,
-    /// Write a log file in the app data directory.
+    /// Write a log file, `stem.log`, in Stem's `logs` folder under
+    /// `%LOCALAPPDATA%`. Stem reads this setting when it starts, so a change
+    /// applies after a restart.
     pub file_logging: bool,
 }
 

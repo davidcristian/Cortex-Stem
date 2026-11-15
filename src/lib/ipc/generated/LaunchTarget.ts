@@ -3,4 +3,29 @@
 /**
  * How to start an application.
  */
-export type LaunchTarget = { "kind": "exe", path: string, args: Array<string>, workingDir: string | null, } | { "kind": "shortcut", path: string, } | { "kind": "storeApp", appUserModelId: string, } | { "kind": "uri", uri: string, };
+export type LaunchTarget = { "kind": "exe", 
+/**
+ * Path of the executable.
+ */
+path: string, 
+/**
+ * Command-line arguments, one string per argument.
+ */
+args: Array<string>, 
+/**
+ * Working directory to start the app in, or `null` to start it in
+ * the executable's own folder.
+ */
+workingDir: string | null, } | { "kind": "shortcut", 
+/**
+ * Path of the `.lnk` file.
+ */
+path: string, } | { "kind": "storeApp", 
+/**
+ * The app's AppUserModelID.
+ */
+appUserModelId: string, } | { "kind": "uri", 
+/**
+ * The URI to open.
+ */
+uri: string, };

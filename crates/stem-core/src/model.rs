@@ -188,23 +188,36 @@ pub enum LaunchTarget {
     /// A classic desktop executable.
     #[serde(rename_all = "camelCase")]
     Exe {
+        /// Path of the executable.
         path: PathBuf,
+        /// Command-line arguments, one string per argument.
         #[serde(default)]
         args: Vec<String>,
+        /// Working directory to start the app in, or `null` to start it in
+        /// the executable's own folder.
         #[serde(default)]
         working_dir: Option<PathBuf>,
     },
     /// A `.lnk` shortcut. Windows resolves it when Stem launches it, and
     /// Stem reads the shortcut to identify the app it starts.
     #[serde(rename_all = "camelCase")]
-    Shortcut { path: PathBuf },
+    Shortcut {
+        /// Path of the `.lnk` file.
+        path: PathBuf,
+    },
     /// A packaged (Store or UWP) app, launched by its AppUserModelID.
     #[serde(rename_all = "camelCase")]
-    StoreApp { app_user_model_id: String },
+    StoreApp {
+        /// The app's AppUserModelID.
+        app_user_model_id: String,
+    },
     /// Anything that `ShellExecute` can open, such as `ms-settings:`,
     /// `shell:AppsFolder` or a web URL.
     #[serde(rename_all = "camelCase")]
-    Uri { uri: String },
+    Uri {
+        /// The URI to open.
+        uri: String,
+    },
 }
 
 /// Resolved facts about an application: how to show it and how to start it.

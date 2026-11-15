@@ -21,8 +21,8 @@ export type Settings = {
  */
 version: number, 
 /**
- * Screen edge the dock is on. A change closes the dock windows and
- * opens new ones.
+ * Screen edge the dock is on. A change applies at once: the dock
+ * windows move to the new edge.
  */
 position: DockPosition, 
 /**
