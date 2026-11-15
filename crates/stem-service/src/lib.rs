@@ -424,13 +424,16 @@ impl DockService {
     /// (`DockEngine::scroll_action`) and it is activated
     /// (`WindowAction::Activate`, which restores a minimised one), unless
     /// that dock window's gate ([`ScrollGate`]) let one through less than
-    /// [`SCROLL_INTERVAL`] ago: then the notch is dropped. Returns the
-    /// window activated, or `None` when the notch did nothing (the setting
-    /// is `none`, a fixed item, a separator, no windows there, dropped by
-    /// the gate). An unknown key, a hidden app's among them, is
+    /// [`SCROLL_INTERVAL`] ago: then the notch is dropped. The engine is
+    /// told which window the notch tried (`note_scroll_activation`), so
+    /// the dock's next notch goes on from it even when Windows refused it
+    /// or its foreground report is late. Returns the window activated, or
+    /// `None` when the notch did nothing (the setting is `none`, a fixed
+    /// item, a separator, no windows there, dropped by the gate). An
+    /// unknown key, a hidden app's among them, is
     /// [`ServiceError::UnknownItem`], as for [`Self::primary_click`]; a
     /// failed activation is the platform's error, and still counts for the
-    /// gate.
+    /// gate and as the window tried.
     pub fn scroll_item(
         &self,
         item_key: &str,
@@ -471,6 +474,11 @@ impl DockService {
             return Ok(None);
         }
         log::debug!("scroll {direction:?} over {item_key} in {dock:?}: activating {id:?}");
+        // Before the platform call, so that this activation's own
+        // foreground report ends it: a refused activation leaves the
+        // foreground where it was, and the dock's next notch must still
+        // go on from `id`.
+        self.inner.engine.lock().note_scroll_activation(dock, id);
         self.inner
             .platform
             .window_action(id, WindowAction::Activate)?;
@@ -1227,6 +1235,9 @@ mod tests {
         /// other target gets the mock's answer.
         target_answers: Vec<(String, Option<AppIdentity>)>,
         target_calls: Mutex<Vec<LaunchTarget>>,
+        /// `window_action(refused_window, Activate)` fails and changes
+        /// nothing, as Windows refusing to bring an elevated window forward.
+        refused_window: Option<WindowId>,
     }
 
     impl Relay {
@@ -1244,7 +1255,14 @@ mod tests {
                 identify_calls: Mutex::new(Vec::new()),
                 target_answers: Vec::new(),
                 target_calls: Mutex::new(Vec::new()),
+                refused_window: None,
             }
+        }
+
+        /// Activating `id` fails (see `refused_window`).
+        fn refusing(mut self, id: WindowId) -> Self {
+            self.refused_window = Some(id);
+            self
         }
 
         /// `identify_target(Exe { path })` answers `answer` (`None`: fails).
@@ -1328,6 +1346,12 @@ mod tests {
         }
 
         fn window_action(&self, id: WindowId, action: WindowAction) -> PlatformResult<()> {
+            if action == WindowAction::Activate && self.refused_window == Some(id) {
+                return Err(PlatformError::Other(format!(
+                    "could not bring window {} to the foreground",
+                    id.0
+                )));
+            }
             self.mock.window_action(id, action)
         }
 
@@ -2673,6 +2697,27 @@ mod tests {
         start + Duration::from_millis(ms)
     }
 
+    /// Set `behavior.scrollAction` to `cycleWindows` and wait until the
+    /// worker reports the settings, when the engine has them.
+    fn cycle_windows(service: &DockService, rx: &Receiver<ServiceEvent>) {
+        let mut settings = service.settings();
+        settings.behavior.scroll_action = stem_core::settings::ScrollAction::CycleWindows;
+        service.update_settings(settings).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match rx.recv_deadline(deadline) {
+                Ok(ServiceEvent::Settings(s))
+                    if s.behavior.scroll_action
+                        == stem_core::settings::ScrollAction::CycleWindows =>
+                {
+                    break;
+                }
+                Ok(_) => {}
+                Err(e) => panic!("no settings event: {e}"),
+            }
+        }
+    }
+
     #[test]
     fn the_scroll_gate_lets_one_activation_per_dock_window_through_every_150_ms() {
         assert_eq!(SCROLL_INTERVAL, Duration::from_millis(150));
@@ -2750,23 +2795,7 @@ mod tests {
         ));
         assert_eq!(platform.calls(), vec![]);
 
-        let mut settings = service.settings();
-        settings.behavior.scroll_action = stem_core::settings::ScrollAction::CycleWindows;
-        service.update_settings(settings).unwrap();
-        // The engine has it once the worker reports the settings.
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            match rx.recv_deadline(deadline) {
-                Ok(ServiceEvent::Settings(s))
-                    if s.behavior.scroll_action
-                        == stem_core::settings::ScrollAction::CycleWindows =>
-                {
-                    break;
-                }
-                Ok(_) => {}
-                Err(e) => panic!("no settings event: {e}"),
-            }
-        }
+        cycle_windows(&service, &rx);
 
         // Firefox: window 2 in front, 3 minimised. Next restores 3.
         let at = |ms| after(t0, ms);
@@ -2827,6 +2856,74 @@ mod tests {
                 MockCall::WindowAction(WindowId(2), WindowAction::Activate),
                 MockCall::WindowAction(WindowId(3), WindowAction::Activate),
                 MockCall::WindowAction(WindowId(4), WindowAction::Activate),
+            ]
+        );
+        service.shutdown();
+    }
+
+    #[test]
+    fn a_scroll_goes_on_past_a_window_windows_refuses_to_bring_forward() {
+        use ScrollDirection::{Next, Previous};
+        let relay = Arc::new(Relay::demo().refusing(WindowId(3)));
+        let (service, rx) = start_relay(relay.clone());
+        wait_state(&rx, resolved);
+        // A third Firefox window, seen last: Firefox cycles 2, 3 and 8.
+        let mut third = relay.window(WindowId(2));
+        third.id = WindowId(8);
+        third.title = "Third".into();
+        relay.mock.push(PlatformEvent::WindowAdded(third));
+        let state = wait_state(&rx, |s| {
+            s.foreground == Some(WindowId(2))
+                && item_titled(s, "firefox").is_some_and(|i| i.windows.len() == 3)
+        });
+        let firefox = item_titled(&state, "firefox").unwrap();
+        let order: Vec<WindowId> = firefox.windows.iter().map(|w| w.id).collect();
+        assert_eq!(order, [WindowId(2), WindowId(3), WindowId(8)]);
+        let firefox = firefox.key.clone();
+        cycle_windows(&service, &rx);
+        relay.mock.clear_calls();
+        let t0 = Instant::now();
+        let at = |ms| after(t0, ms);
+
+        // 2 in front: next is 3, which Windows refuses (an elevated window,
+        // say); the page hears the error and the foreground stays on 2.
+        assert!(matches!(
+            service.scroll_item_at(&firefox, DOCK, Next, at(0)),
+            Err(ServiceError::Platform(_))
+        ));
+        assert_eq!(service.state().foreground, Some(WindowId(2)));
+        // The next notch goes on to 8 rather than trying 3 again.
+        assert_eq!(
+            service
+                .scroll_item_at(&firefox, DOCK, Next, at(150))
+                .unwrap(),
+            Some(WindowId(8))
+        );
+        wait_state(&rx, |s| s.foreground == Some(WindowId(8)));
+        // Back from 8: 3 is refused again, and the notch after it goes on
+        // to 2.
+        assert!(matches!(
+            service.scroll_item_at(&firefox, DOCK, Previous, at(300)),
+            Err(ServiceError::Platform(_))
+        ));
+        assert_eq!(
+            service
+                .scroll_item_at(&firefox, DOCK, Previous, at(450))
+                .unwrap(),
+            Some(WindowId(2))
+        );
+        wait_state(&rx, |s| s.foreground == Some(WindowId(2)));
+        let activations: Vec<MockCall> = relay
+            .mock
+            .calls()
+            .into_iter()
+            .filter(|c| matches!(c, MockCall::WindowAction(..)))
+            .collect();
+        assert_eq!(
+            activations,
+            vec![
+                MockCall::WindowAction(WindowId(8), WindowAction::Activate),
+                MockCall::WindowAction(WindowId(2), WindowAction::Activate),
             ]
         );
         service.shutdown();
