@@ -3,4 +3,4 @@
 /**
  * Shell-level actions behind the fixed items.
  */
-export type ShellAction = "openStartMenu" | "openTaskView" | "toggleShowDesktop" | "openRecycleBin" | "emptyRecycleBin";
+export type ShellAction = "openStartMenu" | "openTaskView" | "toggleShowDesktop" | "openRecycleBin" | "emptyRecycleBin" | "openQuickSettings" | "openNotificationCenter";

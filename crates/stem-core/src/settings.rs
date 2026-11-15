@@ -460,6 +460,12 @@ pub struct FixedItems {
     pub task_view: bool,
     /// The Show Desktop item at the left.
     pub show_desktop: bool,
+    /// The Quick Settings item at the right, before the Recycle Bin. A
+    /// click opens what Win+A opens.
+    pub quick_settings: bool,
+    /// The Notification Center item at the right, before the Recycle Bin.
+    /// A click opens what Win+N opens.
+    pub notification_center: bool,
     /// The Recycle Bin item, last at the right.
     pub recycle_bin: bool,
     /// Draw thin separators between the item groups: the items at the
@@ -474,6 +480,8 @@ impl Default for FixedItems {
             launcher: true,
             task_view: false,
             show_desktop: false,
+            quick_settings: false,
+            notification_center: false,
             recycle_bin: true,
             separators: true,
         }
@@ -708,6 +716,8 @@ mod tests {
                 launcher: rng.bool(),
                 task_view: rng.bool(),
                 show_desktop: rng.bool(),
+                quick_settings: rng.bool(),
+                notification_center: rng.bool(),
                 recycle_bin: rng.bool(),
                 separators: rng.bool(),
             },
@@ -860,6 +870,34 @@ mod tests {
             Settings::from_json(r#"{"appearance": {"theme": "glass"}}"#),
             Err(SettingsError::Parse(_))
         ));
+    }
+
+    #[test]
+    fn quick_settings_and_notification_center_are_off_unless_written() {
+        let items = FixedItems::default();
+        assert!(!items.quick_settings);
+        assert!(!items.notification_center);
+
+        // A file written before the fields existed keeps its other items and
+        // gets both off.
+        let old =
+            Settings::from_json(r#"{"items": {"launcher": false, "taskView": true}}"#).unwrap();
+        assert!(!old.items.launcher);
+        assert!(old.items.task_view);
+        assert!(!old.items.quick_settings);
+        assert!(!old.items.notification_center);
+
+        // Both are camelCase keys of `items` and survive a round trip.
+        let on = Settings::from_json(
+            r#"{"items": {"quickSettings": true, "notificationCenter": true}}"#,
+        )
+        .unwrap();
+        assert!(on.items.quick_settings);
+        assert!(on.items.notification_center);
+        let json = on.to_json_pretty();
+        assert!(json.contains(r#""quickSettings": true"#), "{json}");
+        assert!(json.contains(r#""notificationCenter": true"#), "{json}");
+        assert_eq!(Settings::from_json(&json).unwrap(), on);
     }
 
     #[test]

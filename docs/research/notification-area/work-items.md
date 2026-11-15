@@ -3,9 +3,9 @@
 This page is part of the [notification-area study](index.md): the changes
 the study proposes. The other pages refer to them by number.
 
-1. **Notification area and quick settings items.** Optional fixed items
-   that send *Win+B*, *Win+A* and *Win+N* through `SendInput`, as the
-   Start item does, with settings switches.
+1. **A notification area item.** An optional fixed item that sends
+   *Win+B* through `SendInput`, as the Quick Settings and Notification
+   Center items send *Win+A* and *Win+N*, with a settings switch.
 2. **The clock opens the notification centre.** A click on the clock
    widget sends *Win+N*. An input-language label from `GetKeyboardLayout`
    is a candidate widget.

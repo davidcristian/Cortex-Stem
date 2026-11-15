@@ -20,6 +20,16 @@ taskView: boolean,
  */
 showDesktop: boolean, 
 /**
+ * The Quick Settings item at the right, before the Recycle Bin. A
+ * click opens what Win+A opens.
+ */
+quickSettings: boolean, 
+/**
+ * The Notification Center item at the right, before the Recycle Bin.
+ * A click opens what Win+N opens.
+ */
+notificationCenter: boolean, 
+/**
  * The Recycle Bin item, last at the right.
  */
 recycleBin: boolean, 

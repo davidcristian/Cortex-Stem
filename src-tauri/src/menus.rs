@@ -201,6 +201,14 @@ fn item_menu(
         DockItemKind::ShowDesktop => {
             shell_entry(menu, ShellAction::ToggleShowDesktop, "Show desktop")
         }
+        DockItemKind::QuickSettings => {
+            shell_entry(menu, ShellAction::OpenQuickSettings, "Open Quick Settings")
+        }
+        DockItemKind::NotificationCenter => shell_entry(
+            menu,
+            ShellAction::OpenNotificationCenter,
+            "Open Notification Center",
+        ),
         DockItemKind::RecycleBin => {
             let menu = shell_entry(menu, ShellAction::OpenRecycleBin, "Open");
             shell_entry(menu, ShellAction::EmptyRecycleBin, "Empty Recycle Bin…")
@@ -487,6 +495,8 @@ mod tests {
                 app: AppId("exe:c:/windows/notepad.exe".into()),
             },
             MenuAction::Shell(ShellAction::EmptyRecycleBin),
+            MenuAction::Shell(ShellAction::OpenQuickSettings),
+            MenuAction::Shell(ShellAction::OpenNotificationCenter),
             MenuAction::Settings,
             MenuAction::Quit,
         ];
@@ -498,6 +508,14 @@ mod tests {
         assert_eq!(
             MenuAction::Shell(ShellAction::OpenStartMenu).id(),
             "ctx:shell:openStartMenu"
+        );
+        assert_eq!(
+            MenuAction::Shell(ShellAction::OpenQuickSettings).id(),
+            "ctx:shell:openQuickSettings"
+        );
+        assert_eq!(
+            MenuAction::Shell(ShellAction::OpenNotificationCenter).id(),
+            "ctx:shell:openNotificationCenter"
         );
         assert_eq!(MenuAction::Activate(WindowId(7)).id(), "ctx:activate:7");
         assert_eq!(

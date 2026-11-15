@@ -259,6 +259,10 @@ pub enum DockItemKind {
     Launcher,
     TaskView,
     ShowDesktop,
+    /// Opens Windows' quick settings.
+    QuickSettings,
+    /// Opens Windows' notification center and calendar.
+    NotificationCenter,
     RecycleBin,
     Separator,
 }
@@ -399,6 +403,10 @@ pub enum ShellAction {
     ToggleShowDesktop,
     OpenRecycleBin,
     EmptyRecycleBin,
+    /// Windows' quick settings flyout, as Win+A opens it.
+    OpenQuickSettings,
+    /// Windows' notification center and calendar, as Win+N opens them.
+    OpenNotificationCenter,
 }
 
 /// Facts about this installation for the settings page's *About* section:
@@ -502,6 +510,29 @@ mod tests {
         );
         let back: LaunchTarget = serde_json::from_str(&json).unwrap();
         assert_eq!(back, t);
+    }
+
+    #[test]
+    fn quick_settings_and_notification_center_serialise_in_camel_case() {
+        for (kind, name) in [
+            (DockItemKind::QuickSettings, "quickSettings"),
+            (DockItemKind::NotificationCenter, "notificationCenter"),
+        ] {
+            let json = serde_json::to_string(&kind).unwrap();
+            assert_eq!(json, format!("{name:?}"));
+            assert_eq!(serde_json::from_str::<DockItemKind>(&json).unwrap(), kind);
+        }
+        for (action, name) in [
+            (ShellAction::OpenQuickSettings, "openQuickSettings"),
+            (
+                ShellAction::OpenNotificationCenter,
+                "openNotificationCenter",
+            ),
+        ] {
+            let json = serde_json::to_string(&action).unwrap();
+            assert_eq!(json, format!("{name:?}"));
+            assert_eq!(serde_json::from_str::<ShellAction>(&json).unwrap(), action);
+        }
     }
 
     #[test]

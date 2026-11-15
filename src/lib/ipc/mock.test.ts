@@ -254,6 +254,122 @@ describe('click semantics (mirror of DockEngine::primary_action)', () => {
     await expect(b.primaryClick('app:exe:c:/nope.exe')).rejects.toMatch(/unknown dock item/);
   });
 
+  describe('Quick Settings and Notification Center', () => {
+    async function withItems(
+      b: MockBackend,
+      items: Partial<Settings['items']>,
+    ): Promise<DockState> {
+      const settings = await b.getSettings();
+      settings.items = { ...settings.items, ...items };
+      await b.updateSettings(settings);
+      return b.getDockState();
+    }
+
+    it('are off by default, in the demo too', async () => {
+      const b = fast();
+      expect(defaultSettings().items.quickSettings).toBe(false);
+      expect(defaultSettings().items.notificationCenter).toBe(false);
+      const kinds = (await b.getDockState()).items.map((i) => i.kind);
+      expect(kinds).not.toContain('quickSettings');
+      expect(kinds).not.toContain('notificationCenter');
+    });
+
+    it('sit before the Recycle Bin in that order, after one separator', async () => {
+      const b = fast();
+      const states = recordStates(b);
+      const state = await withItems(b, { quickSettings: true, notificationCenter: true });
+      expect(states).toHaveLength(1);
+      expect(keys(state).slice(-6)).toEqual([
+        app(CODE),
+        app(SPOTIFY),
+        'sep:3',
+        'fixed:quick-settings',
+        'fixed:notification-center',
+        'fixed:recycle-bin',
+      ]);
+      const qs = item(state, 'fixed:quick-settings');
+      expect(qs).toMatchObject({
+        kind: 'quickSettings',
+        title: 'Quick Settings',
+        iconKey: 'shell:quickSettings',
+        appId: null,
+        pinned: false,
+        windows: [],
+      });
+      expect(item(state, 'fixed:notification-center')).toMatchObject({
+        kind: 'notificationCenter',
+        title: 'Notification Center',
+        iconKey: 'shell:notificationCenter',
+        appId: null,
+        pinned: false,
+        windows: [],
+      });
+
+      // Either one alone keeps its place before the bin.
+      expect(keys(await withItems(b, { notificationCenter: false })).slice(-3)).toEqual([
+        'sep:3',
+        'fixed:quick-settings',
+        'fixed:recycle-bin',
+      ]);
+      expect(
+        keys(await withItems(b, { quickSettings: false, notificationCenter: true })).slice(-3),
+      ).toEqual(['sep:3', 'fixed:notification-center', 'fixed:recycle-bin']);
+    });
+
+    it('close the dock without the bin, and draw no separator alone or with separators off', async () => {
+      const b = fast();
+      let state = await withItems(b, {
+        quickSettings: true,
+        notificationCenter: true,
+        recycleBin: false,
+      });
+      expect(keys(state).slice(-4)).toEqual([
+        app(SPOTIFY),
+        'sep:3',
+        'fixed:quick-settings',
+        'fixed:notification-center',
+      ]);
+
+      state = await withItems(b, { separators: false });
+      expect(state.items.filter((i) => i.kind === 'separator')).toHaveLength(0);
+      expect(keys(state).slice(-3)).toEqual([
+        app(SPOTIFY),
+        'fixed:quick-settings',
+        'fixed:notification-center',
+      ]);
+
+      // Nothing but the two: no separator before them.
+      const settings = await b.getSettings();
+      settings.pinned = [];
+      settings.items = { ...settings.items, launcher: false, separators: true };
+      await b.updateSettings(settings);
+      for (const id of [1, 2, 3, 4, 5, 6]) {
+        await b.windowAction(id, 'close');
+      }
+      expect(keys(await b.getDockState())).toEqual([
+        'fixed:quick-settings',
+        'fixed:notification-center',
+      ]);
+    });
+
+    it('a click runs their shell actions, which change nothing else', async () => {
+      const b = fast();
+      await withItems(b, { quickSettings: true, notificationCenter: true });
+      const states = recordStates(b);
+      await b.primaryClick('fixed:quick-settings');
+      await b.primaryClick('fixed:notification-center');
+      expect(b.calls).toEqual([
+        { type: 'shell', action: 'openQuickSettings' },
+        { type: 'shell', action: 'openNotificationCenter' },
+      ]);
+      await b.shellAction('openQuickSettings');
+      expect(b.calls.at(-1)).toEqual({ type: 'shell', action: 'openQuickSettings' });
+      expect(states).toHaveLength(0);
+      // The icon keys are not item keys.
+      await expect(b.primaryClick('shell:quickSettings')).rejects.toMatch(/unknown dock item/);
+    });
+  });
+
   it('activates the first window when none of several is active', async () => {
     const b = fast();
     await b.primaryClick(app(CODE)); // foreground → 4

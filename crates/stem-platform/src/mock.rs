@@ -715,6 +715,32 @@ mod tests {
     }
 
     #[test]
+    fn quick_settings_and_notification_center_are_recorded_and_change_nothing() {
+        let p = MockPlatform::with_demo_scenario();
+        let seen: Arc<Mutex<Vec<PlatformEvent>>> = Arc::default();
+        let sink_seen = Arc::clone(&seen);
+        p.start(Arc::new(move |ev| sink_seen.lock().push(ev)))
+            .unwrap();
+        let before = seen.lock().len();
+        let windows = p.windows().unwrap();
+
+        p.shell_action(ShellAction::OpenQuickSettings).unwrap();
+        p.shell_action(ShellAction::OpenNotificationCenter).unwrap();
+        assert_eq!(
+            p.calls(),
+            vec![
+                MockCall::Shell(ShellAction::OpenQuickSettings),
+                MockCall::Shell(ShellAction::OpenNotificationCenter),
+            ]
+        );
+        // Windows' flyouts are not windows the dock tracks: no event, the
+        // same windows, the same foreground.
+        assert_eq!(seen.lock().len(), before);
+        assert_eq!(p.windows().unwrap(), windows);
+        assert_eq!(p.foreground_window().unwrap(), Some(WindowId(2)));
+    }
+
+    #[test]
     fn icons_are_valid_png_and_deterministic() {
         let p = MockPlatform::new();
         let a = p

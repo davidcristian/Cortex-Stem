@@ -15,7 +15,9 @@ menus.
 notification area (*Win+B*), quick settings (*Win+A*) and the notification
 centre (*Win+N*), and a clock widget that opens the notification centre on
 click. They bring the hidden taskbar's corner within one click of the dock
-without touching the tray.
+without touching the tray. Stem has the *Win+A* and *Win+N* items, but not
+the *Win+B* item or the clock widget
+(see [B](options.md#b-shortcut-items-that-open-windows-own-surfaces)).
 
 Revisit if Microsoft documents a way to host notification icons, if the
 stock taskbar can no longer auto-hide, or if users ask for tray icons in
@@ -24,7 +26,8 @@ log-only first ([work item 4](work-items.md)).
 
 ## Consequences
 
-- The study adds no Win32 code.
+- The study adds no Win32 code. The B items that exist send their
+  shortcuts with `SendInput` in `windows/shell.rs`, as the Start item does.
 - The stock taskbar keeps the tray, the clock, quick settings and the
   input indicator. *Hide the Windows taskbar* stays the way to hide it.
 - Stem's own tray icon stays an ordinary notify icon in Explorer's tray.

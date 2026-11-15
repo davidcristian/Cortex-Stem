@@ -258,6 +258,8 @@ export function defaultSettings(): Settings {
       launcher: true,
       taskView: false,
       showDesktop: false,
+      quickSettings: false,
+      notificationCenter: false,
       recycleBin: true,
       separators: true,
     },
@@ -1214,14 +1216,32 @@ class Engine {
     }
     items.push(...runningItems);
 
-    // 4. Recycle Bin.
-    if (s.items.recycleBin) {
-      if (items.length > 0) {
-        separator();
-      }
-      const icon = this.recycleBin.itemCount === 0 ? 'recycle-bin-empty' : 'recycle-bin-full';
-      items.push(fixedItem('recycleBin', 'fixed:recycle-bin', 'Recycle Bin', `shell:${icon}`));
+    // 4. Fixed trailing group: Quick Settings, Notification Center, and the
+    // Recycle Bin last, with one separator before the group and none inside.
+    const trailing: DockItem[] = [];
+    if (s.items.quickSettings) {
+      trailing.push(
+        fixedItem('quickSettings', 'fixed:quick-settings', 'Quick Settings', 'shell:quickSettings'),
+      );
     }
+    if (s.items.notificationCenter) {
+      trailing.push(
+        fixedItem(
+          'notificationCenter',
+          'fixed:notification-center',
+          'Notification Center',
+          'shell:notificationCenter',
+        ),
+      );
+    }
+    if (s.items.recycleBin) {
+      const icon = this.recycleBin.itemCount === 0 ? 'recycle-bin-empty' : 'recycle-bin-full';
+      trailing.push(fixedItem('recycleBin', 'fixed:recycle-bin', 'Recycle Bin', `shell:${icon}`));
+    }
+    if (trailing.length > 0 && items.length > 0) {
+      separator();
+    }
+    items.push(...trailing);
 
     return {
       revision: this.revision,
@@ -1258,6 +1278,10 @@ class Engine {
         return { type: 'shell', action: 'openTaskView' };
       case 'fixed:show-desktop':
         return { type: 'shell', action: 'toggleShowDesktop' };
+      case 'fixed:quick-settings':
+        return { type: 'shell', action: 'openQuickSettings' };
+      case 'fixed:notification-center':
+        return { type: 'shell', action: 'openNotificationCenter' };
       case 'fixed:recycle-bin':
         return { type: 'shell', action: 'openRecycleBin' };
       default:

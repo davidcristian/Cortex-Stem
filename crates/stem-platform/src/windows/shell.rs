@@ -7,16 +7,28 @@
 //! - `ToggleShowDesktop`: `IShellDispatch::ToggleDesktop` via COM
 //!   (`Shell.Application`), fallback Win+D.
 //! - `OpenRecycleBin` / `EmptyRecycleBin`: `recycle_bin::{open, empty}`.
+//! - `OpenQuickSettings` / `OpenNotificationCenter`: `SendInput`
+//!   Win+A / Win+N, the documented shortcuts (Win down, the letter down and
+//!   up, Win up); Windows has no public API that opens these flyouts. On the
+//!   keyboard the same chord closes the open flyout again; whether a second
+//!   click on the dock does too, or the flyout's light dismiss closes it on
+//!   the press and the chord opens it again, is not documented.
 //!
 //! `SendInput` injects into the foreground thread's queue; it needs no window
 //! of our own and works from a `WS_EX_NOACTIVATE` dock as long as this
-//! process runs at the same integrity level as the desktop (UIPI).
+//! process runs at the same integrity level as the desktop (UIPI). It does
+//! not block: the call queues the events and returns. Microsoft documents
+//! that it fails when UIPI blocks it (an elevated window has the foreground
+//! and Stem is not elevated) and that neither the return value nor
+//! `GetLastError` says UIPI was the cause; a count short of the events given
+//! is logged at `warn` and returned as an error, and a refusal that still
+//! reports every event cannot be seen here.
 
 use stem_core::ShellAction;
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput,
-    VIRTUAL_KEY, VK_D, VK_LWIN, VK_TAB,
+    VIRTUAL_KEY, VK_A, VK_D, VK_LWIN, VK_N, VK_TAB,
 };
 use windows::Win32::UI::Shell::{IShellDispatch4, Shell};
 
@@ -29,6 +41,8 @@ pub fn perform(action: ShellAction) -> PlatformResult<()> {
         ShellAction::EmptyRecycleBin => super::recycle_bin::empty(),
         ShellAction::OpenStartMenu => send_chord(&[VK_LWIN]),
         ShellAction::OpenTaskView => send_chord(&[VK_LWIN, VK_TAB]),
+        ShellAction::OpenQuickSettings => send_chord(&[VK_LWIN, VK_A]),
+        ShellAction::OpenNotificationCenter => send_chord(&[VK_LWIN, VK_N]),
         ShellAction::ToggleShowDesktop => match toggle_desktop() {
             Ok(()) => Ok(()),
             Err(e) => {

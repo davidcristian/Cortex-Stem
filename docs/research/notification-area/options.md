@@ -27,6 +27,9 @@ settings; *Win+N* opens the notification centre and calendar.
 - No icons in the dock, and Windows still opens its flyouts at its corner.
 - Injected keys have the same limits as the Start item's
   (`windows/shell.rs`).
+- Stem has the *Win+A* and *Win+N* parts: the optional Quick Settings and
+  Notification Center items (`items.quickSettings`,
+  `items.notificationCenter`). No item sends *Win+B*.
 
 ## C. Display-only mirror through UI Automation
 
