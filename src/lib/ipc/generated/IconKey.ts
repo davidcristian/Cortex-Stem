@@ -4,6 +4,7 @@
  * Opaque key the platform can turn into PNG bytes (see `Platform::icon_png`).
  * Keys starting with `shell:` are rendered by the frontend from built-in
  * vector art (`shell:start`, `shell:task-view`, `shell:show-desktop`,
+ * `shell:quick-settings`, `shell:notification-center`,
  * `shell:recycle-bin-empty`, `shell:recycle-bin-full`).
  */
 export type IconKey = string;

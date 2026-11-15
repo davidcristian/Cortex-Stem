@@ -59,7 +59,7 @@
     />
     <path d="M26 48h12M32 42v6" stroke="currentColor" stroke-width="3" stroke-linecap="round" />
     <rect x="36" y="30" width="10" height="8" rx="1.5" fill="currentColor" opacity="0.8" />
-  {:else if name === 'quickSettings'}
+  {:else if name === 'quick-settings'}
     <!-- Two toggle switches, one on and one off: Windows' quick settings. -->
     <rect x="2" y="2" width="60" height="60" rx="14" fill="var(--tile-neutral)" />
     <rect x="12" y="15" width="40" height="15" rx="7.5" fill="currentColor" />
@@ -75,7 +75,7 @@
       stroke-width="3"
     />
     <circle cx="21.5" cy="41.5" r="3.5" fill="currentColor" />
-  {:else if name === 'notificationCenter'}
+  {:else if name === 'notification-center'}
     <!-- A bell: Windows' notification center. -->
     <rect x="2" y="2" width="60" height="60" rx="14" fill="var(--tile-neutral)" />
     <path

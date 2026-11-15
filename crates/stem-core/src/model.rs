@@ -63,6 +63,7 @@ pub fn normalize_path(path: &Path) -> String {
 /// Opaque key the platform can turn into PNG bytes (see `Platform::icon_png`).
 /// Keys starting with `shell:` are rendered by the frontend from built-in
 /// vector art (`shell:start`, `shell:task-view`, `shell:show-desktop`,
+/// `shell:quick-settings`, `shell:notification-center`,
 /// `shell:recycle-bin-empty`, `shell:recycle-bin-full`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]

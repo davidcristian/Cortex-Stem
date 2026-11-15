@@ -291,7 +291,7 @@ describe('click semantics (mirror of DockEngine::primary_action)', () => {
       expect(qs).toMatchObject({
         kind: 'quickSettings',
         title: 'Quick Settings',
-        iconKey: 'shell:quickSettings',
+        iconKey: 'shell:quick-settings',
         appId: null,
         pinned: false,
         windows: [],
@@ -299,7 +299,7 @@ describe('click semantics (mirror of DockEngine::primary_action)', () => {
       expect(item(state, 'fixed:notification-center')).toMatchObject({
         kind: 'notificationCenter',
         title: 'Notification Center',
-        iconKey: 'shell:notificationCenter',
+        iconKey: 'shell:notification-center',
         appId: null,
         pinned: false,
         windows: [],
@@ -366,7 +366,7 @@ describe('click semantics (mirror of DockEngine::primary_action)', () => {
       expect(b.calls.at(-1)).toEqual({ type: 'shell', action: 'openQuickSettings' });
       expect(states).toHaveLength(0);
       // The icon keys are not item keys.
-      await expect(b.primaryClick('shell:quickSettings')).rejects.toMatch(/unknown dock item/);
+      await expect(b.primaryClick('shell:quick-settings')).rejects.toMatch(/unknown dock item/);
     });
   });
 

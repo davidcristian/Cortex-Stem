@@ -1221,7 +1221,12 @@ class Engine {
     const trailing: DockItem[] = [];
     if (s.items.quickSettings) {
       trailing.push(
-        fixedItem('quickSettings', 'fixed:quick-settings', 'Quick Settings', 'shell:quickSettings'),
+        fixedItem(
+          'quickSettings',
+          'fixed:quick-settings',
+          'Quick Settings',
+          'shell:quick-settings',
+        ),
       );
     }
     if (s.items.notificationCenter) {
@@ -1230,7 +1235,7 @@ class Engine {
           'notificationCenter',
           'fixed:notification-center',
           'Notification Center',
-          'shell:notificationCenter',
+          'shell:notification-center',
         ),
       );
     }

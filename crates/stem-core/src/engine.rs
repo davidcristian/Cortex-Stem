@@ -662,7 +662,7 @@ impl DockEngine {
                 DockItemKind::QuickSettings,
                 "fixed:quick-settings".into(),
                 "Quick Settings",
-                Some(IconKey::shell("quickSettings")),
+                Some(IconKey::shell("quick-settings")),
             ));
         }
         if s.items.notification_center {
@@ -670,7 +670,7 @@ impl DockEngine {
                 DockItemKind::NotificationCenter,
                 "fixed:notification-center".into(),
                 "Notification Center",
-                Some(IconKey::shell("notificationCenter")),
+                Some(IconKey::shell("notification-center")),
             ));
         }
         if s.items.recycle_bin {
@@ -2334,13 +2334,13 @@ mod tests {
         let qs = &state.items[4];
         assert_eq!(qs.kind, DockItemKind::QuickSettings);
         assert_eq!(qs.title, "Quick Settings");
-        assert_eq!(qs.icon_key, Some(IconKey("shell:quickSettings".into())));
+        assert_eq!(qs.icon_key, Some(IconKey("shell:quick-settings".into())));
         let nc = &state.items[5];
         assert_eq!(nc.kind, DockItemKind::NotificationCenter);
         assert_eq!(nc.title, "Notification Center");
         assert_eq!(
             nc.icon_key,
-            Some(IconKey("shell:notificationCenter".into()))
+            Some(IconKey("shell:notification-center".into()))
         );
         for item in [qs, nc] {
             assert!(item.icon_key.as_ref().is_some_and(IconKey::is_shell));
@@ -2499,7 +2499,7 @@ mod tests {
             ItemAction::Shell(ShellAction::OpenRecycleBin)
         );
         assert_eq!(
-            engine.primary_action("shell:quickSettings", DOCK),
+            engine.primary_action("shell:quick-settings", DOCK),
             ItemAction::None
         );
 

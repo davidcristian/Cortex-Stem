@@ -19,7 +19,7 @@ to the file that covers that section now.
 - **v1.21 (quick settings and notification items):** Two optional fixed items.
   `Settings.items.quickSettings` and `Settings.items.notificationCenter` (both default `false`)
   add `DockItemKind` `quickSettings` and `notificationCenter`, with icon keys
-  `shell:quickSettings` and `shell:notificationCenter` (drawn by the page, like the other
+  `shell:quick-settings` and `shell:notification-center` (drawn by the page, like the other
   `shell:` keys). They are placed in the trailing group before the Recycle Bin, in that order. A
   click runs `ShellAction` `openQuickSettings` (Win+A) or `openNotificationCenter` (Win+N), which
   the platform sends as a key chord (`SendInput`). Their menus follow the Task View item's.
