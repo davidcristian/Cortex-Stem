@@ -204,7 +204,7 @@ jobs:
       # (the module is Windows-only) and only with the feature, so neither
       # the linux job nor the build below runs them.
       - name: Probe unit tests (feature probes)
-        run: cargo test -p stem-platform --features probes --lib windows::probe::
+        run: "cargo test -p stem-platform --features probes --lib windows::probe::"
 
       # The NSIS bundler downloads its toolset (NSIS and Tauri's plugin) from
       # GitHub releases into %LOCALAPPDATA%\tauri when it is not there yet.
