@@ -52,15 +52,16 @@ rectangle, an optional source rectangle, an opacity, a visibility flag and
   lists them by title, and the tooltip shows the app's name after 300 ms.
 - The locked `windows` crate (0.62.2) has the four functions and
   `DWM_THUMBNAIL_PROPERTIES` under `Win32_Graphics_Dwm`, which
-  `stem-platform` enables. No code calls them yet, so this is read from
-  the crate source, not compiled. The struct is `#[repr(C, packed(1))]`, so it
+  `stem-platform` enables. The thumbnail probe
+  (`windows/probe/thumbnails.rs`) calls all four, and it compiles for
+  `x86_64-pc-windows-msvc`. The struct is `#[repr(C, packed(1))]`, so it
   must be built by value and its fields never borrowed.
 
 ## Recommendation
 
 **Implement
 [option 3](../research/window-thumbnails/options.md#3-the-dock-window-is-the-destination-recommended)**,
-behind a new setting that is on by default. Before that, run a thumbnail
+behind a new setting that is on by default. Before that, run the thumbnail
 probe on Windows once (see Assumptions) to settle the open DWM questions.
 If the probe shows that DWM draws nothing into the dock window at all,
 [option 2b](../research/window-thumbnails/options.md#2-a-separate-topmost-tool-window-the-proposal)
@@ -178,9 +179,8 @@ on.
   Nothing is captured, stored or logged.
 - Touch and pen get no strip (there is no hover). Click and the menu still
   work.
-- No new thread, no new dependency and no new `windows` feature, if a
-  build for the Windows target finds the four functions under the already
-  enabled `Win32_Graphics_Dwm`, as the crate source shows. Building it changes
+- No new thread, no new dependency and no new `windows` feature
+  (`Win32_Graphics_Dwm` is already enabled). Building it changes
   [`docs/architecture/dock-window.md`](../architecture/dock-window.md) and
   [`docs/ipc/`](../ipc/index.md).
 - If DWM turns out to draw below the web content (A1), the page leaves the
@@ -189,10 +189,17 @@ on.
 
 ## Assumptions
 
-None of these is confirmed by Microsoft's documentation. A thumbnail
+None of these is confirmed by Microsoft's documentation. The thumbnail
 probe settles A3, A4, A6 to A9 and A11. The
 [manual test plan](../research/window-thumbnails/manual-test-plan.md)
 checks the rest.
+
+The probe runs with
+`cargo run -p stem-platform --example thumbnail-probe --features probes`.
+[`docs/research/thumbnail-probe/`](../research/thumbnail-probe/index.md)
+says how to run it and what each result means for A1 to A11. It also gives
+partial evidence for A1 and A2 (on a GDI window with a caption) and tests
+A5.
 
 - **A1.** DWM draws a thumbnail above the WebView2 content of the dock
   window. If it draws below, the image area must stay transparent.

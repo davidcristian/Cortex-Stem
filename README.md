@@ -233,6 +233,7 @@ The [FAQ](docs/user-guide/faq.md) in the user guide answers common questions abo
 | [docs/research/backdrop/](docs/research/backdrop/index.md) | Acrylic or Mica behind the dock panel: the options |
 | [docs/research/jump-lists/](docs/research/jump-lists/index.md) | Jump lists and recent documents in the dock's menu |
 | [docs/research/notification-area/](docs/research/notification-area/index.md) | What replacing or mirroring the notification area would take, and why Stem does not |
+| [docs/research/thumbnail-probe/](docs/research/thumbnail-probe/index.md) | The probe that tests DWM window thumbnails before window previews are built |
 | [AGENTS.md](AGENTS.md) and [docs/development/](docs/development/index.md) | The rules every change in this repository follows, and the detail behind them |
 
 ## License

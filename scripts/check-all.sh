@@ -86,6 +86,9 @@ if [[ "$(uname -s)" != MINGW* && "$(uname -s)" != MSYS* ]] \
   exit 1
 fi
 cargo clippy --workspace --all-targets --target x86_64-pc-windows-msvc -- -D warnings
+# The diagnostic probes (feature `probes`) are not in the line above:
+# their examples need the feature (`required-features`), so lint them here.
+cargo clippy -p stem-platform --all-targets --features probes --target x86_64-pc-windows-msvc -- -D warnings
 
 if [[ $FRONTEND -eq 0 ]]; then
   echo "(frontend rungs 5-7 skipped: --no-frontend)"

@@ -94,7 +94,9 @@ without failures.
 Window thumbnails have been researched, not built.
 [ADR-0009](adr/0009-window-thumbnails.md) proposes drawing DWM thumbnails
 (live pictures of a window, drawn by DWM, the Desktop Window Manager) into
-the dock window.
+the dock window. A probe (`crates/stem-platform/examples/thumbnail-probe.rs`,
+[how to run it](research/thumbnail-probe/running.md)) tests the open assumptions of
+that ADR with one run on Windows.
 
 **Planned.** A measurement of idle CPU, and window previews on hover, drawn
 with DWM thumbnails.

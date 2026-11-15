@@ -7,6 +7,20 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# Diagnostic programs under examples/ and src/windows/probe/. Off by
+# default; the app never enables it. The extra `windows` features (kept
+# sorted) are the ones only the probes use.
+probes = [
+    "windows/Win32_Security",
+    "windows/Win32_System_Console",
+    "windows/Win32_System_Performance",
+]
+
+[[example]]
+name = "thumbnail-probe"
+required-features = ["probes"]
+
 [dependencies]
 stem-core = { workspace = true }
 crossbeam-channel = { workspace = true }

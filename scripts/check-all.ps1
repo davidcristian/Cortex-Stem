@@ -115,6 +115,9 @@ if ($changed.Count -gt 0) {
 
 Step '4/7 clippy (Windows target, whole workspace incl. Tauri app)'
 Run cargo @('clippy', '--workspace', '--all-targets', '--target', 'x86_64-pc-windows-msvc', '--', '-D', 'warnings')
+# The diagnostic probes (feature `probes`) are not in the line above:
+# their examples need the feature (`required-features`), so lint them here.
+Run cargo @('clippy', '-p', 'stem-platform', '--all-targets', '--features', 'probes', '--target', 'x86_64-pc-windows-msvc', '--', '-D', 'warnings')
 
 $Install = -not $NoInstall
 if ($CI -and (Test-Path -LiteralPath 'node_modules')) {

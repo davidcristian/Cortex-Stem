@@ -36,6 +36,8 @@ pub mod icons;
 pub mod identity;
 pub mod launch;
 pub mod monitors;
+#[cfg(feature = "probes")]
+pub mod probe;
 pub mod recycle_bin;
 pub mod shell;
 pub mod taskbar;

@@ -3,11 +3,15 @@
 These are the pieces of work that build the window previews of
 [ADR-0009](../../adr/0009-window-thumbnails.md).
 
-- **DWM thumbnail probe on Windows.** The probe is a throwaway program in
-  `crates/stem-platform/examples/`. It registers a normal, minimised,
-  cloaked, suspended-Store, elevated and display-affinity window into a
+- **DWM thumbnail probe on Windows.** The probe is a throwaway program:
+  `crates/stem-platform/examples/thumbnail-probe.rs` runs
+  `stem_platform::windows::probe::thumbnails`. It registers two normal
+  windows, a minimised one, a cloaked one, two with a display affinity, an
+  elevated one, a Store app's window and a window on another desktop into a
   plain test window, and records what each shows, the source sizes and the
-  call times.
+  call times. One run on Windows settles
+  the assumptions it covers
+  ([`docs/research/thumbnail-probe/`](../thumbnail-probe/index.md)).
 - **Platform thumbnails.** `Platform::set_window_thumbnails`,
   `windows/thumbnails.rs` in the dock subclass, pure `rules::thumbnail`
   (fit, crop, diff), refit on source moves, hide before click-through.

@@ -14,10 +14,12 @@ feedback cannot prove.
 1. The architecture puts behaviour in host-independent crates
    (`stem-core`, `stem-service`), tested on Linux with the mock platform.
 2. The real Windows code, including the Tauri crate, is type-checked and
-   linted from Linux with this command:
+   linted from Linux with the first command below, and the diagnostic
+   probes with the second:
 
    ```sh
    cargo clippy --workspace --all-targets --target x86_64-pc-windows-msvc -- -D warnings
+   cargo clippy -p stem-platform --all-targets --features probes --target x86_64-pc-windows-msvc -- -D warnings
    ```
 
    `rust-toolchain.toml` installs the `rust-std` for the MSVC target. Check
