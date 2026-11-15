@@ -2318,10 +2318,14 @@ pub fn reveal_all(app: &AppHandle) {
 /// the dock window the latest press gave the keyboard focus to, and the
 /// window that was in front then, which Escape (`release_dock_focus`) or a
 /// second press brings back. `None` while no dock has the focus from the
-/// shortcut, and again once the focus was given back, a click on the dock
-/// superseded the window ([`forget_dock_focus`]), or the dock lost the
-/// activation some other way ([`on_dock_blurred`]). Kept in Tauri's managed
-/// state.
+/// shortcut, and again once the focus was given back
+/// ([`DockFocus::release`]), a click on a dock superseded the window
+/// ([`DockFocus::supersede`]), the dock lost the activation some other way
+/// ([`DockFocus::blurred`]), it closed or its activation failed
+/// ([`DockFocus::end`]). Kept in Tauri's managed state. The rules are its
+/// methods, which touch nothing but the lock, so they are tested without
+/// an app; the functions below that take an `AppHandle` only gather their
+/// inputs and log.
 #[derive(Debug, Default)]
 pub struct DockFocus(Mutex<Option<FocusSession>>);
 
@@ -2334,6 +2338,87 @@ pub struct FocusSession {
     /// `None` when it had none (the desktop, the Start menu or a window of
     /// our own was in front), and then Escape leaves the foreground alone.
     pub window: Option<WindowId>,
+}
+
+/// What the dock window that gives the keyboard focus back
+/// ([`DockFocus::release`]) is to bring back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Release {
+    /// The session was this dock's: bring this window back.
+    Window(WindowId),
+    /// The session was this dock's, with nothing to go back to (nothing was
+    /// in front at the press): the foreground stays.
+    Nothing,
+    /// The session was another dock window's (this label), which lost the
+    /// activation without its blur reaching us: stale, and dropped too; the
+    /// foreground stays.
+    Stale(String),
+    /// No session: the focus shortcut did not bring the keyboard here.
+    NoSession,
+}
+
+impl DockFocus {
+    /// A press gives the dock window `dock` the focus; `window` is the
+    /// engine's active window at the press. Replaces any earlier session.
+    pub fn begin(&self, dock: &str, window: Option<WindowId>) {
+        *self.0.lock() = Some(FocusSession {
+            dock: dock.to_owned(),
+            window,
+        });
+    }
+
+    /// The dock window `label` gives the keyboard focus back (Escape, or a
+    /// second press): take the session and say what to bring back. A
+    /// session of another dock is stale and is dropped too.
+    pub fn release(&self, label: &str) -> Release {
+        match self.0.lock().take() {
+            Some(FocusSession {
+                dock,
+                window: Some(window),
+            }) if dock == label => Release::Window(window),
+            Some(session) if session.dock == label => Release::Nothing,
+            Some(session) => Release::Stale(session.dock),
+            None => Release::NoSession,
+        }
+    }
+
+    /// A click on a dock (`primary_click`, `launch_app`, `window_action`)
+    /// activates or launches something, which supersedes the window the
+    /// focus shortcut remembered: forget it, whichever dock holds the
+    /// session, so a later Escape does not undo the click. The dock whose
+    /// session it was, if there was one.
+    pub fn supersede(&self) -> Option<String> {
+        self.0.lock().take().map(|session| session.dock)
+    }
+
+    /// End the session if it is the dock window `label`'s (it closed, or
+    /// its activation failed); whether it was.
+    pub fn end(&self, label: &str) -> bool {
+        let mut session = self.0.lock();
+        if session.as_ref().is_some_and(|s| s.dock == label) {
+            *session = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// The dock window `label`'s webview lost the keyboard focus (Tauri's
+    /// `Focused(false)`) while `front` is the dock window that is the
+    /// foreground window (`None`: no dock is). When `label` is not in front
+    /// any more, another window took the activation (a click elsewhere,
+    /// Alt+Tab, the window Escape brought back) and its session ends; a dock
+    /// that is still in front (its own native menu took the focus for a
+    /// moment) keeps it. Whether a session ended.
+    pub fn blurred(&self, label: &str, front: Option<&str>) -> bool {
+        front != Some(label) && self.end(label)
+    }
+
+    /// The session as it is now (for the tests).
+    #[cfg(test)]
+    fn session(&self) -> Option<FocusSession> {
+        self.0.lock().clone()
+    }
 }
 
 /// The monitor of the window `id` as the engine's snapshot lists it (its
@@ -2383,22 +2468,32 @@ fn focused_dock(app: &AppHandle, platform: &dyn Platform) -> Option<String> {
 /// Stem the right to take the foreground.
 ///
 /// A press while a dock window has the focus gives it back, as Escape
-/// does. Otherwise: remember the engine's active window; pick the dock
-/// window on its monitor ([`focus_target`]); show that window if the tray
-/// or the toggle hid it, or ask its page for the panel (`dock://show`) if
-/// auto-hide slid it out; then, off the main thread, make it the
-/// foreground window (`Platform::focus_dock_window`) and
-/// tell its page (`dock://focus`), which focuses its toolbar. An
-/// activation that fails is logged and forgets the session; the page is
-/// not told.
+/// does ([`give_focus_back`], off the main thread). Otherwise: remember the
+/// engine's active window ([`DockFocus::begin`]); pick the dock window on
+/// its monitor ([`focus_target`]); show that window if the tray or the
+/// toggle hid it, or ask its page for the panel (`dock://show`) if
+/// auto-hide slid it out; then, off the main thread, make it the foreground
+/// window (`Platform::focus_dock_window`) and tell its page
+/// (`dock://focus`), which focuses its toolbar ([`activated`]).
 pub fn on_focus_shortcut(app: &AppHandle) {
-    let Some(service) = app.try_state::<crate::AppService>() else {
+    let (Some(service), Some(focus)) = (
+        app.try_state::<crate::AppService>(),
+        app.try_state::<DockFocus>(),
+    ) else {
         return;
     };
     let service = std::sync::Arc::clone(&service.0);
     if let Some(label) = focused_dock(app, service.platform().as_ref()) {
         log::debug!("focus shortcut: dock window {label:?} has the focus; giving it back");
-        give_focus_back(app, &service, &label);
+        let app = app.clone();
+        drop(tauri::async_runtime::spawn_blocking(move || {
+            let Some(focus) = app.try_state::<DockFocus>() else {
+                return;
+            };
+            if let Err(e) = give_focus_back(&focus, service.platform().as_ref(), &label) {
+                log::warn!("focus shortcut: {e}");
+            }
+        }));
         return;
     }
 
@@ -2427,12 +2522,7 @@ pub fn on_focus_shortcut(app: &AppHandle) {
     let Some(handle) = native_handle(&dock) else {
         return;
     };
-    if let Some(focus) = app.try_state::<DockFocus>() {
-        *focus.0.lock() = Some(FocusSession {
-            dock: label.clone(),
-            window,
-        });
-    }
+    focus.begin(&label, window);
     log::info!(
         "focus shortcut: the keyboard goes to dock window {label:?} (monitor {}); Escape goes back to {}",
         monitor.as_ref().map_or("unknown", |m| m.0.as_str()),
@@ -2444,22 +2534,38 @@ pub fn on_focus_shortcut(app: &AppHandle) {
     // once its window is in front; until the WebView has the focus the
     // browser holds the page's `focus()` back, so either order ends with
     // the item focused.
-    drop(tauri::async_runtime::spawn_blocking(move || match service
-        .platform()
-        .focus_dock_window(handle)
-    {
-        Ok(()) => {
-            if let Err(e) = app.emit_to(&label, crate::events::FOCUS, ()) {
-                log::warn!("focus shortcut: telling dock window {label:?} failed: {e}");
-            }
+    drop(tauri::async_runtime::spawn_blocking(move || {
+        let result = service.platform().focus_dock_window(handle);
+        let Some(focus) = app.try_state::<DockFocus>() else {
+            return;
+        };
+        if activated(&focus, &label, result)
+            && let Err(e) = app.emit_to(&label, crate::events::FOCUS, ())
+        {
+            log::warn!("focus shortcut: telling dock window {label:?} failed: {e}");
         }
+    }));
+}
+
+/// The activation of the dock window `label` at a press ended with
+/// `result`: whether its page is to be told (`dock://focus`). A failure is
+/// a warning and ends the session if it is still that dock's (a later press
+/// may have given another dock the focus meanwhile); the page is not told.
+fn activated(focus: &DockFocus, label: &str, result: Result<(), PlatformError>) -> bool {
+    match result {
+        Ok(()) => true,
         Err(e) => {
             log::warn!(
                 "focus shortcut: dock window {label:?} could not take the keyboard focus: {e}"
             );
-            forget_session_of(&app, &label, "its activation failed");
+            if focus.end(label) {
+                log::debug!(
+                    "dock window {label:?}: its activation failed; the window to go back to is forgotten"
+                );
+            }
+            false
         }
-    }));
+    }
 }
 
 /// Step 3 of a press: a dock window the tray or the toggle hid is shown; one
@@ -2483,49 +2589,33 @@ fn bring_on_screen(app: &AppHandle, dock: &WebviewWindow) {
     }
 }
 
-/// A second press while the dock window `label` has the focus: what Escape
-/// does (`release_dock_focus`), off the main thread. Main thread.
-fn give_focus_back(app: &AppHandle, service: &std::sync::Arc<DockService>, label: &str) {
-    let Some(window) = take_dock_focus(app, label) else {
-        return;
-    };
-    let service = std::sync::Arc::clone(service);
-    let label = label.to_owned();
-    drop(tauri::async_runtime::spawn_blocking(move || {
-        if let Err(e) = return_focus(service.platform().as_ref(), &label, window) {
-            log::warn!("focus shortcut: {e}");
-        }
-    }));
-}
-
-/// Take the focus shortcut's session for the dock window `label`, which is
-/// giving the focus back (Escape, or a second press): the window to bring
-/// back, if the session is that dock's and remembered one. A session of
-/// another dock is stale (that dock lost the activation without its blur
-/// reaching us) and is dropped too. Any thread.
-pub fn take_dock_focus(app: &AppHandle, label: &str) -> Option<WindowId> {
-    let session = app
-        .try_state::<DockFocus>()
-        .and_then(|focus| focus.0.lock().take());
-    match session {
-        Some(session) if session.dock == label => {
-            if session.window.is_none() {
-                log::debug!(
-                    "dock window {label:?} gives the focus back; nothing was in front at the press"
-                );
-            }
-            session.window
-        }
-        Some(session) => {
+/// The dock window `label` gives the keyboard focus back (Escape through
+/// `release_dock_focus`, or a second press): take the session
+/// ([`DockFocus::release`]) and bring the remembered window back
+/// ([`return_focus`]); with nothing to bring back the foreground stays.
+/// Blocking (bounded): never on the main thread.
+pub fn give_focus_back(
+    focus: &DockFocus,
+    platform: &dyn Platform,
+    label: &str,
+) -> Result<(), String> {
+    match focus.release(label) {
+        Release::Window(window) => return_focus(platform, label, window),
+        Release::Nothing => {
             log::debug!(
-                "dock window {label:?} gives the focus back; the session of {:?} is stale and dropped",
-                session.dock
+                "dock window {label:?} gives the focus back; nothing was in front at the press"
             );
-            None
+            Ok(())
         }
-        None => {
+        Release::Stale(other) => {
+            log::debug!(
+                "dock window {label:?} gives the focus back; the session of {other:?} is stale and dropped"
+            );
+            Ok(())
+        }
+        Release::NoSession => {
             log::debug!("dock window {label:?} gives the focus back; nothing to go back to");
-            None
+            Ok(())
         }
     }
 }
@@ -2554,46 +2644,43 @@ pub fn return_focus(platform: &dyn Platform, label: &str, window: WindowId) -> R
 
 /// A click on a dock (`primary_click`, `launch_app`, `window_action`)
 /// activates or launches something, which supersedes the window the focus
-/// shortcut remembered: forget it, whichever dock holds it, so a
-/// later Escape does not undo the click. Any thread.
+/// shortcut remembered ([`DockFocus::supersede`]). Any thread.
 pub fn forget_dock_focus(app: &AppHandle, why: &str) {
     let Some(focus) = app.try_state::<DockFocus>() else {
         return;
     };
-    if let Some(session) = focus.0.lock().take() {
-        log::debug!(
-            "dock window {:?}: {why}; the window to go back to is forgotten",
-            session.dock
-        );
+    if let Some(dock) = focus.supersede() {
+        log::debug!("dock window {dock:?}: {why}; the window to go back to is forgotten");
     }
 }
 
-/// Forget the session if it is the dock window `label`'s. Any thread.
+/// End the session if it is the dock window `label`'s
+/// ([`DockFocus::end`]). Any thread.
 fn forget_session_of(app: &AppHandle, label: &str, why: &str) {
     let Some(focus) = app.try_state::<DockFocus>() else {
         return;
     };
-    let mut session = focus.0.lock();
-    if session.as_ref().is_some_and(|s| s.dock == label) {
-        *session = None;
+    if focus.end(label) {
         log::debug!("dock window {label:?}: {why}; the window to go back to is forgotten");
     }
 }
 
 /// The dock window `label`'s webview lost the keyboard focus (Tauri's
-/// `Focused(false)`). When that window is no longer the foreground
-/// window, another window took the activation (a click elsewhere, Alt+Tab,
-/// the window Escape brought back) and the focus shortcut's session of that
-/// dock is forgotten; a dock that is still in front (its own native menu
-/// took the focus for a moment) keeps it. Main thread.
+/// `Focused(false)`; [`DockFocus::blurred`] with the dock window
+/// that is in front now). Main thread.
 fn on_dock_blurred(app: &AppHandle, label: &str) {
-    let Some(service) = app.try_state::<crate::AppService>() else {
+    let (Some(service), Some(focus)) = (
+        app.try_state::<crate::AppService>(),
+        app.try_state::<DockFocus>(),
+    ) else {
         return;
     };
-    if focused_dock(app, service.0.platform().as_ref()).as_deref() == Some(label) {
-        return;
+    let front = focused_dock(app, service.0.platform().as_ref());
+    if focus.blurred(label, front.as_deref()) {
+        log::debug!(
+            "dock window {label:?}: it lost the activation; the window to go back to is forgotten"
+        );
     }
-    forget_session_of(app, label, "it lost the activation");
 }
 
 #[cfg(test)]
@@ -3920,5 +4007,153 @@ mod tests {
             focus_target(MonitorMode::All, Some(&other), &unplaced),
             DOCK_LABEL
         );
+    }
+
+    // --- The focus shortcut's session ---
+
+    const OTHER_DOCK: &str = "dock-DISPLAY3";
+
+    fn session(dock: &str, window: Option<u64>) -> Option<FocusSession> {
+        Some(FocusSession {
+            dock: dock.to_owned(),
+            window: window.map(WindowId),
+        })
+    }
+
+    #[test]
+    fn a_release_takes_the_session_of_its_own_dock_and_says_what_to_bring_back() {
+        let focus = DockFocus::default();
+        assert_eq!(focus.release(DOCK_LABEL), Release::NoSession);
+
+        focus.begin(DOCK_LABEL, Some(WindowId(7)));
+        assert_eq!(focus.session(), session(DOCK_LABEL, Some(7)));
+        assert_eq!(focus.release(DOCK_LABEL), Release::Window(WindowId(7)));
+        // Taken: a second Escape has nothing to give back.
+        assert_eq!(focus.session(), None);
+        assert_eq!(focus.release(DOCK_LABEL), Release::NoSession);
+
+        // Nothing was in front at the press (the desktop, Start).
+        focus.begin(DOCK_LABEL, None);
+        assert_eq!(focus.release(DOCK_LABEL), Release::Nothing);
+        assert_eq!(focus.session(), None);
+    }
+
+    #[test]
+    fn a_release_from_another_dock_drops_a_stale_session_and_brings_nothing_back() {
+        let focus = DockFocus::default();
+        focus.begin(OTHER_DOCK, Some(WindowId(7)));
+        assert_eq!(
+            focus.release(DOCK_LABEL),
+            Release::Stale(OTHER_DOCK.to_owned())
+        );
+        // Dropped, so the other dock's own Escape later goes nowhere either.
+        assert_eq!(focus.session(), None);
+        assert_eq!(focus.release(OTHER_DOCK), Release::NoSession);
+    }
+
+    #[test]
+    fn a_later_press_replaces_the_session_whichever_dock_it_picks() {
+        let focus = DockFocus::default();
+        focus.begin(DOCK_LABEL, Some(WindowId(7)));
+        focus.begin(OTHER_DOCK, Some(WindowId(8)));
+        assert_eq!(focus.session(), session(OTHER_DOCK, Some(8)));
+        assert_eq!(
+            focus.release(DOCK_LABEL),
+            Release::Stale(OTHER_DOCK.to_owned())
+        );
+    }
+
+    #[test]
+    fn a_click_on_any_dock_supersedes_the_remembered_window() {
+        let focus = DockFocus::default();
+        assert_eq!(focus.supersede(), None);
+        focus.begin(OTHER_DOCK, Some(WindowId(7)));
+        assert_eq!(focus.supersede(), Some(OTHER_DOCK.to_owned()));
+        assert_eq!(focus.release(OTHER_DOCK), Release::NoSession);
+    }
+
+    #[test]
+    fn only_the_docks_own_close_or_failed_activation_ends_its_session() {
+        let focus = DockFocus::default();
+        assert!(!focus.end(DOCK_LABEL));
+        focus.begin(DOCK_LABEL, Some(WindowId(7)));
+        assert!(!focus.end(OTHER_DOCK));
+        assert_eq!(focus.session(), session(DOCK_LABEL, Some(7)));
+        assert!(focus.end(DOCK_LABEL));
+        assert_eq!(focus.session(), None);
+    }
+
+    #[test]
+    fn a_blur_ends_the_session_only_once_its_dock_is_no_longer_in_front() {
+        let focus = DockFocus::default();
+        focus.begin(DOCK_LABEL, Some(WindowId(7)));
+        // Its own native menu took the focus: the dock is still in front.
+        assert!(!focus.blurred(DOCK_LABEL, Some(DOCK_LABEL)));
+        assert_eq!(focus.session(), session(DOCK_LABEL, Some(7)));
+        // Another dock's blur leaves it alone, wherever the foreground is.
+        assert!(!focus.blurred(OTHER_DOCK, None));
+        assert!(!focus.blurred(OTHER_DOCK, Some(DOCK_LABEL)));
+        assert_eq!(focus.session(), session(DOCK_LABEL, Some(7)));
+        // Another dock took the foreground (its menu), or no dock has it (a
+        // click elsewhere, Alt+Tab): the session ends.
+        assert!(focus.blurred(DOCK_LABEL, Some(OTHER_DOCK)));
+        assert_eq!(focus.session(), None);
+        focus.begin(DOCK_LABEL, None);
+        assert!(focus.blurred(DOCK_LABEL, None));
+        assert_eq!(focus.session(), None);
+        assert!(!focus.blurred(DOCK_LABEL, None), "nothing left to end");
+    }
+
+    #[test]
+    fn a_failed_activation_ends_the_session_and_tells_the_page_nothing() {
+        let focus = DockFocus::default();
+        focus.begin(DOCK_LABEL, Some(WindowId(7)));
+        assert!(activated(&focus, DOCK_LABEL, Ok(())));
+        assert_eq!(focus.session(), session(DOCK_LABEL, Some(7)));
+        assert!(!activated(
+            &focus,
+            DOCK_LABEL,
+            Err(PlatformError::Unsupported("keyboard focus"))
+        ));
+        assert_eq!(focus.session(), None);
+        // A later press gave another dock the focus meanwhile: its session
+        // stays.
+        focus.begin(OTHER_DOCK, Some(WindowId(8)));
+        assert!(!activated(
+            &focus,
+            DOCK_LABEL,
+            Err(PlatformError::Unsupported("keyboard focus"))
+        ));
+        assert_eq!(focus.session(), session(OTHER_DOCK, Some(8)));
+    }
+
+    #[test]
+    fn giving_the_focus_back_activates_the_remembered_window_once_and_only_for_its_dock() {
+        use stem_platform::mock::{MockCall, MockPlatform};
+
+        let platform = MockPlatform::with_demo_scenario();
+        let focus = DockFocus::default();
+        let activate = |id| MockCall::WindowAction(WindowId(id), WindowAction::Activate);
+
+        // Escape after a press from window 1.
+        focus.begin(DOCK_LABEL, Some(WindowId(1)));
+        assert_eq!(give_focus_back(&focus, &platform, DOCK_LABEL), Ok(()));
+        assert_eq!(platform.calls(), vec![activate(1)]);
+        // A second Escape, and one with nothing in front at the press, or
+        // from another dock than the session's, activate nothing.
+        platform.clear_calls();
+        assert_eq!(give_focus_back(&focus, &platform, DOCK_LABEL), Ok(()));
+        focus.begin(DOCK_LABEL, None);
+        assert_eq!(give_focus_back(&focus, &platform, DOCK_LABEL), Ok(()));
+        focus.begin(OTHER_DOCK, Some(WindowId(1)));
+        assert_eq!(give_focus_back(&focus, &platform, DOCK_LABEL), Ok(()));
+        assert_eq!(platform.calls(), vec![]);
+        assert_eq!(focus.session(), None);
+
+        // The remembered window closed meanwhile: the foreground stays, and
+        // the command still resolves.
+        focus.begin(DOCK_LABEL, Some(WindowId(99)));
+        assert_eq!(give_focus_back(&focus, &platform, DOCK_LABEL), Ok(()));
+        assert_eq!(platform.calls(), vec![activate(99)]);
     }
 }

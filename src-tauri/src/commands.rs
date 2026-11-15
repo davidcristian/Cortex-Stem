@@ -401,9 +401,9 @@ async fn delete_to_recycle_bin(
 /// which must not run on the main thread.
 #[tauri::command]
 async fn release_dock_focus(
-    app: AppHandle,
     window: tauri::WebviewWindow,
     service: State<'_, AppService>,
+    focus: State<'_, crate::windows::DockFocus>,
 ) -> CmdResult<()> {
     let label = window.label().to_owned();
     if !label.starts_with(crate::windows::DOCK_LABEL) {
@@ -413,13 +413,10 @@ async fn release_dock_focus(
             Err::<(), _>("only dock windows take the keyboard focus"),
         );
     }
-    let Some(previous) = crate::windows::take_dock_focus(&app, &label) else {
-        return Ok(());
-    };
     checked(
         "release_dock_focus",
-        &(&label, previous),
-        crate::windows::return_focus(service.0.platform().as_ref(), &label, previous),
+        &label,
+        crate::windows::give_focus_back(&focus, service.0.platform().as_ref(), &label),
     )
 }
 
