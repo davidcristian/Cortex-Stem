@@ -426,6 +426,12 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
             crate::request_quit(app);
         }
         action => {
+            // An entry that activates, launches or acts on windows
+            // supersedes the window the focus shortcut would go back to, as
+            // a click does; pinning does not.
+            if !matches!(action, MenuAction::Pin(_) | MenuAction::Unpin(_)) {
+                crate::windows::forget_dock_focus(app, "a menu entry");
+            }
             let Some(service) = app.try_state::<AppService>().map(|s| Arc::clone(&s.0)) else {
                 log::warn!("context menu {action:?} ignored: the service is not running");
                 return;
