@@ -32,9 +32,10 @@ scaling, an icon size of 48 is drawn 72 physical pixels wide.
 ## Appearance
 
 _Icon size_ is `iconSize`. _Magnification_, _Maximum scale_ and _Range_ are
-the [`magnification`](../SETTINGS.md#magnification) keys. _Panel opacity_,
-_Corner radius_, _Backdrop_, _Tooltips_ and _Bounce on launch_ are the
-[`appearance`](../SETTINGS.md#appearance) keys. _Theme_ is `theme`.
+the [`magnification`](../SETTINGS.md#magnification) keys. _Theme_, _Panel
+opacity_, _Corner radius_, _Backdrop_, _Tooltips_ and _Bounce on launch_ are
+the [`appearance`](../SETTINGS.md#appearance) keys. _Colour mode_ is `theme`.
+_Your styles (dock.css)_ is not a setting but a file of your own.
 
 - _Magnification_ makes icons grow as the pointer approaches them. The icon
   right under the pointer grows to _Maximum scale_, and _Range_ is the
@@ -47,14 +48,20 @@ _Corner radius_, _Backdrop_, _Tooltips_ and _Bounce on launch_ are the
   settings window keeps the value.
 - _Bounce on launch_ bounces the icon of an app you started from the dock
   while the app is starting.
-- _Theme_ sets the colours of the dock and the settings window. _Use
+- _Theme_ is how the panel is drawn: _Standard (translucent)_, _Solid
+  (opaque)_ or _Minimal (icons only)_. See [Themes](themes.md). _Panel
+  opacity_ applies to _Standard_ only and is greyed out for the other two.
+- _Colour mode_ sets the colours of the dock and the settings window. _Use
   Windows setting_ (`system`) uses the Windows app mode (light or dark).
   _Light_ (`light`) and _Dark_ (`dark`) override it.
+- _Your styles (dock.css)_ shows where your own stylesheet is and whether the
+  dock uses it, with the buttons _Edit dock.css_ and _Reload_. See
+  [Themes](themes.md).
 
 In every theme, the dock uses the Windows accent colour. With _Transparency
-effects_ off in Windows, the panel is almost opaque. With a Windows contrast
-theme on, the dock and the settings window use the contrast theme's solid
-colours.
+effects_ off in Windows, the _Standard_ panel is almost opaque. With a
+Windows contrast theme on, the dock and the settings window use the contrast
+theme's solid colours, in every theme.
 
 ## Behaviour
 

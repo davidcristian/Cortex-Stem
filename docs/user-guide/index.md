@@ -10,6 +10,7 @@ installing and building, see the [README](../../README.md).
 | [settings-window.md](settings-window.md) | Every section of the settings window, the settings file and the keys behind each section |
 | [pinned-apps.md](pinned-apps.md) | The _Pinned apps_ section, the `pinned` array, and pinning and rearranging apps by drag and drop |
 | [clicking-an-app.md](clicking-an-app.md) | The order of the dock's items, what a click and a right-click on an app do, and the running dots |
+| [themes.md](themes.md) | The _Standard_, _Solid_ and _Minimal_ themes and your own `dock.css` |
 | [auto-hide.md](auto-hide.md) | The auto-hide modes, how to bring a hidden dock back, and fullscreen apps |
 | [fixed-items.md](fixed-items.md) | Start, Task View, Show Desktop and the Recycle Bin |
 | [keyboard-shortcuts.md](keyboard-shortcuts.md) | The toggle shortcut, the focus shortcut and how to write a shortcut |
