@@ -6,7 +6,7 @@ which work may run on which thread.
 | Thread | Crate | Does |
 |--------|-------|------|
 | Tauri main (UI) thread | tauri | window creation, commands (which must return fast) |
-| `stem-platform-events` | platform | the hidden event window, the WinEvent hooks, the shell hook and timers; posts `PlatformEvent`s (see *The events thread* below) |
+| `stem-platform-events` | platform | the hidden event window, the WinEvent hooks, the shell hook, power-setting notifications and timers; posts `PlatformEvent`s (see *The events thread* below) |
 | `dock-recycle-bin` | platform | queries the Recycle Bin (`SHQueryRecycleBinW`) every 5 s and emits `RecycleBinChanged` when it changes; the query walks every drive and can block for seconds, so it never runs on the events thread |
 | `stem-service` worker | service | engine updates (it drains every queued input in one batch), calls the listeners (`State` coalesced to at most one per 16 ms) |
 | `dock-identity` | service | platform identity queries (`identify_window`, `identify_target`), one retry after 2 s, then a fallback identity; `IdentityUnavailable` when there was nothing to query; never blocks the event drain |
@@ -37,6 +37,18 @@ message loop. The window is top-level, not message-only, because broadcasts
 such as `WM_SETTINGCHANGE`, `WM_DISPLAYCHANGE` and `WM_POWERBROADCAST` do
 not reach message-only windows. The thread installs the `SetWinEventHook`
 hooks and the shell hook, keeps its timers, and posts `PlatformEvent`s.
+
+**Power.** The window is registered (`RegisterPowerSettingNotification`) for
+`GUID_BATTERY_PERCENTAGE_REMAINING`, `GUID_ACDC_POWER_SOURCE` and
+`GUID_POWER_SAVING_STATUS`. The registrations are removed on this thread
+before the window is destroyed. Each `WM_POWERBROADCAST` with
+`PBT_POWERSETTINGCHANGE`, `PBT_APMPOWERSTATUSCHANGE` or
+`PBT_APMRESUMEAUTOMATIC` reads `GetSystemPowerStatus` again and emits
+`PowerChanged` only when the reading changed. The battery saver state is
+the `DWORD` of the last `GUID_POWER_SAVING_STATUS` notification, which the
+window procedure copies out of `lParam` while it is valid. Once one such
+notification has arrived, its value replaces `SystemStatusFlag` in every
+reading.
 
 **Late-visible windows.** A create or show event, or `HSHELL_WINDOWCREATED`,
 can find a window hidden or cloaked while it passes every other

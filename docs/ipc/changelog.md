@@ -20,7 +20,11 @@ to the file that covers that section now.
   `PlatformEvent::PowerChanged`, and `ShellAction` `openDateTimeSettings` and
   `openPowerSettings`. New section
   [Clock and battery items](widget-items.md#clock-and-battery-items-v122). The
-  [Context menus](context-menus.md) heading, missing since v1.18, is restored.
+  [Context menus](context-menus.md) heading, missing since v1.18, is restored. Amended later
+  without a payload change: battery saver comes from the `DWORD` of the last
+  `GUID_POWER_SAVING_STATUS` notification once one has arrived, instead of from
+  `SystemStatusFlag`, which may be read before Windows has updated it; the
+  [icon keys table](icon-keys.md) lists `shell:battery` and `shell:clock`.
 - **v1.21 (quick settings and notification items):** Two optional fixed items.
   `Settings.items.quickSettings` and `Settings.items.notificationCenter` (both default `false`)
   add `DockItemKind` `quickSettings` and `notificationCenter` (item keys `fixed:quick-settings`

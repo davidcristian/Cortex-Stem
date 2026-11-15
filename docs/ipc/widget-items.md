@@ -25,8 +25,11 @@ Two optional fixed items that are widgets, items that draw live data:
   for `GUID_BATTERY_PERCENTAGE_REMAINING`, `GUID_ACDC_POWER_SOURCE` and
   `GUID_POWER_SAVING_STATUS` (`RegisterPowerSettingNotification`), and also handles
   `PBT_APMPOWERSTATUSCHANGE` and `PBT_APMRESUMEAUTOMATIC`. Each of these reads the status again.
-  The thread sends `PowerChanged` once after the start snapshot, and after that only when the
-  status differs from the last one sent. It unregisters the notifications at stop.
+  Once a `GUID_POWER_SAVING_STATUS` notification has arrived, battery saver comes from the
+  `DWORD` of the last one (the window procedure copies it out of the `POWERBROADCAST_SETTING`)
+  instead of from `SystemStatusFlag`. The thread sends `PowerChanged` once after the start
+  snapshot, and after that only when the status differs from the last one sent. It unregisters
+  the notifications at stop.
 - The page draws the faces. The clock shows the time (`Intl.DateTimeFormat` with
   `hour: 'numeric', minute: '2-digit'`, in the page's locale) over the short
   weekday and the day. Its title pill and accessible name are the full date and time. It updates
@@ -39,8 +42,9 @@ Two optional fixed items that are widgets, items that draw live data:
   Menus (built by Rust): the clock's has *Open Notification Center* and *Date and time settings*
   (`ShellAction` `openDateTimeSettings`, which launches `ms-settings:dateandtime`). The
   battery's has *Open Quick Settings* and *Power and battery settings* (`openPowerSettings`:
-  `ms-settings:powersleep`). Both end with the entries that every item menu ends with
-  ([Context menus](context-menus.md)).
+  `ms-settings:powersleep`, which Microsoft documents as System > Power & sleep; on Windows 11 the
+  page is Power & battery, or Power on a PC without a battery). Both end with the entries that
+  every item menu ends with ([Context menus](context-menus.md)).
 - `MockBackend`: `MockOptions.power` (default: a laptop at 76 %, on battery) and
   `setPower(status)`, which emits a new state. The clock follows the page's
   own clock (Playwright installs a fixed one).
