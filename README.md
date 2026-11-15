@@ -49,9 +49,10 @@ _Close all windows_, settings and quit.
 **Look.** Icons grow near the pointer, tooltips name the app, and an icon bounces while its app
 starts. Up to three dots per app show its open windows, dimmed while all of them are minimised. An
 app that asks for attention gets an orange pill in place of its dots and wiggles until you switch
-to it. The dock follows the Windows accent colour, light and dark mode, transparency effects and
-contrast themes, with a light or dark override. The settings window offers one backdrop, which the
-page draws itself (`css`, named _Blur (built in)_). `acrylic` or `mica`,
+to it. Three themes (_Standard_, _Solid_ and _Minimal_) and a `dock.css` of your own set how the
+panel is drawn. The dock follows the Windows accent colour, light and dark mode, transparency
+effects and contrast themes, with a light or dark override. The settings window offers one
+backdrop, which the page draws itself (`css`, named _Blur (built in)_). `acrylic` or `mica`,
 written into the settings file, turns on an experimental native backdrop behind the primary dock's
 panel on Windows 11 22H2 or later.
 
@@ -159,6 +160,7 @@ Where Stem keeps its files:
 | What                    | Where                                                                               |
 | ----------------------- | ----------------------------------------------------------------------------------- |
 | Settings                | `%APPDATA%\dev.davidcristian.stem\settings.json`                                    |
+| Your styles             | `%APPDATA%\dev.davidcristian.stem\dock.css`                                         |
 | Log                     | `%LOCALAPPDATA%\dev.davidcristian.stem\logs\stem.log`                               |
 | Icon cache              | `%LOCALAPPDATA%\dev.davidcristian.stem\icons\`                                      |
 | Taskbar and crash notes | `%LOCALAPPDATA%\dev.davidcristian.stem\` (`taskbar.json`, `crash.json`, `run.json`) |
@@ -176,7 +178,7 @@ the details.
 **Uninstalling.** Quit Stem first (tray → _Quit_), so it puts your taskbar setting back. Then
 remove Stem from Windows Settings → Apps → Installed apps. The uninstaller also removes Stem's
 startup entry. Its _Delete the application data_ box, unticked by default, deletes both
-`dev.davidcristian.stem` folders: the settings, the log, the icon cache, the
+`dev.davidcristian.stem` folders: the settings, your `dock.css`, the log, the icon cache, the
 notes and WebView2's data. Leave it unticked to keep your settings.
 
 ## Build from source

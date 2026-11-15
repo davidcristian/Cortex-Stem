@@ -9,6 +9,8 @@ import type { RawWindow } from '../src/lib/ipc/generated/RawWindow';
 import type { Rect } from '../src/lib/ipc/generated/Rect';
 import type { Settings } from '../src/lib/ipc/generated/Settings';
 import type { ThemeInfo } from '../src/lib/ipc/generated/ThemeInfo';
+import type { ThemePreset } from '../src/lib/ipc/generated/ThemePreset';
+import type { UserCss } from '../src/lib/ipc/generated/UserCss';
 
 const OUT = 'e2e/output';
 const APP_SLOT = '.slot[data-kind="app"]';
@@ -62,6 +64,12 @@ interface DemoWindow {
     requestFocus: () => void;
     /** What `get_app_info` answers from now on. */
     setAppInfo: (info: Partial<AppInfo>) => void;
+    /** Change the user's dock.css on "disk" (`null` deletes it); read at the next reload. */
+    writeUserCss: (css: string | null) => void;
+    /** `reload_user_css`: read it again and send `dock://user-css`. */
+    reloadUserCss: () => Promise<UserCss>;
+    /** The mock's dock.css on "disk" (`null`: none). */
+    userCssOnDisk: () => string | null;
   };
 }
 
@@ -5150,4 +5158,435 @@ test.describe('the dock on the left, right and top edges', () => {
       }
     });
   }
+});
+
+test.describe('theme presets and the user dock.css', () => {
+  const PANEL = '.dock-panel';
+  const STAGE = '.dock-stage';
+  const SEPARATOR = '[role="separator"]';
+  const DOT = `${APP_SLOT} .dots i`;
+  const PRESETS: readonly ThemePreset[] = ['standard', 'solid', 'minimal'];
+  const DOCK_CSS_PATH = 'C:\\Users\\me\\AppData\\Roaming\\dev.davidcristian.stem\\dock.css';
+  /** A light-mode accent that is not Windows blue, to show the dots follow it in every preset. */
+  const LIGHT_ACCENT = '#C239B3';
+  const LIGHT_ACCENT_RGB = 'rgb(194, 57, 179)';
+  const DARK_ACCENT_RGB = 'rgb(0, 120, 212)';
+
+  interface Look {
+    fill: string;
+    blur: string;
+    hairline: string;
+    separator: string;
+    pill: string;
+  }
+
+  /** What each preset draws, per colour mode: the computed colours of Dock.svelte's preset rules. */
+  const LOOK: Record<'dark' | 'light', Record<ThemePreset, Look>> = {
+    dark: {
+      standard: {
+        fill: 'rgba(28, 28, 30, 0.72)',
+        blur: 'blur(24px) saturate(1.4)',
+        hairline: 'rgba(255, 255, 255, 0.12)',
+        separator: 'rgba(255, 255, 255, 0.22)',
+        pill: 'rgba(40, 40, 42, 0.94)',
+      },
+      solid: {
+        fill: 'rgb(44, 44, 44)',
+        blur: 'none',
+        hairline: 'rgba(117, 117, 117, 0.4)',
+        separator: 'rgba(255, 255, 255, 0.28)',
+        pill: 'rgb(44, 44, 44)',
+      },
+      minimal: {
+        fill: 'rgba(0, 0, 0, 0)',
+        blur: 'none',
+        hairline: 'rgba(0, 0, 0, 0)',
+        separator: 'rgba(255, 255, 255, 0.5)',
+        pill: 'rgba(40, 40, 42, 0.94)',
+      },
+    },
+    light: {
+      standard: {
+        fill: 'rgba(244, 244, 246, 0.72)',
+        blur: 'blur(24px) saturate(1.4)',
+        hairline: 'rgba(0, 0, 0, 0.1)',
+        separator: 'rgba(0, 0, 0, 0.18)',
+        pill: 'rgba(250, 250, 252, 0.96)',
+      },
+      solid: {
+        fill: 'rgb(249, 249, 249)',
+        blur: 'none',
+        hairline: 'rgba(117, 117, 117, 0.4)',
+        separator: 'rgba(0, 0, 0, 0.22)',
+        pill: 'rgb(249, 249, 249)',
+      },
+      minimal: {
+        fill: 'rgba(0, 0, 0, 0)',
+        blur: 'none',
+        hairline: 'rgba(0, 0, 0, 0)',
+        separator: 'rgba(0, 0, 0, 0.4)',
+        pill: 'rgba(250, 250, 252, 0.96)',
+      },
+    },
+  };
+
+  /** The user's dock.css of the screenshot: a variable of every kind changed but the blur. */
+  const USER_CSS = [
+    '.dock-stage {',
+    '  --stem-panel-fill: linear-gradient(135deg, rgb(0 120 212 / 0.55), rgb(136 23 152 / 0.55));',
+    '  --stem-panel-hairline: rgb(255 255 255 / 0.4);',
+    '  --stem-panel-shadow: 0 6px 18px rgb(0 0 0 / 0.5);',
+    '  --stem-panel-radius: 10px;',
+    '  --stem-separator: rgb(255 255 255 / 0.6);',
+    '  --stem-dot: #ffb900;',
+    '  --stem-pill-fill: #ffb900;',
+    '  --stem-pill-text: #1b1b1f;',
+    '}',
+    '',
+  ].join('\n');
+
+  function setPreset(page: Page, theme: ThemePreset): Promise<void> {
+    return patchSettings(page, { appearance: { theme } });
+  }
+
+  /** The dock.css "on disk" changes and Settings → Reload is pressed: `dock://user-css` reaches the page. */
+  function reloadWith(page: Page, css: string | null): Promise<UserCss | undefined> {
+    return page.evaluate(async (c) => {
+      const mock = (window as unknown as DemoWindow).__dockMock!;
+      mock.writeUserCss(c);
+      return mock.reloadUserCss();
+    }, css);
+  }
+
+  /**
+   * A dock.css that is there when Stem starts: the mock's file is written
+   * and read the moment the page exposes the mock (before mounting, so
+   * before the page's `get_user_css`), which leaves the mock where
+   * `MockOptions.userCss` would. Installed before the page loads, like
+   * `withTaskbarAutoHidden`.
+   */
+  async function withUserCssAtStart(page: Page, css: string): Promise<void> {
+    await page.addInitScript((c) => {
+      interface UserCssMock {
+        writeUserCss: (css: string | null) => void;
+        reloadUserCss: () => Promise<unknown>;
+      }
+      let mock: UserCssMock | undefined;
+      Object.defineProperty(window, '__dockMock', {
+        configurable: true,
+        get: () => mock,
+        set: (value: UserCssMock) => {
+          value.writeUserCss(c);
+          void value.reloadUserCss();
+          mock = value;
+        },
+      });
+    }, css);
+  }
+
+  /** The panel's box (CSS px). */
+  function panelBox(page: Page): Promise<Rect> {
+    return page.locator(PANEL).evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      return { x: r.x, y: r.y, width: r.width, height: r.height };
+    });
+  }
+
+  async function expectLook(
+    page: Page,
+    scheme: 'dark' | 'light',
+    preset: ThemePreset,
+    accent: string,
+  ): Promise<void> {
+    const look = LOOK[scheme][preset];
+    const panel = page.locator(PANEL);
+    await expect(page.locator(STAGE)).toHaveAttribute('data-theme', preset);
+    await expect(panel).toHaveCSS('background-color', look.fill);
+    await expect(panel).toHaveCSS('backdrop-filter', look.blur);
+    expect(await computed(panel, 'border-top-color', '::before')).toBe(look.hairline);
+    await expect(page.locator(SEPARATOR).first()).toHaveCSS('background-color', look.separator);
+    await expect(page.locator(DOT).first()).toHaveCSS('background-color', accent);
+    if (preset === 'minimal') {
+      await expect(panel).toHaveCSS('box-shadow', 'none');
+    } else {
+      await expect(panel).not.toHaveCSS('box-shadow', 'none');
+    }
+  }
+
+  for (const scheme of ['dark', 'light'] as const) {
+    const accent = scheme === 'dark' ? DARK_ACCENT_RGB : LIGHT_ACCENT_RGB;
+
+    test(`at the bottom in ${scheme} mode: each preset draws its panel, the dots keep the accent, nothing moves`, async ({
+      page,
+    }) => {
+      await page.emulateMedia({ colorScheme: scheme });
+      await openDock(page);
+      if (scheme === 'light') {
+        await setOsTheme(page, { dark: false, accent: LIGHT_ACCENT });
+      }
+      await expect(page.locator('html')).toHaveAttribute('data-theme', scheme);
+      const atRest = await panelBox(page);
+      for (const preset of PRESETS) {
+        // Back at rest after the last hover's magnification...
+        await page.mouse.move(640, 10);
+        await expect.poll(() => panelBox(page)).toEqual(atRest);
+        await setPreset(page, preset);
+        await expectLook(page, scheme, preset, accent);
+        // ...the panel keeps its box: a preset change moves no icon.
+        expect(await panelBox(page)).toEqual(atRest);
+        await page.locator(APP_SLOT).nth(3).hover();
+        const pill = page.locator('.tooltip');
+        await expect(pill).toHaveText('notepad');
+        await expect(pill).toHaveCSS('background-color', LOOK[scheme][preset].pill);
+        await page.screenshot({ path: `${OUT}/dock-theme-${preset}-${scheme}.png` });
+      }
+    });
+
+    test(`on the left in ${scheme} mode: each preset draws its panel along the edge`, async ({
+      page,
+    }) => {
+      await page.emulateMedia({ colorScheme: scheme });
+      await page.setViewportSize({ width: 360, height: 800 });
+      await openDock(page, 'mock=1&position=left');
+      if (scheme === 'light') {
+        await setOsTheme(page, { dark: false, accent: LIGHT_ACCENT });
+      }
+      await expect(page.locator(STAGE)).toHaveAttribute('data-edge', 'left');
+      const atRest = await panelBox(page);
+      for (const preset of PRESETS) {
+        await page.mouse.move(350, 10);
+        await expect.poll(() => panelBox(page)).toEqual(atRest);
+        await setPreset(page, preset);
+        await expectLook(page, scheme, preset, accent);
+        expect(await panelBox(page)).toEqual(atRest);
+        await page.locator(APP_SLOT).nth(3).hover();
+        await expect(page.locator('.tooltip')).toHaveText('notepad');
+        await page.screenshot({ path: `${OUT}/dock-theme-${preset}-left-${scheme}.png` });
+      }
+    });
+  }
+
+  test('a contrast theme draws the contrast panel whatever the preset; Transparency effects off leaves solid opaque', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openDock(page);
+    const panel = page.locator(PANEL);
+    await setPreset(page, 'minimal');
+    await setOsTheme(page, { highContrast: true });
+    await expect(page.locator('html')).toHaveAttribute('data-high-contrast', '');
+    await expect(panel).toHaveCSS('background-color', 'rgb(28, 28, 30)');
+    await expect(panel).toHaveCSS('backdrop-filter', 'none');
+    await expect(panel).toHaveCSS('box-shadow', 'none');
+    expect(await computed(panel, 'border-top-width', '::before')).toBe('2px');
+    expect(await computed(panel, 'border-top-color', '::before')).toBe('rgb(255, 255, 255)');
+    await expect(page.locator(SEPARATOR).first()).toHaveCSS(
+      'background-color',
+      'rgb(255, 255, 255)',
+    );
+    await setPreset(page, 'solid');
+    await expect(page.locator(STAGE)).toHaveAttribute('data-theme', 'solid');
+    await expect(panel).toHaveCSS('background-color', 'rgb(28, 28, 30)');
+
+    // Out of the contrast theme, with Transparency effects off: solid is
+    // opaque anyway; standard is nearly opaque; minimal still has
+    // no fill.
+    await setOsTheme(page, { transparency: false });
+    await expectLook(page, 'dark', 'solid', DARK_ACCENT_RGB);
+    await setPreset(page, 'standard');
+    await expect(panel).toHaveCSS('background-color', 'rgba(28, 28, 30, 0.95)');
+    await setPreset(page, 'minimal');
+    await expectLook(page, 'dark', 'minimal', DARK_ACCENT_RGB);
+  });
+
+  test('a dock.css there at start styles every stable variable, after the page\u2019s own styles', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await withUserCssAtStart(page, USER_CSS);
+    await openDock(page);
+    const panel = page.locator(PANEL);
+    const style = page.locator('style#stem-user-css');
+    await expect(style).toHaveCount(1);
+    expect(await style.textContent()).toBe(USER_CSS);
+    // The last element of <head>: after Vite's own stylesheets.
+    expect(await page.evaluate(() => document.head.lastElementChild?.id)).toBe('stem-user-css');
+
+    await expect(panel).toHaveCSS('background-image', /^linear-gradient\(/);
+    await expect(panel).toHaveCSS('border-top-left-radius', '10px');
+    await expect(panel).toHaveCSS('box-shadow', 'rgba(0, 0, 0, 0.5) 0px 6px 18px 0px');
+    expect(await computed(panel, 'border-top-color', '::before')).toBe('rgba(255, 255, 255, 0.4)');
+    expect(await computed(panel, 'border-top-left-radius', '::before')).toBe('10px');
+    await expect(page.locator(SEPARATOR).first()).toHaveCSS(
+      'background-color',
+      'rgba(255, 255, 255, 0.6)',
+    );
+    await expect(page.locator(DOT).first()).toHaveCSS('background-color', 'rgb(255, 185, 0)');
+    // The blur is the preset's: not one of the variables this file sets.
+    await expect(panel).toHaveCSS('backdrop-filter', 'blur(24px) saturate(1.4)');
+    // The accent stays the accent outside the dots.
+    expect(await computed(page.locator('.slot[data-kind="launcher"] svg rect'), 'fill')).toBe(
+      DARK_ACCENT_RGB,
+    );
+    await page.locator(APP_SLOT).nth(3).hover();
+    const pill = page.locator('.tooltip');
+    await expect(pill).toHaveCSS('background-color', 'rgb(255, 185, 0)');
+    await expect(pill).toHaveCSS('color', 'rgb(27, 27, 31)');
+    await page.screenshot({ path: `${OUT}/dock-user-css.png` });
+
+    // The variables override every preset alike.
+    await page.mouse.move(640, 10);
+    await setPreset(page, 'minimal');
+    await expect(panel).toHaveCSS('background-image', /^linear-gradient\(/);
+    await expect(page.locator(DOT).first()).toHaveCSS('background-color', 'rgb(255, 185, 0)');
+  });
+
+  test('Reload replaces the one style element; a variable set on :root applies; no file, a bad rule, markup, a file too large', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openDock(page);
+    const panel = page.locator(PANEL);
+    const dot = page.locator(DOT).first();
+    const style = page.locator('style#stem-user-css');
+    await expect(style).toHaveCount(0);
+    await expect(dot).toHaveCSS('background-color', DARK_ACCENT_RGB);
+
+    // Set on :root, levels above the dots: still applies, since the page
+    // sets no --stem-* variable of its own.
+    const root = ':root { --stem-dot: rgb(16, 124, 16); --stem-panel-radius: 4px; }';
+    expect(await reloadWith(page, root)).toEqual({ path: DOCK_CSS_PATH, css: root });
+    await expect(dot).toHaveCSS('background-color', 'rgb(16, 124, 16)');
+    await expect(panel).toHaveCSS('border-top-left-radius', '4px');
+    await expect(style).toHaveCount(1);
+
+    // A new text replaces the old one in the same element.
+    await reloadWith(page, '.dock-stage[data-theme="standard"] { --stem-dot: rgb(232, 17, 35); }');
+    await expect(style).toHaveCount(1);
+    await expect(dot).toHaveCSS('background-color', 'rgb(232, 17, 35)');
+    await expect(panel).toHaveCSS('border-top-left-radius', '22px');
+    // That rule names the standard preset only.
+    await setPreset(page, 'solid');
+    await expect(dot).toHaveCSS('background-color', DARK_ACCENT_RGB);
+    await setPreset(page, 'standard');
+    await expect(dot).toHaveCSS('background-color', 'rgb(232, 17, 35)');
+
+    // A broken rule is skipped by the browser; the next one still applies.
+    await reloadWith(
+      page,
+      '%%% { --stem-dot: red; } .dock-stage { color: ; --stem-dot: rgb(255, 185, 0); }',
+    );
+    await expect(dot).toHaveCSS('background-color', 'rgb(255, 185, 0)');
+    await expect(page.locator('.dock-panel[data-ready="true"]')).toBeVisible();
+
+    // Markup is text: nothing is parsed out of it, no script runs.
+    await reloadWith(page, '</style><script>window.__ran = true</script><style>');
+    expect(await page.evaluate(() => (window as unknown as { __ran?: boolean }).__ran)).toBe(
+      undefined,
+    );
+    expect(await page.locator('head script:not([src])').count()).toBe(0);
+    await expect(style).toHaveCount(1);
+
+    // No file: the element goes and the preset's look is back.
+    await reloadWith(page, null);
+    await expect(style).toHaveCount(0);
+    await expect(dot).toHaveCSS('background-color', DARK_ACCENT_RGB);
+
+    // Larger than 64 KiB: ignored whole, like Rust does.
+    const big = `.dock-stage { --stem-dot: rgb(255, 185, 0); }\n/*${'x'.repeat(64 * 1024)}*/`;
+    expect((await reloadWith(page, big))?.css).toBeNull();
+    await expect(style).toHaveCount(0);
+    await expect(dot).toHaveCSS('background-color', DARK_ACCENT_RGB);
+  });
+
+  test.describe('in the settings window', () => {
+    test.use({ viewport: { width: 760, height: 600 } });
+
+    async function openSettings(page: Page): Promise<void> {
+      await page.goto('/settings.html?mock=1');
+      await expect(page.locator('.page[data-ready="true"]')).toBeVisible();
+      await expect(page.locator('.status')).toHaveText('Saved');
+      await expect(page.locator('.pin:not([data-icon="loaded"])')).toHaveCount(0);
+    }
+
+    function userCssCalls(page: Page): Promise<string[]> {
+      return page.evaluate(() =>
+        ((window as unknown as DemoWindow).__dockMock?.calls ?? [])
+          .filter((c) => c.type === 'openUserCss' || c.type === 'reloadUserCss')
+          .map((c) => c.type),
+      );
+    }
+
+    test('Theme offers the three presets and saves; opacity is for Standard only; the dock.css row edits and reloads', async ({
+      page,
+    }) => {
+      await page.emulateMedia({ colorScheme: 'dark' });
+      await openSettings(page);
+      const preset = page.locator('#appearance-theme');
+      await expect(page.locator('label[for="appearance-theme"]')).toContainText('Theme');
+      await expect(page.locator('label[for="theme"]')).toContainText('Colour mode');
+      await expect(preset).toHaveValue('standard');
+      await expect(preset.locator('option')).toHaveText([
+        'Standard (translucent)',
+        'Solid (opaque)',
+        'Minimal (icons only)',
+      ]);
+      const opacity = page.locator('#opacity');
+      await expect(opacity).toBeEnabled();
+
+      await preset.selectOption('solid');
+      await expect(page.locator('.status')).toHaveText('Saved');
+      expect(
+        (await page.evaluate(() => (window as unknown as DemoWindow).__dockMock?.getSettings()))
+          ?.appearance.theme,
+      ).toBe('solid');
+      await expect(opacity).toBeDisabled();
+      await expect(page.locator('#opacity-description')).toHaveText(
+        'Only the Standard theme is translucent',
+      );
+
+      const row = page.locator('[data-row="user-css"]');
+      await expect(row.locator('code')).toHaveText(DOCK_CSS_PATH);
+      const status = row.locator('[data-user-css-status]');
+      await expect(status).toContainText('Not in use');
+
+      // Edit creates the file from the template; nothing is read yet.
+      await page.getByRole('button', { name: 'Edit dock.css' }).click();
+      await expect.poll(() => userCssCalls(page)).toEqual(['openUserCss']);
+      expect(
+        await page.evaluate(() => (window as unknown as DemoWindow).__dockMock?.userCssOnDisk()),
+      ).toContain('dock.css');
+      await expect(status).toContainText('Not in use');
+
+      // The user saves the file; Reload reads it.
+      await page.evaluate(() => {
+        (window as unknown as DemoWindow).__dockMock?.writeUserCss(
+          '.dock-stage { --stem-dot: #ffb900; }',
+        );
+      });
+      await page.getByRole('button', { name: 'Reload dock.css' }).click();
+      await expect(status).toHaveText('In use since the last start or Reload');
+      await expect.poll(() => userCssCalls(page)).toEqual(['openUserCss', 'reloadUserCss']);
+      await expect(page.locator('.file-error')).toHaveCount(0);
+      // Neither is a settings change.
+      await expect(page.locator('.status')).toHaveText('Saved');
+      await page.locator('#appearance-theme').scrollIntoViewIfNeeded();
+      await page.screenshot({ path: `${OUT}/settings-themes.png` });
+      await row.scrollIntoViewIfNeeded();
+      await page.screenshot({ path: `${OUT}/settings-user-css.png` });
+
+      // A refusal from Rust is the row's own notice.
+      await page.evaluate((message) => {
+        (window as unknown as DemoWindow).__dockMock?.failNextCommand(message);
+      }, 'could not open dock.css with its default app: no application is associated');
+      await page.getByRole('button', { name: 'Edit dock.css' }).click();
+      await expect(page.locator('.file-error')).toHaveText(
+        "Couldn't open dock.css: could not open dock.css with its default app: no application is associated",
+      );
+      await expect(page.locator('.status')).toHaveText('Saved');
+      // The next attempt clears it.
+      await page.getByRole('button', { name: 'Reload dock.css' }).click();
+      await expect(page.locator('.file-error')).toHaveCount(0);
+    });
+  });
 });

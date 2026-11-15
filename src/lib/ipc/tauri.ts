@@ -20,6 +20,7 @@ import type { Rect } from '$lib/ipc/generated/Rect';
 import type { Settings } from '$lib/ipc/generated/Settings';
 import type { ShellAction } from '$lib/ipc/generated/ShellAction';
 import type { ThemeInfo } from '$lib/ipc/generated/ThemeInfo';
+import type { UserCss } from '$lib/ipc/generated/UserCss';
 import type { WindowAction } from '$lib/ipc/generated/WindowAction';
 import type { WindowId } from '$lib/ipc/generated/WindowId';
 
@@ -220,6 +221,18 @@ export class TauriBackend implements Backend {
 
   releaseDockFocus(): Promise<void> {
     return invoke<void>('release_dock_focus');
+  }
+
+  getUserCss(): Promise<UserCss> {
+    return invoke<UserCss>('get_user_css');
+  }
+
+  reloadUserCss(): Promise<UserCss> {
+    return invoke<UserCss>('reload_user_css');
+  }
+
+  openUserCss(): Promise<void> {
+    return invoke<void>('open_user_css');
   }
 
   on<E extends BackendEvent>(event: E, handler: EventHandler<E>): Unsubscribe {

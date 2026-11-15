@@ -14,6 +14,7 @@ import type { DockItem } from '$lib/ipc/generated/DockItem';
 import type { DockState } from '$lib/ipc/generated/DockState';
 import type { Settings } from '$lib/ipc/generated/Settings';
 import type { ThemeInfo } from '$lib/ipc/generated/ThemeInfo';
+import type { UserCss } from '$lib/ipc/generated/UserCss';
 import { defaultSettings, demoAppInfo, validateSettings } from '$lib/ipc/mock';
 
 import { iconId } from './icon-cache';
@@ -201,6 +202,13 @@ class FakeBackend implements Backend {
   async showItemMenu(): Promise<void> {}
   async showDockMenu(): Promise<void> {}
   async releaseDockFocus(): Promise<void> {}
+  async getUserCss(): Promise<UserCss> {
+    return { path: 'dock.css', css: null };
+  }
+  async reloadUserCss(): Promise<UserCss> {
+    return { path: 'dock.css', css: null };
+  }
+  async openUserCss(): Promise<void> {}
   onFileDrag(): Unsubscribe {
     return () => {};
   }

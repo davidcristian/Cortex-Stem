@@ -21,6 +21,7 @@ import type { Rect } from '$lib/ipc/generated/Rect';
 import type { Settings } from '$lib/ipc/generated/Settings';
 import type { ShellAction } from '$lib/ipc/generated/ShellAction';
 import type { ThemeInfo } from '$lib/ipc/generated/ThemeInfo';
+import type { UserCss } from '$lib/ipc/generated/UserCss';
 import type { WindowAction } from '$lib/ipc/generated/WindowAction';
 import type { WindowId } from '$lib/ipc/generated/WindowId';
 
@@ -52,6 +53,11 @@ export interface BackendEvents {
    * does (let go of the focused item and call `releaseDockFocus`).
    */
   'dock://release-focus': null;
+  /**
+   * To every dock window (docs/ipc/themes.md): `reload_user_css`
+   * read the user's `dock.css` again; the page replaces its `<style>`.
+   */
+  'dock://user-css': UserCss;
 }
 
 export type BackendEvent = keyof BackendEvents;
@@ -186,6 +192,21 @@ export interface Backend {
    * otherwise leaves the foreground alone.
    */
   releaseDockFocus(): Promise<void>;
+  /**
+   * The user's `dock.css` as Rust read it at start or at the last
+   * `reloadUserCss` (docs/ipc/themes.md): its path, and its text or
+   * `null` (no file, unreadable, not UTF-8, larger than 64 KiB).
+   */
+  getUserCss(): Promise<UserCss>;
+  /** Read `dock.css` again; Rust sends the result to every dock window (`dock://user-css`) and returns it. */
+  reloadUserCss(): Promise<UserCss>;
+  /**
+   * Create `dock.css` from the template if it does not exist, then open it
+   * with the default app for `.css`. Reads nothing: the dock changes at the
+   * next `reloadUserCss`. Rejects when it cannot (a demo run saves no
+   * settings file; no app for `.css`).
+   */
+  openUserCss(): Promise<void>;
 
   on<E extends BackendEvent>(event: E, handler: EventHandler<E>): Unsubscribe;
 

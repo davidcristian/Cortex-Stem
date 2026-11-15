@@ -9,21 +9,27 @@ import { applyDemoQuery, demoPosition } from './demo';
 import type { RawWindow } from '$lib/ipc/generated/RawWindow';
 import type { Rect } from '$lib/ipc/generated/Rect';
 
+import type { UserCss } from '$lib/ipc/generated/UserCss';
+
 import {
   appIdForExe,
   colorFor,
   defaultSettings,
+  DEMO_USER_CSS_PATH,
   demoAppInfo,
   dockLabel,
   fileStem,
+  MOCK_USER_CSS_TEMPLATE,
   MockBackend,
   nothingToRecycle,
   overlapped,
   panelOnScreen,
   reanchorPanel,
+  readUserCss,
   rectsIntersect,
   recyclePlan,
   SECOND_MONITOR_ID,
+  USER_CSS_MAX_BYTES,
   validateSettings,
   type MockOptions,
 } from './mock';
@@ -573,6 +579,78 @@ describe('revisions and events', () => {
     ]);
     // Nothing in the snapshot or the settings changes.
     expect(states).toHaveLength(0);
+  });
+
+  it('the user css: read at start from MockOptions.userCss, again on reload, which emits it; open writes the template only once', async () => {
+    const none = fast();
+    expect(await none.getUserCss()).toEqual({ path: DEMO_USER_CSS_PATH, css: null });
+
+    const css = '.dock-stage { --stem-dot: #ffb900; }';
+    const b = fast({ userCss: css });
+    const events: UserCss[] = [];
+    b.on('dock://user-css', (payload) => {
+      events.push(payload);
+    });
+    const states = recordStates(b);
+    expect(await b.getUserCss()).toEqual({ path: DEMO_USER_CSS_PATH, css });
+
+    // An edit shows only once reloaded; the reload answers what it sent.
+    b.writeUserCss('.dock-stage { --stem-dot: red; }');
+    expect((await b.getUserCss()).css).toBe(css);
+    expect(events).toHaveLength(0);
+    const reloaded = await b.reloadUserCss();
+    expect(reloaded).toEqual({ path: DEMO_USER_CSS_PATH, css: '.dock-stage { --stem-dot: red; }' });
+    expect(events).toEqual([reloaded]);
+    expect(await b.getUserCss()).toEqual(reloaded);
+
+    // A deleted file, then a too large one: no CSS, still sent.
+    b.writeUserCss(null);
+    expect((await b.reloadUserCss()).css).toBeNull();
+    b.writeUserCss('a'.repeat(USER_CSS_MAX_BYTES + 1));
+    expect((await b.reloadUserCss()).css).toBeNull();
+    expect(events.map((e) => e.css)).toEqual(['.dock-stage { --stem-dot: red; }', null, null]);
+
+    // Open creates the template when there is no file, and never again.
+    b.writeUserCss(null);
+    await b.openUserCss();
+    expect(b.userCssOnDisk()).toBe(MOCK_USER_CSS_TEMPLATE);
+    b.writeUserCss('mine');
+    await b.openUserCss();
+    expect(b.userCssOnDisk()).toBe('mine');
+    expect(b.calls).toEqual([
+      { type: 'reloadUserCss' },
+      { type: 'reloadUserCss' },
+      { type: 'reloadUserCss' },
+      { type: 'openUserCss', created: true },
+      { type: 'openUserCss', created: false },
+    ]);
+    expect(states).toHaveLength(0);
+  });
+
+  it('readUserCss mirrors the Rust read: 64 KiB of UTF-8 at most, a leading BOM dropped', () => {
+    const bom = String.fromCharCode(0xfeff);
+    const eAcute = String.fromCharCode(0xe9);
+    expect(readUserCss(null)).toBeNull();
+    expect(readUserCss('')).toBe('');
+    expect(readUserCss(`${bom}a {}`)).toBe('a {}');
+    expect(readUserCss(`a${bom}`)).toBe(`a${bom}`);
+    expect(readUserCss('a'.repeat(USER_CSS_MAX_BYTES))).toHaveLength(USER_CSS_MAX_BYTES);
+    expect(readUserCss('a'.repeat(USER_CSS_MAX_BYTES + 1))).toBeNull();
+    // Bytes, not characters: an e with an acute accent is two bytes in UTF-8.
+    expect(readUserCss(eAcute.repeat(USER_CSS_MAX_BYTES / 2))).not.toBeNull();
+    expect(readUserCss(`${eAcute.repeat(USER_CSS_MAX_BYTES / 2)}a`)).toBeNull();
+    // The BOM's three bytes count.
+    expect(readUserCss(`${bom}${'a'.repeat(USER_CSS_MAX_BYTES - 3)}`)).toHaveLength(
+      USER_CSS_MAX_BYTES - 3,
+    );
+    expect(readUserCss(`${bom}${'a'.repeat(USER_CSS_MAX_BYTES - 2)}`)).toBeNull();
+  });
+
+  it('the default settings have the standard theme preset, like Settings::default()', () => {
+    expect(defaultSettings().appearance.theme).toBe('standard');
+    const solid = defaultSettings();
+    solid.appearance.theme = 'solid';
+    expect(validateSettings(solid).appearance.theme).toBe('solid');
   });
 
   it('setDockAutoHidden records each report; requestShow emits dock://show with no payload', async () => {

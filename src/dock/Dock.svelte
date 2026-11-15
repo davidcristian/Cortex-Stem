@@ -71,6 +71,7 @@
     type DropBounds,
   } from '$lib/dock/reorder';
   import { accentColor, effectiveOpacity, resolveTheme } from '$lib/dock/theme';
+  import { applyUserCss, NO_USER_CSS, nextUserCss, type UserCssView } from '$lib/dock/user-css';
   import type { Backend, CssPoint, FileDragEvent } from '$lib/ipc/backend';
   import type { AppId } from '$lib/ipc/generated/AppId';
   import type { DockItem as DockItemModel } from '$lib/ipc/generated/DockItem';
@@ -195,6 +196,8 @@
   const highContrast = $derived(store.theme?.highContrast ?? false);
   const opacity = $derived(effectiveOpacity(settings?.appearance.opacity ?? 0.72, store.theme));
   const cornerRadius = $derived(settings?.appearance.cornerRadius ?? 22);
+  /** The theme preset: the stage's `data-theme`, which the preset rules below key on. */
+  const preset = $derived(settings?.appearance.theme ?? 'standard');
   const iconSize = $derived(settings?.iconSize ?? 48);
   const slotPx = $derived(iconSize + SLOT_GAP);
   const magnify = $derived<MagnifyParams>({
@@ -254,6 +257,18 @@
       root.dataset.wallpaper = theme;
     } else {
       delete root.dataset.wallpaper;
+    }
+  });
+
+  // --- The user's dock.css (docs/ipc/themes.md) --------------------------
+  // One <style> element at the end of <head> (src/lib/dock/user-css.ts),
+  // replaced on `dock://user-css`. The stable variables only restyle, but
+  // anything else in the file may change the panel's size, so the panel is
+  // measured again after a change.
+  let userCss = $state.raw<UserCssView>(NO_USER_CSS);
+  $effect(() => {
+    if (applyUserCss(document, userCss.css)) {
+      scheduleMeasure();
     }
   });
 
@@ -2005,8 +2020,25 @@
     const offFocus = backend.on('dock://focus', onFocusRequested);
     const offRelease = backend.on('dock://release-focus', onReleaseRequested);
     const offFileDrag = backend.onFileDrag(onfiledrag);
+    // The user's dock.css: subscribe, then ask, like the store's
+    // startup sequence; an event that arrives first wins over the answer.
+    let mounted = true;
+    const offUserCss = backend.on('dock://user-css', (css) => {
+      userCss = nextUserCss(userCss, 'event', css);
+    });
+    backend.getUserCss().then(
+      (css) => {
+        if (mounted) {
+          userCss = nextUserCss(userCss, 'fetch', css);
+        }
+      },
+      (err: unknown) => console.error('get_user_css failed:', err),
+    );
     void store.start();
     return () => {
+      mounted = false;
+      offUserCss();
+      applyUserCss(document, null);
       offShow();
       offFocus();
       offRelease();
@@ -2062,6 +2094,7 @@
 <div
   class="dock-stage"
   data-edge={edge}
+  data-theme={preset}
   style:--accent={accent}
   style:--panel-opacity={opacity}
   style:--radius="{cornerRadius}px"
@@ -2198,6 +2231,75 @@
     /* The panel's thickness (icon + padding) plus its margin to the edge:
        where its side away from the edge is. */
     --panel-line: calc(var(--edge-margin) + var(--icon) + 2 * var(--panel-padding));
+
+    /* Theme presets (docs/THEMING.md). The panel, the separators,
+       the dots and the title pills read the stable `--stem-*` variables
+       with these as the fallback, so the user's dock.css sets a variable
+       anywhere above them and it applies; nothing here defines a
+       `--stem-*` variable. `standard` (today's look) is these values, from
+       the colour tokens of app.css; a contrast theme keeps them for every
+       preset (its tokens are solid, `.high-contrast` drops the blur). */
+    --preset-panel-fill: rgb(var(--panel-tint) / var(--panel-opacity));
+    --preset-panel-blur: blur(24px) saturate(1.4);
+    --preset-panel-hairline: var(--panel-border);
+    --preset-panel-shadow: var(--panel-shadow);
+    /* Corner radius is a setting in every preset. */
+    --preset-panel-radius: var(--radius);
+    --preset-separator: var(--separator);
+    --preset-dot: var(--accent);
+    --preset-pill-fill: var(--tooltip-bg);
+    --preset-pill-text: var(--text);
+    --preset-pill-border: var(--tooltip-border);
+  }
+
+  /* `solid`: the panel opaque, in the colours Windows 11 gives a flyout
+     with *Transparency effects* off (#2c2c2c, #f9f9f9), with no blur, the
+     flyout's stronger stroke as the hairline and a tighter shadow; the
+     title pills the same. Readable over any wallpaper. */
+  :global(html:not([data-high-contrast])) .dock-stage[data-theme='solid'] {
+    --preset-panel-fill: rgb(44 44 44);
+    --preset-panel-blur: none;
+    --preset-panel-hairline: rgb(117 117 117 / 0.4);
+    --preset-panel-shadow: 0 8px 24px rgb(0 0 0 / 0.42), 0 2px 6px rgb(0 0 0 / 0.28);
+    --preset-separator: rgb(255 255 255 / 0.28);
+    --preset-pill-fill: rgb(44 44 44);
+    --preset-pill-border: rgb(117 117 117 / 0.4);
+  }
+
+  :global(html[data-theme='light']:not([data-high-contrast])) .dock-stage[data-theme='solid'] {
+    --preset-panel-fill: rgb(249 249 249);
+    --preset-panel-shadow: 0 8px 24px rgb(0 0 0 / 0.16), 0 2px 6px rgb(0 0 0 / 0.1);
+    --preset-separator: rgb(0 0 0 / 0.22);
+    --preset-pill-fill: rgb(249 249 249);
+  }
+
+  /* `minimal`: no panel at all, only the icons, the dots and the
+     separators, which sit on the wallpaper and so take more contrast. The
+     panel keeps its box (padding, hit region, size), so a preset change
+     never moves an icon. */
+  :global(html:not([data-high-contrast])) .dock-stage[data-theme='minimal'] {
+    --preset-panel-fill: transparent;
+    --preset-panel-blur: none;
+    --preset-panel-hairline: transparent;
+    --preset-panel-shadow: none;
+    --preset-separator: rgb(255 255 255 / 0.5);
+  }
+
+  :global(html[data-theme='light']:not([data-high-contrast])) .dock-stage[data-theme='minimal'] {
+    --preset-separator: rgb(0 0 0 / 0.4);
+  }
+
+  /* The dots and the title pills are DockItem's: they read the accent and
+     the tooltip tokens, which take the variables here, for their subtree
+     only (the drop outline and the Start icon keep the accent). */
+  .dock-panel :global(.dots) {
+    --accent: var(--stem-dot, var(--preset-dot));
+  }
+
+  .dock-panel :global(.tooltip) {
+    --tooltip-bg: var(--stem-pill-fill, var(--preset-pill-fill));
+    --tooltip-border: var(--preset-pill-border);
+    --text: var(--stem-pill-text, var(--preset-pill-text));
   }
 
   .dock-stage[data-edge='top'] {
@@ -2340,11 +2442,11 @@
     box-sizing: border-box;
     padding: var(--panel-padding);
     margin-bottom: var(--edge-margin);
-    border-radius: var(--radius);
-    background: rgb(var(--panel-tint) / var(--panel-opacity));
-    -webkit-backdrop-filter: blur(24px) saturate(1.4);
-    backdrop-filter: blur(24px) saturate(1.4);
-    box-shadow: var(--panel-shadow);
+    border-radius: var(--stem-panel-radius, var(--preset-panel-radius));
+    background: var(--stem-panel-fill, var(--preset-panel-fill));
+    -webkit-backdrop-filter: var(--stem-panel-blur, var(--preset-panel-blur));
+    backdrop-filter: var(--stem-panel-blur, var(--preset-panel-blur));
+    box-shadow: var(--stem-panel-shadow, var(--preset-panel-shadow));
   }
 
   /* Hairline border drawn inside the box so it never affects layout. */
@@ -2353,7 +2455,7 @@
     position: absolute;
     inset: 0;
     border-radius: inherit;
-    border: 1px solid var(--panel-border);
+    border: 1px solid var(--stem-panel-hairline, var(--preset-panel-hairline));
     pointer-events: none;
   }
 
@@ -2523,7 +2625,7 @@
     width: 1px;
     height: calc(var(--icon) * 0.8);
     margin: 0 var(--separator-margin) calc(var(--icon) * 0.1);
-    background: var(--separator);
+    background: var(--stem-separator, var(--preset-separator));
   }
 
   .dock-stage[data-edge='top'] .separator {

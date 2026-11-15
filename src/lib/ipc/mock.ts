@@ -45,6 +45,7 @@ import type { RecycleBinState } from '$lib/ipc/generated/RecycleBinState';
 import type { Settings } from '$lib/ipc/generated/Settings';
 import type { ShellAction } from '$lib/ipc/generated/ShellAction';
 import type { ThemeInfo } from '$lib/ipc/generated/ThemeInfo';
+import type { UserCss } from '$lib/ipc/generated/UserCss';
 import type { WindowAction } from '$lib/ipc/generated/WindowAction';
 import type { WindowId } from '$lib/ipc/generated/WindowId';
 import type { WindowInfo } from '$lib/ipc/generated/WindowInfo';
@@ -118,6 +119,13 @@ export interface MockOptions {
    * takes it from `?position=` instead (`demo.ts`, `setPosition`).
    */
   position?: DockPosition;
+  /**
+   * The text of the user's `dock.css` when the backend starts,
+   * read then like Rust reads it at start (`readUserCss`: over 64 KiB is
+   * no CSS); absent or `null`: there is no file. `writeUserCss` changes the
+   * file afterwards and `reloadUserCss` reads it again.
+   */
+  userCss?: string | null;
 }
 
 /**
@@ -141,6 +149,8 @@ export type MockCall =
   | { type: 'showDockMenu'; x: number; y: number }
   | { type: 'openSettings' }
   | { type: 'openAppFolder'; folder: AppFolder }
+  | { type: 'reloadUserCss' }
+  | { type: 'openUserCss'; created: boolean }
   | { type: 'setDockHover'; hovering: boolean }
   | { type: 'releaseDockFocus' }
   | { type: 'quit' };
@@ -157,6 +167,33 @@ export function demoAppInfo(): AppInfo {
     logPath: 'C:\\Users\\me\\AppData\\Local\\dev.davidcristian.stem\\logs\\stem.log',
     platform: 'mock',
   };
+}
+
+/** Where a real installation of the user `me` keeps `dock.css`: next to `demoAppInfo().settingsPath`. */
+export const DEMO_USER_CSS_PATH =
+  'C:\\Users\\me\\AppData\\Roaming\\dev.davidcristian.stem\\dock.css';
+
+/** The largest `dock.css` Rust reads (`user_css::MAX_BYTES`, 64 KiB). */
+export const USER_CSS_MAX_BYTES = 64 * 1024;
+
+/**
+ * What `open_user_css` writes when there is no file (a stand-in: the real
+ * template is `user_css::TEMPLATE` in src-tauri). Comments only, like the
+ * real one, so creating it changes nothing.
+ */
+export const MOCK_USER_CSS_TEMPLATE =
+  "/* dock.css: your own styles for Stem's dock (mock template). */\n.dock-stage {\n  /* --stem-dot: #0078d4; */\n}\n";
+
+/**
+ * `user_css::read_file` for the mock's file (`null`: none): over 64 KiB of
+ * UTF-8 is no CSS, a leading byte order mark is dropped. (A JS string is
+ * always valid text, so the not-UTF-8 case has no stand-in.)
+ */
+export function readUserCss(file: string | null): string | null {
+  if (file === null || new TextEncoder().encode(file).length > USER_CSS_MAX_BYTES) {
+    return null;
+  }
+  return file.startsWith('\uFEFF') ? file.slice(1) : file;
 }
 
 // ---------------------------------------------------------------------------
@@ -210,6 +247,7 @@ export function defaultSettings(): Settings {
     monitors: 'primary',
     theme: 'system',
     appearance: {
+      theme: 'standard',
       opacity: 0.72,
       cornerRadius: 22,
       backdrop: 'css',
@@ -1409,8 +1447,14 @@ export class MockBackend implements Backend {
    * set, as it leaves the real dock in front.
    */
   private shortcutFocus = false;
+  /** The user's `dock.css` "on disk" (`null`: no file); `writeUserCss` changes it. */
+  private userCssFile: string | null;
+  /** What the last read of it gave: at construction, then each `reloadUserCss`. */
+  private userCssRead: UserCss;
 
   constructor(options: MockOptions = {}) {
+    this.userCssFile = options.userCss ?? null;
+    this.userCssRead = { path: DEMO_USER_CSS_PATH, css: readUserCss(this.userCssFile) };
     const scenario = SCENARIOS[options.scenario ?? 'default']();
     if (options.position !== undefined) {
       scenario.settings.position = options.position;
@@ -1828,6 +1872,46 @@ export class MockBackend implements Backend {
     });
   }
 
+  // --- Backend: the user's dock.css (docs/ipc/themes.md)
+
+  /** `get_user_css`: the last read (at construction from `MockOptions.userCss`, or the last reload). */
+  getUserCss(): Promise<UserCss> {
+    return this.command(() => ({ ...this.userCssRead }));
+  }
+
+  /**
+   * `reload_user_css`: read the file again (`readUserCss`), keep the
+   * result, send it as `dock://user-css` (to this page: the mock serves one
+   * page) and return it.
+   */
+  reloadUserCss(): Promise<UserCss> {
+    return this.command(() => {
+      this.record({ type: 'reloadUserCss' });
+      this.userCssRead = { path: DEMO_USER_CSS_PATH, css: readUserCss(this.userCssFile) };
+      this.log(
+        `reload_user_css(): ${this.userCssRead.css === null ? 'no CSS' : `${this.userCssRead.css.length} chars`}`,
+      );
+      this.emit('dock://user-css', { ...this.userCssRead });
+      return { ...this.userCssRead };
+    });
+  }
+
+  /**
+   * `open_user_css`: a browser opens no editor; the file is created from
+   * the (stand-in) template if there is none, and the request is recorded
+   * with whether it was. Nothing is read.
+   */
+  openUserCss(): Promise<void> {
+    return this.command(() => {
+      const created = this.userCssFile === null;
+      if (created) {
+        this.userCssFile = MOCK_USER_CSS_TEMPLATE;
+      }
+      this.record({ type: 'openUserCss', created });
+      this.log(`open_user_css()${created ? ': wrote the template' : ''}`);
+    });
+  }
+
   // --- Backend: planned for M2 (docs/ipc/commands.md); the mock only records it.
 
   setDockHover(hovering: boolean): Promise<void> {
@@ -1862,6 +1946,19 @@ export class MockBackend implements Backend {
    */
   setAppInfo(info: Partial<AppInfo>): void {
     this.appInfo = { ...this.appInfo, ...info };
+  }
+
+  /**
+   * Change the user's `dock.css` on "disk" (`null` deletes it), as
+   * an editor would: nothing is read until the next `reloadUserCss`.
+   */
+  writeUserCss(css: string | null): void {
+    this.userCssFile = css;
+  }
+
+  /** The mock's `dock.css` on "disk" (`null`: none), e.g. after `openUserCss` wrote the template. */
+  userCssOnDisk(): string | null {
+    return this.userCssFile;
   }
 
   pushWindow(raw: RawWindow): void {

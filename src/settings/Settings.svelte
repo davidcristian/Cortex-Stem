@@ -4,10 +4,13 @@
   import { watchDevicePixelRatio } from '$lib/dock/dpr';
   import { moveItem } from '$lib/dock/reorder';
   import { accentColor, resolveTheme } from '$lib/dock/theme';
+  import { userCssStatus } from '$lib/dock/user-css';
   import type { IconKey } from '$lib/ipc/generated/IconKey';
   import type { PinnedApp } from '$lib/ipc/generated/PinnedApp';
   import type { Settings } from '$lib/ipc/generated/Settings';
+  import type { UserCss } from '$lib/ipc/generated/UserCss';
   import type { SettingsStore } from '$lib/stores/settings.svelte';
+  import { describeError } from '$lib/stores/toasts.svelte';
 
   import IconButton from './IconButton.svelte';
   import Select from './Select.svelte';
@@ -119,6 +122,33 @@
     void store.unpinApp(pin.id);
   }
 
+  // --- The user's dock.css (docs/ipc/themes.md) -----------------------------------
+  // Not a setting: Rust reads the file at start and on Reload, and this
+  // row shows where it is and whether the dock uses it. A failure is the
+  // row's own notice, apart from the footer's save status.
+  let userCss = $state.raw<UserCss | null>(null);
+  let userCssError = $state<string | null>(null);
+
+  async function editUserCss(): Promise<void> {
+    userCssError = null;
+    try {
+      await store.backend.openUserCss();
+    } catch (err) {
+      userCssError = `Couldn't open dock.css: ${describeError(err)}`;
+      console.error('open_user_css failed:', err);
+    }
+  }
+
+  async function reloadUserCss(): Promise<void> {
+    userCssError = null;
+    try {
+      userCss = await store.backend.reloadUserCss();
+    } catch (err) {
+      userCssError = `Couldn't read dock.css: ${describeError(err)}`;
+      console.error('reload_user_css failed:', err);
+    }
+  }
+
   // --- Reset ----------------------------------------------------------------------
   let confirmReset = $state(false);
 
@@ -141,8 +171,22 @@
     const stopScale = watchDevicePixelRatio(window, (ratio) => {
       dpr = ratio;
     });
+    let mounted = true;
+    store.backend.getUserCss().then(
+      (css) => {
+        // A Reload that answered first is newer.
+        if (mounted && userCss === null) {
+          userCss = css;
+        }
+      },
+      (err: unknown) => {
+        userCssError = `Couldn't read dock.css: ${describeError(err)}`;
+        console.error('get_user_css failed:', err);
+      },
+    );
     void store.start();
     return () => {
+      mounted = false;
       dark.removeEventListener('change', onDark);
       stopScale();
       store.stop();
@@ -236,13 +280,40 @@
                 })}
             />
           </SettingRow>
-          <SettingRow id="opacity" label="Panel opacity">
+          <SettingRow
+            id="appearance-theme"
+            label="Theme"
+            description="How the panel is drawn; your dock.css, below, can change each of them"
+          >
+            <Select
+              id="appearance-theme"
+              value={settings.appearance.theme}
+              options={[
+                { value: 'standard', label: 'Standard (translucent)' },
+                { value: 'solid', label: 'Solid (opaque)' },
+                { value: 'minimal', label: 'Minimal (icons only)' },
+              ]}
+              onchange={(v) =>
+                edit((s) => {
+                  s.appearance.theme = v;
+                })}
+            />
+          </SettingRow>
+          <SettingRow
+            id="opacity"
+            label="Panel opacity"
+            description={settings.appearance.theme === 'standard'
+              ? undefined
+              : 'Only the Standard theme is translucent'}
+            disabled={settings.appearance.theme !== 'standard'}
+          >
             <Slider
               id="opacity"
               min={0}
               max={1}
               step={0.01}
               value={settings.appearance.opacity}
+              disabled={settings.appearance.theme !== 'standard'}
               format={percent}
               onchange={(v) =>
                 edit((s) => {
@@ -310,7 +381,11 @@
                 })}
             />
           </SettingRow>
-          <SettingRow id="theme" label="Theme" description="Colours of the dock and this window">
+          <SettingRow
+            id="theme"
+            label="Colour mode"
+            description="Light or dark colours for the dock and this window"
+          >
             <Select
               id="theme"
               value={settings.theme}
@@ -325,6 +400,36 @@
                 })}
             />
           </SettingRow>
+          <!-- The user's stylesheet. Rust reads it at start and on
+               Reload; Edit creates it from a template first. -->
+          <div class="file-row" data-row="user-css">
+            <div class="file-text">
+              <span class="file-label">Your styles (dock.css)</span>
+              <span class="file-detail"><code>{userCss?.path ?? '…'}</code></span>
+              <span class="file-detail" data-user-css-status>{userCssStatus(userCss)}</span>
+            </div>
+            <div class="actions">
+              <button
+                type="button"
+                class="button"
+                aria-label="Edit dock.css"
+                onclick={() => void editUserCss()}
+              >
+                Edit dock.css
+              </button>
+              <button
+                type="button"
+                class="button"
+                aria-label="Reload dock.css"
+                onclick={() => void reloadUserCss()}
+              >
+                Reload
+              </button>
+            </div>
+          </div>
+          {#if userCssError !== null}
+            <p class="file-error" role="alert">{userCssError}</p>
+          {/if}
         </SettingsCard>
       </section>
 
@@ -1062,6 +1167,46 @@
     margin: 0;
     padding: 18px 16px;
     color: var(--text-secondary);
+  }
+
+  /* Appearance → dock.css: a row like SettingRow's, with the file's
+     path and whether the dock uses it instead of a description. */
+  .file-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 16px;
+    min-height: 64px;
+    box-sizing: border-box;
+    padding: 12px 16px;
+  }
+
+  .file-text {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .file-label {
+    font-size: 14px;
+    line-height: 20px;
+  }
+
+  .file-detail {
+    margin-top: 2px;
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 16px;
+    overflow-wrap: anywhere;
+  }
+
+  .file-error {
+    margin: 0;
+    padding: 10px 16px;
+    color: var(--error-text);
+    font-size: 12px;
+    line-height: 16px;
+    overflow-wrap: anywhere;
   }
 
   /* About: the rows of SettingRow, with a path instead of a control's description. */

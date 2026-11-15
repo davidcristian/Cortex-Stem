@@ -11,6 +11,7 @@ import type { DockState } from '$lib/ipc/generated/DockState';
 import type { MonitorInfo } from '$lib/ipc/generated/MonitorInfo';
 import type { Settings } from '$lib/ipc/generated/Settings';
 import type { ThemeInfo } from '$lib/ipc/generated/ThemeInfo';
+import type { UserCss } from '$lib/ipc/generated/UserCss';
 import { defaultSettings } from '$lib/ipc/mock';
 
 import { acceptsRevision, DockStore } from './dock.svelte';
@@ -122,6 +123,13 @@ class FakeBackend implements Backend {
   async showItemMenu(): Promise<void> {}
   async showDockMenu(): Promise<void> {}
   async releaseDockFocus(): Promise<void> {}
+  async getUserCss(): Promise<UserCss> {
+    return { path: 'dock.css', css: null };
+  }
+  async reloadUserCss(): Promise<UserCss> {
+    return { path: 'dock.css', css: null };
+  }
+  async openUserCss(): Promise<void> {}
   onFileDrag(): Unsubscribe {
     return () => {};
   }
