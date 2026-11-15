@@ -33,9 +33,10 @@
 //! then `Facts::step` says what to log and what to ask the platform for.
 //! [`wanted`] (pure) turns the facts into the request; an unchanged request
 //! is not sent again, and none is sent before the window's handle is known.
-//! One `info` line per change of the effective look (`css`, a material, or a
-//! contrast theme's refusal); the platform adds one for the material it
-//! applied, or for the build or the compositor that refused it.
+//! One `info` line per change of the effective look (`css`, a material
+//! requested, or a contrast theme's refusal); whether a requested material is
+//! applied is the platform's line, the only verdict: the material it
+//! applied, or the build or the compositor that refused it.
 //!
 //! Threads: the facts are a mutex in Tauri's managed state. The platform
 //! call never blocks (it posts to the platform's backdrop thread) and is made
@@ -489,7 +490,7 @@ fn log_look(look: Effective) {
     match look {
         Effective::Css => log::info!("backdrop: css (the built-in look)"),
         Effective::Native(material) => log::info!(
-            "backdrop: {} (prototype: a native window under the primary dock's panel)",
+            "backdrop: {} requested under the primary dock's panel (prototype; the platform logs whether it is applied)",
             material_name(material)
         ),
         Effective::ContrastTheme(material) => log::info!(

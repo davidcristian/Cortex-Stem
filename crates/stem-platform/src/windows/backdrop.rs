@@ -41,8 +41,12 @@
 //!   so DWM draws the live material on a window that is never active (A6).
 //! - Input: `WS_EX_LAYERED | WS_EX_TRANSPARENT` with
 //!   `SetLayeredWindowAttributes(alpha 255)`: mouse input passes through to
-//!   whatever is beneath (A4). `WM_MOUSEACTIVATE → MA_NOACTIVATE` and
-//!   `WM_NCHITTEST → HTTRANSPARENT` cover the fallback below.
+//!   whatever is beneath (A4). In the fallback below (not layered) the
+//!   window is never activated (`WM_MOUSEACTIVATE → MA_NOACTIVATE`), but it
+//!   does take a click that reaches it: `WM_NCHITTEST → HTTRANSPARENT`
+//!   passes a click on only to windows of the same thread beneath, and
+//!   every window under the backdrop belongs to another thread. Such a click
+//!   is lost, as the research note says the fallback can do.
 //! - Z-order: unowned (an owned window is always above its owner), and
 //!   always placed with `hWndInsertAfter` = the dock window, never with
 //!   `HWND_TOP` / `HWND_TOPMOST`, and shown the same way (`SWP_SHOWWINDOW`),

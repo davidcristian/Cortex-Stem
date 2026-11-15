@@ -36,10 +36,11 @@ The prototype of the [backdrop research](index.md) is
   measured in (`panel_fits`). It is hidden while the window is hidden by the
   tray or the toggle shortcut, while auto-hide has the panel slid out, and
   in a contrast theme.
-- Log lines at `info`: the app logs `backdrop: css (the built-in look)`,
-  `backdrop: acrylic (prototype: …)` or `backdrop: acrylic refused: a
-  contrast theme is on; …` once per change of the effective look. The
-  platform logs `native backdrop applied: Acrylic (DWMSBT_TRANSIENTWINDOW) on
+- Log lines at `info`, once per change of the effective look, say what the
+  app asked for: `backdrop: css (the built-in look)`, `backdrop: acrylic
+  requested under the primary dock's panel (prototype; …)` or `backdrop:
+  acrylic refused: a contrast theme is on; …`. The platform's lines give
+  the result: `native backdrop applied: Acrylic (DWMSBT_TRANSIENTWINDOW) on
   window … under dock window … (layered click-through, frame extended)`
   once per material, or, once per process, `native backdrop refused:
   Windows build N has no DWMWA_SYSTEMBACKDROP_TYPE (it needs build 22621);
@@ -86,7 +87,9 @@ Where it differs from the design of [option 6](backdrop-window.md):
 - **Two switches** for the manual test, read once when the thread starts
   and named in the `applied` line. `STEM_BACKDROP_LAYERED=0` creates an
   ordinary window that returns `MA_NOACTIVATE` for `WM_MOUSEACTIVATE`, the
-  fallback for A4. `STEM_BACKDROP_EXTEND_FRAME=0` skips
+  fallback for A4. That window is never activated, but it takes any click
+  that reaches it, since `HTTRANSPARENT` passes a click on only to windows
+  of its own thread. `STEM_BACKDROP_EXTEND_FRAME=0` skips
   `DwmExtendFrameIntoClientArea` (A2). Any other value keeps the default.
 - Two messages the design did not list: for `WM_GETMINMAXINFO` the window
   lowers the minimum tracking size a captioned window has, to 1 × 1 px, and
