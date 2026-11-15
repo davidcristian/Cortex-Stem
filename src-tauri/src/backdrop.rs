@@ -23,11 +23,14 @@
 //!   the material, the corner radius, light or dark ([`dark`]) and a contrast
 //!   theme, which refuses the material ([`effective`]).
 //!
-//! [`wanted`] (pure) turns these facts into the request; an unchanged request
-//! is not sent again. One `info` line per change of the effective look
-//! (`css`, a material, or a contrast theme's refusal); the platform adds one
-//! for the material it applied, or for the build or the compositor that
-//! refused it.
+//! The facts and what follows from them are a small state machine
+//! (`Facts`, unit-tested as sequences): each entry point changes the facts,
+//! then `Facts::step` says what to log and what to ask the platform for.
+//! [`wanted`] (pure) turns the facts into the request; an unchanged request
+//! is not sent again, and none is sent before the window's handle is known.
+//! One `info` line per change of the effective look (`css`, a material, or a
+//! contrast theme's refusal); the platform adds one for the material it
+//! applied, or for the build or the compositor that refused it.
 //!
 //! Threads: the facts are a mutex in Tauri's managed state. The platform
 //! call never blocks (it posts to the platform's backdrop thread) and is made
@@ -202,6 +205,76 @@ struct Facts {
     sent: Option<DockBackdrop>,
 }
 
+/// What to do after a change of the [`Facts`] ([`Facts::step`]).
+#[derive(Debug, Default, PartialEq)]
+struct Step {
+    /// The effective look changed to this: log it.
+    log: Option<Effective>,
+    /// Ask the platform for this backdrop (`None`: none) under this window.
+    send: Option<(NativeWindowHandle, Option<DockBackdrop>)>,
+}
+
+impl Facts {
+    /// A conversion of the panel: `Some((origin, css, scale))` with the
+    /// window's top-left corner (physical px), the UI's resting panel (CSS
+    /// px) and the scale factor, or `None` while the window is hidden.
+    fn panel_converted(&mut self, place: Option<((i32, i32), Rect, f64)>) {
+        self.panel = place.map(|(origin, css, scale)| PanelPlace {
+            rect: panel_inwards(origin, css, scale),
+            scale,
+        });
+    }
+
+    /// An auto-hide report. Out (`hidden`): the panel counts as slid out at
+    /// once. Back: it still does; the returned number is the one the delayed
+    /// [`Facts::reveal_due`] must carry, so that a later report overtakes it.
+    fn auto_hide_reported(&mut self, hidden: bool) -> Option<u64> {
+        self.auto_hide_reports = self.auto_hide_reports.wrapping_add(1);
+        if hidden {
+            self.slid_out = true;
+            None
+        } else {
+            Some(self.auto_hide_reports)
+        }
+    }
+
+    /// [`REVEAL_DELAY`] has passed since the report numbered `report` said
+    /// the panel is coming back: it is back, unless another report came
+    /// meanwhile.
+    fn reveal_due(&mut self, report: u64) {
+        if self.auto_hide_reports == report {
+            self.slid_out = false;
+        }
+    }
+
+    /// What follows from the facts: the effective look to log when it
+    /// changed, and the request to send when it differs from the last one
+    /// sent and the window's handle is known. Both count as done.
+    fn step(&mut self) -> Step {
+        let Some(inputs) = self.inputs else {
+            return Step::default();
+        };
+        let look = effective(inputs.backdrop, self.theme.high_contrast);
+        let log = (self.logged != Some(look)).then_some(look);
+        self.logged = Some(look);
+        let request = wanted(
+            look,
+            self.panel,
+            self.slid_out,
+            inputs.radius_css,
+            dark(inputs.theme_mode, &self.theme),
+        );
+        let send = match self.handle {
+            Some(handle) if request != self.sent => {
+                self.sent = request;
+                Some((handle, request))
+            }
+            _ => None,
+        };
+        Step { log, send }
+    }
+}
+
 /// At startup, before the dock window exists: the settings and the theme
 /// as the service has them, and one `info` line for the effective look.
 pub fn init(app: &AppHandle, service: &DockService) {
@@ -241,10 +314,7 @@ pub fn on_panel(app: &AppHandle, window: &WebviewWindow, place: Option<((i32, i3
     if facts.handle.is_none() && place.is_some() {
         facts.handle = crate::windows::native_handle(window);
     }
-    facts.panel = place.map(|(origin, css, scale)| PanelPlace {
-        rect: panel_inwards(origin, css, scale),
-        scale,
-    });
+    facts.panel_converted(place);
     if let Some(service) = app.try_state::<crate::AppService>() {
         evaluate(&service.0, &mut facts);
     }
@@ -258,29 +328,15 @@ pub fn on_auto_hidden(app: &AppHandle, window: &WebviewWindow, hidden: bool) {
     if window.label() != DOCK_LABEL {
         return;
     }
-    let Some(state) = app.try_state::<DockBackdropState>() else {
+    let mut reveal = None;
+    update(app, |facts| reveal = facts.auto_hide_reported(hidden));
+    let Some(report) = reveal else {
         return;
-    };
-    let report = {
-        let mut facts = state.0.lock();
-        facts.auto_hide_reports = facts.auto_hide_reports.wrapping_add(1);
-        if hidden {
-            facts.slid_out = true;
-            if let Some(service) = app.try_state::<crate::AppService>() {
-                evaluate(&service.0, &mut facts);
-            }
-            return;
-        }
-        facts.auto_hide_reports
     };
     let handle = app.clone();
     drop(tauri::async_runtime::spawn_blocking(move || {
         std::thread::sleep(REVEAL_DELAY);
-        update(&handle, |facts| {
-            if facts.auto_hide_reports == report {
-                facts.slid_out = false;
-            }
-        });
+        update(&handle, |facts| facts.reveal_due(report));
     }));
 }
 
@@ -300,25 +356,11 @@ fn update(app: &AppHandle, change: impl FnOnce(&mut Facts)) {
 /// Log a change of the effective look, then ask the platform for the
 /// backdrop the facts call for, unless that is what it has.
 fn evaluate(service: &DockService, facts: &mut Facts) {
-    let Some(inputs) = facts.inputs else {
-        return;
-    };
-    let look = effective(inputs.backdrop, facts.theme.high_contrast);
-    if facts.logged != Some(look) {
-        facts.logged = Some(look);
+    let step = facts.step();
+    if let Some(look) = step.log {
         log_look(look);
     }
-    let request = wanted(
-        look,
-        facts.panel,
-        facts.slid_out,
-        inputs.radius_css,
-        dark(inputs.theme_mode, &facts.theme),
-    );
-    if request == facts.sent {
-        return;
-    }
-    let Some(handle) = facts.handle else {
+    let Some((handle, request)) = step.send else {
         return;
     };
     match service.platform().set_dock_backdrop(handle, request) {
@@ -336,7 +378,6 @@ fn evaluate(service: &DockService, facts: &mut Facts) {
             if request.is_some() { "shown" } else { "hidden" }
         ),
     }
-    facts.sent = request;
 }
 
 fn log_look(look: Effective) {
@@ -472,5 +513,197 @@ mod tests {
             scale: 1.0,
         });
         assert_eq!(wanted(acrylic, empty, false, 22, false), None);
+    }
+
+    // --- The state machine, as sequences of reports --------------------------
+
+    const DOCK: NativeWindowHandle = NativeWindowHandle(0x1234);
+
+    fn acrylic_inputs() -> Inputs {
+        Inputs {
+            backdrop: Backdrop::Acrylic,
+            radius_css: 22,
+            theme_mode: ThemeMode::Dark,
+        }
+    }
+
+    /// The resting panel, 640 x 64 CSS px (960 x 96 px at 1.5x), in a
+    /// window whose top-left corner is at (0, 1248).
+    fn at_rest() -> Option<((i32, i32), Rect, f64)> {
+        Some(((0, 1248), Rect::new(534, 16, 640, 64), 1.5))
+    }
+
+    fn backdrop_at_rest() -> DockBackdrop {
+        DockBackdrop {
+            rect: Rect::new(801, 1272, 960, 96),
+            corner_radius: 33,
+            material: BackdropMaterial::Acrylic,
+            dark: true,
+        }
+    }
+
+    /// Facts with acrylic, the window's handle and its panel shown at rest,
+    /// the first request already sent.
+    fn shown() -> Facts {
+        let mut facts = Facts {
+            inputs: Some(acrylic_inputs()),
+            handle: Some(DOCK),
+            ..Facts::default()
+        };
+        facts.panel_converted(at_rest());
+        assert_eq!(
+            facts.step().send,
+            Some((DOCK, Some(backdrop_at_rest()))),
+            "set-up"
+        );
+        facts
+    }
+
+    #[test]
+    fn nothing_is_logged_or_sent_before_the_settings_and_the_handle_arrive() {
+        let mut facts = Facts::default();
+        facts.panel_converted(at_rest());
+        assert_eq!(facts.step(), Step::default(), "no settings yet");
+
+        facts.inputs = Some(acrylic_inputs());
+        assert_eq!(
+            facts.step(),
+            Step {
+                log: Some(Effective::Native(BackdropMaterial::Acrylic)),
+                send: None,
+            },
+            "the look is logged, but there is no window to ask for"
+        );
+        assert_eq!(facts.step(), Step::default(), "logged once");
+
+        facts.handle = Some(DOCK);
+        assert_eq!(
+            facts.step().send,
+            Some((DOCK, Some(backdrop_at_rest()))),
+            "the handle arrives after the inputs: the request goes now"
+        );
+        assert_eq!(
+            facts.step(),
+            Step::default(),
+            "an unchanged request is not sent again"
+        );
+    }
+
+    #[test]
+    fn the_panel_moving_or_the_window_hiding_sends_the_new_request_once() {
+        let mut facts = shown();
+        facts.panel_converted(Some(((0, 1200), Rect::new(534, 16, 640, 64), 1.5)));
+        let moved = DockBackdrop {
+            rect: Rect::new(801, 1224, 960, 96),
+            ..backdrop_at_rest()
+        };
+        assert_eq!(facts.step().send, Some((DOCK, Some(moved))));
+        facts.panel_converted(Some(((0, 1200), Rect::new(534, 16, 640, 64), 1.5)));
+        assert_eq!(facts.step().send, None, "the same place again");
+
+        facts.panel_converted(None);
+        assert_eq!(facts.step().send, Some((DOCK, None)), "window hidden");
+        assert_eq!(facts.step().send, None);
+        facts.panel_converted(at_rest());
+        assert_eq!(facts.step().send, Some((DOCK, Some(backdrop_at_rest()))));
+    }
+
+    #[test]
+    fn the_material_goes_with_the_slide_out_and_comes_back_when_the_reveal_is_due() {
+        let mut facts = shown();
+        assert_eq!(facts.auto_hide_reported(true), None);
+        assert_eq!(facts.step().send, Some((DOCK, None)), "out: at once");
+
+        let reveal = facts.auto_hide_reported(false);
+        assert!(reveal.is_some());
+        assert_eq!(facts.step().send, None, "back: not before the delay");
+        facts.reveal_due(reveal.unwrap_or_default());
+        assert_eq!(facts.step().send, Some((DOCK, Some(backdrop_at_rest()))));
+    }
+
+    #[test]
+    fn a_reveal_overtaken_by_a_newer_report_leaves_the_panel_slid_out() {
+        let mut facts = shown();
+        facts.auto_hide_reported(true);
+        assert_eq!(facts.step().send, Some((DOCK, None)));
+
+        // Out, back and out again within the delay: the first reveal is stale.
+        let stale = facts.auto_hide_reported(false).unwrap_or_default();
+        assert_eq!(facts.auto_hide_reported(true), None);
+        facts.reveal_due(stale);
+        assert!(facts.slid_out);
+        assert_eq!(facts.step().send, None, "still slid out: nothing to send");
+
+        // Back twice within the delay: only the second reveal acts.
+        let first = facts.auto_hide_reported(false).unwrap_or_default();
+        let second = facts.auto_hide_reported(false).unwrap_or_default();
+        facts.reveal_due(first);
+        assert_eq!(facts.step().send, None, "overtaken by the second report");
+        facts.reveal_due(second);
+        assert_eq!(facts.step().send, Some((DOCK, Some(backdrop_at_rest()))));
+    }
+
+    #[test]
+    fn a_settings_or_theme_change_while_slid_out_shows_nothing_until_the_reveal() {
+        let mut facts = shown();
+        facts.auto_hide_reported(true);
+        assert_eq!(facts.step().send, Some((DOCK, None)));
+
+        facts.inputs = Some(Inputs {
+            backdrop: Backdrop::Mica,
+            radius_css: 8,
+            ..acrylic_inputs()
+        });
+        assert_eq!(
+            facts.step(),
+            Step {
+                log: Some(Effective::Native(BackdropMaterial::Mica)),
+                send: None,
+            },
+            "the new look is logged; the panel is still out"
+        );
+        facts.theme.dark = false;
+        assert_eq!(facts.step(), Step::default());
+
+        let reveal = facts.auto_hide_reported(false).unwrap_or_default();
+        facts.reveal_due(reveal);
+        let mica = DockBackdrop {
+            corner_radius: 12,
+            material: BackdropMaterial::Mica,
+            ..backdrop_at_rest()
+        };
+        assert_eq!(facts.step().send, Some((DOCK, Some(mica))));
+    }
+
+    #[test]
+    fn a_contrast_theme_or_the_css_look_takes_the_material_away_and_logs_why() {
+        let mut facts = shown();
+        facts.theme.high_contrast = true;
+        assert_eq!(
+            facts.step(),
+            Step {
+                log: Some(Effective::ContrastTheme(BackdropMaterial::Acrylic)),
+                send: Some((DOCK, None)),
+            }
+        );
+        facts.theme.high_contrast = false;
+        assert_eq!(
+            facts.step(),
+            Step {
+                log: Some(Effective::Native(BackdropMaterial::Acrylic)),
+                send: Some((DOCK, Some(backdrop_at_rest()))),
+            }
+        );
+        facts.inputs = Some(Inputs {
+            backdrop: Backdrop::Css,
+            ..acrylic_inputs()
+        });
+        assert_eq!(
+            facts.step(),
+            Step {
+                log: Some(Effective::Css),
+                send: Some((DOCK, None)),
+            }
+        );
     }
 }
