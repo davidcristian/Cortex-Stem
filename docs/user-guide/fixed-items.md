@@ -39,7 +39,8 @@ instead.
 - A bolt shows while the battery charges, and a plug while the PC is plugged
   in without charging.
 - The fill turns amber while battery saver (energy saver) is on.
-- Its name says the same in words (`Battery 73 %, charging`).
+- Its name says the same in words (`Battery 73 %, charging`). While Windows
+  does not report the charge, the name is just `Battery`.
 - It updates within moments of a change, and after the PC wakes up.
 - A PC without a battery (most desktops) never shows the item, even with the
   switch on.
@@ -51,7 +52,12 @@ instead.
 
 - The icon shows the time over the short weekday and the day. Its name (and
   the pill over it) is the full date and time.
-- All three use the format of your language and region.
+- All three use the format of your Windows display language (Settings →
+  Time & language → Language & region → _Windows display language_). The
+  clock does not use the _Regional format_ set there, or a time format you
+  changed, such as a 24-hour clock. With an English (United States) display
+  language and an English (United Kingdom) region, the taskbar shows `14:05`
+  and the dock shows `2:05 PM`.
 - A click opens your notifications and the calendar, as Win+N does. Its menu
   has _Open Notification Center_ and _Date and time settings_, which opens
   that page of the Windows Settings app.
