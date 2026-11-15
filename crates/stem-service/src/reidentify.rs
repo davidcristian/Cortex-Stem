@@ -11,6 +11,12 @@
 //! whose new id is already pinned is dropped instead, so no duplicate
 //! appears. What cannot be identified, or fails, stays as it is.
 //!
+//! The same goes for an `exe:` pin of an inbox executable under
+//! `<drive>:\Windows\` that Windows redirects to a packaged app (a
+//! `C:\Windows\notepad.exe` dropped on the dock before the platform knew
+//! app execution aliases): the platform names the package app, and the pin
+//! becomes that app's.
+//!
 //! This module holds the decisions (which pins qualify, what an answer
 //! means, how the pinned list changes); `Inner::reidentify_stale_pins` in
 //! the crate root does the platform calls and the one save.
@@ -19,7 +25,7 @@ use std::fmt;
 
 use stem_core::settings::PinnedApp;
 use stem_core::{AppId, AppIdentity, LaunchTarget};
-use stem_platform::rules::identity::packaged_exe;
+use stem_platform::rules::identity::{packaged_exe, windows_dir_exe};
 
 /// Prefix of the ids this module rewrites (`AppId::for_exe`).
 const EXE_ID_PREFIX: &str = "exe:";
@@ -28,16 +34,18 @@ const EXE_ID_PREFIX: &str = "exe:";
 const AUMID_ID_PREFIX: &str = "aumid:";
 
 /// Whether `pin` may be a stale pin of a packaged app: pinned under an
-/// `exe:` id and launched by an `Exe` target under `\WindowsApps\<package>\`
-/// without arguments (a `StoreApp` target cannot carry them, and the
-/// re-identification must not lose anything the user set).
+/// `exe:` id and launched by an `Exe` target under `\WindowsApps\<package>\`,
+/// or under `<drive>:\Windows\` (an inbox exe an app execution alias may
+/// redirect), without arguments (a `StoreApp` target cannot carry them, and
+/// the re-identification must not lose anything the user set).
 pub(crate) fn is_candidate(pin: &PinnedApp) -> bool {
     if !pin.id.as_str().starts_with(EXE_ID_PREFIX) {
         return false;
     }
     match &pin.launch {
         LaunchTarget::Exe { path, args, .. } => {
-            args.is_empty() && packaged_exe(&path.to_string_lossy()).is_some()
+            let path = path.to_string_lossy();
+            args.is_empty() && (packaged_exe(&path).is_some() || windows_dir_exe(&path))
         }
         LaunchTarget::Shortcut { .. }
         | LaunchTarget::StoreApp { .. }
@@ -207,6 +215,17 @@ mod tests {
         assert!(!is_candidate(&exe_pin(
             r"C:\Users\me\AppData\Local\Microsoft\WindowsApps\wt.exe",
             &[]
+        )));
+        // An inbox exe Windows may redirect to a packaged app is asked about
+        // too, unless it carries arguments.
+        assert!(is_candidate(&exe_pin(r"C:\Windows\notepad.exe", &[])));
+        assert!(is_candidate(&exe_pin(
+            r"C:\Windows\System32\notepad.exe",
+            &[]
+        )));
+        assert!(!is_candidate(&exe_pin(
+            r"C:\Windows\System32\notepad.exe",
+            &[r"C:\notes.txt"]
         )));
         assert!(!is_candidate(&store_pin(TERMINAL_AUMID)));
         let mut aumid_id = stale.clone();

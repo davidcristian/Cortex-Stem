@@ -46,6 +46,29 @@ already pinned is dropped instead. The settings are saved once, and each
 change is logged at info (`re-identified pin <old> as <new>`). Failures and
 ambiguous results leave the pin as it is (`stem_service::reidentify`).
 
+## Inbox executables redirected to a package app
+
+Windows 11 starts the Store Notepad for `C:\Windows\notepad.exe` (and
+`System32\notepad.exe`). Two entries make this happen:
+
+- the Image File Execution Options entry for the file name has `UseFilter`
+  and a filter subkey whose `FilterFullPath` is that path, with
+  `AppExecutionAliasRedirect = 1`;
+- the user's app execution alias of the same name
+  (`%LOCALAPPDATA%\Microsoft\WindowsApps\notepad.exe`) names the app. It is
+  an `IO_REPARSE_TAG_APPEXECLINK` reparse point whose data names the
+  package family, the AUMID and the target.
+
+An argument-free `Exe` target that passes both checks, with an AUMID that
+resolves in the AppsFolder, gets that app's identity. So a dropped
+`notepad.exe` merges with Notepad's `aumid:` windows.
+`rules::identity::parse_app_exec_link` parses the reparse data. With the
+alias turned off in Windows Settings, the inbox exe runs and keeps its
+`exe:` identity. The re-identification at start also checks every
+argument-free `exe:` pin under `<drive>:\Windows\`
+(`rules::identity::windows_dir_exe`), so such a pin made earlier becomes
+the app's.
+
 ## Display names
 
 A display name comes from the AppsFolder for an AUMID that the shell
