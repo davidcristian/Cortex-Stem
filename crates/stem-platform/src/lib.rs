@@ -14,7 +14,9 @@
 #![cfg_attr(not(windows), forbid(unsafe_code))]
 
 use std::sync::Arc;
+use std::time::Duration;
 
+use stem_core::settings::DockPosition;
 use stem_core::{
     AppIdentity, IconKey, LaunchTarget, MonitorInfo, PlatformEvent, RawWindow, Rect,
     RecycleBinState, ShellAction, ThemeInfo, WindowAction, WindowId,
@@ -89,6 +91,51 @@ pub struct HitRegion {
     pub panel: Rect,
     pub envelope: Rect,
 }
+
+/// The screen space a dock window reserves as an AppBar: a
+/// band at its screen edge that the shell takes out of the monitor's work
+/// area, so maximised windows stop short of the dock. Physical pixels of
+/// the virtual desktop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AppBarRequest {
+    /// The full bounds of the window's monitor ([`MonitorInfo::bounds`]),
+    /// never its work area: the work area shrinks once the band is
+    /// reserved, so a band asked for on its edge would move inwards with
+    /// every answer. The shell itself moves the band past the stock taskbar
+    /// and other bars on that edge ([`rules::appbar`]).
+    pub monitor: Rect,
+    /// The edge the band lies on.
+    pub edge: DockPosition,
+    /// Across the edge: the panel's resting thickness plus its margin to
+    /// the edge, not the magnification headroom. The platform keeps it
+    /// between 1 px and half the monitor ([`rules::appbar::band_thickness`]).
+    pub thickness: i32,
+}
+
+/// The shell's answer to an [`AppBarRequest`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AppBarGrant {
+    /// The request this answers.
+    pub request: AppBarRequest,
+    /// The band the shell reserved, physical px: on the request's edge of
+    /// its monitor, moved inwards past the bars already on that edge (the
+    /// stock taskbar when it is visible there) and possibly shortened by
+    /// bars on the neighbouring edges. The dock window goes with its edge
+    /// side on this band's edge side ([`rules::appbar::window_rect`]).
+    pub rect: Rect,
+}
+
+/// Where a platform reports what became of a dock window's AppBar:
+/// `Some` with each band the shell grants that differs from the last one
+/// reported (after a request, and whenever the shell moves the band: a bar
+/// or the taskbar changing on that edge, an Explorer restart), `None` once
+/// the window holds no reservation the platform knows of (a registration
+/// that failed or was given up; not after a release the caller asked for,
+/// nor at [`Platform::release_app_bars`]). Called on a thread of the
+/// platform's own, or (the mock) on the caller's: it must be cheap and
+/// must not block (post to the UI thread), and must not call back into
+/// [`Platform::set_dock_app_bar`] synchronously.
+pub type AppBarSink = Arc<dyn Fn(NativeWindowHandle, Option<AppBarGrant>) + Send + Sync + 'static>;
 
 /// The OS seam. Every method is synchronous and may be called from any
 /// thread; implementations must be internally thread-safe and must not block
@@ -176,6 +223,46 @@ pub trait Platform: Send + Sync + 'static {
     /// about 500 ms. Optional; the default reports it unsupported.
     fn set_taskbar_auto_hide(&self, _enabled: bool) -> PlatformResult<()> {
         Err(PlatformError::Unsupported("taskbar auto-hide"))
+    }
+
+    /// Reserve screen space for a dock window as an AppBar (`Some`), or
+    /// give it back (`None`). Returns at once, on any thread
+    /// (the main thread included): the Windows implementation queues the
+    /// request for a thread of its own (`stem-appbar`), which sends every
+    /// `SHAppBarMessage`, waits [`rules::appbar::Settle::DELAY_MS`] for a
+    /// newer request of the same window before it takes a band (a release
+    /// does not wait), registers the window (`ABM_NEW`), proposes the band
+    /// on the request's edge of the monitor's bounds (`ABM_QUERYPOS`), takes
+    /// what the shell allows (`ABM_SETPOS`) and reports the band through
+    /// `sink` ([`AppBarSink`]). It answers the shell's notifications on that
+    /// thread too (the dock window's subclass forwards them): a band the
+    /// shell moves is asked for again and reported, and after an Explorer
+    /// restart every bar registers again. Another edge or another monitor
+    /// gives the old band back before the new one is taken. `handle` must
+    /// be a window [`Platform::prepare_dock_window`] prepared: the shell's
+    /// notifications arrive through its subclass. Optional; the default
+    /// reports it unsupported.
+    fn set_dock_app_bar(
+        &self,
+        _handle: NativeWindowHandle,
+        _request: Option<AppBarRequest>,
+        _sink: AppBarSink,
+    ) -> PlatformResult<()> {
+        Err(PlatformError::Unsupported("appbar registration"))
+    }
+
+    /// Give back every band [`Platform::set_dock_app_bar`] reserved and
+    /// wait at most `timeout` for the shell to take them (the app's quit).
+    /// May be called on the thread that owns the dock windows, which is
+    /// where the app quits: the wait keeps handling the messages other
+    /// threads send to that thread's windows (the shell notifies the
+    /// remaining bars while it removes one), so it cannot deadlock with
+    /// the shell. Fails with [`PlatformError::Timeout`] when the shell did
+    /// not finish in time (a hung Explorer); the release then still
+    /// happens if the shell answers before the process ends. Nothing is
+    /// reported to the sinks. Optional; the default reports it unsupported.
+    fn release_app_bars(&self, _timeout: Duration) -> PlatformResult<()> {
+        Err(PlatformError::Unsupported("appbar registration"))
     }
 
     /// Ask the user a yes/no question in a native, topmost message box

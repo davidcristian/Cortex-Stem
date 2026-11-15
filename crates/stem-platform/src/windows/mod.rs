@@ -15,7 +15,7 @@
 //! - `launch`      ShellExecute & friends
 //! - `theme`       accent colour, light/dark, contrast
 //! - `recycle_bin` SHQueryRecycleBin, open, empty; recycle files
-//! - `appbar`      SHAppBarMessage space reservation (M4)
+//! - `appbar`      SHAppBarMessage space reservation (a thread)
 //! - `shell`       Start menu, Task View, Show Desktop
 //! - `dock_window` extended styles + subclass of our own windows
 //! - `hit_test`    cursor-tracking thread for the hit region
@@ -45,6 +45,8 @@ pub mod theme;
 pub mod util;
 pub mod virtual_desktop;
 
+use std::time::Duration;
+
 use parking_lot::Mutex;
 use stem_core::{
     AppIdentity, IconKey, LaunchTarget, MonitorInfo, RawWindow, RecycleBinState, ShellAction,
@@ -52,16 +54,18 @@ use stem_core::{
 };
 
 use crate::{
-    DockWindowOptions, EventSink, HitRegion, NativeWindowHandle, Platform, PlatformError,
-    PlatformResult,
+    AppBarRequest, AppBarSink, DockWindowOptions, EventSink, HitRegion, NativeWindowHandle,
+    Platform, PlatformError, PlatformResult,
 };
 
 /// The real platform. Cheap to construct; `start` spins up the event thread;
-/// the hit-test thread starts lazily on the first `set_dock_hit_region`.
+/// the hit-test thread starts lazily on the first `set_dock_hit_region`, the
+/// AppBar thread on the first `set_dock_app_bar` that asks for a band.
 #[derive(Debug, Default)]
 pub struct WindowsPlatform {
     hook: Mutex<Option<events::EventHookThread>>,
     hit_test: Mutex<Option<hit_test::HitTestThread>>,
+    app_bars: Mutex<Option<appbar::AppBarThread>>,
     icons: icons::IconCache,
 }
 
@@ -91,6 +95,11 @@ impl Platform for WindowsPlatform {
         }
         if let Some(tracker) = self.hit_test.lock().take() {
             tracker.stop();
+        }
+        // Out of the lock first: the stop waits (bounded) for the shell.
+        let app_bars = self.app_bars.lock().take();
+        if let Some(app_bars) = app_bars {
+            app_bars.stop();
         }
     }
 
@@ -157,6 +166,41 @@ impl Platform for WindowsPlatform {
 
     fn ask_yes_no(&self, title: &str, text: &str) -> PlatformResult<bool> {
         dialog::ask_yes_no(title, text)
+    }
+
+    /// Queues the request for the AppBar thread, started by the first
+    /// request for a band; a release before that has nothing to give back.
+    fn set_dock_app_bar(
+        &self,
+        handle: NativeWindowHandle,
+        request: Option<AppBarRequest>,
+        sink: AppBarSink,
+    ) -> PlatformResult<()> {
+        let mut guard = self.app_bars.lock();
+        if guard.is_none() {
+            if request.is_none() {
+                return Ok(());
+            }
+            *guard = Some(appbar::AppBarThread::start()?);
+        }
+        if let Some(app_bars) = guard.as_ref() {
+            app_bars.set(handle, request, sink);
+        }
+        Ok(())
+    }
+
+    /// Waits outside the platform's lock, so nothing that needs the lock
+    /// can be held up behind the shell.
+    fn release_app_bars(&self, timeout: Duration) -> PlatformResult<()> {
+        let queue = self
+            .app_bars
+            .lock()
+            .as_ref()
+            .map(appbar::AppBarThread::queue);
+        match queue {
+            Some(queue) => appbar::release_all(&queue, timeout),
+            None => Ok(()),
+        }
     }
 
     fn prepare_dock_window(

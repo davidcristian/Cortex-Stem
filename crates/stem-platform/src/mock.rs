@@ -4,6 +4,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use parking_lot::Mutex;
 use stem_core::{
@@ -12,8 +13,8 @@ use stem_core::{
 };
 
 use crate::{
-    DockWindowOptions, EventSink, HitRegion, NativeWindowHandle, Platform, PlatformError,
-    PlatformResult, rules,
+    AppBarGrant, AppBarRequest, AppBarSink, DockWindowOptions, EventSink, HitRegion,
+    NativeWindowHandle, Platform, PlatformError, PlatformResult, rules,
 };
 
 #[derive(Default)]
@@ -30,6 +31,9 @@ struct State {
     taskbar_auto_hide: bool,
     /// What `ask_yes_no` answers; *No* unless scripted.
     yes_no_answer: bool,
+    /// The AppBars registered now, in the order they were first
+    /// registered, with the request each holds.
+    app_bars: Vec<(NativeWindowHandle, AppBarRequest)>,
     sink: Option<EventSink>,
     /// Every call made, for assertions in tests.
     calls: Vec<MockCall>,
@@ -46,6 +50,7 @@ impl std::fmt::Debug for State {
             .field("recycle_failure", &self.recycle_failure)
             .field("taskbar_auto_hide", &self.taskbar_auto_hide)
             .field("yes_no_answer", &self.yes_no_answer)
+            .field("app_bars", &self.app_bars)
             .field("started", &self.sink.is_some())
             .field("calls", &self.calls)
             .finish()
@@ -73,6 +78,10 @@ pub enum MockCall {
         title: String,
         text: String,
     },
+    /// `set_dock_app_bar` with this window and request.
+    SetDockAppBar(NativeWindowHandle, Option<AppBarRequest>),
+    /// `release_app_bars`.
+    ReleaseAppBars,
 }
 
 #[derive(Debug, Default)]
@@ -179,9 +188,28 @@ impl MockPlatform {
         }
     }
 
+    /// The AppBars registered now: each window with the request
+    /// its band was granted for, in the order of their first registration.
+    pub fn app_bars(&self) -> Vec<(NativeWindowHandle, AppBarRequest)> {
+        self.state.lock().app_bars.clone()
+    }
+
     fn record(&self, call: MockCall) {
         self.state.lock().calls.push(call);
     }
+}
+
+/// The band the mock's shell grants for `request`: on the request's edge of
+/// the work area of the scripted monitor whose bounds it names (as if the
+/// stock taskbar, or another bar, held the rest), or of the bounds
+/// themselves for a monitor the script does not list; cut to the request's
+/// thickness by the same rule as the real platform (`rules::appbar`).
+fn mock_band(monitors: &[MonitorInfo], request: &AppBarRequest) -> Rect {
+    let area = monitors
+        .iter()
+        .find(|m| m.bounds == request.monitor)
+        .map_or(request.monitor, |m| m.work_area);
+    rules::appbar::set_rect(area, request)
 }
 
 impl Platform for MockPlatform {
@@ -395,6 +423,57 @@ impl Platform for MockPlatform {
         region: Option<HitRegion>,
     ) -> PlatformResult<()> {
         self.record(MockCall::SetDockHitRegion(handle, region));
+        Ok(())
+    }
+
+    /// Recorded, and kept in [`MockPlatform::app_bars`]; nothing real is
+    /// reserved and the scripted work areas do not change. A request is
+    /// granted at once, without the real platform's wait, and the grant
+    /// ([`mock_band`]) goes to `sink` synchronously, on the calling thread,
+    /// when it differs from the window's previous request. A release
+    /// reports nothing, like the real platform.
+    fn set_dock_app_bar(
+        &self,
+        handle: NativeWindowHandle,
+        request: Option<AppBarRequest>,
+        sink: AppBarSink,
+    ) -> PlatformResult<()> {
+        let grant = {
+            let mut s = self.state.lock();
+            s.calls.push(MockCall::SetDockAppBar(handle, request));
+            let held = s.app_bars.iter().position(|(h, _)| *h == handle);
+            let granted = match (request, held) {
+                (None, Some(i)) => {
+                    s.app_bars.remove(i);
+                    None
+                }
+                (None, None) => None,
+                (Some(request), Some(i)) if s.app_bars[i].1 == request => None,
+                (Some(request), Some(i)) => {
+                    s.app_bars[i].1 = request;
+                    Some(request)
+                }
+                (Some(request), None) => {
+                    s.app_bars.push((handle, request));
+                    Some(request)
+                }
+            };
+            granted.map(|request| AppBarGrant {
+                request,
+                rect: mock_band(&s.monitors, &request),
+            })
+        };
+        if let Some(grant) = grant {
+            sink(handle, Some(grant));
+        }
+        Ok(())
+    }
+
+    /// Recorded; every registration is dropped at once.
+    fn release_app_bars(&self, _timeout: Duration) -> PlatformResult<()> {
+        let mut s = self.state.lock();
+        s.calls.push(MockCall::ReleaseAppBars);
+        s.app_bars.clear();
         Ok(())
     }
 }
@@ -713,6 +792,81 @@ mod tests {
                     title: "Stem".to_owned(),
                     text: "Again?".to_owned(),
                 },
+            ]
+        );
+    }
+
+    #[test]
+    fn app_bars_are_recorded_granted_on_the_work_area_edge_and_released() {
+        use stem_core::settings::DockPosition;
+
+        let p = MockPlatform::new();
+        type Seen = Vec<(NativeWindowHandle, Option<AppBarGrant>)>;
+        let grants: Arc<Mutex<Seen>> = Arc::default();
+        let seen = Arc::clone(&grants);
+        let sink: AppBarSink = Arc::new(move |handle, grant| seen.lock().push((handle, grant)));
+        let monitor = demo_monitor();
+        let bottom = AppBarRequest {
+            monitor: monitor.bounds,
+            edge: DockPosition::Bottom,
+            thickness: 72,
+        };
+        let a = NativeWindowHandle(0xA);
+        let b = NativeWindowHandle(0xB);
+
+        p.set_dock_app_bar(a, Some(bottom), Arc::clone(&sink))
+            .unwrap();
+        // The demo monitor's work area stops 48 px short of its bottom.
+        let band = Rect::new(0, 1392 - 72, 2560, 72);
+        assert_eq!(
+            grants.lock().clone(),
+            vec![(
+                a,
+                Some(AppBarGrant {
+                    request: bottom,
+                    rect: band,
+                })
+            )]
+        );
+        // The same request again grants nothing new.
+        p.set_dock_app_bar(a, Some(bottom), Arc::clone(&sink))
+            .unwrap();
+        assert_eq!(grants.lock().len(), 1);
+
+        // A monitor the script does not list: the band on its bounds.
+        let elsewhere = AppBarRequest {
+            monitor: Rect::new(-1920, 0, 1920, 1080),
+            edge: DockPosition::Left,
+            thickness: 80,
+        };
+        p.set_dock_app_bar(b, Some(elsewhere), Arc::clone(&sink))
+            .unwrap();
+        assert_eq!(
+            grants.lock().last().copied(),
+            Some((
+                b,
+                Some(AppBarGrant {
+                    request: elsewhere,
+                    rect: Rect::new(-1920, 0, 80, 1080),
+                })
+            ))
+        );
+        assert_eq!(p.app_bars(), vec![(a, bottom), (b, elsewhere)]);
+
+        // A release reports nothing and drops the registration.
+        p.set_dock_app_bar(a, None, Arc::clone(&sink)).unwrap();
+        assert_eq!(grants.lock().len(), 2);
+        assert_eq!(p.app_bars(), vec![(b, elsewhere)]);
+        p.release_app_bars(Duration::from_millis(100)).unwrap();
+        assert!(p.app_bars().is_empty());
+        assert_eq!(
+            p.calls(),
+            vec![
+                MockCall::SetDockAppBar(a, Some(bottom)),
+                MockCall::SetDockAppBar(a, Some(bottom)),
+                MockCall::SetDockAppBar(b, Some(elsewhere)),
+                MockCall::SetDockAppBar(a, None),
+                MockCall::ReleaseAppBars,
             ]
         );
     }

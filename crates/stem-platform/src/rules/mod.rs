@@ -6,6 +6,7 @@
 //!
 //! No `windows` crate imports, no `unsafe`, no I/O.
 
+pub mod appbar;
 pub mod backoff;
 pub mod eligibility;
 pub mod events;

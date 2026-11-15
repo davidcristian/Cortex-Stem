@@ -58,7 +58,14 @@
 //!   windows (menus, the taskbar's flyouts) when it does not have to;
 //! - `WM_WINDOWPOSCHANGED` without `SWP_NOZORDER`: logged at trace with the
 //!   insert-after handle, so an outside z-order change can be dated;
-//! - `WM_NCDESTROY`: the subclass is removed and its state freed;
+//! - the AppBar messages (`appbar`): the shell's callback
+//!   (`appbar::CALLBACK_MESSAGE`, answered 0), `WM_ACTIVATE`,
+//!   `WM_WINDOWPOSCHANGED` and `TaskbarCreated` are handed to `appbar`,
+//!   which only queues them for its own thread (this is the main thread,
+//!   which must never wait on the shell); all but the callback are
+//!   forwarded to the chain as well;
+//! - `WM_NCDESTROY`: the window's AppBar is given back (queued), the
+//!   subclass is removed and its state freed;
 //! - everything else goes to `DefSubclassProc`.
 //!
 //! The subclass state is a leaked `Box` passed as the reference data; the
@@ -93,13 +100,13 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowLongPtrW, HWND_TOPMOST, IsWindow, IsWindowVisible, KillTimer, MA_NOACTIVATE,
     PostMessageW, STYLESTRUCT, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
     SWP_NOZORDER, SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, WINDOW_EX_STYLE,
-    WINDOWPOS, WM_APP, WM_CREATE, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_NULL, WM_PARENTNOTIFY,
-    WM_STYLECHANGING, WM_TIMER, WM_WINDOWPOSCHANGED, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+    WINDOWPOS, WM_ACTIVATE, WM_APP, WM_CREATE, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_NULL,
+    WM_PARENTNOTIFY, WM_STYLECHANGING, WM_TIMER, WM_WINDOWPOSCHANGED, WS_EX_LAYERED,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
 };
 use windows::core::BOOL;
 
-use super::util;
+use super::{appbar, util};
 use crate::{DockWindowOptions, NativeWindowHandle, PlatformError, PlatformResult};
 
 /// Window message posted to a prepared dock window to make it click-through
@@ -331,6 +338,7 @@ unsafe extern "system" fn subclass_proc(
     let state_ptr = refdata as *mut SubclassState;
     if msg == WM_NCDESTROY {
         DOCK_WINDOWS.lock().retain(|&raw| raw != hwnd.0 as isize);
+        appbar::on_destroyed(hwnd);
         // SAFETY: balances the SetWindowSubclass in `prepare`, on the
         // window's thread; comctl32 keeps the chain valid for this call.
         let removed = unsafe { RemoveWindowSubclass(hwnd, Some(subclass_proc), SUBCLASS_ID) };
@@ -435,7 +443,16 @@ fn on_message(
             ensure_topmost(hwnd, state, "foreground change");
             Some(LRESULT(0))
         }
+        appbar::CALLBACK_MESSAGE => {
+            appbar::on_callback(hwnd, wparam, lparam);
+            Some(LRESULT(0))
+        }
+        WM_ACTIVATE => {
+            appbar::on_activate(hwnd, wparam);
+            None
+        }
         WM_WINDOWPOSCHANGED => {
+            appbar::on_window_pos_changed(hwnd);
             let pos = lparam.0 as *const WINDOWPOS;
             if !pos.is_null() {
                 // SAFETY: for WM_WINDOWPOSCHANGED the system passes a
@@ -450,6 +467,10 @@ fn on_message(
                     );
                 }
             }
+            None
+        }
+        _ if appbar::is_taskbar_created(msg) => {
+            appbar::on_taskbar_created(hwnd);
             None
         }
         _ => None,
