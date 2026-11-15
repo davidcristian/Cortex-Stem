@@ -510,26 +510,42 @@ fn strip_doc_links(doc: &str) -> String {
     out
 }
 
+/// A bound of a documented range: a plain decimal number, maybe negative.
 fn is_number(s: &str) -> bool {
-    !s.is_empty() && s.chars().all(|c| c.is_ascii_digit() || c == '.') && s.parse::<f64>().is_ok()
+    let digits = s.strip_prefix('-').unwrap_or(s);
+    !digits.is_empty()
+        && digits.chars().all(|c| c.is_ascii_digit() || c == '.')
+        && s.parse::<f64>().is_ok()
 }
 
 /// A documented inclusive range such as `(24..=128)`, removed from the text.
-fn extract_range(doc: &str) -> (Option<(String, String)>, String) {
-    let found = doc.find("..=").and_then(|op| {
-        let open = doc[..op].rfind('(')?;
-        let close = op + doc[op..].find(')')?;
-        let (lo, hi) = (&doc[open + 1..op], &doc[op + 3..close]);
-        (is_number(lo) && is_number(hi)).then_some((open, close, lo, hi))
-    });
-    match found {
-        Some((open, close, lo, hi)) => {
-            let mut text = doc[..open].trim_end().to_owned();
-            text.push_str(&doc[close + 1..]);
-            (Some((lo.to_owned(), hi.to_owned())), text)
-        }
-        None => (None, doc.to_owned()),
-    }
+/// Panics on any other use of `..=`, so that a range the generator cannot
+/// read never stays in the description unchecked.
+fn extract_range(doc: &str, what: &str) -> (Option<(String, String)>, String) {
+    let Some(op) = doc.find("..=") else {
+        return (None, doc.to_owned());
+    };
+    let found = doc[..op]
+        .rfind('(')
+        .zip(doc[op..].find(')'))
+        .and_then(|(open, len)| {
+            let close = op + len;
+            let (lo, hi) = (&doc[open + 1..op], &doc[op + 3..close]);
+            (is_number(lo) && is_number(hi)).then_some((open, close, lo, hi))
+        });
+    let Some((open, close, lo, hi)) = found else {
+        panic!(
+            "{what}: the doc comment has `..=` but no range written as `(lo..=hi)` \
+             with plain numbers, which is the only form the generator reads: {doc}"
+        );
+    };
+    let mut text = doc[..open].trim_end().to_owned();
+    text.push_str(&doc[close + 1..]);
+    assert!(
+        !text.contains("..="),
+        "{what}: the doc comment documents more than one range: {doc}"
+    );
+    (Some((lo.to_owned(), hi.to_owned())), text)
 }
 
 // ---------------------------------------------------------------------------
@@ -727,7 +743,7 @@ impl Generator<'_> {
             let path = child.path.key(&key);
             let mut values = Vec::new();
             let mut ty = self.type_text(&field.ty, &path, &mut children, &mut values);
-            let (range, doc) = extract_range(&strip_doc_links(&field.doc));
+            let (range, doc) = extract_range(&strip_doc_links(&field.doc), &what);
             if let Some((lo, hi)) = range {
                 let integer = ty == "integer";
                 assert!(
@@ -839,7 +855,7 @@ impl Generator<'_> {
                 let key_path = path.key(&field_key(field, variant_camel));
                 let mut values = Vec::new();
                 let ty = self.type_text(&field.ty, &key_path, &mut children, &mut values);
-                let (range, doc) = extract_range(&strip_doc_links(&field.doc));
+                let (range, doc) = extract_range(&strip_doc_links(&field.doc), &what);
                 assert!(
                     range.is_none(),
                     "{what}: ranges inside arrays are not checked"
@@ -1207,6 +1223,35 @@ fn settings_reference_is_up_to_date() {
 }
 
 #[test]
+fn a_documented_range_is_read_and_removed_from_the_text() {
+    let range = |lo: &str, hi: &str| Some((lo.to_owned(), hi.to_owned()));
+    assert_eq!(
+        extract_range("Scale under the cursor (1.0..=2.5).", "a field"),
+        (range("1.0", "2.5"), "Scale under the cursor.".to_owned())
+    );
+    assert_eq!(
+        extract_range("Offset (-12..=12) in pixels.", "a field"),
+        (range("-12", "12"), "Offset in pixels.".to_owned())
+    );
+    assert_eq!(
+        extract_range("Keys `A`..`Z`.", "a field"),
+        (None, "Keys `A`..`Z`.".to_owned())
+    );
+}
+
+#[test]
+#[should_panic(expected = "no range written as `(lo..=hi)`")]
+fn a_range_the_generator_cannot_read_is_refused() {
+    extract_range("Spacing (0 ..= 10).", "a field");
+}
+
+#[test]
+#[should_panic(expected = "more than one range")]
+fn a_second_range_is_refused() {
+    extract_range("Width (1..=4), height (1..=8).", "a field");
+}
+
+#[test]
 #[should_panic(expected = "is not modelled")]
 fn a_serde_default_function_is_not_taken_for_a_plain_default() {
     check_serde(
@@ -1294,6 +1339,58 @@ fn documented_ranges_are_what_validation_clamps_to() {
         );
     }
 }
+
+#[test]
+fn every_clamped_number_has_a_documented_range() {
+    let reference = generate(&parse_items());
+    let defaults = serde_json::to_value(Settings::default()).expect("json");
+    let mut paths = Vec::new();
+    collect_paths(&defaults, &mut Vec::new(), &mut paths);
+    let mut checked = 0;
+    for path in paths {
+        let keys = keys_of(&path);
+        let Value::Number(default) = lookup(&defaults, &keys) else {
+            continue;
+        };
+        // `Settings::migrate` stamps the current version on every document
+        // it loads; that is a migration, not a clamp.
+        if keys == [ROOT_VERSION_KEY] {
+            continue;
+        }
+        let name = path.join(".");
+        let documented = reference
+            .ranges
+            .iter()
+            .any(|claim| claim.path.keys().as_deref() == Some(keys.as_slice()));
+        let probes = if default.is_u64() {
+            [Value::from(0), Value::from(1_000_000_000)]
+        } else {
+            [Value::from(-1e9), Value::from(1e9)]
+        };
+        let mut loaded_any = false;
+        for probe in probes {
+            let written = probe.as_f64().expect("a number");
+            let Ok(loaded) = load(&document(&keys, probe)) else {
+                continue;
+            };
+            loaded_any = true;
+            let got = lookup(&loaded, &keys)
+                .as_f64()
+                .unwrap_or_else(|| panic!("{name} is not a number after loading"));
+            assert!(
+                documented || (got - written).abs() <= 1e-6 * written.abs().max(1.0),
+                "{name}: loading changes {written} to {got}, but its doc comment \
+                 documents no `(lo..=hi)` range"
+            );
+            checked += 1;
+        }
+        assert!(loaded_any, "{name}: no probe loads; choose probes it takes");
+    }
+    assert!(checked > 0, "no numbers were checked");
+}
+
+/// The top-level key [`Settings::migrate`] rewrites on every load.
+const ROOT_VERSION_KEY: &str = "version";
 
 #[test]
 fn a_missing_key_takes_its_default_and_an_unknown_key_is_ignored() {
