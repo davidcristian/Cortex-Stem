@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, untrack } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
 
   import DockItem, { BOUNCE_MS } from '$lib/components/DockItem.svelte';
   import {
@@ -56,7 +56,7 @@
   } from '$lib/dock/geometry';
   import { iconSources, type IconSources } from '$lib/dock/icon-size';
   import { gapTransition, itemTransition } from '$lib/dock/item-transition';
-  import { nextFocusIndex, successorKey, tabStopKey } from '$lib/dock/keyboard';
+  import { entryKey, nextFocusIndex, successorKey, tabStopKey } from '$lib/dock/keyboard';
   import { computeScales, maxGrowth, slotCentres, type MagnifyParams } from '$lib/dock/magnify';
   import { dockFactsFor, dockMonitor, itemsForMonitor, monitorFromSearch } from '$lib/dock/monitor';
   import {
@@ -928,11 +928,18 @@
       return;
     }
     // Otherwise Escape lets go of the focused item: its pill goes,
-    // and with auto-hide on the countdown starts.
-    const active = document.activeElement;
-    if (e.key === 'Escape' && active instanceof HTMLElement && panelEl?.contains(active)) {
-      e.preventDefault();
-      active.blur();
+    // and with auto-hide on the countdown starts. It also gives the
+    // keyboard focus back: Rust brings back the window that was in
+    // front when the focus shortcut was pressed, and does nothing when the
+    // shortcut did not bring the keyboard here. Housekeeping: a failure
+    // only logs.
+    if (e.key === 'Escape') {
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && panelEl?.contains(active)) {
+        e.preventDefault();
+        active.blur();
+      }
+      void backend.releaseDockFocus().catch(report('release_dock_focus', false));
       return;
     }
     if (e.key === ',' && e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
@@ -1825,9 +1832,27 @@
     return target;
   }
 
-  function focusItem(key: string): void {
+  /**
+   * `FocusOptions.focusVisible` (HTML; not in TypeScript's DOM types yet):
+   * `true` asks the browser to show the focus as keyboard focus whatever
+   * its heuristics say.
+   */
+  interface VisibleFocusOptions extends FocusOptions {
+    focusVisible?: boolean;
+  }
+
+  /**
+   * Move the focus to the item `key`. `visible` (the focus shortcut):
+   * show it as keyboard focus even when the page's last input was
+   * the pointer. Chromium decides `:focus-visible` for a script's `focus()`
+   * by the page's last input, and the shortcut's keys never reach the page
+   * (Windows takes them), so after any click on the dock the item would get
+   * the focus without the ring, the pill or the auto-hide hold.
+   */
+  function focusItem(key: string, visible = false): void {
     focusedKey = key;
-    slots.find((el) => el.dataset.key === key)?.focus();
+    const options: VisibleFocusOptions = visible ? { focusVisible: true } : {};
+    slots.find((el) => el.dataset.key === key)?.focus(options);
   }
 
   function onpanelkeydown(e: KeyboardEvent): void {
@@ -1842,6 +1867,27 @@
     }
     e.preventDefault();
     focusItem(items[next]!.key);
+  }
+
+  // The focus shortcut (docs/ipc/keyboard-entry.md): Rust has made
+  // this dock window the foreground window. The keyboard lands on the
+  // active app's item, else the first (`entryKey`), the way Tab would
+  // bring it there: the ring, the title pill and the `focus` hold follow
+  // from `focusin`. A panel still slid out (a press that crossed the slide,
+  // which Rust did not see yet) comes back first: the hold keeps a dock up
+  // but never reveals one. Either way the focus waits for the DOM to catch
+  // up, since a panel the page has just brought back (here, or for the
+  // `dock://show` before this event) is still hidden until then, and a
+  // hidden panel takes no focus.
+  async function focusEntry(): Promise<void> {
+    if (autoHidden) {
+      autoHideSend({ type: 'show' });
+    }
+    await tick();
+    const key = entryKey(items);
+    if (key !== null) {
+      focusItem(key, true);
+    }
   }
 
   function onpanelfocusin(e: FocusEvent): void {
@@ -1931,14 +1977,19 @@
     const onShowRequested = (): void => {
       autoHideSend({ type: 'show' });
     };
+    const onFocusRequested = (): void => {
+      void focusEntry();
+    };
     dark.addEventListener('change', onDark);
     motion.addEventListener('change', onMotion);
     document.addEventListener('visibilitychange', onVisibility);
     const offShow = backend.on('dock://show', onShowRequested);
+    const offFocus = backend.on('dock://focus', onFocusRequested);
     const offFileDrag = backend.onFileDrag(onfiledrag);
     void store.start();
     return () => {
       offShow();
+      offFocus();
       offFileDrag();
       endFileDrag(false, false);
       finishLanding(false);

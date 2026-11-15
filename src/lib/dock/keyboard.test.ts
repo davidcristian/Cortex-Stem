@@ -3,11 +3,13 @@ import { describe, expect, it } from 'vitest';
 import type { DockItemKind } from '$lib/ipc/generated/DockItemKind';
 
 import {
+  entryKey,
   isFocusable,
   isNavigationKey,
   nextFocusIndex,
   successorKey,
   tabStopKey,
+  type EntryItem,
   type NavigableItem,
 } from './keyboard';
 
@@ -227,5 +229,39 @@ describe('successorKey', () => {
   it('is null when nothing is left to take focus', () => {
     expect(successorKey(ITEMS, [], 'app:b')).toBeNull();
     expect(successorKey(ITEMS, [item('separator:0', 'separator')], 'app:b')).toBeNull();
+  });
+});
+
+describe('entryKey', () => {
+  const entry = (key: string, kind: DockItemKind = 'app', isActive = false): EntryItem => ({
+    key,
+    kind,
+    isActive,
+  });
+
+  it("is the active app's item when the dock shows one", () => {
+    const items = [
+      entry('launcher', 'launcher'),
+      entry('separator:0', 'separator'),
+      entry('app:a'),
+      entry('app:b', 'app', true),
+      entry('recycle-bin', 'recycleBin'),
+    ];
+    expect(entryKey(items)).toBe('app:b');
+  });
+
+  it('is the first item that takes focus when no app is active', () => {
+    expect(entryKey(ITEMS.map((i) => ({ ...i, isActive: false })))).toBe('launcher');
+    // A separator first is skipped, as Tab would.
+    expect(entryKey([entry('separator:0', 'separator'), entry('app:a'), entry('app:b')])).toBe(
+      'app:a',
+    );
+  });
+
+  it('only counts apps as active, and is null for a dock without items', () => {
+    // A fixed item never stands for the window in front.
+    expect(entryKey([entry('app:a'), entry('launcher', 'launcher', true)])).toBe('app:a');
+    expect(entryKey([entry('separator:0', 'separator', true)])).toBeNull();
+    expect(entryKey([])).toBeNull();
   });
 });

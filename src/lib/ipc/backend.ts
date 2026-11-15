@@ -41,6 +41,11 @@ export interface BackendEvents {
    * the dock while its panel was slid out by auto-hide; bring it back.
    */
   'dock://show': null;
+  /**
+   * To one dock window (docs/ipc/keyboard-entry.md): the focus
+   * shortcut gave it the keyboard focus; focus the toolbar's entry item.
+   */
+  'dock://focus': null;
 }
 
 export type BackendEvent = keyof BackendEvents;
@@ -168,6 +173,13 @@ export interface Backend {
   showItemMenu(itemKey: string, x: number, y: number): Promise<void>;
   /** The dock's own menu (panel background): settings and quit. */
   showDockMenu(x: number, y: number): Promise<void>;
+  /**
+   * The calling dock window gives the keyboard focus back (Escape;
+   * docs/ipc/keyboard-entry.md): Rust brings back the window that was in
+   * front when the focus shortcut was pressed, if it still exists, and
+   * otherwise leaves the foreground alone.
+   */
+  releaseDockFocus(): Promise<void>;
 
   on<E extends BackendEvent>(event: E, handler: EventHandler<E>): Unsubscribe;
 

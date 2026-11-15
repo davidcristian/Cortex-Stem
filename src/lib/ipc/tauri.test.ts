@@ -89,3 +89,12 @@ describe('TauriBackend geometry reports (docs/ipc/report-provenance.md, v1.18)',
     ]);
   });
 });
+
+describe('TauriBackend keyboard entry (docs/ipc/keyboard-entry.md, v1.19)', () => {
+  it('gives the focus back with release_dock_focus and no arguments', async () => {
+    const backend = new TauriBackend();
+    const before = invokeMock.mock.calls.length;
+    await backend.releaseDockFocus();
+    expect(invokeMock.mock.calls.slice(before)).toEqual([['release_dock_focus']]);
+  });
+});

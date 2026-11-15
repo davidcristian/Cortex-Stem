@@ -54,6 +54,8 @@ interface DemoWindow {
     setTheme: (theme: ThemeInfo) => void;
     /** `dock://show`: the tray or the shortcut pressed while the panel is auto-hidden. */
     requestShow: () => void;
+    /** A press of the focus shortcut: `dock://show` if the panel is slid out, then `dock://focus`. */
+    requestFocus: () => void;
     /** What `get_app_info` answers from now on. */
     setAppInfo: (info: Partial<AppInfo>) => void;
   };
@@ -2987,6 +2989,62 @@ test.describe('settings window', () => {
     await expect(page.locator('.status')).toHaveText('Saved');
   });
 
+  test('the focus shortcut has its own row under the toggle; it applies on Enter and on blur, Escape reverts', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openSettings(page);
+    const field = page.locator('#focus-shortcut');
+    const toggle = page.locator('#toggle-shortcut');
+    const saved = async (): Promise<string | undefined> =>
+      (await page.evaluate(SETTINGS_MOCK))?.behavior.focusShortcut;
+    const savedToggle = async (): Promise<string | undefined> =>
+      (await page.evaluate(SETTINGS_MOCK))?.behavior.toggleShortcut;
+    await expect(field).toHaveValue('Ctrl+Alt+Shift+D');
+    await expect(field).toHaveAccessibleName('Focus the dock');
+    await expect(field).toHaveAccessibleDescription(/Ctrl\+Alt\+Shift\+D/);
+    // The next row after the toggle's, in the same column.
+    const below = await page.evaluate(() => {
+      const rows = Array.from(document.querySelectorAll('input[type="text"], input:not([type])'));
+      const ids = rows.map((r) => r.id);
+      return ids.indexOf('focus-shortcut') - ids.indexOf('toggle-shortcut');
+    });
+    expect(below).toBe(1);
+    const [fieldBox, toggleBox] = [(await field.boundingBox())!, (await toggle.boundingBox())!];
+    expect(fieldBox.y).toBeGreaterThan(toggleBox.y);
+    expect(fieldBox.x).toBeCloseTo(toggleBox.x, 0);
+    await field.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: `${OUT}/settings-focus-shortcut.png` });
+
+    // Typing alone saves nothing; Escape puts the saved value back.
+    await field.fill('Ctrl+Shift+F8');
+    await expect(page.locator('.status')).toHaveText('Saved');
+    expect(await saved()).toBe('Ctrl+Alt+Shift+D');
+    await field.press('Escape');
+    await expect(field).toHaveValue('Ctrl+Alt+Shift+D');
+
+    // Enter applies the trimmed value; the toggle is left alone.
+    await field.fill('  Ctrl+Shift+F8 ');
+    await field.press('Enter');
+    await expect.poll(saved).toBe('Ctrl+Shift+F8');
+    await expect(field).toHaveValue('Ctrl+Shift+F8');
+    expect(await savedToggle()).toBe('Ctrl+Alt+D');
+
+    // The toggle's own keys are kept as written, on blur (Rust registers
+    // nothing for them and logs why).
+    await field.fill('alt+ctrl+d');
+    await page.locator('#tooltips').focus();
+    await expect.poll(saved).toBe('alt+ctrl+d');
+    expect(await savedToggle()).toBe('Ctrl+Alt+D');
+
+    // Empty means no shortcut.
+    await field.fill('');
+    await field.press('Enter');
+    await expect.poll(saved).toBe('');
+    await expect(field).toHaveAttribute('placeholder', 'None');
+    await expect(page.locator('.status')).toHaveText('Saved');
+  });
+
   test("pinned apps show the dock's names and icons, and can be moved and unpinned", async ({
     page,
   }) => {
@@ -3909,6 +3967,173 @@ test.describe('keyboard navigation', () => {
     await page.mouse.move(640, 10);
     await expect(page.locator('.tooltip')).toHaveCount(0);
     await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+  });
+
+  // --- The focus shortcut (docs/ipc/keyboard-entry.md) -----------------------------
+
+  /** How often the page asked Rust to give the keyboard focus back. */
+  const releases = (page: Page): Promise<number> => callsOfType(page, 'releaseDockFocus');
+
+  /** A press of the focus shortcut, as Rust tells the page about it (`dock://focus`). */
+  function pressFocusShortcut(page: Page): Promise<void> {
+    return page.evaluate(() => {
+      (window as unknown as DemoWindow).__dockMock?.requestFocus();
+    });
+  }
+
+  /** The item `key` shows keyboard focus: the ring on its icon and its title pill. */
+  async function expectKeyboardFocusOn(page: Page, key: string): Promise<void> {
+    await expect.poll(() => focused(page)).toBe(key);
+    const item = slot(page, key);
+    expect(await item.evaluate((el) => el.matches(':focus-visible'))).toBe(true);
+    expect(await computed(item.locator('.icon'), 'outline-style')).toBe('solid');
+    await expect(item.locator('.tooltip')).toBeVisible();
+    await expect(page.locator('.tooltip')).toHaveCount(1);
+  }
+
+  test("the focus shortcut puts the keyboard on the active app's item; arrows and Enter work from there; Escape gives the focus back", async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openDock(page);
+    await spyPrimaryClick(page);
+    await page.mouse.move(640, 10);
+    expect(await focused(page)).toBeNull();
+
+    // Firefox is the active app in the demo: the keyboard lands on it, as
+    // Tab would bring it there (ring, pill, nothing magnified).
+    await pressFocusShortcut(page);
+    await expectKeyboardFocusOn(page, FIREFOX);
+    await expect(slot(page, FIREFOX)).not.toHaveAttribute('data-magnified');
+    expect(await tabStops(page)).toEqual([FIREFOX]);
+    await page.screenshot({ path: `${OUT}/dock-focus-shortcut.png` });
+
+    // From there the toolbar's keys work as usual: an arrow to the next
+    // item, Enter clicks it (and only it).
+    const keys = await itemKeys(page);
+    const next = keys[keys.indexOf(FIREFOX) + 1]!;
+    await page.keyboard.press('ArrowRight');
+    await expectKeyboardFocusOn(page, next);
+    await page.keyboard.press('Enter');
+    await expect.poll(() => primaryClicks(page)).toEqual([next]);
+    expect(await releases(page)).toBe(0);
+
+    // Escape lets go of the item and asks Rust, once, to give the focus
+    // back to the window that was in front.
+    await page.keyboard.press('Escape');
+    expect(await focused(page)).toBeNull();
+    await expect(page.locator('.tooltip')).toHaveCount(0);
+    await expect.poll(() => releases(page)).toBe(1);
+    await page.waitForTimeout(150);
+    expect(await releases(page)).toBe(1);
+    expect(await primaryClicks(page)).toEqual([next]);
+
+    // Nothing in front (the desktop): the first item, Start, takes it.
+    await foreground(page, null);
+    await expect(slot(page, FIREFOX)).not.toHaveAttribute('aria-label', /, active$/);
+    await pressFocusShortcut(page);
+    await expectKeyboardFocusOn(page, keys[0]!);
+    expect(keys[0]).toBe('fixed:launcher');
+    await page.keyboard.press('Escape');
+    await expect.poll(() => releases(page)).toBe(2);
+    expect(await focused(page)).toBeNull();
+
+    // Another app in front: its item, wherever the tab stop was.
+    await foreground(page, CODE_WINDOW_ID);
+    await expect(slot(page, CODE_KEY)).toHaveAttribute('aria-label', /, active$/);
+    await pressFocusShortcut(page);
+    await expectKeyboardFocusOn(page, CODE_KEY);
+    await page.keyboard.press('Escape');
+    await expect.poll(() => releases(page)).toBe(3);
+  });
+
+  test('after the pointer, the focus shortcut still shows the ring and the pill', async ({
+    page,
+  }) => {
+    await openDock(page);
+    // The mouse was used on the dock: a click (which never focuses an
+    // item; here it brings the minimised Spotify to the front, so Spotify
+    // is the active app now) and a right-click (which may focus one,
+    // without :focus-visible).
+    await spyPrimaryClick(page);
+    await slot(page, SPOTIFY).click();
+    await expect.poll(() => primaryClicks(page)).toEqual([SPOTIFY]);
+    await expect(slot(page, SPOTIFY)).toHaveAttribute('aria-label', /, active$/);
+    await slot(page, FIREFOX).click({ button: 'right' });
+    await expect.poll(() => callsOfType(page, 'showItemMenu')).toBe(1);
+    await page.mouse.move(640, 10);
+    await expect(page.locator('.tooltip')).toHaveCount(0);
+
+    await pressFocusShortcut(page);
+    await expectKeyboardFocusOn(page, SPOTIFY);
+    // A second press while the dock has the focus is Rust's to handle (it
+    // gives the focus back like Escape); a repeated `dock://focus` only
+    // puts the keyboard on the entry item again.
+    await page.keyboard.press('ArrowRight');
+    expect(await focused(page)).not.toBe(SPOTIFY);
+    await pressFocusShortcut(page);
+    await expectKeyboardFocusOn(page, SPOTIFY);
+    await page.keyboard.press('Escape');
+    await expect.poll(() => releases(page)).toBe(1);
+    expect(await primaryClicks(page)).toEqual([SPOTIFY]);
+  });
+
+  test('with auto-hide always, the focus shortcut brings a slid-out dock back and keeps it up until Escape', async ({
+    page,
+  }) => {
+    await openDock(page);
+    const panel = page.locator(PANEL);
+    await page.mouse.move(640, 10);
+    await patchSettings(page, { autoHide: { mode: 'always', delayMs: DELAY } });
+    await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+    await expect(panel).toBeHidden();
+    // The page told Rust its panel is slid out, so the press sends
+    // `dock://show` before `dock://focus`.
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            ((window as unknown as DemoWindow).__dockMock?.calls ?? [])
+              .filter((c) => c.type === 'setDockAutoHidden')
+              .at(-1)?.hidden,
+        ),
+      )
+      .toBe(true);
+
+    await pressFocusShortcut(page);
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+    await expect(panel).toBeVisible();
+    await expectKeyboardFocusOn(page, FIREFOX);
+    // The `focus` hold keeps it up, pointer away, past the delay.
+    await page.waitForTimeout(DELAY + SLIDE_MS + 200);
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+    await page.keyboard.press('ArrowRight');
+    await page.waitForTimeout(DELAY + SLIDE_MS);
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+
+    // Escape gives the focus back; like any reveal on request, the dock
+    // then stays until the pointer has been over it and left.
+    await page.keyboard.press('Escape');
+    await expect.poll(() => releases(page)).toBe(1);
+    await expect(page.locator('.tooltip')).toHaveCount(0);
+    const box = (await panel.boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.move(640, 10);
+    await expect(panel).toHaveAttribute('data-autohide', 'pending');
+    await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+
+    // A `dock://focus` alone, as when the press crossed the slide and Rust
+    // had not heard of it yet, brings the panel back too.
+    await page.evaluate(() => {
+      const mock = (window as unknown as DemoWindow).__dockMock as unknown as {
+        emit: (event: string, payload: null) => void;
+      };
+      mock.emit('dock://focus', null);
+    });
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+    await expectKeyboardFocusOn(page, FIREFOX);
+    await page.keyboard.press('Escape');
+    await expect.poll(() => releases(page)).toBe(2);
   });
 });
 

@@ -200,6 +200,7 @@ class FakeBackend implements Backend {
   async quit(): Promise<void> {}
   async showItemMenu(): Promise<void> {}
   async showDockMenu(): Promise<void> {}
+  async releaseDockFocus(): Promise<void> {}
   onFileDrag(): Unsubscribe {
     return () => {};
   }

@@ -11,6 +11,9 @@
  * first and the last item; separators are skipped. The focus stops at
  * either end instead of wrapping around, so Home and End and a held arrow
  * all land in the same place.
+ *
+ * The focus shortcut brings the keyboard in from another app: the
+ * page then focuses `entryKey`, the active app's item, else the first.
  */
 
 import type { DockItemKind } from '$lib/ipc/generated/DockItemKind';
@@ -139,4 +142,20 @@ export function successorKey(
     }
   }
   return tabStopKey(after, null);
+}
+
+/** What `entryKey` needs of a `DockItem`. */
+export interface EntryItem extends NavigableItem {
+  readonly isActive: boolean;
+}
+
+/**
+ * The item the focus shortcut puts the keyboard on
+ * (docs/ipc/keyboard-entry.md): the active app's item (the app whose
+ * window was in front at the press) when this dock shows it, else the
+ * first item that takes focus; `null` when none does.
+ */
+export function entryKey(items: readonly EntryItem[]): string | null {
+  const active = items.find((i) => i.kind === 'app' && i.isActive);
+  return active?.key ?? tabStopKey(items, null);
 }

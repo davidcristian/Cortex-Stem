@@ -71,8 +71,8 @@ with an option to list only each monitor's windows on its dock. A change of disp
 without a restart. By default the dock lists only the windows on the current virtual desktop.
 
 **Taskbar, keyboard and tray.** Stem can hide the stock taskbar while it runs, and puts it back on
-quit. It can start when you sign in. By default, `Ctrl+Alt+D` shows or hides the dock from any app.
-Keyboard navigation of the dock is incomplete. A left click on the tray icon shows or hides the
+quit. It can start when you sign in. By default, `Ctrl+Alt+D` shows or hides the dock from any app,
+and `Ctrl+Alt+Shift+D` moves the keyboard into it. A left click on the tray icon shows or hides the
 dock, and the tray menu opens the settings, restarts Stem or quits it. Starting Stem again shows the
 running dock. After a crash, the next start says so once and offers to open the log folder.
 

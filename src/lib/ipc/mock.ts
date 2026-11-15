@@ -142,6 +142,7 @@ export type MockCall =
   | { type: 'openSettings' }
   | { type: 'openAppFolder'; folder: AppFolder }
   | { type: 'setDockHover'; hovering: boolean }
+  | { type: 'releaseDockFocus' }
   | { type: 'quit' };
 
 /**
@@ -1391,6 +1392,12 @@ export class MockBackend implements Backend {
   private readonly fileDragHandlers = new Set<FileDragHandler>();
   /** What `getAppInfo` answers; `setAppInfo` changes it. */
   private appInfo: AppInfo = demoAppInfo();
+  /**
+   * What the page last reported through `setDockAutoHidden`: the
+   * app layer's `DockAutoHidden` for this page's window, which a press of
+   * the focus shortcut reads (`requestFocus`).
+   */
+  private autoHidden = false;
 
   constructor(options: MockOptions = {}) {
     const scenario = SCENARIOS[options.scenario ?? 'default']();
@@ -1683,6 +1690,7 @@ export class MockBackend implements Backend {
   setDockAutoHidden(hidden: boolean): Promise<void> {
     return this.command(() => {
       this.record({ type: 'setDockAutoHidden', hidden });
+      this.autoHidden = hidden;
       this.log(`set_dock_auto_hidden(${hidden})`);
     });
   }
@@ -1796,6 +1804,18 @@ export class MockBackend implements Backend {
     });
   }
 
+  /**
+   * `release_dock_focus`: Rust would bring back the window that was
+   * in front when the focus shortcut was pressed; a browser has no
+   * foreground to give back, so the call is recorded and logged only.
+   */
+  releaseDockFocus(): Promise<void> {
+    return this.command(() => {
+      this.record({ type: 'releaseDockFocus' });
+      this.log('release_dock_focus');
+    });
+  }
+
   // --- Backend: planned for M2 (docs/ipc/commands.md); the mock only records it.
 
   setDockHover(hovering: boolean): Promise<void> {
@@ -1896,6 +1916,23 @@ export class MockBackend implements Backend {
   requestShow(): void {
     this.log('dock reveal requested');
     this.emit('dock://show', null);
+  }
+
+  /**
+   * The focus shortcut was pressed (docs/ipc/keyboard-entry.md):
+   * what `windows::on_focus_shortcut` sends this page's dock window once it
+   * has made it the foreground window. A panel the page last reported slid
+   * out by auto-hide is asked back first (`dock://show`, as `requestShow`
+   * does); then one `dock://focus` with a `null` payload. A browser has no
+   * foreground to take, so nothing else happens.
+   */
+  requestFocus(): void {
+    if (this.autoHidden) {
+      this.log('dock reveal requested');
+      this.emit('dock://show', null);
+    }
+    this.log('dock focus requested');
+    this.emit('dock://focus', null);
   }
 
   pushForeground(id: WindowId | null): void {

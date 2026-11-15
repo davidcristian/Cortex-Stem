@@ -82,7 +82,8 @@ without failures.
   windows behind the dock (`behavior.clickThrough`).
 - `behavior.showOnlyCurrentDesktop` lists only the windows on the current
   virtual desktop. A fullscreen app hides the dock of its monitor.
-- The dock is one toolbar, where the arrow keys, `Home` and
+- The focus shortcut (`Ctrl+Alt+Shift+D` by default) moves the keyboard focus
+  into the dock. The dock is one toolbar, where the arrow keys, `Home` and
   `End` move between items. Each item has `role="button"` and an
   `aria-label`.
 - Bursts of window events are coalesced: title and location changes per

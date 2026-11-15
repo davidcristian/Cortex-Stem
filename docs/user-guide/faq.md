@@ -48,7 +48,8 @@ which stays reachable with [_Hide the Windows taskbar_](hiding-the-windows-taskb
 
 ## Which keyboard shortcuts can I use?
 
-`Ctrl+Alt+D` shows or hides the dock, and it can be changed under Settings →
+`Ctrl+Alt+D` shows or hides the dock, and `Ctrl+Alt+Shift+D` moves the
+keyboard into it; both can be changed under Settings →
 [Behaviour](settings-window.md#behaviour).
 [Keyboard shortcuts](keyboard-shortcuts.md) has the syntax, the keys a
 shortcut must include, and what happens to a shortcut that another app has

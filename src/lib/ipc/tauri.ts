@@ -218,6 +218,10 @@ export class TauriBackend implements Backend {
     return invoke<void>('show_dock_menu', { x, y });
   }
 
+  releaseDockFocus(): Promise<void> {
+    return invoke<void>('release_dock_focus');
+  }
+
   on<E extends BackendEvent>(event: E, handler: EventHandler<E>): Unsubscribe {
     return subscribe(`listen(${event})`, (deliver) =>
       listen<BackendEvents[E]>(event, (e) => deliver(() => handler(e.payload))),

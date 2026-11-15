@@ -603,6 +603,44 @@ describe('revisions and events', () => {
     expect(shows).toHaveLength(2);
   });
 
+  it('requestFocus emits dock://focus, after dock://show while the page reports its panel slid out; releaseDockFocus is recorded', async () => {
+    const b = fast();
+    const events: string[] = [];
+    const offShow = b.on('dock://show', (payload) => {
+      events.push(`show:${String(payload)}`);
+    });
+    const offFocus = b.on('dock://focus', (payload) => {
+      events.push(`focus:${String(payload)}`);
+    });
+    const states = recordStates(b);
+
+    b.requestFocus();
+    expect(events).toEqual(['focus:null']);
+    // With the panel slid out, the press brings it back first.
+    await b.setDockAutoHidden(true);
+    events.length = 0;
+    b.requestFocus();
+    expect(events).toEqual(['show:null', 'focus:null']);
+    await b.setDockAutoHidden(false);
+    events.length = 0;
+    b.requestFocus();
+    expect(events).toEqual(['focus:null']);
+
+    await b.releaseDockFocus();
+    await b.releaseDockFocus();
+    expect(b.calls.filter((c) => c.type === 'releaseDockFocus')).toEqual([
+      { type: 'releaseDockFocus' },
+      { type: 'releaseDockFocus' },
+    ]);
+    // Neither touches the snapshot or the settings.
+    expect(states).toHaveLength(0);
+
+    offShow();
+    offFocus();
+    b.requestFocus();
+    expect(events).toEqual(['focus:null']);
+  });
+
   it('setFullscreen mirrors FullscreenChanged: in the dock’s facts, one state event per change', async () => {
     const b = fast();
     const states = recordStates(b);

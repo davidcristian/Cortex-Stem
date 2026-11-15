@@ -419,6 +419,23 @@
                 })}
             />
           </SettingRow>
+          <!-- Keyboard entry into the dock (docs/ipc/keyboard-entry.md). -->
+          <SettingRow
+            id="focus-shortcut"
+            label="Focus the dock"
+            description="Moves the keyboard into the dock from any app: the arrows go from icon to icon, Enter opens one, Esc goes back. Same format as the toggle, like Ctrl+Alt+Shift+D, and not the same keys; empty for none."
+          >
+            <TextField
+              id="focus-shortcut"
+              value={settings.behavior.focusShortcut}
+              placeholder="None"
+              describedby="focus-shortcut-description"
+              oncommit={(v) =>
+                edit((s) => {
+                  s.behavior.focusShortcut = v;
+                })}
+            />
+          </SettingRow>
           <!-- ADR-0008: the hidden dock leaves its window
                behind, which takes clicks unless click-through is on. -->
           <SettingRow
