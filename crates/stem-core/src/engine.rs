@@ -171,6 +171,11 @@ pub struct DockEngine {
     fullscreen_monitor: Option<MonitorId>,
     /// The dock windows the app layer registered, by label.
     panels: BTreeMap<String, DockPanel>,
+    /// The window each dock window's last admitted wheel notch asked the
+    /// platform to activate, by label (see
+    /// [`Self::note_scroll_activation`]). Emptied whenever `foreground`
+    /// changes; a label also leaves with its panel.
+    scroll_tried: BTreeMap<String, WindowId>,
     /// Our own process id, whose windows never count as overlapping. `None`
     /// when unknown (every window counts then).
     own_process_id: Option<u32>,
@@ -198,6 +203,7 @@ impl DockEngine {
             fullscreen: false,
             fullscreen_monitor: None,
             panels: BTreeMap::new(),
+            scroll_tried: BTreeMap::new(),
             own_process_id: None,
             overlap_dirty: false,
             monitors: Vec::new(),
@@ -382,6 +388,7 @@ impl DockEngine {
     /// and after, see [`EngineOutcome::changed`].
     pub fn apply(&mut self, input: EngineInput) -> EngineOutcome {
         let before = self.snapshot();
+        let foreground_before = self.foreground;
         match input {
             EngineInput::Platform(ev) => self.apply_platform(ev),
             EngineInput::SettingsChanged(settings) => self.settings = settings,
@@ -403,6 +410,7 @@ impl DockEngine {
                     // The window is gone (or was never placed and is
                     // hidden): nothing left to remember about the label.
                     self.panels.remove(&label);
+                    self.scroll_tried.remove(&label);
                 } else {
                     let panel = self.panels.entry(label).or_default();
                     if panel.rect != rect {
@@ -412,6 +420,11 @@ impl DockEngine {
                     panel.monitor = monitor;
                 }
             }
+        }
+        if self.foreground != foreground_before {
+            // The foreground moved (the report of a scroll's activation, or
+            // anything else): every dock's next notch steps from it again.
+            self.scroll_tried.clear();
         }
         self.rebuild_running_order();
         if self.overlap_dirty {
@@ -897,12 +910,15 @@ impl DockEngine {
     /// - with `behavior.scrollAction = cycleWindows`, an app item whose app
     ///   has windows that dock lists ([`Self::windows_on_dock`], first-seen
     ///   order, as its menu lists them) activates, for
-    ///   [`ScrollDirection::Next`], the window after the one in the
-    ///   foreground and, for [`ScrollDirection::Previous`], the one before
-    ///   it, wrapping around at either end; when none of them is in front,
-    ///   `Next` activates the first and `Previous` the last. A lone window
-    ///   in front is its own neighbour: activated again, which changes
-    ///   nothing;
+    ///   [`ScrollDirection::Next`], the window after the one it steps from
+    ///   and, for [`ScrollDirection::Previous`], the one before it,
+    ///   wrapping around at either end. It steps from the window that
+    ///   dock's last notch tried ([`Self::note_scroll_activation`]) while
+    ///   the foreground has not changed since and that window is still
+    ///   one of them, else from the one in the foreground; when neither is
+    ///   one of them, `Next` activates the first and `Previous` the last.
+    ///   A lone window in front is its own neighbour: activated again,
+    ///   which changes nothing;
     /// - anything else ([`ScrollAction::None`], a fixed item, a separator,
     ///   an app item with no window on that dock) is
     ///   [`ScrollEffect::Nothing`].
@@ -931,16 +947,34 @@ impl DockEngine {
         if count == 0 {
             return ScrollEffect::Nothing;
         }
-        let in_front = self
-            .foreground
-            .and_then(|fg| windows.iter().position(|w| *w == fg));
-        let index = match (in_front, direction) {
+        let position = |id: WindowId| windows.iter().position(|w| *w == id);
+        let from = self
+            .scroll_tried
+            .get(dock)
+            .and_then(|tried| position(*tried))
+            .or_else(|| self.foreground.and_then(position));
+        let index = match (from, direction) {
             (Some(pos), ScrollDirection::Next) => (pos + 1) % count,
             (Some(pos), ScrollDirection::Previous) => (pos + count - 1) % count,
             (None, ScrollDirection::Next) => 0,
             (None, ScrollDirection::Previous) => count - 1,
         };
         ScrollEffect::Activate(windows[index])
+    }
+
+    /// The caller let a wheel notch in the dock window `dock` through and
+    /// asks the platform to activate `window`. Until the
+    /// foreground changes, that dock's next notch steps from `window`
+    /// rather than from the window in front ([`Self::scroll_action`]): an
+    /// activation Windows refuses (an elevated window, the foreground
+    /// lock, a hung window) leaves the foreground where it was, and
+    /// stepping from it would choose the refused window again at every
+    /// notch; an activation whose foreground report has not arrived yet
+    /// would be chosen twice. Call it before the platform call, so the
+    /// report of this very activation, or any other foreground change,
+    /// ends it. Not part of the snapshot.
+    pub fn note_scroll_activation(&mut self, dock: &str, window: WindowId) {
+        self.scroll_tried.insert(dock.to_owned(), window);
     }
 }
 
@@ -3786,6 +3820,72 @@ mod tests {
                 activates(4)
             );
         }
+    }
+
+    #[test]
+    fn a_scroll_steps_from_the_window_the_dock_last_tried_until_the_foreground_moves() {
+        use ScrollDirection::{Next, Previous};
+        let mut engine = DockEngine::new(cycling(minimal_settings()));
+        for id in 1..=3 {
+            engine.apply(added(win(id, r"C:\a.exe", &format!("A{id}"))));
+        }
+        engine.apply(added(win(4, r"C:\b.exe", "B")));
+        engine.apply(foreground(Some(1)));
+
+        // Windows refuses 2 (an elevated window, say): the foreground stays
+        // on 1, and the next notch goes on to 3 instead of trying 2 again;
+        // back from 2 is 1.
+        assert_eq!(engine.scroll_action(A_KEY, DOCK, Next), activates(2));
+        engine.note_scroll_activation(DOCK, WindowId(2));
+        assert_eq!(engine.scroll_action(A_KEY, DOCK, Next), activates(3));
+        assert_eq!(engine.scroll_action(A_KEY, DOCK, Previous), activates(1));
+        // 3 is being activated and its report is not in yet: from 3.
+        engine.note_scroll_activation(DOCK, WindowId(3));
+        assert_eq!(engine.scroll_action(A_KEY, DOCK, Next), activates(1));
+        assert_eq!(engine.scroll_action(A_KEY, DOCK, Previous), activates(2));
+        // Each dock window has its own: another steps from the foreground.
+        assert_eq!(engine.scroll_action(A_KEY, SECOND_DOCK, Next), activates(2));
+        // A report of the window that already was in front changes nothing.
+        engine.apply(foreground(Some(1)));
+        assert_eq!(engine.scroll_action(A_KEY, DOCK, Next), activates(1));
+        // 3's report: from the foreground again, which is 3.
+        engine.apply(foreground(Some(3)));
+        assert_eq!(engine.scroll_action(A_KEY, DOCK, Next), activates(1));
+        assert_eq!(engine.scroll_action(A_KEY, DOCK, Previous), activates(2));
+
+        // Any change of the foreground ends it, a change and a change back
+        // too (the user clicked elsewhere and returned).
+        engine.note_scroll_activation(DOCK, WindowId(1));
+        engine.apply(foreground(Some(4)));
+        engine.apply(foreground(Some(3)));
+        assert_eq!(engine.scroll_action(A_KEY, DOCK, Next), activates(1));
+        // So does the foreground window's going away.
+        engine.note_scroll_activation(DOCK, WindowId(1));
+        engine.apply(removed(3));
+        assert_eq!(engine.foreground(), None);
+        assert_eq!(engine.scroll_action(A_KEY, DOCK, Next), activates(1));
+
+        // A tried window that is not one of the item's windows on that dock
+        // (another app's, or one closed since) is passed over: from the
+        // foreground, or the first when none is in front.
+        engine.apply(added(win(5, r"C:\a.exe", "A5")));
+        engine.apply(foreground(Some(2)));
+        engine.note_scroll_activation(DOCK, WindowId(4));
+        assert_eq!(engine.scroll_action(A_KEY, DOCK, Next), activates(5));
+        engine.note_scroll_activation(DOCK, WindowId(1));
+        engine.apply(removed(1));
+        assert_eq!(engine.scroll_action(A_KEY, DOCK, Next), activates(5));
+        assert_eq!(engine.scroll_action(A_KEY, DOCK, Previous), activates(5));
+
+        // A dock window that goes takes its entry with it.
+        engine.apply(panel_of(DOCK, Some(PRIMARY), None));
+        engine.note_scroll_activation(DOCK, WindowId(5));
+        engine.note_scroll_activation(SECOND_DOCK, WindowId(5));
+        engine.apply(panel_of(DOCK, None, None));
+        assert_eq!(
+            engine.scroll_tried.keys().collect::<Vec<_>>(),
+            [SECOND_DOCK]
+        );
     }
 
     #[test]
