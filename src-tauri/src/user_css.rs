@@ -227,11 +227,13 @@ pub fn write_template_if_missing(path: &Path) -> std::io::Result<bool> {
     Ok(true)
 }
 
-/// Notepad, which every Windows has: what [`open_file`] opens `file` with
-/// when the default app for `.css` does not. Its full path under
-/// `system_root` (`%SystemRoot%`) when that is known, so the shell does not
-/// look for a `notepad.exe` anywhere else first; the bare name otherwise.
-/// Built as a string with `\`, so it reads the same on any host.
+/// Notepad: what [`open_file`] opens `file` with when the default app for
+/// `.css` does not. Windows installs it by default but lets it be removed,
+/// so [`open_file`] still fails when Notepad does not start either. Its
+/// full path under `system_root` (`%SystemRoot%`) when that is known, so
+/// the shell does not look for a `notepad.exe` anywhere else first; the
+/// bare name otherwise. Built as a string with `\`, so it reads the same
+/// on any host.
 pub fn notepad_for(file: &Path, system_root: Option<&OsStr>) -> LaunchTarget {
     let root = system_root.map(OsStr::to_string_lossy);
     let path = match root
