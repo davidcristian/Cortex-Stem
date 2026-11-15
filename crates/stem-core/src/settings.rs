@@ -61,8 +61,8 @@ pub struct Settings {
     pub monitors: MonitorMode,
     /// Light or dark colours for the dock and the settings window.
     pub theme: ThemeMode,
-    /// How the dock looks: opacity, corner radius, backdrop, tooltips and the
-    /// launch bounce.
+    /// How the dock looks: theme preset, opacity, corner radius, backdrop,
+    /// tooltips and the launch bounce.
     pub appearance: Appearance,
     /// Which fixed items (the items that are not apps) the dock shows.
     pub items: FixedItems,
@@ -390,12 +390,36 @@ pub enum Backdrop {
     Mica,
 }
 
+/// The dock's theme preset: how the panel is drawn. Every preset takes
+/// light or dark from `Settings::theme`, and its running dots use the
+/// Windows accent colour. The user's `dock.css`, in the folder of the
+/// settings file, can change any preset further through the variables
+/// that `docs/THEMING.md` lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub enum ThemePreset {
+    /// A translucent, blurred panel with a thin outline and a soft shadow
+    /// (the default). `opacity` sets how translucent it is.
+    Standard,
+    /// An opaque panel without blur, with a stronger outline and a tighter
+    /// shadow. It is easy to read over any wallpaper, and the best choice
+    /// while Windows' *Transparency effects* are off.
+    Solid,
+    /// No panel fill, outline or shadow: only the icons, the running dots
+    /// and the separators.
+    Minimal,
+}
+
 /// How the dock looks.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "camelCase", default)]
 pub struct Appearance {
-    /// Panel background opacity (0.0..=1.0).
+    /// Theme preset of the panel. A change restyles the dock at once.
+    pub theme: ThemePreset,
+    /// Panel background opacity of the `standard` theme (0.0..=1.0). The
+    /// `solid` panel is always opaque, and the `minimal` one has no fill.
     pub opacity: f32,
     /// Panel corner radius in CSS pixels (0..=64).
     pub corner_radius: u32,
@@ -412,6 +436,7 @@ pub struct Appearance {
 impl Default for Appearance {
     fn default() -> Self {
         Self {
+            theme: ThemePreset::Standard,
             opacity: 0.72,
             corner_radius: 22,
             backdrop: Backdrop::Css,
@@ -668,6 +693,11 @@ mod tests {
             monitors: rng.pick(&[MonitorMode::Primary, MonitorMode::All]),
             theme: rng.pick(&[ThemeMode::System, ThemeMode::Light, ThemeMode::Dark]),
             appearance: Appearance {
+                theme: rng.pick(&[
+                    ThemePreset::Standard,
+                    ThemePreset::Solid,
+                    ThemePreset::Minimal,
+                ]),
                 opacity: rng.f32(),
                 corner_radius: rng.u32(),
                 backdrop: rng.pick(&[Backdrop::Css, Backdrop::Acrylic, Backdrop::Mica]),
@@ -798,6 +828,41 @@ mod tests {
     }
 
     #[test]
+    fn theme_preset_defaults_to_standard_and_round_trips_in_camel_case() {
+        assert_eq!(Appearance::default().theme, ThemePreset::Standard);
+
+        // A file written before the field existed gets the default next to
+        // its other appearance values.
+        let old = Settings::from_json(r#"{"appearance": {"opacity": 0.5}}"#).unwrap();
+        assert_eq!(old.appearance.theme, ThemePreset::Standard);
+        assert_eq!(old.appearance.opacity, 0.5);
+
+        for (preset, name) in [
+            (ThemePreset::Standard, "standard"),
+            (ThemePreset::Solid, "solid"),
+            (ThemePreset::Minimal, "minimal"),
+        ] {
+            assert_eq!(serde_json::to_string(&preset).unwrap(), format!("{name:?}"));
+            let json = format!(r#"{{"appearance": {{"theme": {name:?}}}}}"#);
+            let s = Settings::from_json(&json).unwrap();
+            assert_eq!(s.appearance.theme, preset);
+            assert!(
+                s.to_json_pretty()
+                    .contains(&format!(r#""theme": {name:?}"#))
+            );
+            assert_eq!(Settings::from_json(&s.to_json_pretty()).unwrap(), s);
+        }
+
+        // Like every other enum value: a name Stem does not know makes the
+        // file unusable rather than silently standard (the app keeps it as
+        // `settings.json.broken`).
+        assert!(matches!(
+            Settings::from_json(r#"{"appearance": {"theme": "glass"}}"#),
+            Err(SettingsError::Parse(_))
+        ));
+    }
+
+    #[test]
     fn validate_clamps_and_dedupes() {
         let mut s = Settings {
             icon_size: 999,
@@ -900,6 +965,7 @@ mod tests {
         restyled.appearance.opacity = 0.3;
         restyled.auto_hide.mode = AutoHideMode::Always;
         restyled.theme = ThemeMode::Dark;
+        restyled.appearance.theme = ThemePreset::Minimal;
         restyled.items.launcher = false;
         restyled.pinned.push(pin("a"));
         assert!(!base.diff_requires_window_rebuild(&restyled));

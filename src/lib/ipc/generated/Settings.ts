@@ -48,8 +48,8 @@ monitors: MonitorMode,
  */
 theme: ThemeMode, 
 /**
- * How the dock looks: opacity, corner radius, backdrop, tooltips and the
- * launch bounce.
+ * How the dock looks: theme preset, opacity, corner radius, backdrop,
+ * tooltips and the launch bounce.
  */
 appearance: Appearance, 
 /**

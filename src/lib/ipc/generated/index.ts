@@ -31,6 +31,8 @@ export type { ShellAction } from "./ShellAction";
 export type { SystemIntegration } from "./SystemIntegration";
 export type { ThemeInfo } from "./ThemeInfo";
 export type { ThemeMode } from "./ThemeMode";
+export type { ThemePreset } from "./ThemePreset";
+export type { UserCss } from "./UserCss";
 export type { WindowAction } from "./WindowAction";
 export type { WindowId } from "./WindowId";
 export type { WindowInfo } from "./WindowInfo";

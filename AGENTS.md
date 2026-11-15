@@ -226,9 +226,9 @@ is exempt.
   requirement is underspecified, write your reading of it in your report as an assumption and
   continue rather than wait; name the riskiest assumptions.
 - **Names are designed, never defaulted.** A name that users or saved files depend on (a setting
-  key, an IPC command or event) is plain, consistent with its siblings and collides with no
-  existing name. Propose one with real alternatives before choosing. Renaming a settings key later
-  needs a step in `Settings::migrate`.
+  key, a theme preset, an IPC command or event) is plain, consistent with its siblings (the presets
+  are `standard`, `solid` and `minimal`) and collides with no existing name. Propose one with real
+  alternatives before choosing. Renaming a settings key later needs a step in `Settings::migrate`.
 - **Claims come with evidence.** Never report a check as passing without having run it in this
   session; show the command and its output. Label an unchecked statement as an assumption.
 - **Prove a check can fail.** A check that cannot fail is a defect. After writing or changing a

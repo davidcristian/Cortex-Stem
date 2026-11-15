@@ -434,9 +434,53 @@ pub enum AppFolder {
     Settings,
 }
 
+/// The user's stylesheet: `dock.css` in the settings file's folder,
+/// as the app read it at start or at the last `reload_user_css`. The answer
+/// to `get_user_css` and `reload_user_css`, and the payload of
+/// `dock://user-css`. The dock page puts `css` in one `<style>` element
+/// after its own styles; `docs/THEMING.md` lists the variables it supports.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub struct UserCss {
+    /// Where the file is, as a path shown (never parsed) by the UI; or a
+    /// short note in parentheses when nothing is saved this run (the mock
+    /// platform, a profile that could not be used), which has no file.
+    pub path: String,
+    /// The file's text, a leading byte order mark dropped; `null` when the
+    /// file does not exist, cannot be read, is not UTF-8 or is larger than
+    /// 64 KiB (the log says which).
+    pub css: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn user_css_serialises_in_camel_case_with_a_null_css() {
+        let none = UserCss {
+            path: r"C:\Users\me\AppData\Roaming\dev.davidcristian.stem\dock.css".to_owned(),
+            css: None,
+        };
+        let json = serde_json::to_value(&none).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "path": r"C:\Users\me\AppData\Roaming\dev.davidcristian.stem\dock.css",
+                "css": null,
+            })
+        );
+        assert_eq!(serde_json::from_value::<UserCss>(json).unwrap(), none);
+        let some = UserCss {
+            css: Some(".dock-stage { --stem-dot: red; }".to_owned()),
+            ..none
+        };
+        assert_eq!(
+            serde_json::to_value(&some).unwrap()["css"],
+            ".dock-stage { --stem-dot: red; }"
+        );
+    }
 
     #[test]
     fn app_id_for_exe_is_case_and_slash_insensitive() {

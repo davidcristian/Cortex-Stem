@@ -25,11 +25,11 @@ use ts_rs::{Config, ExportError, TS};
 use crate::model::{
     AppFolder, AppId, AppIdentity, AppInfo, DockFacts, DockItem, DockItemKind, DockState, IconKey,
     LaunchTarget, MonitorId, MonitorInfo, RawWindow, Rect, RecycleBinState, ShellAction, ThemeInfo,
-    WindowAction, WindowId, WindowInfo,
+    UserCss, WindowAction, WindowId, WindowInfo,
 };
 use crate::settings::{
     Appearance, AutoHide, AutoHideMode, Backdrop, Behavior, DockPosition, FixedItems,
-    Magnification, MonitorMode, PinnedApp, Settings, SystemIntegration, ThemeMode,
+    Magnification, MonitorMode, PinnedApp, Settings, SystemIntegration, ThemeMode, ThemePreset,
 };
 
 /// One exported binding, as ts-rs sees it.
@@ -86,6 +86,7 @@ exported_types! {
     RecycleBinState,
     ShellAction,
     ThemeInfo,
+    UserCss,
     WindowAction,
     WindowId,
     WindowInfo,
@@ -103,6 +104,7 @@ exported_types! {
     Settings,
     SystemIntegration,
     ThemeMode,
+    ThemePreset,
 }
 
 /// Types the frontend must find in the barrel: every named payload and
@@ -120,6 +122,7 @@ const IPC_PAYLOAD_TYPES: &[&str] = &[
     "IconKey",
     "AppInfo",
     "AppFolder",
+    "UserCss",
 ];
 
 const BARREL_FILE: &str = "index.ts";
