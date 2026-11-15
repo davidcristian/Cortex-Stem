@@ -430,8 +430,9 @@ impl Platform for MockPlatform {
     /// reserved and the scripted work areas do not change. A request is
     /// granted at once, without the real platform's wait, and the grant
     /// ([`mock_band`]) goes to `sink` synchronously, on the calling thread,
-    /// when it differs from the window's previous request. A release
-    /// reports nothing, like the real platform.
+    /// after every request, the same one again included, as the real
+    /// platform reports after every request it applied. A release reports
+    /// nothing, like the real platform.
     fn set_dock_app_bar(
         &self,
         handle: NativeWindowHandle,
@@ -448,7 +449,6 @@ impl Platform for MockPlatform {
                     None
                 }
                 (None, None) => None,
-                (Some(request), Some(i)) if s.app_bars[i].1 == request => None,
                 (Some(request), Some(i)) => {
                     s.app_bars[i].1 = request;
                     Some(request)
@@ -828,10 +828,12 @@ mod tests {
                 })
             )]
         );
-        // The same request again grants nothing new.
+        // The same request again reports the same band again.
         p.set_dock_app_bar(a, Some(bottom), Arc::clone(&sink))
             .unwrap();
-        assert_eq!(grants.lock().len(), 1);
+        assert_eq!(grants.lock().len(), 2);
+        let seen = grants.lock().clone();
+        assert_eq!(seen[1], seen[0]);
 
         // A monitor the script does not list: the band on its bounds.
         let elsewhere = AppBarRequest {
@@ -855,7 +857,7 @@ mod tests {
 
         // A release reports nothing and drops the registration.
         p.set_dock_app_bar(a, None, Arc::clone(&sink)).unwrap();
-        assert_eq!(grants.lock().len(), 2);
+        assert_eq!(grants.lock().len(), 3);
         assert_eq!(p.app_bars(), vec![(b, elsewhere)]);
         p.release_app_bars(Duration::from_millis(100)).unwrap();
         assert!(p.app_bars().is_empty());

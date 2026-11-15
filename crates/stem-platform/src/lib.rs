@@ -126,15 +126,23 @@ pub struct AppBarGrant {
 }
 
 /// Where a platform reports what became of a dock window's AppBar:
-/// `Some` with each band the shell grants that differs from the last one
-/// reported (after a request, and whenever the shell moves the band: a bar
-/// or the taskbar changing on that edge, an Explorer restart), `None` once
-/// the window holds no reservation the platform knows of (a registration
-/// that failed or was given up; not after a release the caller asked for,
-/// nor at [`Platform::release_app_bars`]). Called on a thread of the
-/// platform's own, or (the mock) on the caller's: it must be cheap and
-/// must not block (post to the UI thread), and must not call back into
-/// [`Platform::set_dock_app_bar`] synchronously.
+/// - `Some` with the band the shell grants after **every** request the
+///   platform applied, even when it is the band reported before (the
+///   caller may have dropped it while a newer request was on its way), and
+///   whenever the shell moves the band (a bar or the taskbar changing on
+///   that edge, an Explorer restart), then only when it differs from the
+///   last one reported;
+/// - `None` once the window holds no band for a request it still makes (a
+///   registration that failed, or a band the shell answered badly and that
+///   was given up). The platform keeps asking for that request, after a
+///   growing delay (`rules::appbar::Retry`), and reports `Some` once it
+///   holds the band; the caller need not ask again. Nothing is reported
+///   after a release the caller asked for, nor at
+///   [`Platform::release_app_bars`].
+///
+/// Called on a thread of the platform's own, or (the mock) on the caller's:
+/// it must be cheap and must not block (post to the UI thread), and must
+/// not call back into [`Platform::set_dock_app_bar`] synchronously.
 pub type AppBarSink = Arc<dyn Fn(NativeWindowHandle, Option<AppBarGrant>) + Send + Sync + 'static>;
 
 /// The OS seam. Every method is synchronous and may be called from any
@@ -234,11 +242,13 @@ pub trait Platform: Send + Sync + 'static {
     /// does not wait), registers the window (`ABM_NEW`), proposes the band
     /// on the request's edge of the monitor's bounds (`ABM_QUERYPOS`), takes
     /// what the shell allows (`ABM_SETPOS`) and reports the band through
-    /// `sink` ([`AppBarSink`]). It answers the shell's notifications on that
-    /// thread too (the dock window's subclass forwards them): a band the
-    /// shell moves is asked for again and reported, and after an Explorer
-    /// restart every bar registers again. Another edge or another monitor
-    /// gives the old band back before the new one is taken. `handle` must
+    /// `sink` ([`AppBarSink`]); a band it could not take is asked for again
+    /// later. It answers the shell's notifications on that thread too (the
+    /// dock window's subclass forwards them): a band the shell moves is
+    /// asked for again and reported, and after an Explorer restart every
+    /// bar registers again. Another edge or another monitor gives the old
+    /// band back before the new one is taken. The bookkeeping is
+    /// `rules::appbar::Bars`. `handle` must
     /// be a window [`Platform::prepare_dock_window`] prepared: the shell's
     /// notifications arrive through its subclass. Optional; the default
     /// reports it unsupported.

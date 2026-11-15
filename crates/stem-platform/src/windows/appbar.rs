@@ -6,19 +6,22 @@
 //!   `SHAppBarMessage` for the dock windows' bars, in order. The platform
 //!   calls only queue commands for it ([`AppBarThread::set`]) and return at
 //!   once, so they are safe on any thread, the Tauri main thread included.
-//! - A request for a window waits until no newer one has come for
-//!   [`Settle::DELAY_MS`] (`rules::appbar::Settle`), so a burst of reports
-//!   costs one `ABM_SETPOS`; a release (`None`) is applied at once. What a
-//!   request takes is `rules::appbar::steps`: `ABM_NEW` for a first one
-//!   (with [`CALLBACK_MESSAGE`] as the window's callback message),
-//!   `ABM_QUERYPOS` with the band on the request's edge of the monitor's
-//!   **bounds** (`rules::appbar::query_rect`), `ABM_SETPOS` with the
-//!   shell's adjustment cut back to the thickness
-//!   (`rules::appbar::set_rect`), and the band the shell answered goes to
-//!   the window's sink when it is usable (`rules::appbar::is_usable`) and
-//!   differs from the last one reported. Another edge or monitor is
-//!   `ABM_REMOVE` first, then a new registration; a release is
-//!   `ABM_REMOVE`.
+//! - What the thread sends for which window, and what it reports, is
+//!   decided by `rules::appbar::Bars` (pure, unit-tested on every host),
+//!   which the thread drives over [`Win32Shell`], the real messages:
+//!   - a request for a window waits until no newer one has come for
+//!     `rules::appbar::Settle::DELAY_MS`, so a burst of reports costs one
+//!     `ABM_SETPOS`; a release (`None`) is `ABM_REMOVE` at once;
+//!   - a request takes `rules::appbar::steps`: `ABM_NEW` for a first one
+//!     (with [`CALLBACK_MESSAGE`] as the window's callback message),
+//!     `ABM_QUERYPOS` with the band on the request's edge of the monitor's
+//!     **bounds**, `ABM_SETPOS` with the shell's adjustment cut back to the
+//!     thickness; another edge or monitor is `ABM_REMOVE` first;
+//!   - the band the shell answered goes to the window's sink after every
+//!     request applied; a band that could not be taken (no shell, `ABM_NEW`
+//!     refused, an answer that is not a band on the monitor) reports `None`
+//!     and is asked for again after a growing delay
+//!     (`rules::appbar::Retry`) for as long as the window wants it.
 //! - The shell talks to a bar through its window: [`CALLBACK_MESSAGE`]
 //!   (`wParam` = `ABN_*`), and the window must report `WM_ACTIVATE`
 //!   (`ABM_ACTIVATE`) and `WM_WINDOWPOSCHANGED` (`ABM_WINDOWPOSCHANGED`),
@@ -28,8 +31,9 @@
 //!   only queue a command here and return. `ABN_POSCHANGED` and
 //!   `ABN_STATECHANGE` ask `ABM_QUERYPOS` again and send `ABM_SETPOS` only
 //!   when the answer differs from the band the bar asked for last, within
-//!   the bound of `rules::appbar::RequeryGuard`; `ABN_FULLSCREENAPP` is a
-//!   debug line (fullscreen is not handled here); `ABN_WINDOWARRANGE` a
+//!   the bound of `rules::appbar::RequeryGuard` (a band moved during its
+//!   pause is asked for again when the pause ends); `ABN_FULLSCREENAPP` is
+//!   a debug line (fullscreen is not handled here); `ABN_WINDOWARRANGE` a
 //!   trace line.
 //! - `TaskbarCreated` (the shell started again: an Explorer restart drops
 //!   every registration) registers each bar again ([`on_taskbar_created`]);
@@ -62,12 +66,11 @@
 //!
 //! With Explorer gone (crashed, restarting) there is no `Shell_TrayWnd`,
 //! `ABM_NEW` fails and `ABM_QUERYPOS` / `ABM_SETPOS` would answer nothing
-//! (they always "succeed"). So a registration first checks that the tray
-//! window exists (`FindWindowW`, which sends nothing), a reposition of a
-//! bar is skipped without one, and `TaskbarCreated` retries once the shell
-//! is back.
+//! (they always "succeed"). So [`Win32Shell::present`] checks that the tray
+//! window exists (`FindWindowW`, which sends nothing) before a registration
+//! or a reposition; `TaskbarCreated` registers again once the shell is
+//! back, and the retry's delay bounds the attempts meanwhile.
 
-use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -88,12 +91,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{PCWSTR, w};
 
-use crate::rules::appbar::{
-    Requery, RequeryGuard, Settle, Step, across, is_usable, query_rect, set_rect, steps,
-};
-use crate::{
-    AppBarGrant, AppBarRequest, AppBarSink, NativeWindowHandle, PlatformError, PlatformResult,
-};
+use crate::rules::appbar::{AppBarShell, Bars, Notification};
+use crate::{AppBarRequest, AppBarSink, NativeWindowHandle, PlatformError, PlatformResult};
 
 /// The message the shell sends a registered dock window (the bar's
 /// `uCallbackMessage`): `wParam` = the `ABN_*` code, `lParam` its argument.
@@ -371,48 +370,27 @@ fn taskbar_created_message() -> u32 {
 // The thread
 // ---------------------------------------------------------------------------
 
-/// One dock window's bar.
-struct Bar {
-    sink: AppBarSink,
-    /// What the window wants now (the latest `Set`).
-    wanted: Option<AppBarRequest>,
-    /// What the shell holds for the window, if it is registered.
-    registered: Option<Registered>,
-    /// What was last reported to the sink.
-    reported: Option<Option<AppBarGrant>>,
-    requery: RequeryGuard,
-}
-
-/// A registration with the shell.
-#[derive(Debug, Clone, Copy)]
-struct Registered {
-    /// The request it was registered and last positioned for.
-    request: AppBarRequest,
-    /// The band last passed to `ABM_SETPOS`.
-    asked: Option<Rect>,
-}
-
+/// The thread's state: the bookkeeping (`rules::appbar::Bars`) and the
+/// clock it runs on.
 struct Worker {
-    bars: HashMap<isize, Bar>,
-    settle: Settle<isize>,
+    bars: Bars,
     started: Instant,
 }
 
 fn thread_main(receiver: &Receiver<Command>) {
     let mut worker = Worker {
-        bars: HashMap::new(),
-        settle: Settle::default(),
+        bars: Bars::default(),
         started: Instant::now(),
     };
     loop {
-        let first = match worker.settle.next_due() {
+        let first = match worker.bars.next_due() {
             Some(due) => {
                 let wait = Duration::from_millis(due.saturating_sub(worker.now_ms()));
                 match receiver.recv_timeout(wait) {
                     Ok(command) => Some(command),
                     Err(RecvTimeoutError::Timeout) => None,
                     Err(RecvTimeoutError::Disconnected) => {
-                        worker.release_everything();
+                        worker.bars.release_all(&mut Win32Shell);
                         break;
                     }
                 }
@@ -420,7 +398,7 @@ fn thread_main(receiver: &Receiver<Command>) {
             None => match receiver.recv() {
                 Ok(command) => Some(command),
                 Err(_) => {
-                    worker.release_everything();
+                    worker.bars.release_all(&mut Win32Shell);
                     break;
                 }
             },
@@ -433,7 +411,7 @@ fn thread_main(receiver: &Receiver<Command>) {
                 Ok(command) => batch.push(command),
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
-                    worker.release_everything();
+                    worker.bars.release_all(&mut Win32Shell);
                     return;
                 }
             }
@@ -441,9 +419,8 @@ fn thread_main(receiver: &Receiver<Command>) {
         if worker.run(batch) {
             break;
         }
-        for (handle, request) in worker.settle.take_due(worker.now_ms()) {
-            worker.apply(handle, Some(request));
-        }
+        let now = worker.now_ms();
+        worker.bars.tick(&mut Win32Shell, now);
     }
     log::debug!("AppBar thread ends");
 }
@@ -455,6 +432,7 @@ impl Worker {
 
     /// Handle one batch of commands in order; `true` to end the thread.
     fn run(&mut self, batch: Vec<Command>) -> bool {
+        let shell = &mut Win32Shell;
         let mut moved: Vec<isize> = Vec::new();
         for command in batch {
             match command {
@@ -462,311 +440,102 @@ impl Worker {
                     handle,
                     request,
                     sink,
-                } => self.on_set(handle, request, sink),
-                Command::Notify { handle, code, arg } => self.on_notify(handle, code, arg),
-                Command::Activate { handle, active } => {
-                    if self.is_registered(handle) {
-                        let mut data = app_bar_data(handle);
-                        data.lParam = LPARAM(isize::from(active));
-                        send(ABM_ACTIVATE, &mut data);
-                    }
+                } => {
+                    let now = self.now_ms();
+                    self.bars.set(shell, handle, request, sink, now);
                 }
+                Command::Notify { handle, code, arg } => {
+                    let now = self.now_ms();
+                    self.bars
+                        .notify(shell, handle, notification(code, arg), now);
+                }
+                Command::Activate { handle, active } => self.bars.activate(shell, handle, active),
                 Command::WindowPosChanged(handle) => {
                     if !moved.contains(&handle) {
                         moved.push(handle);
                     }
                 }
-                Command::TaskbarCreated(handle) => self.on_shell_restarted(handle),
-                Command::Destroyed(handle) => self.on_destroyed(handle),
+                Command::TaskbarCreated(handle) => {
+                    let now = self.now_ms();
+                    self.bars.shell_restarted(shell, handle, now);
+                }
+                Command::Destroyed(handle) => self.bars.destroyed(shell, handle),
                 Command::ReleaseAll(done) => {
-                    self.release_everything();
+                    self.bars.release_all(shell);
                     let _ = done.send(());
                 }
                 Command::Stop => {
-                    self.release_everything();
+                    self.bars.release_all(shell);
                     return true;
                 }
             }
         }
         for handle in moved {
-            if self.is_registered(handle) {
-                send(ABM_WINDOWPOSCHANGED, &mut app_bar_data(handle));
-            }
+            self.bars.window_pos_changed(shell, handle);
         }
         false
     }
+}
 
-    fn is_registered(&self, handle: isize) -> bool {
-        self.bars
-            .get(&handle)
-            .is_some_and(|bar| bar.registered.is_some())
-    }
-
-    fn on_set(&mut self, handle: isize, request: Option<AppBarRequest>, sink: AppBarSink) {
-        let bar = self.bars.entry(handle).or_insert_with(|| Bar {
-            sink: sink.clone(),
-            wanted: None,
-            registered: None,
-            reported: None,
-            requery: RequeryGuard::default(),
-        });
-        bar.sink = sink;
-        bar.wanted = request;
-        match request {
-            Some(request) => {
-                let now = self.now_ms();
-                self.settle.push(handle, request, now);
-            }
-            None => {
-                self.settle.cancel(handle);
-                self.apply(handle, None);
-            }
-        }
-    }
-
-    /// Bring the window's registration in line with `wanted`
-    /// (`rules::appbar::steps`) and report what it holds afterwards.
-    fn apply(&mut self, handle: isize, wanted: Option<AppBarRequest>) {
-        let Some(bar) = self.bars.get_mut(&handle) else {
-            return;
-        };
-        let registered = bar.registered.map(|r| r.request);
-        for step in steps(registered, wanted) {
-            match step {
-                Step::Remove => {
-                    remove(handle);
-                    bar.registered = None;
-                    if wanted.is_none() {
-                        log::info!("AppBar {handle:#x}: band given back");
-                        // A release the caller asked for is not reported.
-                        bar.reported = Some(None);
-                    } else {
-                        log::info!(
-                            "AppBar {handle:#x}: band given back before registering on another \
-                             edge or monitor"
-                        );
-                    }
-                }
-                Step::New => {
-                    let Some(request) = wanted else {
-                        return;
-                    };
-                    if let Err(e) = register(handle) {
-                        log::warn!(
-                            "AppBar {handle:#x}: could not register on the {:?} edge ({e}); no \
-                             screen space is reserved for this dock until the shell is back",
-                            request.edge
-                        );
-                        report(handle, bar, None);
-                        return;
-                    }
-                    bar.registered = Some(Registered {
-                        request,
-                        asked: None,
-                    });
-                }
-                Step::Position => {
-                    let Some(request) = wanted else {
-                        return;
-                    };
-                    if let Some(registered) = bar.registered.as_mut() {
-                        registered.request = request;
-                    }
-                    position(handle, bar, request);
-                }
-            }
-        }
-    }
-
-    fn on_notify(&mut self, handle: isize, code: u32, arg: isize) {
-        let now = self.now_ms();
-        let Some(bar) = self.bars.get_mut(&handle) else {
-            log::trace!("AppBar {handle:#x}: notification {code} for no bar");
-            return;
-        };
-        match code {
-            ABN_POSCHANGED | ABN_STATECHANGE => {
-                let Some(registered) = bar.registered else {
-                    return;
-                };
-                if !tray_present() {
-                    log::debug!(
-                        "AppBar {handle:#x}: notification {code} while the shell is gone; \
-                         TaskbarCreated registers the bar again"
-                    );
-                    return;
-                }
-                let asked = query(handle, &registered.request);
-                if Some(asked) == registered.asked {
-                    log::trace!("AppBar {handle:#x}: notification {code}: the band is unchanged");
-                    return;
-                }
-                match bar.requery.allow(now) {
-                    Requery::Go => {
-                        log::debug!(
-                            "AppBar {handle:#x}: notification {code}: the shell moved the band; \
-                             asking for {asked:?}"
-                        );
-                        take(handle, bar, registered.request, asked);
-                    }
-                    Requery::Pause => log::warn!(
-                        "AppBar {handle:#x}: the shell moved the band {} times in a row; its \
-                         notifications are ignored for {} s (another bar keeps moving it?)",
-                        RequeryGuard::BURST,
-                        RequeryGuard::PAUSE_MS / 1000
-                    ),
-                    Requery::Paused => {
-                        log::trace!("AppBar {handle:#x}: notification {code} ignored (paused)");
-                    }
-                }
-            }
-            ABN_FULLSCREENAPP => log::debug!(
-                "AppBar {handle:#x}: a fullscreen app {} on this bar's monitor",
-                if arg != 0 { "opened" } else { "closed" }
-            ),
-            ABN_WINDOWARRANGE => log::trace!(
-                "AppBar {handle:#x}: windows are being {} (tile or cascade)",
-                if arg != 0 {
-                    "arranged"
-                } else {
-                    "done arranging"
-                }
-            ),
-            other => log::trace!("AppBar {handle:#x}: notification {other} ignored"),
-        }
-    }
-
-    /// The shell started again (`TaskbarCreated`): its registrations are
-    /// gone, so the bar registers again for what it wants.
-    fn on_shell_restarted(&mut self, handle: isize) {
-        let Some(bar) = self.bars.get_mut(&handle) else {
-            return;
-        };
-        let Some(wanted) = bar.wanted else {
-            return;
-        };
-        log::info!("AppBar {handle:#x}: the shell started again; registering the bar again");
-        bar.registered = None;
-        self.settle.cancel(handle);
-        self.apply(handle, Some(wanted));
-    }
-
-    fn on_destroyed(&mut self, handle: isize) {
-        self.settle.cancel(handle);
-        if let Some(bar) = self.bars.remove(&handle)
-            && bar.registered.is_some()
-        {
-            log::debug!("AppBar {handle:#x}: the window is gone; giving its band back");
-            remove(handle);
-        }
-    }
-
-    /// Give every band back (the quit). Nothing is reported.
-    fn release_everything(&mut self) {
-        for (&handle, bar) in &mut self.bars {
-            self.settle.cancel(handle);
-            bar.wanted = None;
-            if bar.registered.take().is_some() {
-                remove(handle);
-                log::info!("AppBar {handle:#x}: band given back");
-            }
-        }
+/// The callback message's `wParam` / `lParam` as a notification.
+fn notification(code: u32, arg: isize) -> Notification {
+    match code {
+        ABN_POSCHANGED => Notification::PosChanged,
+        ABN_STATECHANGE => Notification::StateChange,
+        ABN_FULLSCREENAPP => Notification::FullScreenApp(arg != 0),
+        ABN_WINDOWARRANGE => Notification::WindowArrange(arg != 0),
+        other => Notification::Other(other),
     }
 }
 
-/// `ABM_QUERYPOS` then `ABM_SETPOS` for `request`; the band the shell
-/// answered is reported.
-fn position(handle: isize, bar: &mut Bar, request: AppBarRequest) {
-    if !tray_present() {
-        log::debug!("AppBar {handle:#x}: not positioned: the shell is gone");
-        return;
-    }
-    let asked = query(handle, &request);
-    take(handle, bar, request, asked);
-}
+/// The real shell: one `SHAppBarMessage` per call. The AppBar thread only.
+#[derive(Debug, Clone, Copy)]
+struct Win32Shell;
 
-/// `ABM_SETPOS` with `asked`, then report the band the shell answered, or
-/// give the registration up when the answer is not a usable band.
-fn take(handle: isize, bar: &mut Bar, request: AppBarRequest, asked: Rect) {
-    let mut data = app_bar_data(handle);
-    data.uEdge = abe(request.edge);
-    data.rc = to_rect(asked);
-    send(ABM_SETPOS, &mut data);
-    let granted = from_rect(data.rc);
-    if let Some(registered) = bar.registered.as_mut() {
-        registered.asked = Some(asked);
+impl AppBarShell for Win32Shell {
+    /// Whether the tray window exists. Reads the window list; sends nothing.
+    fn present(&mut self) -> bool {
+        // SAFETY: both arguments are a valid NUL-terminated string or null.
+        unsafe { FindWindowW(w!("Shell_TrayWnd"), PCWSTR::null()) }.is_ok()
     }
-    if !is_usable(granted, &request) {
-        log::warn!(
-            "AppBar {handle:#x}: the shell granted {granted:?} for {request:?}, which is not a \
-             band on that monitor; giving the registration up"
-        );
-        remove(handle);
-        bar.registered = None;
-        report(handle, bar, None);
-        return;
-    }
-    log::info!(
-        "AppBar {handle:#x}: {} px reserved on the {:?} edge of {:?}: the shell granted \
-         {granted:?}",
-        across(granted, request.edge),
-        request.edge,
-        request.monitor
-    );
-    report(
-        handle,
-        bar,
-        Some(AppBarGrant {
-            request,
-            rect: granted,
-        }),
-    );
-}
 
-/// `ABM_QUERYPOS` with the band on the request's edge of the monitor's
-/// bounds; the shell's adjustment cut back to the thickness.
-fn query(handle: isize, request: &AppBarRequest) -> Rect {
-    let mut data = app_bar_data(handle);
-    data.uEdge = abe(request.edge);
-    data.rc = to_rect(query_rect(request));
-    send(ABM_QUERYPOS, &mut data);
-    set_rect(from_rect(data.rc), request)
-}
+    fn register(&mut self, handle: isize) -> bool {
+        send(ABM_NEW, &mut app_bar_data(handle)) != 0
+    }
 
-/// Report `grant` to the bar's sink unless it is what was reported last.
-fn report(handle: isize, bar: &mut Bar, grant: Option<AppBarGrant>) {
-    if bar.reported == Some(grant) {
-        return;
+    /// `ABM_REMOVE` always "succeeds".
+    fn remove(&mut self, handle: isize) {
+        send(ABM_REMOVE, &mut app_bar_data(handle));
     }
-    bar.reported = Some(grant);
-    (bar.sink)(NativeWindowHandle(handle), grant);
-}
 
-/// `ABM_NEW` for the window. A refusal means an error or a window that is
-/// registered already (a registration this thread no longer knows of): the
-/// stale one is removed and the registration tried once more.
-fn register(handle: isize) -> PlatformResult<()> {
-    if !tray_present() {
-        return Err(no_tray());
+    fn query(&mut self, handle: isize, edge: DockPosition, rect: Rect) -> Rect {
+        let mut data = app_bar_data(handle);
+        data.uEdge = abe(edge);
+        data.rc = to_rect(rect);
+        send(ABM_QUERYPOS, &mut data);
+        from_rect(data.rc)
     }
-    if send(ABM_NEW, &mut app_bar_data(handle)) != 0 {
-        return Ok(());
+
+    fn set_pos(&mut self, handle: isize, edge: DockPosition, rect: Rect) -> Rect {
+        let mut data = app_bar_data(handle);
+        data.uEdge = abe(edge);
+        data.rc = to_rect(rect);
+        send(ABM_SETPOS, &mut data);
+        from_rect(data.rc)
     }
-    log::debug!("AppBar {handle:#x}: ABM_NEW refused; removing a stale registration and retrying");
-    remove(handle);
-    if send(ABM_NEW, &mut app_bar_data(handle)) != 0 {
-        Ok(())
-    } else {
-        Err(PlatformError::Other("the shell refused ABM_NEW".into()))
+
+    fn activate(&mut self, handle: isize, active: bool) {
+        let mut data = app_bar_data(handle);
+        data.lParam = LPARAM(isize::from(active));
+        send(ABM_ACTIVATE, &mut data);
+    }
+
+    fn window_pos_changed(&mut self, handle: isize) {
+        send(ABM_WINDOWPOSCHANGED, &mut app_bar_data(handle));
     }
 }
 
-/// `ABM_REMOVE` for the window (always "succeeds").
-fn remove(handle: isize) {
-    send(ABM_REMOVE, &mut app_bar_data(handle));
-}
-
-/// One `SHAppBarMessage`. This thread only.
+/// One `SHAppBarMessage`. The AppBar thread only.
 fn send(message: u32, data: &mut APPBARDATA) -> usize {
     // SAFETY: `data` is a complete `APPBARDATA` with `cbSize` set, alive and
     // exclusively borrowed for the call; the shell copies what it reads,
@@ -782,20 +551,6 @@ fn app_bar_data(handle: isize) -> APPBARDATA {
         uCallbackMessage: CALLBACK_MESSAGE,
         ..Default::default()
     }
-}
-
-/// Whether the tray window exists. Reads the window list; sends nothing.
-fn tray_present() -> bool {
-    // SAFETY: both arguments are a valid NUL-terminated string or null.
-    unsafe { FindWindowW(w!("Shell_TrayWnd"), PCWSTR::null()) }.is_ok()
-}
-
-fn no_tray() -> PlatformError {
-    PlatformError::Other(
-        "there is no taskbar to register with (Shell_TrayWnd not found: Explorer is not running \
-         or is restarting)"
-            .into(),
-    )
 }
 
 fn abe(edge: DockPosition) -> u32 {
