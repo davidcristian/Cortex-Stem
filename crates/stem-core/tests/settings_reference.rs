@@ -1059,8 +1059,23 @@ fn render(reference: &Reference) -> String {
          \n\
          A dotted key such as `magnification.maxScale` is the `maxScale` key inside the\n\
          `magnification` object, and `pinned[]` stands for each entry of the `pinned`\n\
-         array. A key missing from the file takes its default, a key Stem does not know\n\
-         is ignored, and a number outside its range is clamped to the nearest end of it.\n\
+         array.\n\
+         \n\
+         A key missing from the file takes its default, a key that this page does not\n\
+         list is ignored, and a number outside its documented range is clamped to the\n\
+         nearest end of it. The whole file is unreadable when it is not valid JSON, or\n\
+         when it has one of these values:\n\
+         \n\
+         - a value of the wrong JSON type, such as `\"48\"` for a number, `\"true\"` for a\n\
+         \x20 boolean or `null` for an object;\n\
+         - a string that is not one of the key's listed values;\n\
+         - for an integer key, a negative number, a number with a decimal point (even\n\
+         \x20 `48.0`) or one above `4294967295`;\n\
+         - a `pinned[]` or `hiddenApps[]` entry without one of its required keys;\n\
+         - a `version` higher than the one this build of Stem writes.\n\
+         \n\
+         Stem then keeps the file as `settings.json.broken` and starts with the\n\
+         defaults; see the [user guide](user-guide/settings-window.md).\n\
          \n"
     )
     .expect("write to a String");
@@ -1219,9 +1234,17 @@ fn documented_ranges_are_what_validation_clamps_to() {
         let lo: f64 = claim.lo.parse().expect("range start");
         let hi: f64 = claim.hi.parse().expect("range end");
         let name = claim.path.display();
-        let mut probes = vec![(hi + 1.0, hi), (hi + 1_000.0, hi)];
-        // An unsigned integer cannot be written below 0.
-        if !claim.integer || lo >= 1.0 {
+        let mut probes = vec![(lo, lo), (hi, hi), (hi + 1.0, hi), (hi + 1_000.0, hi)];
+        if claim.integer && lo < 1.0 {
+            // Below 0 an integer key is not clamped: the page's introduction
+            // calls a negative integer unreadable.
+            let written = lo as i64 - 1;
+            assert!(
+                load(&document(&keys, Value::from(written))).is_err(),
+                "{name}: the page says a negative integer makes the file \
+                 unreadable, but {written} loads"
+            );
+        } else {
             probes.push((lo - 1.0, lo));
         }
         for (written, expected) in probes {
@@ -1253,6 +1276,58 @@ fn documented_ranges_are_what_validation_clamps_to() {
             "{name}: default {default} outside its range"
         );
     }
+}
+
+/// The values the page's introduction calls unreadable, for a key whose
+/// default is `default`; `listed` when the page lists the key's values.
+fn unreadable_values(default: &Value, listed: bool) -> Vec<Value> {
+    let mut values = vec![match default {
+        // `null` is a key of an optional type, which takes more than one.
+        Value::Null => return Vec::new(),
+        Value::Bool(_) => Value::from("true"),
+        Value::Number(_) => Value::from("48"),
+        Value::String(_) => Value::from(48),
+        Value::Array(_) => Value::Object(Map::new()),
+        Value::Object(_) => Value::Null,
+    }];
+    if let Some(integer) = default.as_u64() {
+        values.extend([
+            Value::from(-1),
+            Value::from(u64::from(u32::MAX) + 1),
+            Value::from(integer as f64),
+            Value::from(integer as f64 + 0.5),
+        ]);
+    }
+    if listed {
+        values.push(Value::from("notAListedValue"));
+    }
+    values
+}
+
+#[test]
+fn values_the_page_calls_unreadable_do_not_load() {
+    let reference = generate(&parse_items());
+    let defaults = serde_json::to_value(Settings::default()).expect("json");
+    let mut paths = Vec::new();
+    collect_paths(&defaults, &mut Vec::new(), &mut paths);
+    let mut checked = 0;
+    for path in paths {
+        let keys: Vec<&str> = path.iter().map(String::as_str).collect();
+        let listed = reference
+            .values
+            .iter()
+            .any(|claim| claim.path.keys().as_deref() == Some(keys.as_slice()));
+        for value in unreadable_values(lookup(&defaults, &keys), listed) {
+            let doc = document(&keys, value);
+            assert!(
+                load(&doc).is_err(),
+                "{}: the page calls this value unreadable, but it loads: {doc}",
+                path.join(".")
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 0, "no values were checked");
 }
 
 #[test]

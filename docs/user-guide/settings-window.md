@@ -14,7 +14,10 @@ it starts and writes it again after every change, so quit Stem before you
 edit the file by hand. A number outside its range is set to the nearest end
 of the range. A file that Stem cannot read is renamed to
 `settings.json.broken`, and Stem starts with the defaults. Such a file is
-broken JSON, or a file written by a newer version of Stem.
+broken JSON, a file written by a newer version of Stem, or a file with a
+value of the wrong kind, such as a negative `iconSize` or
+`"position": "buttom"`. The [settings reference](../SETTINGS.md) lists which
+values those are.
 
 Sizes are in CSS pixels, which Windows display scaling multiplies: at 150 %
 scaling, an icon size of 48 is drawn 72 physical pixels wide.

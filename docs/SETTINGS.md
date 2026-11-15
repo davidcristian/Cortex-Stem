@@ -26,8 +26,23 @@ settings window names each setting, and how the dock behaves.
 
 A dotted key such as `magnification.maxScale` is the `maxScale` key inside the
 `magnification` object, and `pinned[]` stands for each entry of the `pinned`
-array. A key missing from the file takes its default, a key Stem does not know
-is ignored, and a number outside its range is clamped to the nearest end of it.
+array.
+
+A key missing from the file takes its default, a key that this page does not
+list is ignored, and a number outside its documented range is clamped to the
+nearest end of it. The whole file is unreadable when it is not valid JSON, or
+when it has one of these values:
+
+- a value of the wrong JSON type, such as `"48"` for a number, `"true"` for a
+  boolean or `null` for an object;
+- a string that is not one of the key's listed values;
+- for an integer key, a negative number, a number with a decimal point (even
+  `48.0`) or one above `4294967295`;
+- a `pinned[]` or `hiddenApps[]` entry without one of its required keys;
+- a `version` higher than the one this build of Stem writes.
+
+Stem then keeps the file as `settings.json.broken` and starts with the
+defaults; see the [user guide](user-guide/settings-window.md).
 
 - [Top level](#top-level)
 - [`magnification`](#magnification)
