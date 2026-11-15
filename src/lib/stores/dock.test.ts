@@ -23,6 +23,7 @@ const snapshot = (revision: number): DockState => ({
   items: [],
   foreground: null,
   docks: [],
+  power: { hasBattery: false, percent: null, charging: false, onAc: false, saver: false },
 });
 
 const MONITOR: MonitorInfo = {

@@ -116,6 +116,8 @@ Which fixed items (the items that are not apps) the dock shows. The items at the
 | `items.showDesktop`        | boolean | `false` | The Show Desktop item at the left.                                                                                                       |
 | `items.quickSettings`      | boolean | `false` | The Quick Settings item at the right, before the Recycle Bin. A click opens what Win+A opens.                                            |
 | `items.notificationCenter` | boolean | `false` | The Notification Center item at the right, before the Recycle Bin. A click opens what Win+N opens.                                       |
+| `items.battery`            | boolean | `false` | The battery item at the right, after Notification Center. It appears only on a PC with a battery. A click opens what Win+A opens.        |
+| `items.clock`              | boolean | `false` | The clock item at the right, after the battery. A click opens what Win+N opens.                                                          |
 | `items.recycleBin`         | boolean | `true`  | The Recycle Bin item, last at the right.                                                                                                 |
 | `items.separators`         | boolean | `true`  | Draw thin separators between the item groups: the items at the left, the pinned apps, the other running apps and the items at the right. |
 

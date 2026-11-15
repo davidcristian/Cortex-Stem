@@ -5,7 +5,7 @@ This study asks what replacing or mirroring the notification area of
 replacing it means handling a private protocol and rebuilding shell surfaces
 that have no public API. Mirroring it is possible only through undocumented
 behaviour or an unsupported tree. The study recommends against both and
-proposes one small step that uses public means only. Stem has part of that
+proposes one small step that uses public means only. Stem has most of that
 step (see [Recommendation](recommendation.md)).
 
 Claims marked **[An]** are assumptions: neither Microsoft's documentation

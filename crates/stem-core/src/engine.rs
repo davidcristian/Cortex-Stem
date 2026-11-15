@@ -9,7 +9,7 @@
 //! 2. pinned apps in the user's order, each showing its running windows;
 //! 3. a separator, then running apps that are not pinned, in first-seen order;
 //! 4. a separator, then the fixed trailing items (quick settings,
-//!    notification center, the Recycle Bin last).
+//!    notification center, battery, clock, the Recycle Bin last).
 //!
 //! Separators are only emitted between non-empty groups.
 //!
@@ -38,6 +38,9 @@
 //!   monitor it names): the engine never derives it from window rects. It
 //!   sets the fact on the dock of the verdict's monitor, or on the primary
 //!   monitor's dock when the verdict names none;
+//! - `power` is the platform's last reading, stored as is and part
+//!   of the snapshot whatever the settings say; it also decides whether the
+//!   battery item exists (only with a system battery) and its title;
 //! - `overlapped` is the one thing the engine derives from window
 //!   rects: whether a window of another process covers a dock's resting
 //!   panel ([`crate::overlap`]), per panel. It is recomputed only after an
@@ -52,7 +55,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use crate::events::{EngineInput, PlatformEvent};
 use crate::model::{
     AppId, AppIdentity, DockFacts, DockItem, DockItemKind, DockState, IconKey, MonitorId,
-    MonitorInfo, RawWindow, Rect, RecycleBinState, ShellAction, ThemeInfo, WindowId, WindowInfo,
+    MonitorInfo, PowerStatus, RawWindow, Rect, RecycleBinState, ShellAction, ThemeInfo, WindowId,
+    WindowInfo,
 };
 use crate::overlap;
 use crate::settings::{MonitorMode, Settings};
@@ -152,6 +156,8 @@ pub struct DockEngine {
     monitors: Vec<MonitorInfo>,
     theme: ThemeInfo,
     recycle_bin: RecycleBinState,
+    /// The platform's last power reading; `DockState::power`.
+    power: PowerStatus,
     next_seq: u64,
     revision: u64,
 }
@@ -173,6 +179,7 @@ impl DockEngine {
             monitors: Vec::new(),
             theme: ThemeInfo::default(),
             recycle_bin: RecycleBinState::default(),
+            power: PowerStatus::default(),
             next_seq: 1,
             revision: 0,
         }
@@ -202,6 +209,12 @@ impl DockEngine {
 
     pub fn recycle_bin(&self) -> RecycleBinState {
         self.recycle_bin
+    }
+
+    /// The platform's last power reading: every field `false` and
+    /// no percent until the first `PlatformEvent::PowerChanged`.
+    pub fn power(&self) -> PowerStatus {
+        self.power
     }
 
     /// The OS foreground window, if the engine tracks it. It may be a window
@@ -426,6 +439,10 @@ impl DockEngine {
             PlatformEvent::MonitorsChanged(monitors) => self.monitors = monitors,
             PlatformEvent::ThemeChanged(theme) => self.theme = theme,
             PlatformEvent::RecycleBinChanged(state) => self.recycle_bin = state,
+            // Part of the snapshot (`DockState::power`, and the battery
+            // item's presence and title), so `apply` bumps the revision
+            // exactly when the reading differs from the one kept.
+            PlatformEvent::PowerChanged(power) => self.power = power,
             // Part of the snapshot (through the docks' facts), so `apply`
             // bumps the revision only when some dock's fact changes.
             PlatformEvent::FullscreenChanged { active, monitor } => {
@@ -653,9 +670,9 @@ impl DockEngine {
         }
         items.extend(running_items);
 
-        // 4. Fixed trailing group: Quick Settings, Notification Center, and
-        // the Recycle Bin last, with one separator before the group and none
-        // inside it (like the left group).
+        // 4. Fixed trailing group: Quick Settings, Notification Center,
+        // battery, clock, and the Recycle Bin last, with one separator before
+        // the group and none inside it (like the left group).
         let mut trailing = Vec::new();
         if s.items.quick_settings {
             trailing.push(fixed_item(
@@ -671,6 +688,24 @@ impl DockEngine {
                 "fixed:notification-center".into(),
                 "Notification Center",
                 Some(IconKey::shell("notification-center")),
+            ));
+        }
+        // A machine without a system battery (a desktop PC) never shows the
+        // battery item, whatever the setting says.
+        if s.items.battery && self.power.has_battery {
+            trailing.push(fixed_item(
+                DockItemKind::Battery,
+                "fixed:battery".into(),
+                &battery_title(&self.power),
+                Some(IconKey::shell("battery")),
+            ));
+        }
+        if s.items.clock {
+            trailing.push(fixed_item(
+                DockItemKind::Clock,
+                "fixed:clock".into(),
+                "Clock",
+                Some(IconKey::shell("clock")),
             ));
         }
         if s.items.recycle_bin {
@@ -696,6 +731,7 @@ impl DockEngine {
             items,
             foreground: self.foreground,
             docks: self.dock_facts(),
+            power: self.power,
         }
     }
 
@@ -745,7 +781,8 @@ impl DockEngine {
     /// Decide what a primary click on `item_key` in the dock window `dock`
     /// should do.
     ///
-    /// - fixed items map to their shell action;
+    /// - fixed items map to their shell action (the battery item to quick
+    ///   settings, the clock to the notification center and calendar);
     /// - an app with none of the windows that dock lists
     ///   ([`Self::windows_on_dock`]) is launched (if it can be): a pinned app
     ///   whose windows are all on other monitors starts a new one, as that
@@ -760,9 +797,10 @@ impl DockEngine {
             "fixed:task-view" => return ItemAction::Shell(ShellAction::OpenTaskView),
             "fixed:show-desktop" => return ItemAction::Shell(ShellAction::ToggleShowDesktop),
             "fixed:quick-settings" => return ItemAction::Shell(ShellAction::OpenQuickSettings),
-            "fixed:notification-center" => {
+            "fixed:notification-center" | "fixed:clock" => {
                 return ItemAction::Shell(ShellAction::OpenNotificationCenter);
             }
+            "fixed:battery" => return ItemAction::Shell(ShellAction::OpenQuickSettings),
             "fixed:recycle-bin" => return ItemAction::Shell(ShellAction::OpenRecycleBin),
             _ => {}
         }
@@ -809,6 +847,26 @@ fn overlap_facts(raw: &RawWindow) -> (bool, bool, bool, u32, Option<Rect>) {
         raw.process_id,
         raw.rect,
     )
+}
+
+/// The battery item's title and accessible name: `Battery 73 %`,
+/// then `, charging` while charging or `, plugged in` on AC power without
+/// charging, then `, battery saver on` while battery saver is on. Without a
+/// known percent the first part is `Battery` alone (`Battery, charging`).
+fn battery_title(power: &PowerStatus) -> String {
+    let mut title = match power.percent {
+        Some(percent) => format!("Battery {percent} %"),
+        None => "Battery".to_owned(),
+    };
+    if power.charging {
+        title.push_str(", charging");
+    } else if power.on_ac {
+        title.push_str(", plugged in");
+    }
+    if power.saver {
+        title.push_str(", battery saver on");
+    }
+    title
 }
 
 fn fixed_item(kind: DockItemKind, key: String, title: &str, icon_key: Option<IconKey>) -> DockItem {
@@ -2507,6 +2565,453 @@ mod tests {
         let item = engine.dock_item("fixed:notification-center", DOCK).unwrap();
         assert_eq!(item.kind, DockItemKind::NotificationCenter);
         assert!(item.windows.is_empty());
+    }
+
+    // ----- clock and battery -------------------------------------------------
+
+    fn with_clock_and_battery(clock: bool, battery: bool) -> Settings {
+        let mut s = Settings::default();
+        s.items.clock = clock;
+        s.items.battery = battery;
+        s
+    }
+
+    fn laptop(percent: u8) -> PowerStatus {
+        PowerStatus {
+            has_battery: true,
+            percent: Some(percent),
+            charging: false,
+            on_ac: false,
+            saver: false,
+        }
+    }
+
+    fn power(status: PowerStatus) -> EngineInput {
+        PlatformEvent::PowerChanged(status).into()
+    }
+
+    fn item<'a>(state: &'a DockState, key: &str) -> Option<&'a DockItem> {
+        state.items.iter().find(|i| i.key == key)
+    }
+
+    #[test]
+    fn clock_and_battery_are_off_by_default() {
+        let mut engine = DockEngine::new(Settings::default());
+        engine.apply(power(laptop(50)));
+        let state = engine.snapshot();
+        assert!(
+            state
+                .items
+                .iter()
+                .all(|i| !matches!(i.kind, DockItemKind::Clock | DockItemKind::Battery))
+        );
+        assert_eq!(
+            keys(&state),
+            vec!["fixed:launcher", "sep:1", "fixed:recycle-bin"]
+        );
+    }
+
+    #[test]
+    fn power_is_unknown_until_the_first_reading_and_then_kept_as_sent() {
+        let mut engine = DockEngine::new(with_clock_and_battery(true, true));
+        assert_eq!(engine.power(), PowerStatus::default());
+        let state = engine.snapshot();
+        assert_eq!(state.power, PowerStatus::default());
+        assert!(!state.power.has_battery);
+        assert_eq!(state.power.percent, None);
+        assert!(!state.power.charging && !state.power.on_ac && !state.power.saver);
+
+        let reading = PowerStatus {
+            has_battery: true,
+            percent: Some(73),
+            charging: true,
+            on_ac: true,
+            saver: true,
+        };
+        assert!(engine.apply(power(reading)).changed);
+        assert_eq!(engine.power(), reading);
+        assert_eq!(engine.snapshot().power, reading);
+    }
+
+    #[test]
+    fn power_changed_bumps_the_revision_only_when_the_reading_differs() {
+        let mut engine = DockEngine::new(with_clock_and_battery(true, true));
+        assert!(engine.apply(power(laptop(76))).changed);
+        let r = engine.snapshot().revision;
+
+        // The same reading again (a resume, a repeated broadcast): nothing.
+        assert!(!engine.apply(power(laptop(76))).changed);
+        assert_eq!(engine.snapshot().revision, r);
+
+        // Each field on its own is a change.
+        let mut next = laptop(75);
+        assert!(engine.apply(power(next)).changed);
+        next.on_ac = true;
+        assert!(engine.apply(power(next)).changed);
+        next.charging = true;
+        assert!(engine.apply(power(next)).changed);
+        next.saver = true;
+        assert!(engine.apply(power(next)).changed);
+        next.percent = None;
+        assert!(engine.apply(power(next)).changed);
+        assert_eq!(engine.snapshot().revision, r + 5);
+
+        // `DockState::power` is the platform's fact whatever the settings
+        // say: without either item a change still reaches the page.
+        let mut engine = DockEngine::new(Settings::default());
+        assert!(engine.apply(power(laptop(40))).changed);
+        assert_eq!(engine.snapshot().power, laptop(40));
+        assert!(!engine.apply(power(laptop(40))).changed);
+        assert!(engine.apply(power(laptop(39))).changed);
+        assert_eq!(
+            keys(&engine.snapshot()),
+            vec!["fixed:launcher", "sep:1", "fixed:recycle-bin"]
+        );
+    }
+
+    #[test]
+    fn battery_and_clock_come_after_notification_center_and_before_the_bin() {
+        let mut settings = with_clock_and_battery(true, true);
+        settings.items.quick_settings = true;
+        settings.items.notification_center = true;
+        let mut engine = DockEngine::new(settings);
+        engine.apply(added(win(1, r"C:\a.exe", "A")));
+        engine.apply(power(laptop(76)));
+        let state = engine.snapshot();
+        assert_eq!(
+            keys(&state),
+            vec![
+                "fixed:launcher",
+                "sep:1",
+                "app:exe:c:/a.exe",
+                "sep:2",
+                "fixed:quick-settings",
+                "fixed:notification-center",
+                "fixed:battery",
+                "fixed:clock",
+                "fixed:recycle-bin",
+            ]
+        );
+        let battery = item(&state, "fixed:battery").unwrap();
+        assert_eq!(battery.kind, DockItemKind::Battery);
+        assert_eq!(battery.title, "Battery 76 %");
+        assert_eq!(battery.icon_key, Some(IconKey("shell:battery".into())));
+        let clock = item(&state, "fixed:clock").unwrap();
+        assert_eq!(clock.kind, DockItemKind::Clock);
+        assert_eq!(clock.title, "Clock");
+        assert_eq!(clock.icon_key, Some(IconKey("shell:clock".into())));
+        for item in [battery, clock] {
+            assert!(item.icon_key.as_ref().is_some_and(IconKey::is_shell));
+            assert_eq!(item.app_id, None);
+            assert!(!item.pinned);
+            assert!(item.windows.is_empty());
+            assert!(!item.is_active && !item.needs_attention);
+            assert_eq!(item.badge, None);
+        }
+
+        // Battery before clock, both before the bin, with the Quick Settings
+        // and Notification Center items off.
+        let mut engine = DockEngine::new(with_clock_and_battery(true, true));
+        engine.apply(power(laptop(76)));
+        assert_eq!(
+            keys(&engine.snapshot()),
+            vec![
+                "fixed:launcher",
+                "sep:1",
+                "fixed:battery",
+                "fixed:clock",
+                "fixed:recycle-bin",
+            ]
+        );
+        // Each one alone keeps its place.
+        let mut engine = DockEngine::new(with_clock_and_battery(false, true));
+        engine.apply(power(laptop(76)));
+        assert_eq!(
+            keys(&engine.snapshot()),
+            vec![
+                "fixed:launcher",
+                "sep:1",
+                "fixed:battery",
+                "fixed:recycle-bin"
+            ]
+        );
+        let mut settings = with_clock_and_battery(true, false);
+        settings.items.notification_center = true;
+        let engine = DockEngine::new(settings);
+        assert_eq!(
+            keys(&engine.snapshot()),
+            vec![
+                "fixed:launcher",
+                "sep:1",
+                "fixed:notification-center",
+                "fixed:clock",
+                "fixed:recycle-bin"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_battery_item_exists_only_while_the_system_has_a_battery() {
+        let mut engine = DockEngine::new(with_clock_and_battery(true, true));
+        // No reading yet: no battery is known, so no battery item.
+        assert_eq!(
+            keys(&engine.snapshot()),
+            vec![
+                "fixed:launcher",
+                "sep:1",
+                "fixed:clock",
+                "fixed:recycle-bin"
+            ]
+        );
+
+        // A desktop PC: on AC, no battery. Still no battery item.
+        let desktop = PowerStatus {
+            has_battery: false,
+            percent: None,
+            charging: false,
+            on_ac: true,
+            saver: false,
+        };
+        let r = engine.snapshot().revision;
+        assert!(engine.apply(power(desktop)).changed);
+        assert!(item(&engine.snapshot(), "fixed:battery").is_none());
+        assert_eq!(engine.snapshot().revision, r + 1);
+        // Battery saver can be on without a battery; the item stays away.
+        assert!(
+            engine
+                .apply(power(PowerStatus {
+                    saver: true,
+                    ..desktop
+                }))
+                .changed
+        );
+        assert!(item(&engine.snapshot(), "fixed:battery").is_none());
+
+        // The system sees a battery: the item appears in its place.
+        assert!(engine.apply(power(laptop(30))).changed);
+        assert_eq!(
+            keys(&engine.snapshot()),
+            vec![
+                "fixed:launcher",
+                "sep:1",
+                "fixed:battery",
+                "fixed:clock",
+                "fixed:recycle-bin"
+            ]
+        );
+        // And goes again when it no longer does.
+        assert!(engine.apply(power(desktop)).changed);
+        assert_eq!(
+            keys(&engine.snapshot()),
+            vec![
+                "fixed:launcher",
+                "sep:1",
+                "fixed:clock",
+                "fixed:recycle-bin"
+            ]
+        );
+
+        // A battery with the setting off shows nothing.
+        let mut engine = DockEngine::new(Settings::default());
+        engine.apply(power(laptop(30)));
+        assert!(item(&engine.snapshot(), "fixed:battery").is_none());
+
+        // The battery item alone on a desktop leaves an empty trailing group:
+        // no separator for it.
+        let mut alone = minimal_settings();
+        alone.items.battery = true;
+        let mut engine = DockEngine::new(alone);
+        engine.apply(added(win(1, r"C:\a.exe", "A")));
+        engine.apply(power(desktop));
+        assert_eq!(keys(&engine.snapshot()), vec!["app:exe:c:/a.exe"]);
+        engine.apply(power(laptop(30)));
+        assert_eq!(
+            keys(&engine.snapshot()),
+            vec!["app:exe:c:/a.exe", "sep:1", "fixed:battery"]
+        );
+    }
+
+    #[test]
+    fn the_battery_title_says_the_percent_the_power_source_and_battery_saver() {
+        let cases = [
+            ((Some(73), false, false, false), "Battery 73 %"),
+            ((Some(73), true, true, false), "Battery 73 %, charging"),
+            ((Some(100), false, true, false), "Battery 100 %, plugged in"),
+            ((Some(0), false, false, false), "Battery 0 %"),
+            (
+                (Some(18), false, false, true),
+                "Battery 18 %, battery saver on",
+            ),
+            (
+                (Some(18), true, true, true),
+                "Battery 18 %, charging, battery saver on",
+            ),
+            (
+                (Some(95), false, true, true),
+                "Battery 95 %, plugged in, battery saver on",
+            ),
+            // Charging without AC (a system that reports it so) still says
+            // charging.
+            ((Some(50), true, false, false), "Battery 50 %, charging"),
+            ((None, false, false, false), "Battery"),
+            ((None, true, true, false), "Battery, charging"),
+            ((None, false, true, false), "Battery, plugged in"),
+            ((None, false, false, true), "Battery, battery saver on"),
+        ];
+        for ((percent, charging, on_ac, saver), expected) in cases {
+            let status = PowerStatus {
+                has_battery: true,
+                percent,
+                charging,
+                on_ac,
+                saver,
+            };
+            assert_eq!(battery_title(&status), expected, "{status:?}");
+
+            // The snapshot's item carries the same title.
+            let mut engine = DockEngine::new(with_clock_and_battery(false, true));
+            engine.apply(power(status));
+            let state = engine.snapshot();
+            assert_eq!(
+                item(&state, "fixed:battery").map(|i| i.title.as_str()),
+                Some(expected)
+            );
+        }
+
+        // A discharge moves the title with the percent.
+        let mut engine = DockEngine::new(with_clock_and_battery(false, true));
+        engine.apply(power(laptop(76)));
+        engine.apply(power(laptop(75)));
+        assert_eq!(
+            item(&engine.snapshot(), "fixed:battery").unwrap().title,
+            "Battery 75 %"
+        );
+    }
+
+    #[test]
+    fn the_clock_and_battery_follow_the_trailing_groups_separator_rules() {
+        // Without the bin they close the dock, after one separator.
+        let mut settings = with_clock_and_battery(true, true);
+        settings.items.recycle_bin = false;
+        let mut engine = DockEngine::new(settings);
+        engine.apply(added(win(1, r"C:\a.exe", "A")));
+        engine.apply(power(laptop(60)));
+        assert_eq!(
+            keys(&engine.snapshot()),
+            vec![
+                "fixed:launcher",
+                "sep:1",
+                "app:exe:c:/a.exe",
+                "sep:2",
+                "fixed:battery",
+                "fixed:clock",
+            ]
+        );
+
+        // Alone in the dock: no separator at all.
+        let mut alone = minimal_settings();
+        alone.items.clock = true;
+        alone.items.battery = true;
+        let mut engine = DockEngine::new(alone.clone());
+        engine.apply(power(laptop(60)));
+        assert_eq!(
+            keys(&engine.snapshot()),
+            vec!["fixed:battery", "fixed:clock"]
+        );
+
+        // Separators off: none anywhere.
+        let mut full = with_clock_and_battery(true, true);
+        full.items.separators = false;
+        let mut engine = DockEngine::new(full);
+        engine.apply(added(win(1, r"C:\a.exe", "A")));
+        engine.apply(power(laptop(60)));
+        assert_eq!(
+            keys(&engine.snapshot()),
+            vec![
+                "fixed:launcher",
+                "app:exe:c:/a.exe",
+                "fixed:battery",
+                "fixed:clock",
+                "fixed:recycle-bin",
+            ]
+        );
+    }
+
+    #[test]
+    fn switching_the_clock_or_the_battery_bumps_the_revision_only_when_it_shows() {
+        let mut settings = Settings::default();
+        let mut engine = DockEngine::new(settings.clone());
+        let r = engine.snapshot().revision;
+
+        // The battery item on a machine with no battery (no reading yet)
+        // changes no item: no bump.
+        settings.items.battery = true;
+        assert!(
+            !engine
+                .apply(EngineInput::SettingsChanged(settings.clone()))
+                .changed
+        );
+        assert_eq!(engine.snapshot().revision, r);
+
+        // The reading shows it.
+        assert!(engine.apply(power(laptop(80))).changed);
+        assert!(item(&engine.snapshot(), "fixed:battery").is_some());
+
+        settings.items.clock = true;
+        assert!(
+            engine
+                .apply(EngineInput::SettingsChanged(settings.clone()))
+                .changed
+        );
+        settings.items.battery = false;
+        settings.items.clock = false;
+        assert!(engine.apply(EngineInput::SettingsChanged(settings)).changed);
+        assert_eq!(
+            keys(&engine.snapshot()),
+            vec!["fixed:launcher", "sep:1", "fixed:recycle-bin"]
+        );
+        // The reading is kept across setting changes.
+        assert_eq!(engine.power(), laptop(80));
+    }
+
+    #[test]
+    fn a_click_on_the_clock_or_the_battery_opens_its_windows_panel() {
+        let mut engine = DockEngine::new(with_clock_and_battery(true, true));
+        engine.apply(power(laptop(50)));
+        assert_eq!(
+            engine.primary_action("fixed:clock", DOCK),
+            ItemAction::Shell(ShellAction::OpenNotificationCenter)
+        );
+        assert_eq!(
+            engine.primary_action("fixed:battery", DOCK),
+            ItemAction::Shell(ShellAction::OpenQuickSettings)
+        );
+        // Any dock window, as for the other fixed items.
+        assert_eq!(
+            engine.primary_action("fixed:clock", "dock-DISPLAY2"),
+            ItemAction::Shell(ShellAction::OpenNotificationCenter)
+        );
+        assert_eq!(
+            engine.primary_action("fixed:battery", "dock-DISPLAY2"),
+            ItemAction::Shell(ShellAction::OpenQuickSettings)
+        );
+        // The icon keys are not item keys.
+        assert_eq!(engine.primary_action("shell:clock", DOCK), ItemAction::None);
+        assert_eq!(
+            engine.primary_action("shell:battery", DOCK),
+            ItemAction::None
+        );
+
+        // The menus are built from the items as a dock lists them.
+        let clock = engine.dock_item("fixed:clock", DOCK).unwrap();
+        assert_eq!(clock.kind, DockItemKind::Clock);
+        let battery = engine.dock_item("fixed:battery", DOCK).unwrap();
+        assert_eq!(battery.kind, DockItemKind::Battery);
+        assert_eq!(battery.title, "Battery 50 %");
+
+        // Without a battery there is no battery item to build a menu from.
+        engine.apply(power(PowerStatus::default()));
+        assert!(engine.dock_item("fixed:battery", DOCK).is_none());
     }
 
     #[test]

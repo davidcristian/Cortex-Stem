@@ -64,7 +64,8 @@ pub fn normalize_path(path: &Path) -> String {
 /// Keys starting with `shell:` are rendered by the frontend from built-in
 /// vector art (`shell:start`, `shell:task-view`, `shell:show-desktop`,
 /// `shell:quick-settings`, `shell:notification-center`,
-/// `shell:recycle-bin-empty`, `shell:recycle-bin-full`).
+/// `shell:recycle-bin-empty`, `shell:recycle-bin-full`; the clock and battery
+/// faces `shell:clock` and `shell:battery` are drawn from live data).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(transparent)]
@@ -264,6 +265,11 @@ pub enum DockItemKind {
     QuickSettings,
     /// Opens Windows' notification center and calendar.
     NotificationCenter,
+    /// Shows the battery's charge from [`DockState::power`]; present only on
+    /// a machine with a system battery.
+    Battery,
+    /// Shows the time and the date, drawn by the page.
+    Clock,
     RecycleBin,
     Separator,
 }
@@ -312,6 +318,34 @@ pub struct DockState {
     /// it sits on; a dock with no entry (yet) takes both facts as `false`.
     #[serde(default)]
     pub docks: Vec<DockFacts>,
+    /// The power source and the battery: the last
+    /// `PlatformEvent::PowerChanged`, whatever the settings say; every field
+    /// `false` and no percent until the first one. The battery item's face
+    /// is drawn from it.
+    #[serde(default)]
+    pub power: PowerStatus,
+}
+
+/// The power source and the system battery, part of [`DockState`].
+/// The platform reads it (`Platform::power_status`, `GetSystemPowerStatus`
+/// on Windows) and reports changes with `PlatformEvent::PowerChanged`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub struct PowerStatus {
+    /// The machine has a system battery. A desktop PC (and a laptop whose
+    /// battery the system does not see) has none: the dock then shows no
+    /// battery item.
+    pub has_battery: bool,
+    /// The battery's charge, 0 to 100; `null` when the system does not know
+    /// it, and always without a battery.
+    pub percent: Option<u8>,
+    /// The battery is charging.
+    pub charging: bool,
+    /// The machine runs on AC power (plugged in), charging or not.
+    pub on_ac: bool,
+    /// Battery saver (energy saver) is on.
+    pub saver: bool,
 }
 
 /// What one dock window needs to know about its own monitor, part
@@ -408,6 +442,10 @@ pub enum ShellAction {
     OpenQuickSettings,
     /// Windows' notification center and calendar, as Win+N opens them.
     OpenNotificationCenter,
+    /// The Settings app's date and time page (`ms-settings:dateandtime`).
+    OpenDateTimeSettings,
+    /// The Settings app's power and battery page (`ms-settings:powersleep`).
+    OpenPowerSettings,
 }
 
 /// Facts about this installation for the settings page's *About* section:
@@ -534,6 +572,63 @@ mod tests {
             assert_eq!(json, format!("{name:?}"));
             assert_eq!(serde_json::from_str::<ShellAction>(&json).unwrap(), action);
         }
+    }
+
+    #[test]
+    fn clock_battery_and_their_settings_pages_serialise_in_camel_case() {
+        for (kind, name) in [
+            (DockItemKind::Battery, "battery"),
+            (DockItemKind::Clock, "clock"),
+        ] {
+            let json = serde_json::to_string(&kind).unwrap();
+            assert_eq!(json, format!("{name:?}"));
+            assert_eq!(serde_json::from_str::<DockItemKind>(&json).unwrap(), kind);
+        }
+        for (action, name) in [
+            (ShellAction::OpenDateTimeSettings, "openDateTimeSettings"),
+            (ShellAction::OpenPowerSettings, "openPowerSettings"),
+        ] {
+            let json = serde_json::to_string(&action).unwrap();
+            assert_eq!(json, format!("{name:?}"));
+            assert_eq!(serde_json::from_str::<ShellAction>(&json).unwrap(), action);
+        }
+    }
+
+    #[test]
+    fn power_status_serialises_in_camel_case_with_a_null_percent() {
+        let unknown = PowerStatus::default();
+        assert_eq!(
+            serde_json::to_value(unknown).unwrap(),
+            serde_json::json!({
+                "hasBattery": false,
+                "percent": null,
+                "charging": false,
+                "onAc": false,
+                "saver": false,
+            })
+        );
+        let laptop = PowerStatus {
+            has_battery: true,
+            percent: Some(73),
+            charging: true,
+            on_ac: true,
+            saver: false,
+        };
+        let json = serde_json::to_value(laptop).unwrap();
+        assert_eq!(json["percent"], 73);
+        assert_eq!(json["onAc"], true);
+        assert_eq!(serde_json::from_value::<PowerStatus>(json).unwrap(), laptop);
+    }
+
+    #[test]
+    fn dock_state_without_power_still_deserialises() {
+        // `power` arrived with the battery item; a document written before
+        // it reads as the engine's "nothing known yet".
+        let state: DockState =
+            serde_json::from_str(r#"{"revision":3,"items":[],"foreground":null,"docks":[]}"#)
+                .unwrap();
+        assert_eq!(state.revision, 3);
+        assert_eq!(state.power, PowerStatus::default());
     }
 
     #[test]

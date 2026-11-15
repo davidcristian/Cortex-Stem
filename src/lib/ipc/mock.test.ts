@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { panelRectReport } from '$lib/dock/geometry';
 import type { DockState } from '$lib/ipc/generated/DockState';
+import type { PowerStatus } from '$lib/ipc/generated/PowerStatus';
 import type { Settings } from '$lib/ipc/generated/Settings';
 
 import type { BouncePayload, FileDragEvent } from './backend';
@@ -13,8 +14,10 @@ import type { UserCss } from '$lib/ipc/generated/UserCss';
 
 import {
   appIdForExe,
+  batteryTitle,
   colorFor,
   defaultSettings,
+  DEMO_POWER,
   DEMO_USER_CSS_PATH,
   demoAppInfo,
   dockLabel,
@@ -367,6 +370,182 @@ describe('click semantics (mirror of DockEngine::primary_action)', () => {
       expect(states).toHaveLength(0);
       // The icon keys are not item keys.
       await expect(b.primaryClick('shell:quick-settings')).rejects.toMatch(/unknown dock item/);
+    });
+  });
+
+  describe('clock and battery', () => {
+    async function withItems(
+      b: MockBackend,
+      items: Partial<Settings['items']>,
+    ): Promise<DockState> {
+      const settings = await b.getSettings();
+      settings.items = { ...settings.items, ...items };
+      await b.updateSettings(settings);
+      return b.getDockState();
+    }
+
+    const DESKTOP: PowerStatus = {
+      hasBattery: false,
+      percent: null,
+      charging: false,
+      onAc: true,
+      saver: false,
+    };
+
+    it('are off by default; the demo is a laptop at 76 %, on battery', async () => {
+      const b = fast();
+      expect(defaultSettings().items.clock).toBe(false);
+      expect(defaultSettings().items.battery).toBe(false);
+      const state = await b.getDockState();
+      const kinds = state.items.map((i) => i.kind);
+      expect(kinds).not.toContain('clock');
+      expect(kinds).not.toContain('battery');
+      expect(state.power).toEqual(DEMO_POWER);
+      expect(DEMO_POWER).toEqual({
+        hasBattery: true,
+        percent: 76,
+        charging: false,
+        onAc: false,
+        saver: false,
+      });
+    });
+
+    it('sit after Notification Center and before the Recycle Bin, battery first', async () => {
+      const b = fast();
+      const states = recordStates(b);
+      const state = await withItems(b, {
+        quickSettings: true,
+        notificationCenter: true,
+        battery: true,
+        clock: true,
+      });
+      expect(states).toHaveLength(1);
+      expect(keys(state).slice(-7)).toEqual([
+        app(SPOTIFY),
+        'sep:3',
+        'fixed:quick-settings',
+        'fixed:notification-center',
+        'fixed:battery',
+        'fixed:clock',
+        'fixed:recycle-bin',
+      ]);
+      expect(item(state, 'fixed:battery')).toMatchObject({
+        kind: 'battery',
+        title: 'Battery 76 %',
+        iconKey: 'shell:battery',
+        appId: null,
+        pinned: false,
+        windows: [],
+      });
+      expect(item(state, 'fixed:clock')).toMatchObject({
+        kind: 'clock',
+        title: 'Clock',
+        iconKey: 'shell:clock',
+        appId: null,
+        pinned: false,
+        windows: [],
+      });
+
+      // Each alone keeps its place; without the bin they close the dock.
+      expect(
+        keys(
+          await withItems(b, { quickSettings: false, notificationCenter: false, clock: false }),
+        ).slice(-3),
+      ).toEqual(['sep:3', 'fixed:battery', 'fixed:recycle-bin']);
+      expect(
+        keys(await withItems(b, { battery: false, clock: true, recycleBin: false })).slice(-2),
+      ).toEqual(['sep:3', 'fixed:clock']);
+    });
+
+    it('show the battery only while the machine has one', async () => {
+      const b = fast({ power: DESKTOP });
+      let state = await withItems(b, { battery: true, clock: true });
+      expect(state.power).toEqual(DESKTOP);
+      expect(keys(state).slice(-3)).toEqual(['sep:3', 'fixed:clock', 'fixed:recycle-bin']);
+
+      // A battery appears (as a reading would say): the item comes, in its place.
+      const states = recordStates(b);
+      b.setPower({ ...DEMO_POWER, percent: 40 });
+      expect(states).toHaveLength(1);
+      state = states[0]!;
+      expect(keys(state).slice(-4)).toEqual([
+        'sep:3',
+        'fixed:battery',
+        'fixed:clock',
+        'fixed:recycle-bin',
+      ]);
+      // And goes again.
+      b.setPower(DESKTOP);
+      expect(states).toHaveLength(2);
+      expect(keys(states[1]!)).not.toContain('fixed:battery');
+    });
+
+    it('title the battery by percent, power source and battery saver', () => {
+      const cases: Array<[Partial<PowerStatus>, string]> = [
+        [{}, 'Battery 76 %'],
+        [{ charging: true, onAc: true }, 'Battery 76 %, charging'],
+        [{ onAc: true, percent: 100 }, 'Battery 100 %, plugged in'],
+        [{ saver: true, percent: 18 }, 'Battery 18 %, battery saver on'],
+        [{ saver: true, charging: true, onAc: true }, 'Battery 76 %, charging, battery saver on'],
+        [{ saver: true, onAc: true }, 'Battery 76 %, plugged in, battery saver on'],
+        [{ percent: null }, 'Battery'],
+        [{ percent: null, charging: true, onAc: true }, 'Battery, charging'],
+      ];
+      for (const [patch, title] of cases) {
+        expect(batteryTitle({ ...DEMO_POWER, ...patch })).toBe(title);
+      }
+    });
+
+    it('setPower emits a state only for a different reading, whatever the settings', async () => {
+      const b = fast();
+      const states = recordStates(b);
+      b.setPower(DEMO_POWER);
+      expect(states).toHaveLength(0);
+      b.setPower({ ...DEMO_POWER, percent: 75 });
+      expect(states).toHaveLength(1);
+      expect(states[0]!.power.percent).toBe(75);
+      // The battery item is off: only `power` changed.
+      expect(keys(states[0]!)).not.toContain('fixed:battery');
+
+      await withItems(b, { battery: true });
+      b.setPower({ ...DEMO_POWER, percent: 75, onAc: true, charging: true });
+      const last = states.at(-1)!;
+      expect(item(last, 'fixed:battery').title).toBe('Battery 75 %, charging');
+      expect(last.revision).toBeGreaterThan(states[0]!.revision);
+      // The reading is a copy: changing what was passed changes nothing.
+      const reading: PowerStatus = { ...DEMO_POWER, saver: true };
+      b.setPower(reading);
+      reading.percent = 1;
+      expect((await b.getDockState()).power).toEqual({ ...DEMO_POWER, saver: true });
+    });
+
+    it('a click opens Notification Center from the clock and Quick Settings from the battery', async () => {
+      const b = fast();
+      await withItems(b, { battery: true, clock: true });
+      const states = recordStates(b);
+      await b.primaryClick('fixed:clock');
+      await b.primaryClick('fixed:battery');
+      expect(b.calls).toEqual([
+        { type: 'shell', action: 'openNotificationCenter' },
+        { type: 'shell', action: 'openQuickSettings' },
+      ]);
+      // The menus' Settings pages are plain shell actions too.
+      await b.shellAction('openDateTimeSettings');
+      await b.shellAction('openPowerSettings');
+      expect(b.calls.slice(-2)).toEqual([
+        { type: 'shell', action: 'openDateTimeSettings' },
+        { type: 'shell', action: 'openPowerSettings' },
+      ]);
+      expect(states).toHaveLength(0);
+      await b.showItemMenu('fixed:clock', 10, 20);
+      expect(b.calls.at(-1)).toEqual({
+        type: 'showItemMenu',
+        itemKey: 'fixed:clock',
+        x: 10,
+        y: 20,
+      });
+      await expect(b.primaryClick('shell:clock')).rejects.toMatch(/unknown dock item/);
+      await expect(b.primaryClick('shell:battery')).rejects.toMatch(/unknown dock item/);
     });
   });
 

@@ -13,6 +13,17 @@
 //!   keyboard the same chord closes the open flyout again; whether a second
 //!   click on the dock does too, or the flyout's light dismiss closes it on
 //!   the press and the chord opens it again, is not documented.
+//! - `OpenDateTimeSettings` / `OpenPowerSettings` (the clock's and
+//!   the battery's menus): open a page of the Settings app by its
+//!   `ms-settings:` URI through `launch` (`ShellExecuteExW`, the way a
+//!   `Uri` launch target opens). Microsoft's list of the scheme ("Launch
+//!   Windows Settings", learn.microsoft.com) documents `ms-settings:dateandtime`
+//!   as *Time and language > Date & time* and `ms-settings:powersleep` as
+//!   *System > Power & sleep*, the Windows 10 name of the page Windows 11
+//!   calls *Power & battery* on a machine with a battery and *Power* on one
+//!   without. The documented battery pages
+//!   (`ms-settings:batterysaver*`) exist only with a battery; `powersleep`
+//!   exists on every machine.
 //!
 //! `SendInput` injects into the foreground thread's queue; it needs no window
 //! of our own and works from a `WS_EX_NOACTIVATE` dock as long as this
@@ -34,7 +45,7 @@
 //! as *Open Narrator settings*. Nothing here releases held modifiers or
 //! ignores modified clicks.
 
-use stem_core::ShellAction;
+use stem_core::{LaunchTarget, ShellAction};
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput,
@@ -45,8 +56,16 @@ use windows::Win32::UI::Shell::{IShellDispatch4, Shell};
 use super::util;
 use crate::PlatformResult;
 
+/// The Settings app's *Date & time* page.
+const DATE_TIME_SETTINGS: &str = "ms-settings:dateandtime";
+/// The Settings app's power page: *Power & battery* (or *Power* without a
+/// battery) on Windows 11, *Power & sleep* on Windows 10.
+const POWER_SETTINGS: &str = "ms-settings:powersleep";
+
 pub fn perform(action: ShellAction) -> PlatformResult<()> {
     match action {
+        ShellAction::OpenDateTimeSettings => open_settings_page(DATE_TIME_SETTINGS),
+        ShellAction::OpenPowerSettings => open_settings_page(POWER_SETTINGS),
         ShellAction::OpenRecycleBin => super::recycle_bin::open(),
         ShellAction::EmptyRecycleBin => super::recycle_bin::empty(),
         ShellAction::OpenStartMenu => send_chord(&[VK_LWIN]),
@@ -61,6 +80,19 @@ pub fn perform(action: ShellAction) -> PlatformResult<()> {
             }
         },
     }
+}
+
+/// Open a page of the Settings app by its `ms-settings:` URI, as a `Uri`
+/// launch target opens (`launch`: COM on this thread, then `ShellExecuteExW`
+/// without UI, which returns once the shell has handed the URI on).
+fn open_settings_page(uri: &str) -> PlatformResult<()> {
+    let result = super::launch::launch(&LaunchTarget::Uri {
+        uri: uri.to_owned(),
+    });
+    if let Err(e) = &result {
+        log::warn!("opening {uri} failed: {e}");
+    }
+    result
 }
 
 /// `Shell.Application` -> `ToggleDesktop` (introduced on `IShellDispatch4`),
@@ -160,6 +192,14 @@ fn key_input(key: VIRTUAL_KEY, up: bool) -> INPUT {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_settings_pages_are_the_documented_ms_settings_uris() {
+        // Microsoft's list of the `ms-settings:` scheme: Time and language >
+        // Date & time, and System > Power & sleep.
+        assert_eq!(DATE_TIME_SETTINGS, "ms-settings:dateandtime");
+        assert_eq!(POWER_SETTINGS, "ms-settings:powersleep");
+    }
 
     #[test]
     fn a_short_chord_releases_exactly_the_keys_it_left_down() {

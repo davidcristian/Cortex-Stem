@@ -15,8 +15,7 @@ menus.
 notification area (*Win+B*), quick settings (*Win+A*) and the notification
 centre (*Win+N*), and a clock widget that opens the notification centre on
 click. They bring the hidden taskbar's corner within one click of the dock
-without touching the tray. Stem has the *Win+A* and *Win+N* items, but not
-the *Win+B* item or the clock widget
+without touching the tray. Stem has all of these except the *Win+B* item
 (see [B](options.md#b-shortcut-items-that-open-windows-own-surfaces)).
 
 Revisit if Microsoft documents a way to host notification icons, if the

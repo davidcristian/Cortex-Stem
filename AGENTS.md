@@ -20,8 +20,8 @@ frontend. It runs only on Windows; macOS and Linux hosts are used only for devel
 - It shows **pinned apps** and **running windows**, grouped per application. You can activate,
   minimise and close windows, launch apps, pin and unpin them, and reorder them by drag.
 - Fixed items, each one turned on or off by a setting: at the left a launcher (Start, on by
-  default), Task View and Show Desktop; at the right Quick Settings and Notification Center items,
-  then a Recycle Bin (on by default).
+  default), Task View and Show Desktop; at the right Quick Settings, Notification Center, battery
+  (shown only on a PC with a battery) and clock items, then a Recycle Bin (on by default).
 - It can **auto-hide**, follows the Windows **accent colour and light or dark theme**, supports
   **multiple monitors** and **per-monitor DPI**, and can hide the stock taskbar.
 - It is **not** a notification-area (system tray) replacement; that is not a goal for now

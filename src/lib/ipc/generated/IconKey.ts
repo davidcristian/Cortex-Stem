@@ -5,6 +5,7 @@
  * Keys starting with `shell:` are rendered by the frontend from built-in
  * vector art (`shell:start`, `shell:task-view`, `shell:show-desktop`,
  * `shell:quick-settings`, `shell:notification-center`,
- * `shell:recycle-bin-empty`, `shell:recycle-bin-full`).
+ * `shell:recycle-bin-empty`, `shell:recycle-bin-full`; the clock and battery
+ * faces `shell:clock` and `shell:battery` are drawn from live data).
  */
 export type IconKey = string;

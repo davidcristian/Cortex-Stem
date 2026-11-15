@@ -23,6 +23,7 @@ export type { MonitorId } from "./MonitorId";
 export type { MonitorInfo } from "./MonitorInfo";
 export type { MonitorMode } from "./MonitorMode";
 export type { PinnedApp } from "./PinnedApp";
+export type { PowerStatus } from "./PowerStatus";
 export type { RawWindow } from "./RawWindow";
 export type { Rect } from "./Rect";
 export type { RecycleBinState } from "./RecycleBinState";

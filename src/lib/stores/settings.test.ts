@@ -44,6 +44,7 @@ const snapshot = (revision: number, items: DockItem[] = []): DockState => ({
   items,
   foreground: null,
   docks: [],
+  power: { hasBattery: false, percent: null, charging: false, onAc: false, saver: false },
 });
 
 /** Scripted backend: a settings document, a call log, and manual control over latency. */

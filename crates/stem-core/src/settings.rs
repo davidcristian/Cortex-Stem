@@ -466,6 +466,12 @@ pub struct FixedItems {
     /// The Notification Center item at the right, before the Recycle Bin.
     /// A click opens what Win+N opens.
     pub notification_center: bool,
+    /// The battery item at the right, after Notification Center. It appears
+    /// only on a PC with a battery. A click opens what Win+A opens.
+    pub battery: bool,
+    /// The clock item at the right, after the battery. A click opens what
+    /// Win+N opens.
+    pub clock: bool,
     /// The Recycle Bin item, last at the right.
     pub recycle_bin: bool,
     /// Draw thin separators between the item groups: the items at the
@@ -482,6 +488,8 @@ impl Default for FixedItems {
             show_desktop: false,
             quick_settings: false,
             notification_center: false,
+            battery: false,
+            clock: false,
             recycle_bin: true,
             separators: true,
         }
@@ -718,6 +726,8 @@ mod tests {
                 show_desktop: rng.bool(),
                 quick_settings: rng.bool(),
                 notification_center: rng.bool(),
+                battery: rng.bool(),
+                clock: rng.bool(),
                 recycle_bin: rng.bool(),
                 separators: rng.bool(),
             },
@@ -898,6 +908,43 @@ mod tests {
         assert!(json.contains(r#""quickSettings": true"#), "{json}");
         assert!(json.contains(r#""notificationCenter": true"#), "{json}");
         assert_eq!(Settings::from_json(&json).unwrap(), on);
+    }
+
+    #[test]
+    fn clock_and_battery_are_off_unless_written() {
+        let items = FixedItems::default();
+        assert!(!items.clock);
+        assert!(!items.battery);
+
+        // A file written before the fields existed keeps its other
+        // items and gets both off.
+        let old = Settings::from_json(
+            r#"{"items": {"launcher": false, "quickSettings": true, "recycleBin": false}}"#,
+        )
+        .unwrap();
+        assert!(!old.items.launcher);
+        assert!(old.items.quick_settings);
+        assert!(!old.items.recycle_bin);
+        assert!(!old.items.clock);
+        assert!(!old.items.battery);
+
+        // Both are camelCase keys of `items`, independent of each other, and
+        // survive a round trip.
+        for (clock, battery) in [(true, false), (false, true), (true, true)] {
+            let on = Settings::from_json(&format!(
+                r#"{{"items": {{"clock": {clock}, "battery": {battery}}}}}"#
+            ))
+            .unwrap();
+            assert_eq!((on.items.clock, on.items.battery), (clock, battery));
+            let json = on.to_json_pretty();
+            assert!(json.contains(&format!(r#""clock": {clock}"#)), "{json}");
+            assert!(json.contains(&format!(r#""battery": {battery}"#)), "{json}");
+            assert_eq!(Settings::from_json(&json).unwrap(), on);
+            // `validate` leaves them as written.
+            let mut validated = on.clone();
+            validated.validate();
+            assert_eq!(validated, on);
+        }
     }
 
     #[test]

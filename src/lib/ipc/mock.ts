@@ -39,6 +39,7 @@ import type { LaunchTarget } from '$lib/ipc/generated/LaunchTarget';
 import type { MonitorId } from '$lib/ipc/generated/MonitorId';
 import type { MonitorInfo } from '$lib/ipc/generated/MonitorInfo';
 import type { PinnedApp } from '$lib/ipc/generated/PinnedApp';
+import type { PowerStatus } from '$lib/ipc/generated/PowerStatus';
 import type { RawWindow } from '$lib/ipc/generated/RawWindow';
 import type { Rect } from '$lib/ipc/generated/Rect';
 import type { RecycleBinState } from '$lib/ipc/generated/RecycleBinState';
@@ -126,6 +127,53 @@ export interface MockOptions {
    * file afterwards and `reloadUserCss` reads it again.
    */
   userCss?: string | null;
+  /**
+   * The power reading when the backend starts (`PlatformEvent::PowerChanged`
+   * after the start snapshot). Absent: the demo's laptop at 76 %, on
+   * battery (`DEMO_POWER`, as `MockPlatform::with_demo_scenario`);
+   * `setPower` changes it afterwards.
+   */
+  power?: PowerStatus;
+}
+
+/**
+ * The demo's power reading: a laptop at 76 %, on battery; the same
+ * as `demo_power` in `crates/stem-platform/src/mock.rs`.
+ */
+export const DEMO_POWER: Readonly<PowerStatus> = Object.freeze({
+  hasBattery: true,
+  percent: 76,
+  charging: false,
+  onAc: false,
+  saver: false,
+});
+
+/** What the engine knows before the first power reading: nothing. */
+const NO_POWER: Readonly<PowerStatus> = Object.freeze({
+  hasBattery: false,
+  percent: null,
+  charging: false,
+  onAc: false,
+  saver: false,
+});
+
+/**
+ * The battery item's title (`battery_title` in engine.rs):
+ * `Battery 73 %`, then `, charging` or `, plugged in` (on AC, not charging),
+ * then `, battery saver on`; `Battery` alone in place of the first part
+ * without a known percent.
+ */
+export function batteryTitle(power: PowerStatus): string {
+  let title = power.percent === null ? 'Battery' : `Battery ${power.percent} %`;
+  if (power.charging) {
+    title += ', charging';
+  } else if (power.onAc) {
+    title += ', plugged in';
+  }
+  if (power.saver) {
+    title += ', battery saver on';
+  }
+  return title;
 }
 
 /**
@@ -260,6 +308,8 @@ export function defaultSettings(): Settings {
       showDesktop: false,
       quickSettings: false,
       notificationCenter: false,
+      battery: false,
+      clock: false,
       recycleBin: true,
       separators: true,
     },
@@ -926,6 +976,8 @@ class Engine {
   monitors: MonitorInfo[] = [];
   theme: ThemeInfo;
   recycleBin: RecycleBinState = { itemCount: 0, sizeBytes: 0 };
+  /** The last power reading, `DockState.power`; nothing known at first. */
+  power: PowerStatus = { ...NO_POWER };
   private nextSeq = 1;
   revision = 0;
 
@@ -1119,6 +1171,16 @@ class Engine {
     return this.apply(changed);
   }
 
+  /**
+   * `PlatformEvent::PowerChanged`: part of the snapshot whatever the
+   * settings say, so only a different reading bumps the revision.
+   */
+  setPower(power: PowerStatus): boolean {
+    const changed = JSON.stringify(power) !== JSON.stringify(this.power);
+    this.power = { ...power };
+    return this.apply(changed);
+  }
+
   setSettings(settings: Settings): boolean {
     const changed = JSON.stringify(settings) !== JSON.stringify(this.settings);
     this.settings = settings;
@@ -1216,8 +1278,9 @@ class Engine {
     }
     items.push(...runningItems);
 
-    // 4. Fixed trailing group: Quick Settings, Notification Center, and the
-    // Recycle Bin last, with one separator before the group and none inside.
+    // 4. Fixed trailing group: Quick Settings, Notification Center, battery,
+    // clock, and the Recycle Bin last, with one separator before the group
+    // and none inside.
     const trailing: DockItem[] = [];
     if (s.items.quickSettings) {
       trailing.push(
@@ -1239,6 +1302,15 @@ class Engine {
         ),
       );
     }
+    // No battery item on a machine without a battery.
+    if (s.items.battery && this.power.hasBattery) {
+      trailing.push(
+        fixedItem('battery', 'fixed:battery', batteryTitle(this.power), 'shell:battery'),
+      );
+    }
+    if (s.items.clock) {
+      trailing.push(fixedItem('clock', 'fixed:clock', 'Clock', 'shell:clock'));
+    }
     if (s.items.recycleBin) {
       const icon = this.recycleBin.itemCount === 0 ? 'recycle-bin-empty' : 'recycle-bin-full';
       trailing.push(fixedItem('recycleBin', 'fixed:recycle-bin', 'Recycle Bin', `shell:${icon}`));
@@ -1253,6 +1325,7 @@ class Engine {
       items,
       foreground: this.foreground,
       docks: this.dockFacts(),
+      power: { ...this.power },
     };
   }
 
@@ -1286,7 +1359,10 @@ class Engine {
       case 'fixed:quick-settings':
         return { type: 'shell', action: 'openQuickSettings' };
       case 'fixed:notification-center':
+      case 'fixed:clock':
         return { type: 'shell', action: 'openNotificationCenter' };
+      case 'fixed:battery':
+        return { type: 'shell', action: 'openQuickSettings' };
       case 'fixed:recycle-bin':
         return { type: 'shell', action: 'openRecycleBin' };
       default:
@@ -1512,6 +1588,7 @@ export class MockBackend implements Backend {
     this.engine.setRecycleBin(scenario.recycleBin);
     this.engine.snapshotWindows(scenario.windows);
     this.engine.setForeground(scenario.foreground);
+    this.engine.setPower(options.power ?? DEMO_POWER);
 
     this.scheduleIdentityResolution();
   }
@@ -2106,6 +2183,18 @@ export class MockBackend implements Backend {
   setFullscreen(active: boolean, monitor: MonitorId | null = null): void {
     if (this.engine.setFullscreen(active, monitor)) {
       this.log(`fullscreen ${active ? `on (${monitor ?? 'unknown monitor'})` : 'off'}`);
+      this.emitState();
+    }
+  }
+
+  /**
+   * The power source, the battery or battery saver changed: what
+   * the events thread reports as `PowerChanged`, only when it differs from
+   * the last reading. One `dock://state` when it does.
+   */
+  setPower(status: PowerStatus): void {
+    if (this.engine.setPower(status)) {
+      this.log(`power ${batteryTitle(status)}${status.hasBattery ? '' : ' (no battery)'}`);
       this.emitState();
     }
   }

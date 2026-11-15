@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use stem_core::settings::DockPosition;
 use stem_core::{
-    AppIdentity, IconKey, LaunchTarget, MonitorInfo, PlatformEvent, RawWindow, Rect,
+    AppIdentity, IconKey, LaunchTarget, MonitorInfo, PlatformEvent, PowerStatus, RawWindow, Rect,
     RecycleBinState, ShellAction, ThemeInfo, WindowAction, WindowId,
 };
 
@@ -233,6 +233,15 @@ pub trait Platform: Send + Sync + 'static {
     fn delete_to_recycle_bin(&self, paths: &[String]) -> PlatformResult<()>;
 
     fn shell_action(&self, action: ShellAction) -> PlatformResult<()>;
+
+    /// The power source, the battery and battery saver right now
+    /// (`GetSystemPowerStatus` on Windows, which does not block). Changes
+    /// also arrive as `PlatformEvent::PowerChanged` once the platform is
+    /// started, so callers need this only for a reading of their own.
+    /// Optional; the default reports it unsupported.
+    fn power_status(&self) -> PlatformResult<PowerStatus> {
+        Err(PlatformError::Unsupported("widget support"))
+    }
 
     /// Whether Windows' own *Automatically hide the taskbar* is on right now
     /// (`SHAppBarMessage(ABM_GETSTATE)`). A message to the tray
@@ -484,6 +493,11 @@ mod tests {
         assert!(matches!(
             Real.focus_dock_window(NativeWindowHandle(0x1234)),
             Err(PlatformError::Unsupported("keyboard focus"))
+        ));
+        // The same for the power reading.
+        assert!(matches!(
+            Real.power_status(),
+            Err(PlatformError::Unsupported("widget support"))
         ));
     }
 }

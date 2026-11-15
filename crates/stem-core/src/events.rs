@@ -4,8 +4,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::model::{
-    AppId, AppIdentity, MonitorId, MonitorInfo, RawWindow, Rect, RecycleBinState, ThemeInfo,
-    WindowId,
+    AppId, AppIdentity, MonitorId, MonitorInfo, PowerStatus, RawWindow, Rect, RecycleBinState,
+    ThemeInfo, WindowId,
 };
 use crate::settings::Settings;
 
@@ -44,6 +44,11 @@ pub enum PlatformEvent {
         active: bool,
         monitor: Option<MonitorId>,
     },
+    /// The power source, the battery's charge or battery saver changed:
+    /// the platform's fresh reading, sent only when it differs from
+    /// the last one sent (plus once after the start snapshot). The engine
+    /// keeps it as `DockState::power`.
+    PowerChanged(PowerStatus),
 }
 
 /// Everything the engine can be fed.

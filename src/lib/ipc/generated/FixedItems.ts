@@ -30,6 +30,16 @@ quickSettings: boolean,
  */
 notificationCenter: boolean, 
 /**
+ * The battery item at the right, after Notification Center. It appears
+ * only on a PC with a battery. A click opens what Win+A opens.
+ */
+battery: boolean, 
+/**
+ * The clock item at the right, after the battery. A click opens what
+ * Win+N opens.
+ */
+clock: boolean, 
+/**
  * The Recycle Bin item, last at the right.
  */
 recycleBin: boolean, 

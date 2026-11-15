@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use stem_core::{
-    AppId, AppIdentity, IconKey, LaunchTarget, MonitorId, MonitorInfo, PlatformEvent, RawWindow,
-    Rect, RecycleBinState, ShellAction, ThemeInfo, WindowAction, WindowId,
+    AppId, AppIdentity, IconKey, LaunchTarget, MonitorId, MonitorInfo, PlatformEvent, PowerStatus,
+    RawWindow, Rect, RecycleBinState, ShellAction, ThemeInfo, WindowAction, WindowId,
 };
 
 use crate::{
@@ -24,6 +24,9 @@ struct State {
     monitors: Vec<MonitorInfo>,
     theme: ThemeInfo,
     recycle_bin: RecycleBinState,
+    /// The power reading: no battery unless scripted (the demo has
+    /// a laptop's).
+    power: PowerStatus,
     /// When set, `delete_to_recycle_bin` fails with this message.
     recycle_failure: Option<String>,
     /// Windows' own *Automatically hide the taskbar*; off unless
@@ -47,6 +50,7 @@ impl std::fmt::Debug for State {
             .field("monitors", &self.monitors)
             .field("theme", &self.theme)
             .field("recycle_bin", &self.recycle_bin)
+            .field("power", &self.power)
             .field("recycle_failure", &self.recycle_failure)
             .field("taskbar_auto_hide", &self.taskbar_auto_hide)
             .field("yes_no_answer", &self.yes_no_answer)
@@ -101,7 +105,8 @@ impl MockPlatform {
         this
     }
 
-    /// A platform pre-populated with a handful of fake apps and windows.
+    /// A platform pre-populated with a handful of fake apps and windows, and
+    /// a laptop's battery ([`demo_power`]).
     pub fn with_demo_scenario() -> Self {
         let this = Self::new();
         {
@@ -112,6 +117,7 @@ impl MockPlatform {
                 item_count: 3,
                 size_bytes: 1_234_567,
             };
+            s.power = demo_power();
         }
         this
     }
@@ -134,6 +140,7 @@ impl MockPlatform {
                 PlatformEvent::MonitorsChanged(m) => s.monitors = m.clone(),
                 PlatformEvent::ThemeChanged(t) => s.theme = t.clone(),
                 PlatformEvent::RecycleBinChanged(r) => s.recycle_bin = *r,
+                PlatformEvent::PowerChanged(p) => s.power = *p,
                 PlatformEvent::WindowAttention { .. } | PlatformEvent::FullscreenChanged { .. } => {
                 }
             }
@@ -170,6 +177,18 @@ impl MockPlatform {
     /// *No* (`false`) until this is called.
     pub fn script_yes_no_answer(&self, answer: bool) {
         self.state.lock().yes_no_answer = answer;
+    }
+
+    /// The power source, the battery or battery saver changed:
+    /// report `status` the way the events thread does, with one
+    /// `PowerChanged`, and only when it differs from the reading before (the
+    /// real thread's change filter). Returns whether it was reported.
+    pub fn set_power(&self, status: PowerStatus) -> bool {
+        if self.state.lock().power == status {
+            return false;
+        }
+        self.push(PlatformEvent::PowerChanged(status));
+        true
     }
 
     /// A window moved or resized: give it a new frame (`None` for a
@@ -234,6 +253,8 @@ impl Platform for MockPlatform {
                 PlatformEvent::RecycleBinChanged(s.recycle_bin),
                 PlatformEvent::WindowsSnapshot(s.windows.clone()),
                 PlatformEvent::ForegroundChanged(s.foreground),
+                // Once after the snapshot, as the real events thread does.
+                PlatformEvent::PowerChanged(s.power),
             ]
         };
         for ev in initial {
@@ -378,6 +399,12 @@ impl Platform for MockPlatform {
         }
         s.recycle_bin.item_count += plan.recycle.len() as u64;
         Ok(())
+    }
+
+    /// The scripted reading (no battery unless the demo or
+    /// [`MockPlatform::set_power`] gave one); nothing is recorded.
+    fn power_status(&self) -> PlatformResult<PowerStatus> {
+        Ok(self.state.lock().power)
     }
 
     fn shell_action(&self, action: ShellAction) -> PlatformResult<()> {
@@ -603,6 +630,19 @@ fn demo_monitor() -> MonitorInfo {
     }
 }
 
+/// The demo's power reading: a laptop at 76 %, on battery. The TS
+/// mirror (`MockOptions.power` in `src/lib/ipc/mock.ts`) defaults to the
+/// same.
+fn demo_power() -> PowerStatus {
+    PowerStatus {
+        has_battery: true,
+        percent: Some(76),
+        charging: false,
+        on_ac: false,
+        saver: false,
+    }
+}
+
 fn demo_window(id: u64, exe: &str, title: &str, minimized: bool, rect: Rect) -> RawWindow {
     RawWindow {
         id: WindowId(id),
@@ -695,7 +735,92 @@ mod tests {
         assert!(matches!(seen[0], PlatformEvent::MonitorsChanged(_)));
         assert!(matches!(seen[3], PlatformEvent::WindowsSnapshot(ref w) if w.len() == 6));
         assert_eq!(seen[4], PlatformEvent::ForegroundChanged(Some(WindowId(2))));
+        assert_eq!(seen[5], PlatformEvent::PowerChanged(demo_power()));
+        assert_eq!(seen.len(), 6);
         assert!(p.start(Arc::new(|_| {})).is_err());
+    }
+
+    #[test]
+    fn power_is_a_laptop_on_battery_in_the_demo_and_none_otherwise() {
+        assert_eq!(
+            MockPlatform::with_demo_scenario().power_status().unwrap(),
+            PowerStatus {
+                has_battery: true,
+                percent: Some(76),
+                charging: false,
+                on_ac: false,
+                saver: false,
+            }
+        );
+        let empty = MockPlatform::new();
+        assert_eq!(empty.power_status().unwrap(), PowerStatus::default());
+        let seen: Arc<Mutex<Vec<PlatformEvent>>> = Arc::default();
+        let sink_seen = Arc::clone(&seen);
+        empty
+            .start(Arc::new(move |ev| sink_seen.lock().push(ev)))
+            .unwrap();
+        assert_eq!(
+            seen.lock().last(),
+            Some(&PlatformEvent::PowerChanged(PowerStatus::default()))
+        );
+    }
+
+    #[test]
+    fn set_power_reports_only_a_change_and_records_no_call() {
+        let p = MockPlatform::with_demo_scenario();
+        let seen: Arc<Mutex<Vec<PlatformEvent>>> = Arc::default();
+        let sink_seen = Arc::clone(&seen);
+        p.start(Arc::new(move |ev| sink_seen.lock().push(ev)))
+            .unwrap();
+        seen.lock().clear();
+
+        // The same reading: nothing.
+        assert!(!p.set_power(demo_power()));
+        assert!(seen.lock().is_empty());
+
+        // Plugged in and charging: one event, and the reading follows.
+        let charging = PowerStatus {
+            charging: true,
+            on_ac: true,
+            ..demo_power()
+        };
+        assert!(p.set_power(charging));
+        assert_eq!(*seen.lock(), vec![PlatformEvent::PowerChanged(charging)]);
+        assert_eq!(p.power_status().unwrap(), charging);
+        assert!(!p.set_power(charging));
+        assert_eq!(seen.lock().len(), 1);
+
+        // A pushed reading is kept too.
+        let saver = PowerStatus {
+            saver: true,
+            percent: Some(19),
+            ..demo_power()
+        };
+        p.push(PlatformEvent::PowerChanged(saver));
+        assert_eq!(p.power_status().unwrap(), saver);
+        assert!(!p.set_power(saver));
+        assert!(p.calls().is_empty());
+    }
+
+    #[test]
+    fn the_date_time_and_power_settings_pages_are_recorded_and_change_nothing() {
+        let p = MockPlatform::with_demo_scenario();
+        let seen: Arc<Mutex<Vec<PlatformEvent>>> = Arc::default();
+        let sink_seen = Arc::clone(&seen);
+        p.start(Arc::new(move |ev| sink_seen.lock().push(ev)))
+            .unwrap();
+        let before = seen.lock().len();
+        p.shell_action(ShellAction::OpenDateTimeSettings).unwrap();
+        p.shell_action(ShellAction::OpenPowerSettings).unwrap();
+        assert_eq!(
+            p.calls(),
+            vec![
+                MockCall::Shell(ShellAction::OpenDateTimeSettings),
+                MockCall::Shell(ShellAction::OpenPowerSettings),
+            ]
+        );
+        assert_eq!(seen.lock().len(), before);
+        assert_eq!(p.power_status().unwrap(), demo_power());
     }
 
     #[test]

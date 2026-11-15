@@ -209,6 +209,27 @@ fn item_menu(
             ShellAction::OpenNotificationCenter,
             "Open Notification Center",
         ),
+        // The panel a click opens, then the Settings page behind it.
+        DockItemKind::Battery => {
+            let menu = shell_entry(menu, ShellAction::OpenQuickSettings, "Open Quick Settings");
+            shell_entry(
+                menu,
+                ShellAction::OpenPowerSettings,
+                "Power and battery settings",
+            )
+        }
+        DockItemKind::Clock => {
+            let menu = shell_entry(
+                menu,
+                ShellAction::OpenNotificationCenter,
+                "Open Notification Center",
+            );
+            shell_entry(
+                menu,
+                ShellAction::OpenDateTimeSettings,
+                "Date and time settings",
+            )
+        }
         DockItemKind::RecycleBin => {
             let menu = shell_entry(menu, ShellAction::OpenRecycleBin, "Open");
             shell_entry(menu, ShellAction::EmptyRecycleBin, "Empty Recycle Bin…")
@@ -503,6 +524,8 @@ mod tests {
             MenuAction::Shell(ShellAction::EmptyRecycleBin),
             MenuAction::Shell(ShellAction::OpenQuickSettings),
             MenuAction::Shell(ShellAction::OpenNotificationCenter),
+            MenuAction::Shell(ShellAction::OpenDateTimeSettings),
+            MenuAction::Shell(ShellAction::OpenPowerSettings),
             MenuAction::Settings,
             MenuAction::Quit,
         ];
@@ -522,6 +545,14 @@ mod tests {
         assert_eq!(
             MenuAction::Shell(ShellAction::OpenNotificationCenter).id(),
             "ctx:shell:openNotificationCenter"
+        );
+        assert_eq!(
+            MenuAction::Shell(ShellAction::OpenDateTimeSettings).id(),
+            "ctx:shell:openDateTimeSettings"
+        );
+        assert_eq!(
+            MenuAction::Shell(ShellAction::OpenPowerSettings).id(),
+            "ctx:shell:openPowerSettings"
         );
         assert_eq!(MenuAction::Activate(WindowId(7)).id(), "ctx:activate:7");
         assert_eq!(
