@@ -9,7 +9,8 @@ panel is drawn. A change applies at once and moves no icon.
   shadow. It is easy to read over any wallpaper, and it is the one to choose
   with Windows' _Transparency effects_ off.
 - _Minimal_: no panel at all, only the icons, the running dots and the
-  separators.
+  separators. The invisible panel still belongs to the dock: a right-click
+  between or around the icons opens the dock's menu, not the desktop's.
 
 Each theme has a light and a dark version (_Colour mode_). In all three, the
 running dots use the Windows accent colour.

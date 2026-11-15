@@ -26,7 +26,7 @@ dock at once. No icon moves, because every preset keeps the panel's size.
 | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `standard` (default) | Translucent and blurred, with a fine hairline and a soft shadow. _Panel opacity_ (`appearance.opacity`) sets how translucent it is.                       |
 | `solid`              | Opaque, in the colours Windows 11 gives a flyout with _Transparency effects_ off, with no blur, the flyout's stronger stroke as the hairline and a tighter shadow. The title pills are opaque to match. It is easy to read over any wallpaper, and the natural choice with Windows' _Transparency effects_ off. _Panel opacity_ does not apply. |
-| `minimal`            | No panel fill, hairline or shadow: only the icons, the running dots and the separators. The separators have more contrast, because they are drawn on the wallpaper. _Panel opacity_ does not apply. |
+| `minimal`            | No panel fill, hairline or shadow: only the icons, the running dots and the separators. The separators have more contrast, because they are drawn on the wallpaper. _Panel opacity_ does not apply. The panel is invisible but still there (see below). |
 
 Independent of the preset:
 
@@ -38,6 +38,11 @@ Independent of the preset:
 - **_Transparency effects_ off** in Windows makes the `standard` panel at
   least 95 % opaque; `solid` is opaque anyway and `minimal` has nothing
   translucent.
+- **Clicks** work the same in every preset. The panel keeps its box in
+  `minimal` too, so the space between and around the icons still belongs to
+  the dock, not the desktop: a click there does nothing, and a right-click
+  opens the dock's own menu, not the desktop's. Beyond the panel and the
+  magnified icons, clicks reach the desktop, as in every preset.
 - **A Windows contrast theme** overrides the preset: every preset draws
   the contrast panel (opaque, unblurred, lines and separators in the text
   colour, no shadow), and WebView2's forced-colours mode then repaints it in
