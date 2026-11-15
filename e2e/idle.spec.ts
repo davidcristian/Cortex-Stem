@@ -47,10 +47,15 @@
  * by design, so it cannot go quiet; it is held to the bound it keeps
  * instead (compositor only: no layout, script or callbacks).
  *
- * Vite's dev client (`/@vite/client`, a 30 s WebSocket ping interval) is
- * served only by the dev server these tests run against, not with the
- * bundle the app loads (`dist/`): its timers are counted apart and never
- * fail a scenario.
+ * What is measured is the dev build: `pnpm e2e:screenshots` runs these
+ * tests against `pnpm dev` (unbundled modules, Svelte in dev mode), not
+ * the bundle the app loads (`dist/`). Vite's dev client there
+ * (`/@vite/client`, a 30 s WebSocket ping interval) is not part of the
+ * bundle: its timers are counted apart and never fail a scenario. To
+ * measure the bundle, serve it and point the tests at it (outside CI the
+ * config reuses a server that is already up): `pnpm build`, then
+ * `pnpm preview --port 1436 --strictPort`, then
+ * `STEM_DEV_PORT=1436 pnpm exec playwright test e2e/idle.spec.ts`.
  */
 
 import { expect, test, type Browser, type CDPSession, type Page } from '@playwright/test';
@@ -796,8 +801,18 @@ function hoverScenario(edge: 'bottom' | 'left'): Scenario {
       // magnification's frames and, after the leave, the settle timer.
       expect(await settle(page)).toEqual([]);
       const seen = await probeSince(page, mark);
-      expect(Object.keys(seen.frames).join('\n')).toMatch(/scheduleFrame .*Dock\.svelte/);
-      expect(seen.timers.join('\n')).toMatch(/timeout 160 ms from .*Dock\.svelte/);
+      const frames = Object.keys(seen.frames).join('\n');
+      const timers = seen.timers.join('\n');
+      expect(frames).not.toBe('');
+      expect(timers).toMatch(/timeout 160 ms from /);
+      // Only the dev build names the code; the bundle's names are minified.
+      const devBuild = await page.evaluate(
+        () => document.querySelector('script[src="/@vite/client"]') !== null,
+      );
+      if (devBuild) {
+        expect(frames).toMatch(/scheduleFrame .*Dock\.svelte/);
+        expect(timers).toMatch(/timeout 160 ms from .*Dock\.svelte/);
+      }
     },
   };
 }
