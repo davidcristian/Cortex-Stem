@@ -31,7 +31,9 @@
 //!   source (A11). It ends with a summary table. It waits for the worker at
 //!   most `WORKER_DEADLINE`, pumping its messages meanwhile; a worker that
 //!   does not finish is recorded as the A6 answer and the probe stops there,
-//!   summary first.
+//!   summary first. Only a line typed after a pause has printed its list
+//!   answers it: earlier keys (a second Enter, Enter during the build) are
+//!   thrown away, except `q`.
 //! - It unregisters every thumbnail and destroys every window of its own
 //!   before it exits: on Enter at the end, `q` and Enter at any pause,
 //!   Ctrl+C, Ctrl+Break, closing the console, or the destination's close
@@ -71,7 +73,8 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation};
 use windows::Win32::System::Console::{
-    CTRL_BREAK_EVENT, CTRL_C_EVENT, CTRL_CLOSE_EVENT, SetConsoleCtrlHandler,
+    CTRL_BREAK_EVENT, CTRL_C_EVENT, CTRL_CLOSE_EVENT, FlushConsoleInputBuffer, GetStdHandle,
+    STD_INPUT_HANDLE, SetConsoleCtrlHandler,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
@@ -134,6 +137,9 @@ const SLOW_MICROS: f64 = 16_000.0;
 const WORKER_DEADLINE: Duration = Duration::from_secs(5);
 /// The slice phase 2 waits for a worker message between two message pumps.
 const WORKER_SLICE: Duration = Duration::from_millis(10);
+/// How long a pause lets the window repaint before it asks for Enter. Lines
+/// typed until then (an Enter pressed twice) answer nothing.
+const PAUSE_SETTLE: Duration = Duration::from_millis(400);
 /// Windows' iconic position of a minimised window.
 const ICONIC_COORDINATE: i32 = -32_000;
 const TASK_MANAGER_CLASS: &str = "TaskManagerWindow";
@@ -288,7 +294,7 @@ const fn missing_hint(kind: Find) -> &'static str {
 
 // ---- quitting ----------------------------------------------------------------
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 enum Quit {
     Typed = 1,
@@ -1695,6 +1701,69 @@ fn spawn_stdin_reader(dest: isize) -> Receiver<Option<String>> {
     receiver
 }
 
+/// Throws away keys typed before the stdin reader starts, for example an
+/// Enter pressed during the first build, which would otherwise answer the
+/// first pause.
+fn flush_console_input() {
+    // SAFETY: reads this process's standard input handle; nothing is closed.
+    let handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+    let flushed = handle.and_then(|handle| {
+        // SAFETY: the process's own standard input handle, for this call
+        // only; a handle that is not a console makes the call fail.
+        unsafe { FlushConsoleInputBuffer(handle) }
+    });
+    if let Err(e) = flushed {
+        say!("could not flush the console input ({e}); keys typed before now may answer a pause");
+    }
+}
+
+/// What was already waiting on stdin when a pause began.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Drained {
+    /// Lines typed before the pause asked for one; they answer nothing.
+    ignored: Vec<String>,
+    /// `q` among them, or the end of input.
+    stop: Option<Quit>,
+}
+
+/// Takes every line already waiting, without blocking. `q` still stops the
+/// probe and the end of input still ends it; any other line is ignored.
+fn drain_early(input: &Receiver<Option<String>>) -> Drained {
+    let mut drained = Drained::default();
+    loop {
+        match input.try_recv() {
+            Ok(Some(line)) if line.eq_ignore_ascii_case("q") => {
+                drained.stop = Some(Quit::Typed);
+                return drained;
+            }
+            Ok(Some(line)) => drained.ignored.push(line),
+            Ok(None) | Err(TryRecvError::Disconnected) => {
+                drained.stop = Some(Quit::StdinClosed);
+                return drained;
+            }
+            Err(TryRecvError::Empty) => return drained,
+        }
+    }
+}
+
+/// Before a pause asks for Enter: lets the windows repaint for
+/// `PAUSE_SETTLE`, then drops every line typed before now (an Enter pressed
+/// twice, or during a phase), so each pause waits for a fresh Enter.
+fn settle_input(input: &Receiver<Option<String>>) {
+    pump_for(PAUSE_SETTLE);
+    let drained = drain_early(input);
+    for line in &drained.ignored {
+        if line.is_empty() {
+            emit("(ignored an Enter typed before this pause)");
+        } else {
+            say!("(ignored a line typed before this pause: {line})");
+        }
+    }
+    if let Some(reason) = drained.stop {
+        request_quit(reason);
+    }
+}
+
 // ---- the probe ---------------------------------------------------------------
 
 struct Slot {
@@ -2103,6 +2172,7 @@ impl Probe {
 
     fn pause(&mut self, input: &Receiver<Option<String>>, phase: &str, look: &[&str]) -> bool {
         self.refresh_board();
+        settle_input(input);
         emit("");
         emit("Look:");
         for line in look {
@@ -2801,6 +2871,7 @@ pub fn run() -> ExitCode {
     if let Err(e) = handler {
         say!("SetConsoleCtrlHandler failed ({e}); Ctrl+C ends the probe without clean-up");
     }
+    flush_console_input();
     let input = spawn_stdin_reader(probe.dest().0 as isize);
     probe.show_windows();
     let completed = probe.run_phases(&input);
@@ -2808,6 +2879,7 @@ pub fn run() -> ExitCode {
     if completed {
         probe.set_header("Done: press Enter in the console to unregister everything and exit");
         emit("");
+        settle_input(&input);
         emit("Press Enter to unregister every thumbnail and exit.");
         let _ = wait_for_line(&input);
     }
@@ -3066,5 +3138,36 @@ mod tests {
         );
         let vanished = worker_result(WorkerEnd::Vanished, &[], None, waited);
         assert!(vanished.contains("panicked) in its last message"));
+    }
+
+    #[test]
+    fn early_input_is_dropped_but_q_and_the_end_still_count() {
+        let (sender, input) = mpsc::channel();
+        assert_eq!(drain_early(&input), Drained::default());
+
+        for line in ["", "a note"] {
+            let _ = sender.send(Some(line.to_owned()));
+        }
+        assert_eq!(
+            drain_early(&input),
+            Drained {
+                ignored: vec![String::new(), "a note".to_owned()],
+                stop: None,
+            }
+        );
+
+        for line in ["", "Q", "after q"] {
+            let _ = sender.send(Some(line.to_owned()));
+        }
+        let drained = drain_early(&input);
+        assert_eq!(drained.ignored, vec![String::new()]);
+        assert_eq!(drained.stop, Some(Quit::Typed));
+
+        let _ = sender.send(Some("after q".to_owned()));
+        let _ = sender.send(None);
+        drop(sender);
+        let drained = drain_early(&input);
+        assert_eq!(drained.stop, Some(Quit::StdinClosed));
+        assert_eq!(drain_early(&input).stop, Some(Quit::StdinClosed));
     }
 }

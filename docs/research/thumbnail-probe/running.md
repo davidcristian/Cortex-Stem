@@ -36,6 +36,11 @@ At every pause the console lists what to look at. Type a short note if you
 like (the summary repeats it), then press Enter. `q` and Enter stops the
 probe at any pause.
 
+Only a line typed after the list appears ends a pause. When the probe
+starts, it throws away the keys pressed during the build. A line typed
+earlier than the list (a second Enter, or one pressed while a phase runs)
+is printed as ignored. A `q` among those lines still stops the probe.
+
 Ctrl+C, Ctrl+Break, closing the console and the probe window's close button
 also stop the probe. Each of them runs the same clean-up: the probe
 unregisters every thumbnail, then destroys every window of its own. If the
