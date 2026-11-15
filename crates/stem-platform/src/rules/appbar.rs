@@ -27,7 +27,9 @@
 //!   click-through there as before.
 //! - [`reserved_thickness`]: how thick the band is: from the resting
 //!   panel's far side to the window's edge side, the panel's thickness plus
-//!   its margin to the edge, never the magnification headroom.
+//!   its margin to the edge, never the magnification headroom; unknown for a
+//!   panel outside the window across the edge (a report measured before a
+//!   resize of the window but read after it).
 //! - [`work_area_excludes`]: whether a work area still leaves a band out,
 //!   so a band just given back is still placed on until the work area the
 //!   platform reports has grown over it again.
@@ -141,23 +143,45 @@ pub fn work_area_excludes(work_area: Rect, band: Rect, edge: DockPosition) -> bo
     }
 }
 
+/// How far (CSS px) a panel may reach past its window's sides across the
+/// edge and still count as inside it ([`reserved_thickness`]): the page
+/// rounds the panel outwards to whole CSS px, and the app layer rounds the
+/// window's viewport to the nearest CSS px.
+pub const PANEL_SLACK_CSS: i32 = 1;
+
 /// The thickness to reserve for a window of `window` size (width, height)
 /// whose resting panel is `panel` (in the same units, relative to the
 /// window): from the panel's far side to the window's side on `edge`, which
 /// is the panel's thickness plus its margin to the edge. Clamped to the
-/// window; 0 for an empty panel.
-pub fn reserved_thickness(window: (i32, i32), panel: Rect, edge: DockPosition) -> i32 {
+/// window; `Some(0)` for an empty panel.
+///
+/// `None` when the panel does not lie inside the window across `edge`
+/// (within [`PANEL_SLACK_CSS`]): a rect the page measured in a viewport of
+/// another size, which the app layer reads against the window's size when
+/// it handles the report, after a resize the page had not seen yet (the
+/// window shrinking after a drop or a smaller icon size). Its
+/// distance to the edge side says nothing about the band: on `bottom` and
+/// `right` it would be 0 or less, which gives the band back at once, only
+/// for the page's next report to take it again. The caller keeps the
+/// thickness it had. Pure.
+pub fn reserved_thickness(window: (i32, i32), panel: Rect, edge: DockPosition) -> Option<i32> {
     if panel.width <= 0 || panel.height <= 0 {
-        return 0;
+        return Some(0);
     }
     let (width, height) = window;
-    let (distance, limit) = match edge {
-        DockPosition::Bottom => (height - panel.y, height),
-        DockPosition::Top => (panel.bottom(), height),
-        DockPosition::Left => (panel.right(), width),
-        DockPosition::Right => (width - panel.x, width),
+    let (start, end, limit) = if is_vertical(edge) {
+        (panel.x, panel.right(), width)
+    } else {
+        (panel.y, panel.bottom(), height)
     };
-    distance.clamp(0, limit.max(0))
+    if start < -PANEL_SLACK_CSS || end > limit.saturating_add(PANEL_SLACK_CSS) {
+        return None;
+    }
+    let distance = match edge {
+        DockPosition::Bottom | DockPosition::Right => limit.saturating_sub(start),
+        DockPosition::Top | DockPosition::Left => end,
+    };
+    Some(distance.clamp(0, limit.max(0)))
 }
 
 /// One step of bringing a registration in line with a request ([`steps`]).
@@ -1141,32 +1165,39 @@ mod tests {
         let panel = Rect::new(640, 63, 640, 64);
         assert_eq!(
             reserved_thickness((1920, 135), panel, DockPosition::Bottom),
-            72
+            Some(72)
         );
         // On the top edge, 8 px below the window's top.
         let panel = Rect::new(640, 8, 640, 64);
         assert_eq!(
             reserved_thickness((1920, 135), panel, DockPosition::Top),
-            72
+            Some(72)
         );
         // Vertical: a 64×640 panel 8 px from the window's left side.
         let panel = Rect::new(8, 200, 64, 640);
         assert_eq!(
             reserved_thickness((135, 1032), panel, DockPosition::Left),
-            72
+            Some(72)
         );
         // And 8 px from its right side.
         let panel = Rect::new(63, 200, 64, 640);
         assert_eq!(
             reserved_thickness((135, 1032), panel, DockPosition::Right),
-            72
+            Some(72)
         );
         // The window grown for a drag: the panel's place follows, the band
         // does not.
         let panel = Rect::new(640, 935, 640, 64);
         assert_eq!(
             reserved_thickness((1920, 1007), panel, DockPosition::Bottom),
-            72
+            Some(72)
+        );
+        // A panel longer than its window along the edge still has its
+        // thickness across it.
+        let panel = Rect::new(-40, 63, 2000, 64);
+        assert_eq!(
+            reserved_thickness((1920, 135), panel, DockPosition::Bottom),
+            Some(72)
         );
     }
 
@@ -1174,27 +1205,98 @@ mod tests {
     fn the_reserved_thickness_is_clamped_to_the_window_and_zero_without_a_panel() {
         assert_eq!(
             reserved_thickness((1920, 135), Rect::new(0, 0, 0, 0), DockPosition::Bottom),
-            0
+            Some(0)
         );
         assert_eq!(
             reserved_thickness((1920, 135), Rect::new(10, 10, 0, 64), DockPosition::Top),
-            0
+            Some(0)
         );
-        // A panel rect still laid out for the bottom read on the left edge:
-        // as long as the panel is (640), but never more than the window.
-        assert_eq!(
-            reserved_thickness((135, 1032), Rect::new(640, 63, 640, 64), DockPosition::Left),
-            135
-        );
-        // A panel outside the window on the far side.
+        // Rounded outwards past the window's sides by a px: inside, and
+        // never more than the window.
         assert_eq!(
             reserved_thickness(
                 (1920, 135),
-                Rect::new(0, 200, 640, 64),
+                Rect::new(640, 72, 640, 64),
                 DockPosition::Bottom
             ),
-            0
+            Some(63)
         );
+        assert_eq!(
+            reserved_thickness((1920, 135), Rect::new(640, -1, 640, 137), DockPosition::Top),
+            Some(135)
+        );
+        assert_eq!(
+            reserved_thickness(
+                (135, 1032),
+                Rect::new(-1, 200, 137, 640),
+                DockPosition::Right
+            ),
+            Some(135)
+        );
+    }
+
+    #[test]
+    fn a_panel_outside_its_window_across_the_edge_has_no_thickness() {
+        // The icon size going from 96 to 48 on `bottom`: the page measures
+        // the smaller panel (64 css high) in the 226 css window, 8 above its
+        // bottom, but the report is read after the window shrank to 149.
+        // 149 - 154 would be 0: a band given back for nothing.
+        assert_eq!(
+            reserved_thickness(
+                (1920, 149),
+                Rect::new(640, 154, 640, 64),
+                DockPosition::Bottom
+            ),
+            None
+        );
+        // The same after a drop on `bottom`: measured in the 1007 css high
+        // window the drag grew, read in the 135 css one.
+        assert_eq!(
+            reserved_thickness(
+                (1920, 135),
+                Rect::new(640, 935, 640, 64),
+                DockPosition::Bottom
+            ),
+            None
+        );
+        // And on `right`: measured in the grown window, the column
+        // lies past the side of the 150 css wide one.
+        assert_eq!(
+            reserved_thickness(
+                (150, 928),
+                Rect::new(1572, 144, 64, 640),
+                DockPosition::Right
+            ),
+            None
+        );
+        // Once the page measured in the window's own viewport again.
+        assert_eq!(
+            reserved_thickness((150, 928), Rect::new(78, 144, 64, 640), DockPosition::Right),
+            Some(72)
+        );
+        // A panel rect still laid out for the bottom read on the left edge.
+        assert_eq!(
+            reserved_thickness((135, 1032), Rect::new(640, 63, 640, 64), DockPosition::Left),
+            None
+        );
+        // Above the window, and past its top side.
+        assert_eq!(
+            reserved_thickness((1920, 135), Rect::new(0, -70, 640, 64), DockPosition::Top),
+            None
+        );
+        assert_eq!(
+            reserved_thickness((1920, 135), Rect::new(0, -2, 640, 64), DockPosition::Bottom),
+            None
+        );
+        // Every edge: a panel more than a px past the far side.
+        for (window, panel, edge) in [
+            ((1920, 135), Rect::new(0, 72, 640, 65), DockPosition::Bottom),
+            ((1920, 135), Rect::new(0, 72, 640, 65), DockPosition::Top),
+            ((135, 1032), Rect::new(72, 0, 65, 640), DockPosition::Left),
+            ((135, 1032), Rect::new(72, 0, 65, 640), DockPosition::Right),
+        ] {
+            assert_eq!(reserved_thickness(window, panel, edge), None, "{edge:?}");
+        }
     }
 
     #[test]

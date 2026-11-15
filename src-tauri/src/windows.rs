@@ -167,7 +167,12 @@ pub struct DockWindowState {
     /// made (`appbar::request_for`). Taken at the report rather than at
     /// each placement, so a window that grows for a drag (whose page
     /// reports the panel's new place only afterwards) never asks for a
-    /// thicker band meanwhile. Dropped with the panel rect.
+    /// thicker band meanwhile. Kept as it was when a report does not lie
+    /// inside the viewport it is read against (`reserved_thickness` is
+    /// `None`: the page measured it before a resize it had not seen, a drop
+    /// or a smaller icon size), so such a report never gives the band back;
+    /// the page's next one, measured after the resize, sets it. Dropped with
+    /// the panel rect.
     reserve_css: Option<i32>,
     /// The window's scale factor as last seen (at creation, then on every
     /// `ScaleFactorChanged`), so the log line of a change can say what it
@@ -803,21 +808,38 @@ pub fn validate_panel_rect(rect: Rect) -> Result<(), String> {
 /// to the service in physical screen pixels, with the window's
 /// label and monitor; no rect goes instead while the window is
 /// hidden. The panel's distance to the window's edge side is the band
-/// *Reserve screen space* asks for (`appbar::sync`). Runs on the
-/// main thread.
+/// *Reserve screen space* asks for (`appbar::sync`), unless the
+/// panel does not lie inside the window's viewport across the edge: the
+/// page sends its content size first, and that resize runs before this
+/// report is handled, so a report measured before the window shrank says
+/// nothing about the band, which keeps its thickness. Runs on the main
+/// thread.
 pub fn apply_dock_panel(app: &AppHandle, window: &WebviewWindow, rect: Rect) -> Result<(), String> {
     let service = app
         .try_state::<crate::AppService>()
         .ok_or_else(|| "service not available".to_owned())?;
     let viewport = viewport_css(window);
     if let Some(geometry) = app.try_state::<DockGeometry>() {
-        geometry.update(window.label(), |dock| {
+        let kept = geometry.update(window.label(), |dock| {
             dock.panel_css = Some(rect);
-            dock.reserve_css = dock
-                .edge
-                .zip(viewport)
-                .map(|(edge, viewport)| reserved_thickness(viewport, rect, edge));
+            let Some((edge, viewport)) = dock.edge.zip(viewport) else {
+                dock.reserve_css = None;
+                return None;
+            };
+            match reserved_thickness(viewport, rect, edge) {
+                Some(css) => {
+                    dock.reserve_css = Some(css);
+                    None
+                }
+                None => Some((edge, viewport, dock.reserve_css)),
+            }
         });
+        if let Some(Some((edge, viewport, reserve))) = kept {
+            log::debug!(
+                "dock window {:?}: the panel {rect:?} does not lie inside the {viewport:?} css viewport across the {edge:?} edge (measured before a resize); the band keeps {reserve:?} css until the next report",
+                window.label()
+            );
+        }
     }
     crate::backdrop::on_panel_measured(app, window);
     let pushed = push_dock_panel(app, &service.0, window, rect);

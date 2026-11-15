@@ -16,9 +16,12 @@
 //!   thickness plus its margin to the edge, from the window's latest
 //!   `set_dock_panel_rect` (the distance from the panel's far side to the
 //!   window's edge side, in CSS px, taken when the page reports and scaled
-//!   when the request is made, [`request_for`]); never the magnification
-//!   headroom, which the window keeps: it reaches past the band into the
-//!   work area, transparent and click-through there as before.
+//!   when the request is made, [`request_for`]; a report that does not lie
+//!   inside the window across the edge, measured before a resize, keeps the
+//!   thickness as it was, so it never gives the band back); never the
+//!   magnification headroom, which the window keeps: it reaches past the
+//!   band into the work area, transparent and click-through there as
+//!   before.
 //! - The window goes with its edge side on the band the shell granted
 //!   (`rules::appbar::window_rect`, in `windows::layout`) instead of on the
 //!   work area's edge, which is the band's far side once the band is
