@@ -1,5 +1,5 @@
 /**
- * `MockBackend`: the whole IPC contract (docs/ipc/ v1.17) without Rust, for
+ * `MockBackend`: the whole IPC contract (docs/ipc/ v1.21) without Rust, for
  * browser runs and Playwright screenshots.
  *
  * It mirrors, deliberately in this one file so the two sides can be compared,

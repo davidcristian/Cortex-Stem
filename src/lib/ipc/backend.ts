@@ -1,5 +1,5 @@
 /**
- * The frontend's only door to the Rust side (docs/ipc/, contract v1.15).
+ * The frontend's only door to the Rust side (docs/ipc/, contract v1.21).
  *
  * One method per command and one `on` subscription per event (plus
  * `onFileDrag` for Tauri's own file drag events). Components
@@ -90,7 +90,7 @@ export type FileDragEvent =
 export type FileDragHandler = (event: FileDragEvent) => void;
 
 /**
- * Commands and events of docs/ipc/ v1.15. Method names are the command
+ * Commands and events of docs/ipc/ v1.21. Method names are the command
  * names in camelCase; argument order follows the command's argument list.
  *
  * Failed commands reject with a `string` (the Rust error message).
