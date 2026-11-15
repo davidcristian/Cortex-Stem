@@ -117,9 +117,9 @@ impl AppPaths {
     }
 }
 
-/// Event names, as documented in `docs/ipc/events.md`. All but `SHOW` and `FOCUS`
-/// forward a `ServiceEvent`; those two come from the shell itself
-/// (`windows::toggle_dock`, `windows::on_focus_shortcut`).
+/// Event names, as documented in `docs/ipc/events.md`. All but `SHOW`, `FOCUS`
+/// and `RELEASE_FOCUS` forward a `ServiceEvent`; those come from the shell
+/// itself (`windows::toggle_dock`, `windows::on_focus_shortcut`).
 pub mod events {
     pub const STATE: &str = "dock://state";
     pub const SETTINGS: &str = "dock://settings";
@@ -131,6 +131,9 @@ pub mod events {
     /// To one dock window: the focus shortcut gave it the keyboard focus;
     /// focus the toolbar.
     pub const FOCUS: &str = "dock://focus";
+    /// To one dock window: a press of the focus shortcut while it still
+    /// has the keyboard from an earlier press; do what Escape does.
+    pub const RELEASE_FOCUS: &str = "dock://release-focus";
 }
 
 /// File name (without extension) of the log file in the app log dir.

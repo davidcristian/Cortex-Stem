@@ -392,13 +392,14 @@ async fn delete_to_recycle_bin(
     }
 }
 
-/// The calling dock window gives the keyboard focus back (Escape;
-/// `docs/ipc/keyboard-entry.md`): the window that was in front when the
-/// focus shortcut was pressed comes back to the foreground, if the focus
-/// shortcut's session is this dock's and that window still exists;
-/// otherwise the foreground is left alone and the command resolves. Only a
-/// dock window may call it. `async`: the activation is the foreground chain,
-/// which must not run on the main thread.
+/// The calling dock window gives the keyboard focus back (Escape, or a
+/// second press of the focus shortcut through `dock://release-focus`;
+/// `docs/ipc/keyboard-entry.md`): the window that was in front
+/// when the focus shortcut was pressed comes back to the foreground, if the
+/// focus shortcut's session is this dock's and that window still exists
+/// (a click on a dock forgets it); otherwise the foreground is left alone
+/// and the command resolves. Only a dock window may call it. `async`: the
+/// activation is the foreground chain, which must not run on the main thread.
 #[tauri::command]
 async fn release_dock_focus(
     window: tauri::WebviewWindow,
