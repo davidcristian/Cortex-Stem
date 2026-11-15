@@ -72,6 +72,7 @@
   } from '$lib/dock/reorder';
   import { accentColor, effectiveOpacity, resolveTheme } from '$lib/dock/theme';
   import { applyUserCss, NO_USER_CSS, nextUserCss, type UserCssView } from '$lib/dock/user-css';
+  import { WheelNotches } from '$lib/dock/wheel';
   import type { Backend, CssPoint, FileDragEvent } from '$lib/ipc/backend';
   import type { AppId } from '$lib/ipc/generated/AppId';
   import type { DockItem as DockItemModel } from '$lib/ipc/generated/DockItem';
@@ -243,6 +244,8 @@
   const bounceEnabled = $derived((settings?.appearance.bounceOnLaunch ?? true) && !reducedMotion);
   const itemMotion = $derived(!reducedMotion);
   const showDots = $derived(settings?.behavior.runningIndicators ?? true);
+  /** `behavior.scrollAction`: the wheel over an item sends nothing while it is `none`. */
+  const scrollOn = $derived((settings?.behavior.scrollAction ?? 'none') !== 'none');
 
   // --- Theme on <html> --------------------------------------------------------
   $effect(() => {
@@ -473,6 +476,7 @@
 
   function onpanelpointerleave(): void {
     hovering = false;
+    wheelNotches.reset();
     clearTooltip();
     // Ease back over 120 ms, then go idle (no timers, no transitions).
     settling = !reducedMotion && magnify.maxScale > 1;
@@ -905,6 +909,40 @@
       return;
     }
     void backend.primaryClick(item.key).catch(report(item.title));
+  }
+
+  // The wheel over an item (docs/ipc/scrolling-over-an-item.md):
+  // one listener on the panel. `wheel.ts` adds the vertical travel up per
+  // item and says when a notch (100 px) is complete; each one is a
+  // `scroll_item`, and Rust decides what it does (cycle the item's windows,
+  // at most once per 150 ms). Nothing is counted or sent while the setting
+  // is `none`, and the page's default handling is only prevented for an
+  // event that sends something.
+  const wheelNotches = new WheelNotches();
+
+  function onpanelwheel(e: WheelEvent): void {
+    if (!scrollOn || drag?.started) {
+      wheelNotches.reset();
+      return;
+    }
+    const slot =
+      e.target instanceof Element ? e.target.closest<HTMLElement>('.slot[data-key]') : null;
+    const key = slot !== null && panelEl?.contains(slot) ? (slot.dataset.key ?? null) : null;
+    const notches = wheelNotches.add({
+      key,
+      deltaX: e.deltaX,
+      deltaY: e.deltaY,
+      deltaMode: e.deltaMode,
+      pageHeight: window.innerHeight,
+    });
+    if (key === null || notches.length === 0) {
+      return;
+    }
+    e.preventDefault();
+    const title = items.find((i) => i.key === key)?.title ?? key;
+    for (const direction of notches) {
+      void backend.scrollItem(key, direction).catch(report(title));
+    }
   }
 
   function onmiddle(item: DockItemModel): void {
@@ -2140,6 +2178,7 @@
       onpointermove={onpanelpointermove}
       onpointerenter={onpanelpointerenter}
       onpointerleave={onpanelpointerleave}
+      onwheel={onpanelwheel}
       ontransitionend={onpaneltransitionend}
       oncontextmenu={onpanelcontextmenu}
       onkeydown={onpanelkeydown}

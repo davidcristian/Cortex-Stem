@@ -457,6 +457,25 @@
                 })}
             />
           </SettingRow>
+          <!-- The wheel over an item (docs/ipc/scrolling-over-an-item.md). -->
+          <SettingRow
+            id="scroll-action"
+            label="Scrolling over an app"
+            description="Cycles its windows: each notch of the wheel over an app's icon brings its next open window to the front, or the previous one when you scroll up; a minimised window is restored"
+          >
+            <Select
+              id="scroll-action"
+              value={settings.behavior.scrollAction}
+              options={[
+                { value: 'none', label: 'Does nothing' },
+                { value: 'cycleWindows', label: 'Cycles its windows' },
+              ]}
+              onchange={(v) =>
+                edit((s) => {
+                  s.behavior.scrollAction = v;
+                })}
+            />
+          </SettingRow>
           <SettingRow
             id="current-desktop"
             label="Show only windows on the current desktop"
