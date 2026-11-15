@@ -3,6 +3,24 @@
 This file lists every version of the [IPC contract](index.md), newest first. A section name links
 to the file that covers that section now.
 
+- **v1.21 (quick settings and notification items):** Two optional fixed items.
+  `Settings.items.quickSettings` and `Settings.items.notificationCenter` (both default `false`)
+  add `DockItemKind` `quickSettings` and `notificationCenter`, with icon keys
+  `shell:quickSettings` and `shell:notificationCenter` (drawn by the page, like the other
+  `shell:` keys). They are placed in the trailing group before the Recycle Bin, in that order. A
+  click runs `ShellAction` `openQuickSettings` (Win+A) or `openNotificationCenter` (Win+N), which
+  the platform sends as a key chord (`SendInput`). Their menus follow the Task View item's.
+- **v1.20 (themes):** `Settings.appearance.theme` (`ThemePreset`: `standard`, `solid`,
+  `minimal`), and the user's `dock.css`: `get_user_css`, `reload_user_css`, `open_user_css`,
+  `UserCss` and the `dock://user-css` event. New section [Themes](themes.md).
+- **v1.19 (keyboard entry):** `Settings.behavior.focusShortcut` (default `Ctrl+Alt+Shift+D`),
+  the `dock://focus` event and the `release_dock_focus` command. New section
+  [Keyboard entry](keyboard-entry.md).
+- **v1.18 (report provenance):** `edge` on `set_dock_content_size`, `set_dock_hit_region` and
+  `set_dock_panel_rect`, and `viewport` on `set_dock_panel_rect`. Rust drops a report measured
+  for another edge and re-anchors a panel rect measured in an older viewport, so the engine's
+  panel, the reserved band and the backdrop no longer read an outdated report against a resized
+  window. New section [Report provenance](report-provenance.md).
 - **v1.17 (reserve screen space):** `Settings.system.reserveScreenSpace` takes effect
   ([Settings the app shell applies](app-shell-settings.md)). With auto-hide off, each visible
   dock window reserves a band of its panel's thickness plus margin at its edge, and the window's

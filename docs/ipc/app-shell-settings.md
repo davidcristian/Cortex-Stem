@@ -41,6 +41,10 @@ log, not on IPC:
     fullscreen window is up.
   - The settings window greys the switch out while auto-hide is on. Demo runs
     (`STEM_PLATFORM=mock`) record the registrations and reserve nothing.
+- `Settings.behavior.focusShortcut` (default `"Ctrl+Alt+Shift+D"`): a global shortcut that gives
+  the keyboard focus to a dock window ([Keyboard entry](keyboard-entry.md)). It has the same
+  format, rules and live re-registration as `toggleShortcut`; the same chord as `toggleShortcut`
+  registers nothing.
 
 The webview is not granted the plugins' own commands (`plugin:autostart|*`,
 `plugin:global-shortcut|*`).

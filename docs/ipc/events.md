@@ -11,6 +11,8 @@ how a page listens.
 | `dock://monitors`    | `MonitorInfo[]`                 | at start, and when the display topology changes               |
 | `dock://item-bounce` | `{ itemKey: string }`           | an app was launched from the dock; the page plays the bounce  |
 | `dock://show`        | `null`                          | to one dock window: a tray click or the toggle shortcut requested the dock while auto-hide had slid its panel out. The page brings the panel back (see [Toggle while hidden](toggle-while-hidden.md)). |
+| `dock://focus`       | `null`                          | to one dock window: the focus shortcut gave it the keyboard focus. The page focuses the toolbar (see [Keyboard entry](keyboard-entry.md), v1.19). |
+| `dock://user-css`    | `UserCss`                       | to every dock window: `reload_user_css` read `dock.css` again (see [Themes](themes.md), v1.20) |
 
 Tauri's own `tauri://drag-enter|over|drop|leave` events (files dragged from the shell over a dock
 window) are not part of this contract; see [File drags](file-drags.md).
