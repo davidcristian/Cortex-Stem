@@ -488,8 +488,11 @@ describe('click semantics (mirror of DockEngine::primary_action)', () => {
         [{ saver: true, percent: 18 }, 'Battery 18 %, battery saver on'],
         [{ saver: true, charging: true, onAc: true }, 'Battery 76 %, charging, battery saver on'],
         [{ saver: true, onAc: true }, 'Battery 76 %, plugged in, battery saver on'],
+        // Without a known percent: `Battery` alone, whatever else is known.
         [{ percent: null }, 'Battery'],
-        [{ percent: null, charging: true, onAc: true }, 'Battery, charging'],
+        [{ percent: null, charging: true, onAc: true }, 'Battery'],
+        [{ percent: null, onAc: true }, 'Battery'],
+        [{ percent: null, saver: true }, 'Battery'],
       ];
       for (const [patch, title] of cases) {
         expect(batteryTitle({ ...DEMO_POWER, ...patch })).toBe(title);

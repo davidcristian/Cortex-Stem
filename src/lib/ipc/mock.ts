@@ -160,11 +160,14 @@ const NO_POWER: Readonly<PowerStatus> = Object.freeze({
 /**
  * The battery item's title (`battery_title` in engine.rs):
  * `Battery 73 %`, then `, charging` or `, plugged in` (on AC, not charging),
- * then `, battery saver on`; `Battery` alone in place of the first part
- * without a known percent.
+ * then `, battery saver on`; `Battery` alone, whatever else is known, without
+ * a known percent.
  */
 export function batteryTitle(power: PowerStatus): string {
-  let title = power.percent === null ? 'Battery' : `Battery ${power.percent} %`;
+  if (power.percent === null) {
+    return 'Battery';
+  }
+  let title = `Battery ${power.percent} %`;
   if (power.charging) {
     title += ', charging';
   } else if (power.onAc) {
