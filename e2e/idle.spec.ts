@@ -23,7 +23,7 @@
  *   animation is busy work, even when the compositor plays it).
  *
  * Settled means: fonts and images loaded, and for `QUIET_FOR_MS` straight no
- * running animation, no pending frame callback, no timer due before the
+ * running animation, no pending frame or idle callback, no timer due before the
  * window would end, and nothing that repeats faster than once a minute.
  * Work that recurs once a minute (the clock item's tick) is allowed:
  * the settle waits until its next run is past the window. A page that never
@@ -42,8 +42,9 @@
  * Scenarios run concurrently (one context each), so the whole file takes a
  * few windows' time, not one per scenario. Controls show that the probe
  * sees busy work: a synthetic frame loop with an interval, a 10 s polling
- * chain that never fires in the window, and the attention wiggle,
- * which runs until the window is activated by design.
+ * chain that never fires in the window, an idle-callback loop, and the
+ * attention wiggle, which runs until the window is activated by
+ * design.
  *
  * Vite's dev client (`/@vite/client`, a 30 s WebSocket ping interval) is
  * served only by the dev server these tests run against, not with the
@@ -206,9 +207,11 @@ async function installIdleProbe(page: Page): Promise<void> {
     const nativeClearTimeout = window.clearTimeout.bind(window);
     const nativeClearInterval = window.clearInterval.bind(window);
     const nativeIdle = window.requestIdleCallback?.bind(window);
+    const nativeCancelIdle = window.cancelIdleCallback?.bind(window);
 
     const log: ProbeEvent[] = [];
     const pendingFrames = new Map<number, string>();
+    const pendingIdle = new Map<number, string>();
     const pendingTimeouts = new Map<number, Timer>();
     const liveIntervals = new Map<number, Timer>();
     /** When the last timeout set at each call site that has fired fell due. */
@@ -326,12 +329,21 @@ async function installIdleProbe(page: Page): Promise<void> {
       clear(id);
       nativeClearInterval(id);
     }) as typeof window.clearInterval;
-    if (nativeIdle !== undefined) {
-      window.requestIdleCallback = (callback, options): number =>
-        nativeIdle((deadline) => {
+    if (nativeIdle !== undefined && nativeCancelIdle !== undefined) {
+      window.requestIdleCallback = (callback, options): number => {
+        const { source } = caller();
+        const id = nativeIdle((deadline) => {
+          pendingIdle.delete(id);
           log.push({ type: 'idle' });
           callback(deadline);
         }, options);
+        pendingIdle.set(id, source);
+        return id;
+      };
+      window.cancelIdleCallback = (id: number): void => {
+        pendingIdle.delete(id);
+        nativeCancelIdle(id);
+      };
     }
 
     function running(): string[] {
@@ -356,6 +368,10 @@ async function installIdleProbe(page: Page): Promise<void> {
       const out = running();
       for (const source of pendingFrames.values()) {
         out.push(`frame callback from ${source}`);
+      }
+      // An idle callback runs as soon as the page is idle, so in the window.
+      for (const source of pendingIdle.values()) {
+        out.push(`idle callback from ${source}`);
       }
       const now = performance.now();
       for (const t of timers()) {
@@ -569,7 +585,8 @@ function summary(name: string, m: Measured): string {
   return (
     `[idle] ${name}: settled in ${m.settleMs} ms; layouts ${m.layouts}, style ${m.styleRecalcs}, ` +
     `script ${m.scriptMs.toFixed(2)} ms, tasks ${m.taskMs.toFixed(2)} ms, frames ${frames}, ` +
-    `timers ${m.delta.timers.length}, animations ${m.running.length}, ` +
+    `timers ${m.delta.timers.length}, idle callbacks ${m.delta.idleCallbacks}, ` +
+    `animations ${m.running.length}, ` +
     `dev-client timers ${m.devTimers} (over ${m.windowMs} ms)`
   );
 }
@@ -872,7 +889,9 @@ test.describe('the dock page goes quiet once it has settled', () => {
     ]);
   });
 
-  test('timers: work once a minute is quiet, a 10 s polling chain is not', async ({ browser }) => {
+  test('timers and idle callbacks: work once a minute is quiet, a polling chain or an idle loop is not', async ({
+    browser,
+  }) => {
     await expectQuiet(browser, [
       {
         name: 'a minute clock (a stand-in for the clock item)',
@@ -944,6 +963,25 @@ test.describe('the dock page goes quiet once it has settled', () => {
             .soft(busy, 'it is still live at the end')
             .toMatch(/repeating faster than once a minute: timeout 10000 ms from poll/);
           expect.soft(m.delta.timerCallbacks, 'it did not run in the window').toEqual([]);
+        },
+      },
+      {
+        name: 'control: an idle-callback loop is seen',
+        setup: async (page) => {
+          await page.evaluate(() => {
+            const idle = (): void => {
+              requestIdleCallback(idle);
+            };
+            idle();
+          });
+        },
+        watch: CONTROL_WATCH,
+        check: (m) => {
+          const busy = busyWork(m).join('\n');
+          expect
+            .soft(busy, 'it keeps the page from settling')
+            .toMatch(/never settled: .*idle callback from idle/);
+          expect.soft(busy, 'it runs in the window').toMatch(/\d+ idle callbacks/);
         },
       },
     ]);
