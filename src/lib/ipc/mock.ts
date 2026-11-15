@@ -24,6 +24,7 @@
  * UI directly; the UI only ever sees `DockState` snapshots and `Settings`.
  */
 
+import type { Viewport } from '$lib/dock/geometry';
 import type { AppFolder } from '$lib/ipc/generated/AppFolder';
 import type { AppId } from '$lib/ipc/generated/AppId';
 import type { AppIdentity } from '$lib/ipc/generated/AppIdentity';
@@ -132,9 +133,9 @@ export type MockCall =
   | { type: 'launch'; target: LaunchTarget }
   | { type: 'deleteToRecycleBin'; paths: string[] }
   | { type: 'shell'; action: ShellAction }
-  | { type: 'setDockContentSize'; width: number; height: number }
-  | { type: 'setDockHitRegion'; panel: Rect; envelope: Rect }
-  | { type: 'setDockPanelRect'; rect: Rect }
+  | { type: 'setDockContentSize'; width: number; height: number; edge: DockPosition }
+  | { type: 'setDockHitRegion'; panel: Rect; envelope: Rect; edge: DockPosition }
+  | { type: 'setDockPanelRect'; rect: Rect; edge: DockPosition; viewport: Viewport }
   | { type: 'setDockAutoHidden'; hidden: boolean }
   | { type: 'showItemMenu'; itemKey: string; x: number; y: number }
   | { type: 'showDockMenu'; x: number; y: number }
@@ -336,6 +337,51 @@ export function panelOnScreen(
   const originX = edge === 'right' ? workArea.x + workArea.width - width : workArea.x;
   const originY = edge === 'bottom' ? workArea.y + workArea.height - height : workArea.y;
   return { ...scaled, x: originX + scaled.x, y: originY + scaled.y };
+}
+
+/**
+ * `windows::VIEWPORT_SLACK_CSS`: two viewports that differ by less than
+ * this on an axis (CSS px) are the same on it (`reanchorPanel`).
+ */
+export const VIEWPORT_SLACK_CSS = 1;
+
+/**
+ * The app layer's re-anchoring of a reported panel rect
+ * (`windows::reanchor_panel`; docs/ipc/report-provenance.md): `rect`,
+ * measured in the viewport `from` for a dock on `edge`, moved to where the
+ * page's layout puts it in the viewport `to`. Across the edge it keeps its
+ * distance to the viewport's edge side (on `bottom` it moves by the change
+ * in height, on `right` by the change in width), along the edge its offset
+ * from the centre (half the change in length, rounded to the nearest px,
+ * a half away from zero like Rust's `f64::round`). A difference under
+ * `VIEWPORT_SLACK_CSS` on an axis moves nothing on it; the size never
+ * changes.
+ */
+export function reanchorPanel(rect: Rect, edge: DockPosition, from: Viewport, to: Viewport): Rect {
+  const change = (before: number, after: number): number => {
+    const d = after - before;
+    return Number.isFinite(d) && Math.abs(d) >= VIEWPORT_SLACK_CSS ? d : 0;
+  };
+  const dw = change(from.width, to.width);
+  const dh = change(from.height, to.height);
+  const shifts: Record<DockPosition, readonly [number, number]> = {
+    bottom: [dw / 2, dh],
+    top: [dw / 2, 0],
+    left: [0, dh / 2],
+    right: [dw, dh / 2],
+  };
+  const [dx, dy] = shifts[edge];
+  // `Math.round` rounds a half up; Rust's `round` away from zero (`+ 0`: no -0).
+  const round = (v: number): number => (v < 0 ? -Math.round(-v) : Math.round(v)) + 0;
+  return { ...rect, x: round(rect.x + dx), y: round(rect.y + dy) };
+}
+
+/** `CssViewport::validate`: both sides positive and finite, else the Rust error. */
+function viewportError(viewport: Viewport): string | null {
+  const usable = (v: number): boolean => Number.isFinite(v) && v > 0;
+  return usable(viewport.width) && usable(viewport.height)
+    ? null
+    : `the viewport must have a positive, finite width and height: ${JSON.stringify(viewport)}`;
 }
 
 /** `Settings::reorder_pinned`: listed ids first, the rest keep their order. */
@@ -1513,21 +1559,49 @@ export class MockBackend implements Backend {
     });
   }
 
-  setDockContentSize(width: number, height: number): Promise<void> {
+  /**
+   * Whether a report the page measured for `edge` belongs to where the
+   * app layer has the window (`DockWindowState::stale_for`): the
+   * mock's window moves with `Settings.position` at once, so a report for
+   * another edge was measured before the page saw the change, and is
+   * dropped (logged; it stays recorded in `calls`).
+   */
+  private reportIsCurrent(command: string, edge: DockPosition): boolean {
+    const placed = this.engine.settings.position;
+    if (edge === placed) {
+      return true;
+    }
+    this.log(
+      `${command} measured for the ${edge} edge dropped; the window is on the ${placed} edge`,
+    );
+    return false;
+  }
+
+  /** `set_dock_content_size`: a browser window is not resized; recorded and logged. */
+  setDockContentSize(width: number, height: number, edge: DockPosition): Promise<void> {
     return this.command(() => {
-      this.record({ type: 'setDockContentSize', width, height });
-      this.log(`set_dock_content_size(${Math.round(width)} × ${Math.round(height)})`);
+      this.record({ type: 'setDockContentSize', width, height, edge });
+      if (this.reportIsCurrent('set_dock_content_size', edge)) {
+        this.log(`set_dock_content_size(${Math.round(width)} × ${Math.round(height)}, ${edge})`);
+      }
     });
   }
 
   /** `set_dock_hit_region`: a browser has no OS hit-testing; recorded and logged. */
-  setDockHitRegion(panel: Rect, envelope: Rect): Promise<void> {
+  setDockHitRegion(panel: Rect, envelope: Rect, edge: DockPosition): Promise<void> {
     return this.command(() => {
-      this.record({ type: 'setDockHitRegion', panel: { ...panel }, envelope: { ...envelope } });
-      this.log(
-        `set_dock_hit_region(panel ${panel.width}×${panel.height} at ${panel.x},${panel.y}; ` +
-          `envelope ${envelope.width}×${envelope.height} at ${envelope.x},${envelope.y})`,
-      );
+      this.record({
+        type: 'setDockHitRegion',
+        panel: { ...panel },
+        envelope: { ...envelope },
+        edge,
+      });
+      if (this.reportIsCurrent('set_dock_hit_region', edge)) {
+        this.log(
+          `set_dock_hit_region(panel ${panel.width}×${panel.height} at ${panel.x},${panel.y}; ` +
+            `envelope ${envelope.width}×${envelope.height} at ${envelope.x},${envelope.y}; ${edge})`,
+        );
+      }
     });
   }
 
@@ -1547,20 +1621,37 @@ export class MockBackend implements Backend {
   }
 
   /**
-   * `set_dock_panel_rect`: recorded, converted to the page's
-   * monitor's screen coordinates the way the app layer converts it for the
-   * real window on the configured edge (`panelOnScreen`, at that monitor's
-   * scale; see `MockOptions.viewportHeight` and `viewportWidth`), and handed
-   * to the engine under this dock window's label and monitor, which
-   * emits a state only when the docks' facts change.
+   * `set_dock_panel_rect`: recorded with its provenance;
+   * rejected like Rust for a non-positive or non-finite viewport; dropped
+   * when measured for another edge than the window's (`reportIsCurrent`);
+   * else re-anchored from the viewport it carries to the window's viewport
+   * now (`reanchorPanel`; `MockOptions.viewportHeight` and `viewportWidth`,
+   * else `window.innerWidth` × `innerHeight` read per call, else the work
+   * area's size), converted to the page's monitor's screen coordinates the
+   * way the app layer converts it for the real window on the configured edge
+   * (`panelOnScreen`, at that monitor's scale), and handed to the engine
+   * under this dock window's label and monitor, which emits a state
+   * only when the docks' facts change.
    */
-  setDockPanelRect(rect: Rect): Promise<void> {
+  setDockPanelRect(rect: Rect, edge: DockPosition, viewport: Viewport): Promise<void> {
     return this.command(() => {
-      this.record({ type: 'setDockPanelRect', rect: { ...rect } });
+      this.record({
+        type: 'setDockPanelRect',
+        rect: { ...rect },
+        edge,
+        viewport: { width: viewport.width, height: viewport.height },
+      });
+      const invalid = viewportError(viewport);
+      if (invalid !== null) {
+        throw invalid;
+      }
+      if (!this.reportIsCurrent('set_dock_panel_rect', edge)) {
+        return;
+      }
       const monitor = this.pageMonitorInfo();
       const workArea = monitor?.workArea ?? { x: 0, y: 0, width: 0, height: 0 };
       const browser = typeof window !== 'undefined';
-      const viewport = {
+      const now = {
         width:
           this.viewportWidth ??
           (browser && window.innerWidth > 0 ? window.innerWidth : workArea.width),
@@ -1568,16 +1659,13 @@ export class MockBackend implements Backend {
           this.viewportHeight ??
           (browser && window.innerHeight > 0 ? window.innerHeight : workArea.height),
       };
-      const screen = panelOnScreen(
-        rect,
-        workArea,
-        viewport,
-        this.engine.settings.position,
-        monitor?.scaleFactor ?? 1,
-      );
+      const css = reanchorPanel(rect, edge, viewport, now);
+      const screen = panelOnScreen(css, workArea, now, edge, monitor?.scaleFactor ?? 1);
       const label = this.pageLabel;
       this.log(
-        `set_dock_panel_rect(${rect.width}×${rect.height} at ${rect.x},${rect.y}) -> ` +
+        `set_dock_panel_rect(${rect.width}×${rect.height} at ${rect.x},${rect.y} in ` +
+          `${viewport.width}×${viewport.height}, ${edge}) -> ${css.x},${css.y} in ` +
+          `${now.width}×${now.height} -> ` +
           `${screen.x},${screen.y} on screen (${label} on ${monitor?.id ?? 'no monitor'})`,
       );
       if (this.engine.setDockPanel(label, monitor?.id ?? null, screen)) {

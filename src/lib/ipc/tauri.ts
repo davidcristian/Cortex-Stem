@@ -11,6 +11,7 @@ import { getCurrentWebview, type DragDropEvent } from '@tauri-apps/api/webview';
 import type { AppFolder } from '$lib/ipc/generated/AppFolder';
 import type { AppId } from '$lib/ipc/generated/AppId';
 import type { AppInfo } from '$lib/ipc/generated/AppInfo';
+import type { DockPosition } from '$lib/ipc/generated/DockPosition';
 import type { DockState } from '$lib/ipc/generated/DockState';
 import type { IconKey } from '$lib/ipc/generated/IconKey';
 import type { LaunchTarget } from '$lib/ipc/generated/LaunchTarget';
@@ -22,7 +23,7 @@ import type { ThemeInfo } from '$lib/ipc/generated/ThemeInfo';
 import type { WindowAction } from '$lib/ipc/generated/WindowAction';
 import type { WindowId } from '$lib/ipc/generated/WindowId';
 
-import { integerRect } from '$lib/dock/geometry';
+import { integerRect, type Viewport } from '$lib/dock/geometry';
 
 import type {
   Backend,
@@ -154,20 +155,27 @@ export class TauriBackend implements Backend {
     return invoke<string | null>('get_icon', { iconKey, size: Math.max(1, Math.round(size)) });
   }
 
-  setDockContentSize(width: number, height: number): Promise<void> {
-    return invoke<void>('set_dock_content_size', { width, height });
+  setDockContentSize(width: number, height: number, edge: DockPosition): Promise<void> {
+    return invoke<void>('set_dock_content_size', { width, height, edge });
   }
 
-  setDockHitRegion(panel: Rect, envelope: Rect): Promise<void> {
+  setDockHitRegion(panel: Rect, envelope: Rect, edge: DockPosition): Promise<void> {
     // `Rect` fields are `i32` on the Rust side.
     return invoke<void>('set_dock_hit_region', {
       panel: integerRect(panel),
       envelope: integerRect(envelope),
+      edge,
     });
   }
 
-  setDockPanelRect(rect: Rect): Promise<void> {
-    return invoke<void>('set_dock_panel_rect', { rect: integerRect(rect) });
+  setDockPanelRect(rect: Rect, edge: DockPosition, viewport: Viewport): Promise<void> {
+    // The viewport is whole CSS px (`innerWidth` × `innerHeight` already are);
+    // Rust rejects a non-positive or non-finite one.
+    return invoke<void>('set_dock_panel_rect', {
+      rect: integerRect(rect),
+      edge,
+      viewport: { width: Math.round(viewport.width), height: Math.round(viewport.height) },
+    });
   }
 
   setDockAutoHidden(hidden: boolean): Promise<void> {

@@ -23,6 +23,7 @@ use std::fmt::{Debug, Display};
 use std::sync::Arc;
 
 use base64::Engine as _;
+use stem_core::settings::DockPosition;
 use stem_core::{
     AppFolder, AppId, AppInfo, DockState, IconKey, LaunchTarget, MonitorInfo, Rect, Settings,
     ShellAction, ThemeInfo, WindowAction, WindowId,
@@ -30,6 +31,7 @@ use stem_core::{
 use stem_platform::is_mock;
 use tauri::{AppHandle, State};
 
+use crate::windows::{CssViewport, PanelReport};
 use crate::{AppPaths, AppService};
 
 type CmdResult<T> = Result<T, String>;
@@ -191,18 +193,22 @@ async fn get_icon(
 /// The dock UI reports the size of its visible content (CSS pixels) so the
 /// window can take its thickness from it: the height on a horizontal dock
 /// (`bottom`, `top`), the width on a vertical one (`left`, `right`); the
-/// window stays as long as its work area along the edge. See `docs/ipc/sizing-protocol.md`
-/// . Only a dock window may call it, with finite numbers; the range
-/// is clamped in `windows::apply_content_size`. Synchronous on purpose: it
-/// touches the window and must run on the main thread.
+/// window stays as long as its work area along the edge. See
+/// `docs/ipc/sizing-protocol.md`. `edge` is the edge the page laid itself
+/// out for (docs/ipc/report-provenance.md, v1.18): a report for another
+/// edge than the window's is dropped there. Only a dock window may call
+/// it, with finite numbers; the range is clamped in
+/// `windows::apply_content_size`. Synchronous on purpose: it touches the
+/// window and must run on the main thread.
 #[tauri::command]
 fn set_dock_content_size(
     app: AppHandle,
     window: tauri::WebviewWindow,
     width: f64,
     height: f64,
+    edge: DockPosition,
 ) -> CmdResult<()> {
-    let args = (window.label().to_owned(), width, height);
+    let args = (window.label().to_owned(), width, height, edge);
     if !window.label().starts_with(crate::windows::DOCK_LABEL) {
         return checked(
             "set_dock_content_size",
@@ -220,13 +226,15 @@ fn set_dock_content_size(
     checked(
         "set_dock_content_size",
         &args,
-        crate::windows::apply_content_size(&app, &window, width, height),
+        crate::windows::apply_content_size(&app, &window, width, height, edge),
     )
 }
 
 /// The dock UI reports where it accepts clicks (CSS px, window-local; see
-/// `docs/ipc/hit-region.md`). Only a dock window may call it; the rects
-/// must have non-negative sizes and `envelope` must contain `panel`.
+/// `docs/ipc/hit-region.md`), laid out for `edge`
+/// (docs/ipc/report-provenance.md: a report for another edge than the
+/// window's is dropped). Only a dock window may call it; the rects must
+/// have non-negative sizes and `envelope` must contain `panel`.
 /// Synchronous: it reads the window's scale factor on the main thread and
 /// the platform call only hands the region to its tracking thread.
 #[tauri::command]
@@ -235,8 +243,9 @@ fn set_dock_hit_region(
     window: tauri::WebviewWindow,
     panel: Rect,
     envelope: Rect,
+    edge: DockPosition,
 ) -> CmdResult<()> {
-    let args = (window.label().to_owned(), panel, envelope);
+    let args = (window.label().to_owned(), panel, envelope, edge);
     if !window.label().starts_with(crate::windows::DOCK_LABEL) {
         return checked(
             "set_dock_hit_region",
@@ -250,21 +259,32 @@ fn set_dock_hit_region(
     checked(
         "set_dock_hit_region",
         &args,
-        crate::windows::apply_hit_region(&app, &window, panel, envelope),
+        crate::windows::apply_hit_region(&app, &window, panel, envelope, edge),
     )
 }
 
-/// The dock UI reports where its panel rests (CSS px relative to the
-/// viewport, whatever the auto-hide phase; see `docs/ipc/dock-panel.md`),
-/// so the engine can tell when a window overlaps it; the app layer
-/// hands it on with the calling window's label and monitor, so each dock
-/// has its own fact. Only a dock window may call it; the rect must
-/// have non-negative sizes. Synchronous: it reads the window's position and
-/// scale factor on the main thread, and the service call only queues the
+/// The dock UI reports where its panel rests (CSS px relative to
+/// `viewport`, whatever the auto-hide phase; see
+/// `docs/ipc/dock-panel.md`), so the engine can tell when a window
+/// overlaps it; the app layer hands it on with the calling window's label
+/// and monitor, so each dock has its own fact. `edge` and `viewport` say
+/// what the page measured it in (docs/ipc/report-provenance.md, v1.18): a
+/// report for another edge than the window's is dropped, and the rect is
+/// re-anchored to the window's viewport of the moment before it is
+/// converted. Only a dock window may call it; the rect must have
+/// non-negative sizes and the viewport a positive, finite width and
+/// height. Synchronous: it reads the window's position, size and scale
+/// factor on the main thread, and the service call only queues the
 /// converted rect for its worker.
 #[tauri::command]
-fn set_dock_panel_rect(app: AppHandle, window: tauri::WebviewWindow, rect: Rect) -> CmdResult<()> {
-    let args = (window.label().to_owned(), rect);
+fn set_dock_panel_rect(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    rect: Rect,
+    edge: DockPosition,
+    viewport: CssViewport,
+) -> CmdResult<()> {
+    let args = (window.label().to_owned(), rect, edge, viewport);
     if !window.label().starts_with(crate::windows::DOCK_LABEL) {
         return checked(
             "set_dock_panel_rect",
@@ -272,13 +292,18 @@ fn set_dock_panel_rect(app: AppHandle, window: tauri::WebviewWindow, rect: Rect)
             Err::<(), _>("only dock windows have a panel"),
         );
     }
-    if let Err(e) = crate::windows::validate_panel_rect(rect) {
+    if let Err(e) = crate::windows::validate_panel_rect(rect).and_then(|()| viewport.validate()) {
         return checked("set_dock_panel_rect", &args, Err::<(), _>(e));
     }
+    let report = PanelReport {
+        rect,
+        edge,
+        viewport,
+    };
     checked(
         "set_dock_panel_rect",
         &args,
-        crate::windows::apply_dock_panel(&app, &window, rect),
+        crate::windows::apply_dock_panel(&app, &window, report),
     )
 }
 

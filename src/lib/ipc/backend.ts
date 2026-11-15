@@ -8,9 +8,11 @@
  * browser or under Playwright.
  */
 
+import type { Viewport } from '$lib/dock/geometry';
 import type { AppFolder } from '$lib/ipc/generated/AppFolder';
 import type { AppId } from '$lib/ipc/generated/AppId';
 import type { AppInfo } from '$lib/ipc/generated/AppInfo';
+import type { DockPosition } from '$lib/ipc/generated/DockPosition';
 import type { DockState } from '$lib/ipc/generated/DockState';
 import type { IconKey } from '$lib/ipc/generated/IconKey';
 import type { LaunchTarget } from '$lib/ipc/generated/LaunchTarget';
@@ -95,22 +97,33 @@ export interface Backend {
   reorderPinned(order: AppId[]): Promise<void>;
   /** PNG `data:` URL, or `null` for `shell:*` keys and unknown keys. */
   getIcon(iconKey: IconKey, size: number): Promise<string | null>;
-  /** CSS pixels; Rust sizes the calling window (docs/ipc/sizing-protocol.md). */
-  setDockContentSize(width: number, height: number): Promise<void>;
+  /**
+   * CSS pixels; Rust sizes the calling window
+   * (docs/ipc/sizing-protocol.md). `edge` is the `Settings.position` the
+   * page laid itself out for when it measured
+   * (docs/ipc/report-provenance.md, v1.18): Rust drops a report naming
+   * another edge than the one the window is placed on.
+   */
+  setDockContentSize(width: number, height: number, edge: DockPosition): Promise<void>;
   /**
    * Where the calling dock window accepts clicks (docs/ipc/hit-region.md):
    * integer CSS px relative to the viewport; `envelope` contains `panel`.
    * Outside `panel` the window is click-through until the pointer enters it;
-   * it stays clickable until the pointer leaves `envelope`.
+   * it stays clickable until the pointer leaves `envelope`. `edge` as for
+   * `setDockContentSize`.
    */
-  setDockHitRegion(panel: Rect, envelope: Rect): Promise<void>;
+  setDockHitRegion(panel: Rect, envelope: Rect, edge: DockPosition): Promise<void>;
   /**
    * Where the calling dock window's panel rests (docs/ipc/dock-panel.md):
-   * integer CSS px relative to the viewport, whatever the auto-hide
+   * integer CSS px relative to `viewport`, whatever the auto-hide
    * phase. Rust converts it to screen pixels and the engine reports that
    * dock's `overlapped` against it, in its `DockState.docks` entry.
+   * `edge` as for `setDockContentSize`; `viewport` is the page's viewport
+   * the rect is relative to (`window.innerWidth` × `window.innerHeight`,
+   * whole CSS px), which lets Rust re-anchor the rect to a window it has
+   * resized since (docs/ipc/report-provenance.md, v1.18).
    */
-  setDockPanelRect(rect: Rect): Promise<void>;
+  setDockPanelRect(rect: Rect, edge: DockPosition, viewport: Viewport): Promise<void>;
   /**
    * Auto-hide slid the calling dock window's panel out (`true`) or brought
    * it back (`false`) (docs/ipc/toggle-while-hidden.md). Sent on

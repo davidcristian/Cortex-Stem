@@ -19,6 +19,7 @@ import {
   nothingToRecycle,
   overlapped,
   panelOnScreen,
+  reanchorPanel,
   rectsIntersect,
   recyclePlan,
   SECOND_MONITOR_ID,
@@ -43,6 +44,13 @@ const item = (state: DockState, key: string) => {
   }
   return found;
 };
+
+/**
+ * The mock monitor's work area as a viewport: what a backend without
+ * `viewportWidth`/`viewportHeight` takes for the window's in node (viewport
+ * px are screen px), so a panel reported in it is not re-anchored.
+ */
+const SCREEN = { width: 2560, height: 1392 } as const;
 
 /** A backend with no latency and identities resolved up front. */
 function fast(options: MockOptions = {}): MockBackend {
@@ -600,7 +608,7 @@ describe('revisions and events', () => {
     // The page registers its dock window (no panel rect yet): one entry on
     // the primary monitor with both facts clear.
     expect((await b.getDockState()).docks).toEqual([]);
-    await b.setDockPanelRect({ x: 1000, y: 1320, width: 560, height: 72 });
+    await b.setDockPanelRect({ x: 1000, y: 1320, width: 560, height: 72 }, 'bottom', SCREEN);
     const before = await b.getDockState();
     expect(before.docks).toEqual([
       { monitor: 'mock-primary', fullscreen: false, overlapped: false },
@@ -937,7 +945,10 @@ describe('a window over the dock (mirror of crates/stem-core/src/overlap.rs)', (
 
   it('a viewport width places a panel reported on the right edge like the app layer does', async () => {
     const b = fast({ viewportHeight: 1392, viewportWidth: 330, position: 'right' });
-    await b.setDockPanelRect({ x: 258, y: 400, width: 64, height: 561 });
+    await b.setDockPanelRect({ x: 258, y: 400, width: 64, height: 561 }, 'right', {
+      width: 330,
+      height: 1392,
+    });
     expect(b.dockPanel()).toEqual({ x: 2488, y: 400, width: 64, height: 561 });
     expect(overlappedOn(await b.getDockState())).toBe(false);
     // Terminal's window dragged over the right edge.
@@ -945,7 +956,10 @@ describe('a window over the dock (mirror of crates/stem-core/src/overlap.rs)', (
     expect(overlappedOn(await b.getDockState())).toBe(true);
     // The same report on the left edge: the viewport's left edge is the work area's.
     const left = fast({ viewportHeight: 1392, viewportWidth: 330, position: 'left' });
-    await left.setDockPanelRect({ x: 8, y: 400, width: 64, height: 561 });
+    await left.setDockPanelRect({ x: 8, y: 400, width: 64, height: 561 }, 'left', {
+      width: 330,
+      height: 1392,
+    });
     expect(left.dockPanel()).toEqual({ x: 8, y: 400, width: 64, height: 561 });
     expect(overlappedOn(await left.getDockState())).toBe(false);
   });
@@ -965,8 +979,10 @@ describe('a window over the dock (mirror of crates/stem-core/src/overlap.rs)', (
 
     // The first report registers the dock: one state with its entry, clear
     // of every demo window.
-    await b.setDockPanelRect(PANEL);
-    expect(b.calls).toEqual([{ type: 'setDockPanelRect', rect: PANEL }]);
+    await b.setDockPanelRect(PANEL, 'bottom', SCREEN);
+    expect(b.calls).toEqual([
+      { type: 'setDockPanelRect', rect: PANEL, edge: 'bottom', viewport: SCREEN },
+    ]);
     expect(b.dockPanel()).toEqual(PANEL);
     expect(b.dockPanel('dock')).toEqual(PANEL);
     expect(b.dockPanel('dock-DISPLAY3')).toBeNull();
@@ -1008,16 +1024,19 @@ describe('a window over the dock (mirror of crates/stem-core/src/overlap.rs)', (
 
     // The panel moves (a wider dock) but stays clear: nothing emitted; onto
     // a window: set.
-    await b.setDockPanelRect({ ...PANEL, x: 900, width: 760 });
+    await b.setDockPanelRect({ ...PANEL, x: 900, width: 760 }, 'bottom', SCREEN);
     expect(states).toHaveLength(count);
-    await b.setDockPanelRect({ x: 200, y: 40, width: 100, height: 100 });
+    await b.setDockPanelRect({ x: 200, y: 40, width: 100, height: 100 }, 'bottom', SCREEN);
     expect(overlappedOn(states.at(-1)!)).toBe(true);
     expect(overlappedOn(await b.getDockState())).toBe(true);
   });
 
   it('a viewport height places the reported panel like the app layer does', async () => {
     const b = fast({ viewportHeight: 240 });
-    await b.setDockPanelRect({ x: 360, y: 168, width: 561, height: 64 });
+    await b.setDockPanelRect({ x: 360, y: 168, width: 561, height: 64 }, 'bottom', {
+      width: 2560,
+      height: 240,
+    });
     expect(b.dockPanel()).toEqual({ x: 360, y: 1320, width: 561, height: 64 });
     expect(overlappedOn(await b.getDockState())).toBe(false);
     b.moveWindow(1, { x: 0, y: 1200, width: 2560, height: 192 });
@@ -1057,6 +1076,126 @@ describe('a window over the dock (mirror of crates/stem-core/src/overlap.rs)', (
     expect(
       panelOnScreen({ x: 10, y: 20, width: 30, height: 40 }, workArea, small, 'bottom', 0),
     ).toEqual(panelOnScreen({ x: 10, y: 20, width: 30, height: 40 }, workArea, small, 'bottom'));
+  });
+});
+
+describe('report provenance (mirror of src-tauri/src/windows.rs)', () => {
+  const row: Rect = { x: 960, y: 16, width: 640, height: 64 };
+  const topRow: Rect = { x: 960, y: 8, width: 640, height: 64 };
+  const column: Rect = { x: 8, y: 400, width: 64, height: 640 };
+  const rightColumn: Rect = { x: 78, y: 400, width: 64, height: 640 };
+  const wide = { width: 2560, height: 96 };
+  const tall = { width: 150, height: 1440 };
+
+  it('reanchorPanel keeps the distance to the edge side and the offset from the centre', () => {
+    // A thickness change.
+    expect(reanchorPanel(row, 'bottom', wide, { width: 2560, height: 144 })).toEqual({
+      ...row,
+      y: 64,
+    });
+    expect(reanchorPanel(topRow, 'top', wide, { width: 2560, height: 144 })).toEqual(topRow);
+    expect(reanchorPanel(column, 'left', tall, { width: 198, height: 1440 })).toEqual(column);
+    expect(reanchorPanel(rightColumn, 'right', tall, { width: 198, height: 1440 })).toEqual({
+      ...rightColumn,
+      x: 126,
+    });
+    // A length change: half of it along the edge.
+    expect(reanchorPanel(row, 'bottom', wide, { width: 1920, height: 96 })).toEqual({
+      ...row,
+      x: 640,
+    });
+    expect(reanchorPanel(topRow, 'top', wide, { width: 1920, height: 96 })).toEqual({
+      ...topRow,
+      x: 640,
+    });
+    expect(reanchorPanel(column, 'left', tall, { width: 150, height: 1040 })).toEqual({
+      ...column,
+      y: 200,
+    });
+    expect(reanchorPanel(rightColumn, 'right', tall, { width: 198, height: 1040 })).toEqual({
+      ...rightColumn,
+      x: 126,
+      y: 200,
+    });
+    // At 1.5x the window's viewport is fractional (2560 x 144 px = 1706.67 x
+    // 96 css): less than a px from the page's is the same viewport.
+    const fractional = { width: 2560 / 1.5, height: 96 };
+    expect(reanchorPanel(row, 'bottom', { width: 1707, height: 96 }, fractional)).toEqual(row);
+    expect(reanchorPanel(row, 'bottom', { width: 1706, height: 96 }, fractional)).toEqual(row);
+    // Half a px along the edge rounds away from zero, like Rust's `round`.
+    expect(reanchorPanel(row, 'bottom', wide, { width: 2563, height: 96 }).x).toBe(962);
+    expect(reanchorPanel(row, 'bottom', wide, { width: 2557, height: 96 }).x).toBe(959);
+    expect(reanchorPanel({ ...row, x: 0 }, 'top', wide, { width: 2559, height: 96 }).x).toBe(-1);
+    expect(reanchorPanel({ ...row, x: 1 }, 'top', wide, { width: 2558, height: 96 }).x).toBe(0);
+  });
+
+  it('setDockPanelRect records its provenance and re-anchors the rect to the window’s viewport', async () => {
+    // The window is 300 css tall now; the page measured in a 240 css one
+    // (its content size has been applied since): 60 css lower, the same
+    // place on screen as a report measured in a 240 css window.
+    const b = fast({ viewportHeight: 300, viewportWidth: 1280 });
+    const rect = { x: 360, y: 168, width: 561, height: 64 };
+    await b.setDockPanelRect(rect, 'bottom', { width: 1280, height: 240 });
+    expect(b.calls).toEqual([
+      { type: 'setDockPanelRect', rect, edge: 'bottom', viewport: { width: 1280, height: 240 } },
+    ]);
+    expect(b.dockPanel()).toEqual({ x: 360, y: 1320, width: 561, height: 64 });
+    // Measured in a window 280 css shorter along the edge: 140 css further along.
+    await b.setDockPanelRect(rect, 'bottom', { width: 1000, height: 240 });
+    expect(b.dockPanel()).toEqual({ x: 500, y: 1320, width: 561, height: 64 });
+
+    // On top, a thicker window leaves the rect where it is.
+    const top = fast({ position: 'top', viewportHeight: 300, viewportWidth: 1280 });
+    await top.setDockPanelRect({ ...rect, y: 8 }, 'top', { width: 1280, height: 240 });
+    expect(top.dockPanel()).toEqual({ x: 360, y: 8, width: 561, height: 64 });
+  });
+
+  it('a report measured for another edge than the window’s is recorded and dropped', async () => {
+    const b = fast({ viewportHeight: 240, viewportWidth: 1280 });
+    const rest = { x: 360, y: 168, width: 561, height: 64 };
+    await b.setDockPanelRect(rest, 'bottom', { width: 1280, height: 240 });
+    const atRest = b.dockPanel();
+    expect(atRest).toEqual({ x: 360, y: 1320, width: 561, height: 64 });
+
+    // The dock moves to the left edge; reports the page measured for the
+    // bottom edge are still on their way.
+    b.setPosition('left');
+    await b.setDockContentSize(1300, 135, 'bottom');
+    await b.setDockHitRegion(rest, { ...rest, y: 60, height: 172 }, 'bottom');
+    await b.setDockPanelRect({ ...rest, x: 300 }, 'bottom', { width: 1280, height: 240 });
+    expect(b.dockPanel()).toEqual(atRest);
+    expect(b.calls.map((c) => ('edge' in c ? [c.type, c.edge] : [c.type]))).toEqual([
+      ['setDockPanelRect', 'bottom'],
+      ['setDockContentSize', 'bottom'],
+      ['setDockHitRegion', 'bottom'],
+      ['setDockPanelRect', 'bottom'],
+    ]);
+
+    // The page's first report for the left edge is taken.
+    await b.setDockPanelRect({ x: 8, y: 400, width: 64, height: 561 }, 'left', {
+      width: 1280,
+      height: 240,
+    });
+    expect(b.dockPanel()).toEqual({ x: 8, y: 400, width: 64, height: 561 });
+  });
+
+  it('a viewport that is not positive and finite rejects the report, like Rust', async () => {
+    const b = fast();
+    const rect = { x: 0, y: 0, width: 10, height: 10 };
+    for (const viewport of [
+      { width: 0, height: 240 },
+      { width: 1280, height: -1 },
+      { width: Number.NaN, height: 240 },
+      { width: 1280, height: Number.POSITIVE_INFINITY },
+    ]) {
+      await expect(b.setDockPanelRect(rect, 'bottom', viewport)).rejects.toMatch(
+        /positive, finite width and height/,
+      );
+    }
+    expect(b.dockPanel()).toBeNull();
+    // The queue goes on.
+    await b.setDockPanelRect(rect, 'bottom', SCREEN);
+    expect(b.dockPanel()).toEqual(rect);
   });
 });
 
@@ -1120,8 +1259,8 @@ describe('two monitors', () => {
 
     // Each page's panel lands on its own monitor, the second at 150 %.
     const rect = { x: 360, y: 168, width: 561, height: 64 };
-    await primary.setDockPanelRect(rect);
-    await second.setDockPanelRect(rect);
+    await primary.setDockPanelRect(rect, 'bottom', { width: 2560, height: 240 });
+    await second.setDockPanelRect(rect, 'bottom', { width: 1920, height: 240 });
     expect(primary.dockPanel()).toEqual({ x: 360, y: 1320, width: 561, height: 64 });
     expect(second.dockPanel()).toEqual({ x: 3100, y: 924, width: 842, height: 96 });
     // One backend serves one page: each knows only its own dock.
@@ -1137,7 +1276,10 @@ describe('two monitors', () => {
   it('fullscreen and overlapped are per dock', async () => {
     const second = fast({ scenario: 'twoMonitors', viewportHeight: 240, monitor: DISPLAY3 });
     const states = recordStates(second);
-    await second.setDockPanelRect({ x: 360, y: 168, width: 561, height: 64 });
+    await second.setDockPanelRect({ x: 360, y: 168, width: 561, height: 64 }, 'bottom', {
+      width: 1920,
+      height: 240,
+    });
     states.length = 0;
 
     // A video goes fullscreen on the primary: not this dock's business.
@@ -1158,7 +1300,10 @@ describe('two monitors', () => {
     second.moveWindow(8, under);
     expect(factsOn(states.at(-1)!, DISPLAY3)?.overlapped).toBe(true);
     const primary = fast({ scenario: 'twoMonitors', viewportHeight: 240 });
-    await primary.setDockPanelRect({ x: 360, y: 168, width: 561, height: 64 });
+    await primary.setDockPanelRect({ x: 360, y: 168, width: 561, height: 64 }, 'bottom', {
+      width: 2560,
+      height: 240,
+    });
     const primaryStates = recordStates(primary);
     primary.moveWindow(8, under);
     expect(primaryStates).toHaveLength(0);
@@ -1191,8 +1336,11 @@ describe('two monitors', () => {
     monitor: string | null,
     showOnlyCurrentMonitor: boolean,
   ): Promise<MockBackend> {
-    const b = fast({ scenario: 'twoMonitors', viewportHeight: 240, monitor });
-    await b.setDockPanelRect({ x: 360, y: 168, width: 561, height: 64 });
+    const b = fast({ scenario: 'twoMonitors', viewportHeight: 240, viewportWidth: 1000, monitor });
+    await b.setDockPanelRect({ x: 360, y: 168, width: 561, height: 64 }, 'bottom', {
+      width: 1000,
+      height: 240,
+    });
     b.pushWindowRemoved(7);
     b.pushWindow(notepadOn(9, 'mock-primary'));
     b.pushWindow(notepadOn(7, DISPLAY3));

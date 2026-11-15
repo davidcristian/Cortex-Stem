@@ -327,6 +327,55 @@ function contentSizes(page: Page): Promise<Array<{ width: number; height: number
   );
 }
 
+/** One `set_dock_panel_rect` with its provenance (docs/ipc/report-provenance.md). */
+interface PanelRectCall {
+  rect: Rect;
+  edge: string;
+  viewport: { width: number; height: number };
+}
+
+/** Every `set_dock_panel_rect` the mock recorded so far, oldest first. */
+function panelRects(page: Page): Promise<PanelRectCall[]> {
+  return page.evaluate(() =>
+    ((window as unknown as DemoWindow).__dockMock?.calls ?? [])
+      .filter((c) => c.type === 'setDockPanelRect')
+      .map((c) => ({ rect: c.rect, edge: c.edge, viewport: c.viewport }) as PanelRectCall),
+  );
+}
+
+/**
+ * The three geometry reports the mock recorded from call `from` on, oldest
+ * first: each one's type and the edge it names.
+ */
+function geometryReports(page: Page, from = 0): Promise<Array<{ type: string; edge: unknown }>> {
+  return page.evaluate(
+    (m) =>
+      ((window as unknown as DemoWindow).__dockMock?.calls ?? [])
+        .slice(m)
+        .filter(
+          (c) =>
+            c.type === 'setDockContentSize' ||
+            c.type === 'setDockHitRegion' ||
+            c.type === 'setDockPanelRect',
+        )
+        .map((c) => ({ type: c.type, edge: c.edge })),
+    from,
+  );
+}
+
+/**
+ * How many side effects the mock has recorded once every command the page
+ * issued so far has run (the mock runs them in order, so one more command
+ * waits for them all): a mark for `geometryReports`.
+ */
+function callCount(page: Page): Promise<number> {
+  return page.evaluate(async () => {
+    const mock = (window as unknown as DemoWindow).__dockMock;
+    await mock?.getSettings();
+    return (mock?.calls ?? []).length;
+  });
+}
+
 function contains(outer: Rect, inner: Rect): boolean {
   return (
     inner.x >= outer.x &&
@@ -983,6 +1032,10 @@ test.describe('dock in mock mode', () => {
       const before = await pinnedKeys(page);
       const atRest = (await hitRegions(page))[0]!;
       const restSize = (await contentSizes(page))[0]!;
+      await expect.poll(async () => (await panelRects(page)).length).toBeGreaterThan(0);
+      const restPanel = (await panelRects(page)).at(-1)!;
+      const onScreen = await dockPanel(page);
+      expect(restPanel).toEqual({ rect: atRest.panel, edge: 'bottom', viewport });
       // Rust grows the window to the work area's height with its bottom
       // edge fixed; the viewport's origin moves up by the growth.
       const GROWTH = 720;
@@ -1013,6 +1066,13 @@ test.describe('dock in mock mode', () => {
         });
       const grown = (await page.locator('.dock-panel').boundingBox())!;
       expect(Math.floor(grown.y)).toBe(atRest.panel.y + GROWTH);
+      // The panel rect goes again with the viewport it is relative to now,
+      // and the app layer's conversion puts it where it was.
+      const grownViewport = { width: viewport.width, height: viewport.height + GROWTH };
+      await expect
+        .poll(async () => (await panelRects(page)).at(-1))
+        .toEqual({ rect: shifted(atRest.panel), edge: 'bottom', viewport: grownViewport });
+      expect(await dockPanel(page)).toEqual(onScreen);
       await page.mouse.move(pointer.x, pointer.y + GROWTH);
       await expect(page.locator(PINNED).nth(0)).toHaveAttribute('data-drag', 'lifted');
 
@@ -1039,6 +1099,8 @@ test.describe('dock in mock mode', () => {
       // drops the hover state and measures again: the rest region is back.
       await page.setViewportSize(viewport);
       await expect.poll(async () => (await hitRegions(page)).at(-1)).toEqual(atRest);
+      await expect.poll(async () => (await panelRects(page)).at(-1)).toEqual(restPanel);
+      expect(await dockPanel(page)).toEqual(onScreen);
       expect(await scaleOf(page, 2)).toBe(1);
       await expect(page.locator('.tooltip')).toHaveCount(0);
       const reports = (await hitRegions(page)).length;
@@ -4597,6 +4659,81 @@ test.describe('the dock on the left, right and top edges', () => {
     });
   }
 
+  // Report provenance (docs/ipc/report-provenance.md): Rust drops a
+  // report naming another edge than its window's and re-anchors the panel
+  // rect from the viewport it carries, so both must be the page's own.
+  for (const edge of ['bottom', 'top', 'left', 'right'] as const) {
+    test(`on ${edge}: every geometry report names the edge the page laid out for, the panel rect its viewport`, async ({
+      page,
+    }) => {
+      await openOn(page, edge);
+      await expect.poll(() => lastPanelRect(page)).toBeDefined();
+      await expect(page.locator('[data-edge]').first()).toHaveAttribute('data-edge', edge);
+      // A setting that changes the thickness only: another round of reports.
+      const mark = await callCount(page);
+      await patchSettings(page, { magnification: { enabled: true, maxScale: 2, rangeIcons: 3 } });
+      await expect.poll(async () => (await geometryReports(page, mark)).length).toBeGreaterThan(0);
+
+      const reports = await geometryReports(page);
+      expect(new Set(reports.map((r) => r.type))).toEqual(
+        new Set(['setDockContentSize', 'setDockHitRegion', 'setDockPanelRect']),
+      );
+      for (const report of reports) {
+        expect(report.edge, report.type).toBe(edge);
+      }
+      const viewport = viewportFor(edge);
+      const panels = await panelRects(page);
+      expect(panels.length).toBeGreaterThan(0);
+      for (const panel of panels) {
+        expect(panel.viewport).toEqual(viewport);
+        expect(contains({ x: 0, y: 0, ...viewport }, panel.rect)).toBe(true);
+      }
+      // The mock converts each report from its viewport, so its panel on
+      // screen is the one of the latest report.
+      const rest = panels.at(-1)!.rect;
+      const onScreen =
+        edge === 'right'
+          ? { ...rest, x: WORK_AREA.width - viewport.width + rest.x }
+          : edge === 'bottom'
+            ? { ...rest, y: WORK_AREA.height - viewport.height + rest.y }
+            : rest;
+      expect(await dockPanel(page)).toEqual(onScreen);
+    });
+  }
+
+  test('a position change: the reports name the old edge before it and the new one after it', async ({
+    page,
+  }) => {
+    await openDock(page);
+    await expect.poll(() => lastPanelRect(page)).toBeDefined();
+    const before = await geometryReports(page);
+    expect(before.length).toBeGreaterThan(0);
+    expect(before.every((r) => r.edge === 'bottom')).toBe(true);
+
+    for (const [edge, size] of [
+      ['left', SIDE_VIEWPORT],
+      ['top', TOP_VIEWPORT],
+      ['right', SIDE_VIEWPORT],
+      ['bottom', TOP_VIEWPORT],
+    ] as const) {
+      const mark = await callCount(page);
+      await patchSettings(page, { position: edge });
+      await page.setViewportSize(size);
+      await expect(page.locator('[data-edge]').first()).toHaveAttribute('data-edge', edge);
+      await expect
+        .poll(async () => (await panelRects(page)).at(-1)?.viewport)
+        .toEqual({ width: size.width, height: size.height });
+      const since = await geometryReports(page, mark);
+      expect(new Set(since.map((r) => r.type))).toEqual(
+        new Set(['setDockContentSize', 'setDockHitRegion', 'setDockPanelRect']),
+      );
+      for (const report of since) {
+        expect(report.edge, `${report.type} after the move to ${edge}`).toBe(edge);
+      }
+      expect((await panelRects(page)).at(-1)?.edge).toBe(edge);
+    }
+  });
+
   test('a position change at runtime lays the page out again without a reload', async ({
     page,
   }) => {
@@ -4686,7 +4823,7 @@ test.describe('the dock on the left, right and top edges', () => {
       await expect.poll(async () => (await lastSize(page))?.width).toBe(thickness);
       await expect.poll(async () => (await lastRegion(page))?.panel.x).toBe(EDGE_MARGIN);
       await expect.poll(async () => (await lastPanelRect(page))?.x).toBe(EDGE_MARGIN);
-      type Report = { type: string; rect: Rect } | { type: string; width: number };
+      type Report = { type: string; edge: unknown } & ({ rect: Rect } | { width: number });
       const since = await page.evaluate(
         (m) =>
           ((window as unknown as DemoWindow).__dockMock?.calls ?? [])
@@ -4694,11 +4831,11 @@ test.describe('the dock on the left, right and top edges', () => {
             .flatMap((c): Report[] => {
               switch (c.type) {
                 case 'setDockHitRegion':
-                  return [{ type: c.type, rect: c.panel as Rect }];
+                  return [{ type: c.type, edge: c.edge, rect: c.panel as Rect }];
                 case 'setDockPanelRect':
-                  return [{ type: c.type, rect: c.rect as Rect }];
+                  return [{ type: c.type, edge: c.edge, rect: c.rect as Rect }];
                 case 'setDockContentSize':
-                  return [{ type: c.type, width: c.width as number }];
+                  return [{ type: c.type, edge: c.edge, width: c.width as number }];
                 default:
                   return [];
               }
@@ -4709,6 +4846,8 @@ test.describe('the dock on the left, right and top edges', () => {
         expect.arrayContaining(['setDockContentSize', 'setDockHitRegion', 'setDockPanelRect']),
       );
       for (const call of since) {
+        // Named for the edge it was laid out for.
+        expect(call.edge, call.type).toBe('left');
         if ('rect' in call) {
           // A column 8 px from the left side, not the row centred along the bottom.
           expect(call.rect.x, call.type).toBe(EDGE_MARGIN);

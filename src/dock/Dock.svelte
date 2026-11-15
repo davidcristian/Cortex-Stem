@@ -638,7 +638,7 @@
       ? { width: DRAG_WINDOW_THICKNESS, height: reported.height }
       : { width: reported.width, height: DRAG_WINDOW_THICKNESS };
     void backend
-      .setDockContentSize(reported.width, reported.height)
+      .setDockContentSize(reported.width, reported.height, edge)
       .catch(report('set_dock_content_size', false));
   }
 
@@ -966,8 +966,8 @@
   let snapMargins: SnapMargins = { start: 0, edge: EDGE_MARGIN };
   let reported = { width: 0, height: 0 };
   let reportedHit: HitRegion | null = null;
-  /** The resting panel of the latest `set_dock_panel_rect`. */
-  let reportedPanel: Rect | null = null;
+  /** The resting panel of the latest `set_dock_panel_rect`, with the viewport it is relative to. */
+  let reportedPanel: { rect: Rect; viewport: Viewport } | null = null;
   let measureFrame = 0;
 
   /** Measure on the next frame, at most once per frame. */
@@ -1091,7 +1091,9 @@
       : Math.ceil(rest.height + snapMargins.edge + rise + HEADROOM);
     if (width !== reported.width || height !== reported.height) {
       reported = { width, height };
-      void backend.setDockContentSize(width, height).catch(report('set_dock_content_size', false));
+      void backend
+        .setDockContentSize(width, height, edge)
+        .catch(report('set_dock_content_size', false));
     }
     reportHitRegion();
   }
@@ -1146,7 +1148,7 @@
     }
     reportedHit = region;
     void backend
-      .setDockHitRegion(region.panel, region.envelope)
+      .setDockHitRegion(region.panel, region.envelope, edge)
       .catch(report('set_dock_hit_region', false));
   }
 
@@ -1156,21 +1158,32 @@
    * hidden dock's hit region is the strip, which nothing could overlap, so
    * the overlap reference is reported on its own). The window grows for a
    * drag with its edge side fixed, so on `bottom` and `right` the panel
-   * shifts by the growth (`edgeShift`), like the hit region's. Sent
-   * only when it changed.
+   * shifts by the growth (`edgeShift`), like the hit region's. It
+   * goes with its provenance (docs/ipc/report-provenance.md): the
+   * edge the page is laid out for and the viewport the rect is relative to,
+   * which lets Rust re-anchor it to a window it resized meanwhile. Sent only
+   * when the rect or that viewport changed.
    */
   function reportDockPanel(): void {
     const rest = restingPanel();
     if (rest === null) {
       return;
     }
-    const { dx, dy } = edgeShift(edge, measuredViewport, viewportNow());
+    const viewport = viewportNow();
+    const { dx, dy } = edgeShift(edge, measuredViewport, viewport);
     const panel = integerRect({ ...rest, x: rest.x + dx, y: rest.y + dy });
-    if (reportedPanel !== null && sameRect(reportedPanel, panel)) {
+    if (
+      reportedPanel !== null &&
+      sameRect(reportedPanel.rect, panel) &&
+      reportedPanel.viewport.width === viewport.width &&
+      reportedPanel.viewport.height === viewport.height
+    ) {
       return;
     }
-    reportedPanel = panel;
-    void backend.setDockPanelRect(panel).catch(report('set_dock_panel_rect', false));
+    reportedPanel = { rect: panel, viewport };
+    void backend
+      .setDockPanelRect(panel, edge, viewport)
+      .catch(report('set_dock_panel_rect', false));
   }
 
   /**

@@ -15,13 +15,18 @@
 //!   other bars on that edge. Its thickness is the panel's resting
 //!   thickness plus its margin to the edge, from the window's latest
 //!   `set_dock_panel_rect` (the distance from the panel's far side to the
-//!   window's edge side, in CSS px, taken when the page reports and scaled
-//!   when the request is made, [`request_for`]; a report that does not lie
-//!   inside the window across the edge, measured before a resize, keeps the
-//!   thickness as it was, so it never gives the band back); never the
-//!   magnification headroom, which the window keeps: it reaches past the
-//!   band into the work area, transparent and click-through there as
-//!   before.
+//!   viewport's edge side, in CSS px, taken when the page reports and
+//!   scaled when the request is made, [`request_for`]). It is read against
+//!   the viewport the report carries (`windows::PanelReport`): that
+//!   distance is what the re-anchored rect keeps in the window's viewport
+//!   of any moment, so a report handled after a resize the page had not
+//!   seen yet (a drop, a smaller icon size) gives the right thickness at
+//!   once. (Earlier it was read against the window's viewport when the
+//!   report was handled, and such a report had to leave the thickness as it
+//!   was until the page's next one; a report measured for another edge is
+//!   now dropped before it gets here.) Never the magnification headroom,
+//!   which the window keeps: it reaches past the band into the work area,
+//!   transparent and click-through there as before.
 //! - The window goes with its edge side on the band the shell granted
 //!   (`rules::appbar::window_rect`, in `windows::layout`) instead of on the
 //!   work area's edge, which is the band's far side once the band is
@@ -190,8 +195,9 @@ pub struct BarInputs {
     pub placed: Option<DockPosition>,
     /// The edge in effect (`settings.position`).
     pub edge: DockPosition,
-    /// From the resting panel's far side to the window's edge side, CSS px,
-    /// from the page's latest panel rect for the edge it is placed on.
+    /// From the resting panel's far side to the viewport's edge side, CSS
+    /// px, from the page's latest panel rect for the edge the window is
+    /// placed on, read against the viewport that report carries.
     pub reserve_css: Option<i32>,
     /// The window's scale factor.
     pub scale: f64,

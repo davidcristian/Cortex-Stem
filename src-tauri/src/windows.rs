@@ -86,6 +86,24 @@
 //! reports a rect laid out for the new edge ([`forget_edge_layout`]), and
 //! neither monitor nor rect once the window is closed.
 //!
+//! Report provenance (`docs/ipc/report-provenance.md`, v1.18): the
+//! page measures, then reports, and a report is handled here later, maybe
+//! after this module moved or resized the window. Each of the three
+//! geometry reports names the edge the page laid itself out for, and a
+//! report naming another edge than the one the window was placed on last
+//! ([`DockWindowState::stale_for`]) was measured before the page saw a
+//! position change: it is dropped (one `debug` line), and the page's next
+//! reports, laid out for the new edge, are applied as usual. The panel rect
+//! also carries the viewport it is relative to ([`PanelReport`]): every
+//! conversion re-anchors it to the window's viewport of the moment
+//! ([`reanchor_panel`], the page's own layout: anchored to the edge side,
+//! centred along it), so the engine's panel, the band and the backdrop read
+//! it where the panel is now, after a resize the page has not reported yet
+//! (its content size, sent in the same tick and applied first; a drag's
+//! growth; a thickness change on `top` or `left`, which leaves the rect
+//! unchanged, so the page does not report it again). The band's thickness
+//! is read against the report's own viewport.
+//!
 //! Reserve screen space (`appbar`): while a dock window holds a band
 //! the shell reserved for it as an AppBar, [`layout`] puts the window's
 //! edge side on the band's edge side
@@ -146,8 +164,9 @@ pub struct DockWindowState {
     /// view of the primary monitor put it, and the engine gets no monitor
     /// for it).
     monitor: Option<MonitorId>,
-    /// The latest `set_dock_content_size`, clamped, with the edge it was
-    /// reported on; `None` before the UI's first report.
+    /// The latest `set_dock_content_size`, clamped, with the edge the page
+    /// measured it for (the edge the window was on then, or the
+    /// report was dropped); `None` before the UI's first report.
     content: Option<DockContent>,
     /// The edge the window was placed on last, taken as soon as the window
     /// has its size for that edge ([`place`]); `None` before its first
@@ -158,26 +177,207 @@ pub struct DockWindowState {
     /// while `behavior.clickThrough` is on and replayed when it is turned
     /// back on.
     hit_region_css: Option<(Rect, Rect)>,
-    /// The resting panel of the latest `set_dock_panel_rect`,
-    /// converted again whenever the window moves or is shown.
-    panel_css: Option<Rect>,
-    /// From that panel's far side to the window's edge side, CSS px, as the
-    /// viewport was when the page reported it: the thickness of the
-    /// band *Reserve screen space* asks for, scaled when the request is
-    /// made (`appbar::request_for`). Taken at the report rather than at
-    /// each placement, so a window that grows for a drag (whose page
-    /// reports the panel's new place only afterwards) never asks for a
-    /// thicker band meanwhile. Kept as it was when a report does not lie
-    /// inside the viewport it is read against (`reserved_thickness` is
-    /// `None`: the page measured it before a resize it had not seen, a drop
-    /// or a smaller icon size), so such a report never gives the band back;
-    /// the page's next one, measured after the resize, sets it. Dropped with
-    /// the panel rect.
+    /// The resting panel of the latest `set_dock_panel_rect` with
+    /// the edge and the viewport the page measured it in; converted
+    /// again, re-anchored to the window's viewport of the moment
+    /// ([`PanelReport::now`]), whenever the window moves or is shown.
+    panel: Option<PanelReport>,
+    /// From that panel's far side to the viewport's edge side, CSS px, read
+    /// against the viewport the page measured it in: the
+    /// thickness of the band *Reserve screen space* asks for, scaled when
+    /// the request is made (`appbar::request_for`). The distance to the edge
+    /// side is what re-anchoring keeps, so it holds in the window's viewport
+    /// of any moment: a report handled after a resize (a drop, a smaller
+    /// icon size) gives the band its right thickness at once, and a window
+    /// that grows for a drag never asks for a thicker band. Kept as it was
+    /// only when the rect does not lie inside its own viewport across the
+    /// edge (`reserved_thickness` is `None`), which a page laid out as
+    /// `docs/ipc/sizing-protocol.md` says never sends. Dropped with the
+    /// panel rect.
     reserve_css: Option<i32>,
     /// The window's scale factor as last seen (at creation, then on every
     /// `ScaleFactorChanged`), so the log line of a change can say what it
     /// changed from.
     scale: Option<f64>,
+}
+
+impl DockWindowState {
+    /// The edge the window was placed on last when a report the page
+    /// measured for `edge` does not belong to it: the page laid
+    /// itself out for another edge, before it saw a position change, and
+    /// the report is dropped. `None` when the report is current, and for any
+    /// edge before the window's first placement (a window is placed when it
+    /// is created, before its page loads).
+    fn stale_for(&self, edge: DockPosition) -> Option<DockPosition> {
+        self.edge.filter(|placed| *placed != edge)
+    }
+
+    /// Take a `set_dock_content_size` measured for `content.edge`, unless it
+    /// is stale ([`Self::stale_for`]; `Err` with the window's edge).
+    fn take_content(&mut self, content: DockContent) -> Result<(), DockPosition> {
+        if let Some(placed) = self.stale_for(content.edge) {
+            return Err(placed);
+        }
+        self.content = Some(content);
+        Ok(())
+    }
+
+    /// Take a `set_dock_hit_region` measured for `edge`, unless it is stale
+    /// ([`Self::stale_for`]; `Err` with the window's edge).
+    fn take_hit_region(
+        &mut self,
+        panel: Rect,
+        envelope: Rect,
+        edge: DockPosition,
+    ) -> Result<(), DockPosition> {
+        if let Some(placed) = self.stale_for(edge) {
+            return Err(placed);
+        }
+        self.hit_region_css = Some((panel, envelope));
+        Ok(())
+    }
+
+    /// Take a `set_dock_panel_rect`, unless it is stale
+    /// ([`Self::stale_for`]; `Err` with the window's edge), with the band's
+    /// thickness read against the report's own viewport: `Ok(Some(css))`,
+    /// or `Ok(None)` when the rect does not lie inside that viewport across
+    /// the edge, which keeps the thickness as it was.
+    fn take_panel(&mut self, report: PanelReport) -> Result<Option<i32>, DockPosition> {
+        if let Some(placed) = self.stale_for(report.edge) {
+            return Err(placed);
+        }
+        self.panel = Some(report);
+        let thickness = reserved_thickness(report.viewport.whole(), report.rect, report.edge);
+        if thickness.is_some() {
+            self.reserve_css = thickness;
+        }
+        Ok(thickness)
+    }
+}
+
+/// A dock window's viewport in CSS px: the space the page measures in.
+/// What `set_dock_panel_rect` carries as `viewport` (the page's
+/// `window.innerWidth` × `window.innerHeight`, whole CSS px), and what the
+/// window has now ([`CssViewport::of`] its client area, fractional at a
+/// scale other than 1). The app layer's own type: no `stem-core` type
+/// crosses IPC for it.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
+pub struct CssViewport {
+    pub width: f64,
+    pub height: f64,
+}
+
+impl CssViewport {
+    /// A client area of `physical` px (width, height) at `scale` (1 when
+    /// unusable). Pure.
+    pub fn of(physical: (u32, u32), scale: f64) -> Self {
+        let scale = if scale.is_finite() && scale > 0.0 {
+            scale
+        } else {
+            1.0
+        };
+        Self {
+            width: f64::from(physical.0) / scale,
+            height: f64::from(physical.1) / scale,
+        }
+    }
+
+    /// Argument check for `set_dock_panel_rect`'s `viewport`: both sides
+    /// finite and positive (`docs/ipc/report-provenance.md`). Pure.
+    pub fn validate(self) -> Result<(), String> {
+        let usable = |v: f64| v.is_finite() && v > 0.0;
+        if usable(self.width) && usable(self.height) {
+            Ok(())
+        } else {
+            Err(format!(
+                "the viewport must have a positive, finite width and height: {self:?}"
+            ))
+        }
+    }
+
+    /// Rounded to whole CSS px, the space of the page's rects.
+    fn whole(self) -> (i32, i32) {
+        let whole = |v: f64| {
+            if v.is_finite() {
+                v.round().clamp(0.0, f64::from(i32::MAX)) as i32
+            } else {
+                0
+            }
+        };
+        (whole(self.width), whole(self.height))
+    }
+}
+
+/// One `set_dock_panel_rect` with its provenance, kept per
+/// window ([`DockWindowState`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PanelReport {
+    /// The panel at rest, whole CSS px relative to `viewport`.
+    pub rect: Rect,
+    /// The edge the page had laid itself out for.
+    pub edge: DockPosition,
+    /// The page's viewport the rect is relative to.
+    pub viewport: CssViewport,
+}
+
+impl PanelReport {
+    /// The rect in a window whose viewport is `now` ([`reanchor_panel`]):
+    /// where the panel rests now. As reported when the window cannot say
+    /// (`None`). Pure.
+    pub fn now(self, now: Option<CssViewport>) -> Rect {
+        match now {
+            Some(now) => reanchor_panel(self.rect, self.edge, self.viewport, now),
+            None => self.rect,
+        }
+    }
+}
+
+/// How far (CSS px) the page's viewport and the window's may differ on an
+/// axis and still count as the same ([`reanchor_panel`]): the page reports
+/// whole CSS px, and the window's client area of whole physical px is
+/// fractional in CSS px at a scale other than 1, so the two differ by less
+/// than 1 when nothing changed. The window's thickness and length change by
+/// whole CSS px at 1×, and by more than one at any larger scale.
+pub const VIEWPORT_SLACK_CSS: f64 = 1.0;
+
+/// The panel `rect` (CSS px) that the page measured in the viewport `from`,
+/// laid out for `edge`, moved to where the page's layout
+/// (`docs/ipc/sizing-protocol.md`: the panel anchored to the window's edge
+/// side and centred along it) puts it in the viewport `to`: across the edge
+/// it keeps its distance to the viewport's edge side (on `bottom` it moves
+/// by the change in height, on `right` by the change in width, on `top` and
+/// `left` it stays), along the edge its offset from the viewport's centre
+/// (it moves by half the change in length, rounded to the nearest CSS px).
+/// Its size never changes. A difference under [`VIEWPORT_SLACK_CSS`] on an
+/// axis moves nothing on it. Pure.
+pub fn reanchor_panel(rect: Rect, edge: DockPosition, from: CssViewport, to: CssViewport) -> Rect {
+    let change = |before: f64, after: f64| {
+        let d = after - before;
+        if d.is_finite() && d.abs() >= VIEWPORT_SLACK_CSS {
+            d
+        } else {
+            0.0
+        }
+    };
+    let dw = change(from.width, to.width);
+    let dh = change(from.height, to.height);
+    let (dx, dy) = match edge {
+        DockPosition::Bottom => (dw / 2.0, dh),
+        DockPosition::Top => (dw / 2.0, 0.0),
+        DockPosition::Left => (0.0, dh / 2.0),
+        DockPosition::Right => (dw, dh / 2.0),
+    };
+    let shift = |v: i32, d: f64| {
+        (f64::from(v) + d)
+            .round()
+            .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
+    };
+    Rect::new(
+        shift(rect.x, dx),
+        shift(rect.y, dy),
+        rect.width,
+        rect.height,
+    )
 }
 
 /// The dock windows that exist, by label, with what each one's UI reported,
@@ -675,39 +875,54 @@ pub(crate) fn dock_windows(app: &AppHandle) -> Vec<WebviewWindow> {
 // dock windows: the UI's reports
 // ---------------------------------------------------------------------------
 
-/// Take the reported content size (CSS px) for the edge in effect: the
-/// value across the edge becomes the window's thickness, and the window is
-/// laid on that edge of its own monitor's work area, as long as the work
-/// area along it ([`layout`]). Called from the `set_dock_content_size`
-/// command, on the main thread.
+/// One `debug` line for a report the page measured for `edge` while the
+/// window is on `placed`: dropped, the page reports for the new
+/// edge next.
+fn log_stale(label: &str, report: &str, edge: DockPosition, placed: DockPosition) {
+    log::debug!(
+        "dock window {label:?}: {report} measured for the {edge:?} edge dropped; the window is on the {placed:?} edge"
+    );
+}
+
+/// Take the reported content size (CSS px), measured for `edge`: the value
+/// across that edge becomes the window's thickness, and the window is laid
+/// on the edge in effect of its own monitor's work area, as long as the
+/// work area along it ([`layout`]). A report measured for another edge than
+/// the window's is dropped ([`DockWindowState::take_content`]).
+/// Called from the `set_dock_content_size` command, on the main thread.
 pub fn apply_content_size(
     app: &AppHandle,
     window: &WebviewWindow,
     width: f64,
     height: f64,
+    edge: DockPosition,
 ) -> tauri::Result<()> {
-    let edge = dock_edge(app);
     let (width, height) = clamp_content(edge, width, height);
     let content = DockContent {
         width,
         height,
         edge,
     };
-    let remembered = app
+    let taken = app
         .try_state::<DockGeometry>()
-        .and_then(|geometry| geometry.update(window.label(), |dock| dock.content = Some(content)));
-    if remembered.is_none() {
-        log::warn!(
+        .and_then(|geometry| geometry.update(window.label(), |dock| dock.take_content(content)));
+    match taken {
+        Some(Ok(())) => {}
+        Some(Err(placed)) => {
+            log_stale(window.label(), "a content size", edge, placed);
+            return Ok(());
+        }
+        None => log::warn!(
             "no state for dock window {:?}; monitor changes will not re-layout it",
             window.label()
-        );
+        ),
     }
     let monitors = match app.try_state::<crate::AppService>() {
         Some(service) => service.0.monitors(),
         None => Vec::new(),
     };
     let monitor = monitor_of(app, window.label(), &monitors);
-    layout(window, monitor.as_ref(), edge, Some(content))
+    layout(window, monitor.as_ref(), dock_edge(app), Some(content))
 }
 
 /// Argument check for `set_dock_hit_region` (`docs/ipc/hit-region.md`):
@@ -730,26 +945,34 @@ pub fn validate_hit_region(panel: Rect, envelope: Rect) -> Result<(), String> {
     Ok(())
 }
 
-/// Remember the UI's hit region (CSS px, window-local) and, while
-/// `behavior.clickThrough` is on, hand it to the platform in physical
-/// pixels. While the setting is off the window stays fully clickable and
-/// the report waits for the setting to be turned on ([`on_settings_changed`]).
-/// A platform without the feature (mock, non-Windows hosts) leaves the
-/// window fully clickable; that is logged once at debug and is not an error
-/// for the UI. Runs on the main thread.
+/// Remember the UI's hit region (CSS px, window-local), measured for
+/// `edge`, and, while `behavior.clickThrough` is on, hand it to the
+/// platform in physical pixels. While the setting is off the window stays
+/// fully clickable and the report waits for the setting to be turned on
+/// ([`on_settings_changed`]). A report measured for another edge than the
+/// window's is dropped ([`DockWindowState::take_hit_region`]): the
+/// platform keeps the region it has until the page's report for the new
+/// edge. A platform without the feature (mock, non-Windows hosts) leaves
+/// the window fully clickable; that is logged once at debug and is not an
+/// error for the UI. Runs on the main thread.
 pub fn apply_hit_region(
     app: &AppHandle,
     window: &WebviewWindow,
     panel: Rect,
     envelope: Rect,
+    edge: DockPosition,
 ) -> Result<(), String> {
     let service = app
         .try_state::<crate::AppService>()
         .ok_or_else(|| "service not available".to_owned())?;
     if let Some(geometry) = app.try_state::<DockGeometry>() {
-        geometry.update(window.label(), |dock| {
-            dock.hit_region_css = Some((panel, envelope));
+        let taken = geometry.update(window.label(), |dock| {
+            dock.take_hit_region(panel, envelope, edge)
         });
+        if let Some(Err(placed)) = taken {
+            log_stale(window.label(), "a hit region", edge, placed);
+            return Ok(());
+        }
     }
     if !service.0.settings().behavior.click_through {
         log::trace!(
@@ -804,72 +1027,85 @@ pub fn validate_panel_rect(rect: Rect) -> Result<(), String> {
     Ok(())
 }
 
-/// Remember the UI's resting panel (CSS px, viewport-relative) and hand it
-/// to the service in physical screen pixels, with the window's
-/// label and monitor; no rect goes instead while the window is
-/// hidden. The panel's distance to the window's edge side is the band
-/// *Reserve screen space* asks for (`appbar::sync`), unless the
-/// panel does not lie inside the window's viewport across the edge: the
-/// page sends its content size first, and that resize runs before this
-/// report is handled, so a report measured before the window shrank says
-/// nothing about the band, which keeps its thickness. Runs on the main
-/// thread.
-pub fn apply_dock_panel(app: &AppHandle, window: &WebviewWindow, rect: Rect) -> Result<(), String> {
+/// Remember the UI's resting panel (CSS px of the viewport it carries,
+/// measured for the edge it names) and hand it to the service in physical
+/// screen pixels, with the window's label and monitor,
+/// re-anchored to the window's viewport of the moment
+/// ([`push_dock_panel`]); no rect goes instead while the window is hidden. A
+/// report measured for another edge than the window's is dropped
+/// ([`DockWindowState::take_panel`]). The panel's distance to its
+/// viewport's edge side is the band *Reserve screen space* asks for
+/// (`appbar::sync`), read against the report's own viewport, so a report
+/// handled after the resize the page sent its content size for (the same
+/// tick, applied first) says what it said when the page measured it. Runs
+/// on the main thread.
+pub fn apply_dock_panel(
+    app: &AppHandle,
+    window: &WebviewWindow,
+    report: PanelReport,
+) -> Result<(), String> {
     let service = app
         .try_state::<crate::AppService>()
         .ok_or_else(|| "service not available".to_owned())?;
-    let viewport = viewport_css(window);
     if let Some(geometry) = app.try_state::<DockGeometry>() {
-        let kept = geometry.update(window.label(), |dock| {
-            dock.panel_css = Some(rect);
-            let Some((edge, viewport)) = dock.edge.zip(viewport) else {
-                dock.reserve_css = None;
-                return None;
-            };
-            match reserved_thickness(viewport, rect, edge) {
-                Some(css) => {
-                    dock.reserve_css = Some(css);
-                    None
-                }
-                None => Some((edge, viewport, dock.reserve_css)),
-            }
+        let taken = geometry.update(window.label(), |dock| {
+            (dock.take_panel(report), dock.reserve_css)
         });
-        if let Some(Some((edge, viewport, reserve))) = kept {
-            log::debug!(
-                "dock window {:?}: the panel {rect:?} does not lie inside the {viewport:?} css viewport across the {edge:?} edge (measured before a resize); the band keeps {reserve:?} css until the next report",
-                window.label()
-            );
+        match taken {
+            Some((Err(placed), _)) => {
+                log_stale(window.label(), "a panel rect", report.edge, placed);
+                return Ok(());
+            }
+            Some((Ok(None), reserve)) => log::debug!(
+                "dock window {:?}: the panel {:?} does not lie inside the {:?} css viewport it was measured in across the {:?} edge; the band keeps {reserve:?} css",
+                window.label(),
+                report.rect,
+                report.viewport,
+                report.edge
+            ),
+            Some((Ok(Some(_)), _)) | None => {}
         }
     }
-    crate::backdrop::on_panel_measured(app, window);
-    let pushed = push_dock_panel(app, &service.0, window, rect);
+    let pushed = push_dock_panel(app, &service.0, window, report, None);
     crate::appbar::sync(app, window);
     pushed
 }
 
-/// The window's viewport in CSS px (its client size over its scale
-/// factor, rounded), the space of the page's rects; `None` when the
-/// window cannot say.
-fn viewport_css(window: &WebviewWindow) -> Option<(i32, i32)> {
-    let size = window.inner_size().ok()?;
-    let scale = window
-        .scale_factor()
-        .ok()
-        .filter(|s| s.is_finite() && *s > 0.0)?;
-    let css = |px: u32| (f64::from(px) / scale).round().min(f64::from(i32::MAX)) as i32;
-    Some((css(size.width), css(size.height)))
+/// The window's viewport in CSS px now (its client size over its scale
+/// factor, not rounded), the space the page lays itself out in; `None`
+/// (logged at debug) when the window cannot say.
+fn viewport_now(window: &WebviewWindow) -> Option<CssViewport> {
+    let read = || -> tauri::Result<CssViewport> {
+        let size = window.inner_size()?;
+        let scale = window.scale_factor()?;
+        Ok(CssViewport::of((size.width, size.height), scale))
+    };
+    match read() {
+        Ok(viewport) => Some(viewport),
+        Err(e) => {
+            log::debug!(
+                "dock window {:?}: its viewport is unknown ({e}); its panel rect is read as reported",
+                window.label()
+            );
+            None
+        }
+    }
 }
 
-/// The service call behind [`apply_dock_panel`]: CSS px → physical screen
-/// px from the window's position and scale factor, then
-/// `DockService::set_dock_panel` for the window's label and monitor; a
-/// hidden window reports no rect. Main thread (the getters are window
-/// calls).
+/// Convert the page's panel `report` for the engine and the backdrop: on a
+/// hidden window no rect; else the rect re-anchored to the window's
+/// viewport now ([`PanelReport::now`]), CSS px → physical screen px
+/// from the window's top-left corner (`origin` when the caller just placed
+/// it there, else read from the window) and its scale factor
+/// ([`panel_on_screen`]), then `DockService::set_dock_panel` for the
+/// window's label and monitor and `backdrop::on_panel`. Main thread (the
+/// getters are window calls).
 fn push_dock_panel(
     app: &AppHandle,
     service: &DockService,
     window: &WebviewWindow,
-    css: Rect,
+    report: PanelReport,
+    origin: Option<(i32, i32)>,
 ) -> Result<(), String> {
     let label = window.label();
     let monitor = monitor_id_of(app, label);
@@ -878,22 +1114,48 @@ fn push_dock_panel(
         crate::backdrop::on_panel(app, window, None);
         return Ok(());
     }
-    let origin = window.outer_position().map_err(|e| e.to_string())?;
+    let origin = match origin {
+        Some(origin) => origin,
+        None => {
+            let position = window.outer_position().map_err(|e| e.to_string())?;
+            (position.x, position.y)
+        }
+    };
     let scale = window.scale_factor().map_err(|e| e.to_string())?;
-    let panel = panel_on_screen((origin.x, origin.y), css, scale);
-    log::trace!(
-        "dock panel of {label:?}: {css:?} css at {scale}x from {origin:?} -> {panel:?} on {monitor:?}"
-    );
+    let viewport = viewport_now(window);
+    let css = report.now(viewport);
+    let panel = panel_on_screen(origin, css, scale);
+    if css == report.rect {
+        log::trace!(
+            "dock panel of {label:?}: {css:?} css at {scale}x from {origin:?} -> {panel:?} on {monitor:?}"
+        );
+    } else {
+        log::trace!(
+            "dock panel of {label:?}: {:?} css measured in {:?} on the {:?} edge, {css:?} in {viewport:?}, at {scale}x from {origin:?} -> {panel:?} on {monitor:?}",
+            report.rect,
+            report.viewport,
+            report.edge
+        );
+    }
     service.set_dock_panel(label, monitor, Some(panel));
-    crate::backdrop::on_panel(app, window, Some(((origin.x, origin.y), css, scale)));
+    crate::backdrop::on_panel(
+        app,
+        window,
+        Some(crate::backdrop::PanelConversion {
+            origin,
+            css,
+            scale,
+            viewport,
+        }),
+    );
     Ok(())
 }
 
-/// The window was moved by this module (`place`), or shown again: convert
-/// the UI's latest panel rect for the window's new place. `origin` is the
-/// window's top-left corner in physical pixels when known (just placed),
-/// else it is read from the window. Main thread; silent when the UI has
-/// reported nothing yet.
+/// The window was moved or resized by this module (`place`), or shown
+/// again: convert the UI's latest panel report for the window's new place
+/// and viewport ([`push_dock_panel`]). `origin` is the window's top-left
+/// corner in physical pixels when known (just placed), else it is read from
+/// the window. Main thread; silent when the UI has reported nothing yet.
 fn sync_dock_panel(window: &WebviewWindow, origin: Option<(i32, i32)>) {
     let app = window.app_handle();
     let (Some(service), Some(geometry)) = (
@@ -902,28 +1164,10 @@ fn sync_dock_panel(window: &WebviewWindow, origin: Option<(i32, i32)>) {
     ) else {
         return;
     };
-    let Some(dock) = geometry.dock(window.label()) else {
+    let Some(report) = geometry.dock(window.label()).and_then(|dock| dock.panel) else {
         return;
     };
-    let Some(css) = dock.panel_css else {
-        return;
-    };
-    let result = match origin {
-        Some(origin) if window.is_visible().unwrap_or(false) => match window.scale_factor() {
-            Ok(scale) => {
-                service.0.set_dock_panel(
-                    window.label(),
-                    dock.monitor,
-                    Some(panel_on_screen(origin, css, scale)),
-                );
-                crate::backdrop::on_panel(app, window, Some((origin, css, scale)));
-                Ok(())
-            }
-            Err(e) => Err(e.to_string()),
-        },
-        _ => push_dock_panel(app, &service.0, window, css),
-    };
-    if let Err(e) = result {
+    if let Err(e) = push_dock_panel(app, &service.0, window, report, origin) {
         log::debug!(
             "the dock panel of {:?} could not be converted after a move: {e}",
             window.label()
@@ -1036,7 +1280,10 @@ fn on_position_setting(app: &AppHandle, edge: DockPosition) {
 /// where the page last drew its panel) until the page's next report; it is
 /// not replayed meanwhile (a DPI change, `behavior.clickThrough` turned
 /// on). The content size is kept: its thickness holds until the next
-/// report (`docs/ipc/sizing-protocol.md`, step 5). Main thread.
+/// report (`docs/ipc/sizing-protocol.md`, step 5). A report the page
+/// measured for the old edge that is handled after this is dropped
+/// ([`DockWindowState::stale_for`]): the window is placed on the new edge
+/// in the same turn of the main thread. Main thread.
 fn forget_edge_layout(app: &AppHandle, service: &DockService, label: &str) {
     let Some(geometry) = app.try_state::<DockGeometry>() else {
         return;
@@ -1044,7 +1291,7 @@ fn forget_edge_layout(app: &AppHandle, service: &DockService, label: &str) {
     let forgotten = geometry.update(label, |dock| {
         dock.hit_region_css = None;
         dock.reserve_css = None;
-        dock.panel_css.take().map(|_| dock.monitor.clone())
+        dock.panel.take().map(|_| dock.monitor.clone())
     });
     if let Some(Some(monitor)) = forgotten {
         log::debug!(
@@ -1517,8 +1764,11 @@ fn window_scale(window: &WebviewWindow, monitor: Option<&MonitorInfo>) -> f64 {
 /// the edge for its next placement as soon as the window has its new size
 /// (the size alone says which side is the thickness, [`thickness_of`], so
 /// a move that fails after the resize still leaves the right pair); then
-/// redo the panel conversion for its new place and let `appbar`
-/// follow (a new monitor or scale changes the band). Every
+/// redo the panel conversion for its new place and its new
+/// viewport (the page's latest rect re-anchored to it, so a
+/// thickness change or a drag's growth needs no new report from the page)
+/// and let `appbar` follow (a new monitor or scale changes the
+/// band). Every
 /// placement of a dock window ends here.
 fn place(window: &WebviewWindow, edge: DockPosition, rect: Rect) -> tauri::Result<()> {
     let current = current_rect(window);
@@ -2875,5 +3125,308 @@ mod tests {
         let window = plan_dock_rect(wa, 1.0, 700.0, 96.0, DockPosition::Top);
         let panel = panel_on_screen((window.x, window.y), Rect::new(930, 0, 700, 70), 1.0);
         assert_eq!(panel, Rect::new(930, 48, 700, 70));
+    }
+
+    // --- Report provenance ---------------------------------------------------
+
+    fn css(width: f64, height: f64) -> CssViewport {
+        CssViewport { width, height }
+    }
+
+    #[test]
+    fn reanchoring_keeps_the_distance_to_the_edge_side_and_the_offset_from_the_centre() {
+        use DockPosition::{Bottom, Left, Right, Top};
+        // A row 640 css long centred in a 2560 css window, 16 css below the
+        // top of a 96 css thick one (8 above its bottom) on `bottom`, 8 css
+        // below the top on `top`; a column 640 css long centred in a 1440
+        // css tall window, 8 css from the edge side of a 150 css wide one.
+        let row = Rect::new(960, 16, 640, 64);
+        let top_row = Rect::new(960, 8, 640, 64);
+        let column = Rect::new(8, 400, 64, 640);
+        let right_column = Rect::new(78, 400, 64, 640);
+        let wide = css(2560.0, 96.0);
+        let tall = css(150.0, 1440.0);
+        let cases = [
+            // A thickness change: the window 48 css thicker across the edge.
+            (
+                Bottom,
+                row,
+                wide,
+                css(2560.0, 144.0),
+                Rect::new(960, 64, 640, 64),
+            ),
+            (Top, top_row, wide, css(2560.0, 144.0), top_row),
+            (Left, column, tall, css(198.0, 1440.0), column),
+            (
+                Right,
+                right_column,
+                tall,
+                css(198.0, 1440.0),
+                Rect::new(126, 400, 64, 640),
+            ),
+            // Thinner again (a drop, a smaller icon size).
+            (
+                Bottom,
+                Rect::new(960, 848, 640, 64),
+                css(2560.0, 928.0),
+                wide,
+                row,
+            ),
+            (
+                Right,
+                Rect::new(2488, 400, 64, 640),
+                css(2560.0, 1440.0),
+                tall,
+                right_column,
+            ),
+            // A length change (another work area): half of it along the edge.
+            (
+                Bottom,
+                row,
+                wide,
+                css(1920.0, 96.0),
+                Rect::new(640, 16, 640, 64),
+            ),
+            (
+                Top,
+                top_row,
+                wide,
+                css(1920.0, 96.0),
+                Rect::new(640, 8, 640, 64),
+            ),
+            (
+                Left,
+                column,
+                tall,
+                css(150.0, 1040.0),
+                Rect::new(8, 200, 64, 640),
+            ),
+            (
+                Right,
+                right_column,
+                tall,
+                css(150.0, 1040.0),
+                Rect::new(78, 200, 64, 640),
+            ),
+            // Both at once.
+            (
+                Bottom,
+                row,
+                wide,
+                css(1920.0, 144.0),
+                Rect::new(640, 64, 640, 64),
+            ),
+            (
+                Right,
+                right_column,
+                tall,
+                css(198.0, 1040.0),
+                Rect::new(126, 200, 64, 640),
+            ),
+            // Nothing changed.
+            (Left, column, tall, tall, column),
+        ];
+        for (edge, rect, from, to, expected) in cases {
+            let moved = reanchor_panel(rect, edge, from, to);
+            assert_eq!(
+                moved, expected,
+                "{edge:?}: {rect:?} from {from:?} to {to:?}"
+            );
+            assert_eq!((moved.width, moved.height), (rect.width, rect.height));
+            let report = PanelReport {
+                rect,
+                edge,
+                viewport: from,
+            };
+            assert_eq!(report.now(Some(to)), expected);
+            assert_eq!(report.now(None), rect, "an unknown viewport: as reported");
+        }
+    }
+
+    #[test]
+    fn reanchoring_at_150_percent_ignores_the_rounding_of_the_viewport() {
+        // A bottom dock at 1.5x: a client area of 2560 x 144 px is 1706.67 x
+        // 96 css; the page reports whole css px (1707 or 1706, as its
+        // `innerWidth` rounds), which is the same viewport.
+        let rest = CssViewport::of((2560, 144), 1.5);
+        assert!((rest.width - 2560.0 / 1.5).abs() < 1e-9);
+        assert_eq!(rest.height, 96.0);
+        let rect = Rect::new(534, 16, 640, 64);
+        for page in [css(1707.0, 96.0), css(1706.0, 96.0)] {
+            assert_eq!(reanchor_panel(rect, DockPosition::Bottom, page, rest), rect);
+        }
+        // The magnification grows the window to 216 px (144 css): 48 css
+        // lower, the same place on screen once the window moved up 72 px.
+        let thicker = CssViewport::of((2560, 216), 1.5);
+        let moved = reanchor_panel(rect, DockPosition::Bottom, css(1707.0, 96.0), thicker);
+        assert_eq!(moved, Rect::new(534, 64, 640, 64));
+        assert_eq!(
+            panel_on_screen((0, 1176), moved, 1.5),
+            panel_on_screen((0, 1248), rect, 1.5)
+        );
+        assert_eq!(
+            panel_on_screen((0, 1248), rect, 1.5),
+            Rect::new(801, 1272, 960, 96)
+        );
+        // Another monitor 2400 px wide (1600 css): half the change along.
+        let narrower = CssViewport::of((2400, 144), 1.5);
+        assert_eq!(
+            reanchor_panel(rect, DockPosition::Bottom, css(1706.0, 96.0), narrower),
+            Rect::new(481, 16, 640, 64)
+        );
+
+        // A right dock at 1.5x: 225 x 1392 px is 150 x 928 css; 288 px wide
+        // is 192 css, and the column keeps its 8 css to the right side.
+        let column = Rect::new(78, 144, 64, 640);
+        let right = css(150.0, 928.0);
+        let wider = CssViewport::of((288, 1392), 1.5);
+        let moved = reanchor_panel(column, DockPosition::Right, right, wider);
+        assert_eq!(moved, Rect::new(120, 144, 64, 640));
+        assert_eq!(
+            panel_on_screen((2272, 0), moved, 1.5),
+            panel_on_screen((2335, 0), column, 1.5),
+            "the same place on screen"
+        );
+        // A shorter work area (1032 px, 688 css): centred again along it.
+        let shorter = CssViewport::of((225, 1032), 1.5);
+        assert_eq!(
+            reanchor_panel(column, DockPosition::Right, right, shorter),
+            Rect::new(78, 24, 64, 640)
+        );
+    }
+
+    #[test]
+    fn a_report_for_another_edge_than_the_windows_is_dropped() {
+        use DockPosition::{Bottom, Left};
+        // The window was moved to the left edge; the page's reports measured
+        // for the bottom edge arrive after that.
+        let mut dock = DockWindowState {
+            edge: Some(Left),
+            ..DockWindowState::default()
+        };
+        let bottom_size = DockContent {
+            width: 1300.0,
+            height: 135.0,
+            edge: Bottom,
+        };
+        assert_eq!(dock.take_content(bottom_size), Err(Left));
+        assert_eq!(dock.content, None);
+        let panel = Rect::new(960, 16, 640, 64);
+        let envelope = Rect::new(900, 0, 760, 80);
+        assert_eq!(dock.take_hit_region(panel, envelope, Bottom), Err(Left));
+        assert_eq!(dock.hit_region_css, None);
+        let bottom_panel = PanelReport {
+            rect: panel,
+            edge: Bottom,
+            viewport: css(2560.0, 96.0),
+        };
+        assert_eq!(dock.take_panel(bottom_panel), Err(Left));
+        assert_eq!((dock.panel, dock.reserve_css), (None, None));
+
+        // The reports measured for the left edge are taken.
+        let left_size = DockContent {
+            width: 135.0,
+            height: 800.0,
+            edge: Left,
+        };
+        assert_eq!(dock.take_content(left_size), Ok(()));
+        assert_eq!(dock.content, Some(left_size));
+        let column = Rect::new(8, 400, 64, 640);
+        let column_envelope = Rect::new(8, 340, 110, 760);
+        assert_eq!(dock.take_hit_region(column, column_envelope, Left), Ok(()));
+        assert_eq!(dock.hit_region_css, Some((column, column_envelope)));
+        let left_panel = PanelReport {
+            rect: column,
+            edge: Left,
+            viewport: css(150.0, 1440.0),
+        };
+        assert_eq!(dock.take_panel(left_panel), Ok(Some(72)));
+        assert_eq!((dock.panel, dock.reserve_css), (Some(left_panel), Some(72)));
+
+        // A late one from the bottom edge changes none of them.
+        assert_eq!(dock.take_content(bottom_size), Err(Left));
+        assert_eq!(dock.take_panel(bottom_panel), Err(Left));
+        assert_eq!(dock.take_hit_region(panel, envelope, Bottom), Err(Left));
+        assert_eq!(dock.content, Some(left_size));
+        assert_eq!((dock.panel, dock.reserve_css), (Some(left_panel), Some(72)));
+        assert_eq!(dock.hit_region_css, Some((column, column_envelope)));
+
+        // Before its first placement a window takes any edge.
+        let mut fresh = DockWindowState::default();
+        assert_eq!(fresh.stale_for(Bottom), None);
+        assert_eq!(fresh.take_content(bottom_size), Ok(()));
+        assert_eq!(dock.stale_for(Left), None);
+        assert_eq!(dock.stale_for(Bottom), Some(Left));
+    }
+
+    #[test]
+    fn the_band_is_read_against_the_viewport_the_report_carries() {
+        let mut dock = DockWindowState {
+            edge: Some(DockPosition::Bottom),
+            ..DockWindowState::default()
+        };
+        // At rest: 80 css from the panel's top to the window's bottom.
+        let rest = PanelReport {
+            rect: Rect::new(960, 16, 640, 64),
+            edge: DockPosition::Bottom,
+            viewport: css(2560.0, 96.0),
+        };
+        assert_eq!(dock.take_panel(rest), Ok(Some(80)));
+        // Measured in the drag's grown viewport and handled after the drop
+        // shrank the window back: still 80, read against its own viewport
+        // (against the shrunk window the rect would lie below its bottom).
+        let grown = PanelReport {
+            rect: Rect::new(960, 848, 640, 64),
+            viewport: css(2560.0, 928.0),
+            ..rest
+        };
+        assert_eq!(dock.take_panel(grown), Ok(Some(80)));
+        assert_eq!(dock.reserve_css, Some(80));
+        // A rect outside its own viewport (no page sends one) keeps the band.
+        let outside = PanelReport {
+            rect: Rect::new(960, 100, 640, 64),
+            ..rest
+        };
+        assert_eq!(dock.take_panel(outside), Ok(None));
+        assert_eq!(dock.reserve_css, Some(80));
+        assert_eq!(dock.panel, Some(outside));
+
+        // A top dock at 1.5x: the page's 1707 x 96 viewport, the panel 8 css
+        // from the top: 72 css.
+        let mut top = DockWindowState {
+            edge: Some(DockPosition::Top),
+            ..DockWindowState::default()
+        };
+        let report = PanelReport {
+            rect: Rect::new(534, 8, 640, 64),
+            edge: DockPosition::Top,
+            viewport: css(1707.0, 96.0),
+        };
+        assert_eq!(top.take_panel(report), Ok(Some(72)));
+    }
+
+    #[test]
+    fn a_viewport_must_be_positive_and_finite() {
+        assert_eq!(css(1280.0, 240.0).validate(), Ok(()));
+        assert_eq!(css(0.5, 0.5).validate(), Ok(()));
+        for bad in [
+            css(0.0, 240.0),
+            css(1280.0, 0.0),
+            css(-1.0, 240.0),
+            css(f64::NAN, 240.0),
+            css(1280.0, f64::INFINITY),
+            css(f64::NEG_INFINITY, 240.0),
+        ] {
+            assert!(bad.validate().is_err(), "{bad:?}");
+        }
+        // The window's own viewport; an unusable scale counts as 1.
+        assert_eq!(CssViewport::of((300, 150), 2.0), css(150.0, 75.0));
+        assert_eq!(CssViewport::of((300, 150), f64::NAN), css(300.0, 150.0));
+        assert_eq!(CssViewport::of((300, 150), 0.0), css(300.0, 150.0));
+        assert_eq!(css(1706.6, 95.5).whole(), (1707, 96));
+        // The payload as the page sends it.
+        let parsed: CssViewport =
+            serde_json::from_str(r#"{ "width": 1280, "height": 240 }"#).expect("parses");
+        assert_eq!(parsed, css(1280.0, 240.0));
     }
 }
