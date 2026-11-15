@@ -32,8 +32,8 @@ The prototype of the [backdrop research](index.md) is
   times the window's scale, and dark from `settings.theme` or Windows' app
   theme. The material is sized from every conversion of
   `set_dock_panel_rect` (`push_dock_panel`, `sync_dock_panel`), rounded
-  inwards, while the window's viewport keeps the size the report was
-  measured in (`panel_fits`). It is hidden while the window is hidden by the
+  inwards, and re-anchored to the window's current viewport while it lies
+  inside it (`panel_fits`). It is hidden while the window is hidden by the
   tray or the toggle shortcut, while auto-hide has the panel slid out, in a
   contrast theme, and after a change of the `position` setting until the UI
   reports the panel on the new edge.
@@ -70,17 +70,10 @@ Where it differs from the design of [option 6](backdrop-window.md):
   when the slide out starts.
 - **Size.** At rest only: a magnified panel grows past the material until
   it settles, and an item animation shows the old box until the panel is
-  measured again. When the window grows for a drag or shrinks back after
-  the drop, the stored panel rect belongs to the old viewport (on `bottom`
-  the window keeps its bottom edge, so its origin moves by the growth). The
-  material is then hidden until the UI reports the panel in the new
-  viewport, which it does after every resize. This gives a few frames
-  without material instead of a panel-shaped piece hundreds of px above or
-  below the panel. A report that does not fit inside the viewport's height
-  (one measured before a resize and handled after it) is not used either.
-  If the panel's rect comes out unchanged after a resize, the UI sends no
-  report, and the material stays hidden until the panel next changes; only
-  a width change of a CSS px or two can do that.
+  measured again. When the window grows for a drag, shrinks back after the
+  drop or takes another thickness, the stored panel rect is re-anchored to
+  the new viewport, so the material stays under the panel without waiting
+  for the UI's next report.
   The live box needs the IPC change listed under
   [Remaining work](remaining-work.md).
 - **Fullscreen** has no path of its own: the UI slides the panel out in

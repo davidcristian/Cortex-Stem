@@ -25,9 +25,9 @@ log, not on IPC:
   windows stop short of the dock.
   - The band is the panel's resting thickness plus its margin to the edge, from the window's
     latest `set_dock_panel_rect`: the distance from the panel's far side to the viewport's edge
-    side, read against the window's viewport when Rust handles the report. A rect that does not
-    lie inside that viewport across the edge (one measured before a resize that the page had not
-    seen yet) leaves the band as it was. The band does not include the magnification
+    side, read against the viewport the report includes
+    ([Report provenance](report-provenance.md)). A rect that does not lie inside its own viewport
+    across the edge leaves the band as it was. The band does not include the magnification
     headroom. The shell moves the band past the stock taskbar and other bars on that edge.
   - The window keeps its thickness and puts its edge side on the band's edge side instead of on
     the work area's edge ([Sizing protocol](sizing-protocol.md), step 1; with the taskbar visible

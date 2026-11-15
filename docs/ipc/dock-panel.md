@@ -5,17 +5,18 @@ place where its panel rests, and the [hit region](hit-region.md) cannot give it.
 is hidden, the hit region is the 2 px strip, which no window could overlap, so the dock would
 show and hide in a loop. So the UI reports the resting panel separately:
 
-- `set_dock_panel_rect({ rect })`: the panel's bounding rect **at rest** (where it is when
-  shown, without the auto-hide slide), as integers in CSS px relative to the calling window's
-  viewport, like the hit region's `panel`. The UI sends it whenever that rect changes: at
-  startup, when items are added or removed, for the icon size, separators, and the window growing
-  for a drag (the rect then follows the panel's place in the grown viewport). It sends it
+- `set_dock_panel_rect({ rect, edge, viewport })`: the panel's bounding rect **at rest** (where
+  it is when shown, without the auto-hide slide), as integers in CSS px relative to the calling
+  window's viewport, like the hit region's `panel`. The UI sends it whenever that rect changes:
+  at startup, when items are added or removed, for the icon size, separators, and the window
+  growing for a drag (the rect then follows the panel's place in the grown viewport). It sends it
   whatever the auto-hide phase, never per magnification frame. Only dock windows may call it; a
   negative size rejects.
 - Rust converts it once per report into physical pixels of the virtual desktop, the space of
-  `RawWindow.rect`. It applies the window's scale factor (rounded outwards like the hit region)
-  and adds the window's position. It passes the result to the engine with the calling window's
-  label and the monitor the app layer placed that window on
+  `RawWindow.rect`. It re-anchors the rect to the window's current viewport
+  ([Report provenance](report-provenance.md)), applies the window's scale factor (rounded
+  outwards like the hit region) and adds the window's position. It passes the result to the
+  engine with the calling window's label and the monitor the app layer placed that window on
   (`DockService::set_dock_panel(label, monitor, rect)`).
   - Rust converts the latest report again whenever it moves the dock window itself (a monitor or
     work-area change, which moves the window without changing the UI's viewport) and when the
@@ -27,7 +28,7 @@ show and hide in a loop. So the UI reports the resting panel separately:
     until the page reports one laid out for the new edge. It emits `dock://settings` to the pages
     before it moves their windows, so a page usually lays itself out for the new edge before its
     window moves. A report that the page measured for the old edge and that arrives after the
-    move is still read for the new edge, for at most one frame, until the page's next reports.
+    move names that edge and is dropped ([Report provenance](report-provenance.md)).
 
   The engine stores the panels by label (`DockEngine::dock_panel(label)`), computes each dock's
   `overlapped` again from its rect and the window frames, and publishes one `docks` entry per
