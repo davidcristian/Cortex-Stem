@@ -328,17 +328,21 @@ impl DockEngine {
 
     /// The name the item of `app_id` shows, or would show were it not
     /// hidden: its resolved display name, else the title of its
-    /// first-seen tracked window (shown or not). `None` when the engine
-    /// knows nothing of the app: no identity and no window. A pin's label is
-    /// not consulted; the caller decides what a pinned app is called.
+    /// first shown window (the one the item's title falls back to, see
+    /// `app_item`). An app with tracked windows but none shown (all
+    /// cloaked, say) has no item; its first-seen window's title is used
+    /// then. `None` when the engine knows nothing of the app: no identity
+    /// and no window. A pin's label is not consulted; the caller decides
+    /// what a pinned app is called.
     pub fn app_name(&self, app_id: &AppId) -> Option<String> {
         if let Some(identity) = self.identities.get(app_id) {
             return Some(identity.display_name.clone());
         }
-        self.windows
-            .values()
-            .filter(|t| app_id_for(&t.raw) == *app_id)
-            .min_by_key(|t| t.seq)
+        let of_app = |t: &&Tracked| app_id_for(&t.raw) == *app_id;
+        self.shown_windows()
+            .into_iter()
+            .find(of_app)
+            .or_else(|| self.windows.values().filter(of_app).min_by_key(|t| t.seq))
             .map(|t| t.raw.title.clone())
     }
 
@@ -3621,18 +3625,35 @@ mod tests {
         let mut engine = DockEngine::new(minimal_settings());
         let a = exe_id(r"C:\a.exe");
         assert_eq!(engine.app_name(&a), None, "unknown app");
-        engine.apply(added(cloaked(win(2, r"C:\a.exe", "first, cloaked"))));
-        engine.apply(added(win(1, r"C:\a.exe", "second")));
-        // First seen, shown or not (a lower window id does not matter).
+        engine.apply(added(cloaked(win(4, r"C:\a.exe", "first, cloaked"))));
+        // No shown window, so no item: the first-seen window names it.
         assert_eq!(engine.app_name(&a).as_deref(), Some("first, cloaked"));
+        engine.apply(added(win(3, r"C:\a.exe", "second")));
+        engine.apply(added(win(2, r"C:\a.exe", "third")));
+        // The title the item shows: its first shown window's, in first-seen
+        // order (a lower window id does not matter), not the cloaked one's.
+        let title = |engine: &DockEngine| {
+            engine
+                .snapshot()
+                .items
+                .into_iter()
+                .find(|i| i.app_id.as_ref() == Some(&a))
+                .map(|i| i.title)
+        };
+        assert_eq!(title(&engine).as_deref(), Some("second"));
+        assert_eq!(engine.app_name(&a), title(&engine));
+        engine.apply(removed(3));
+        assert_eq!(engine.app_name(&a).as_deref(), Some("third"));
+        assert_eq!(engine.app_name(&a), title(&engine));
         engine.apply(EngineInput::IdentityResolved {
             app_id: a.clone(),
             identity: identity(&a, "App A", "icon:a"),
         });
         assert_eq!(engine.app_name(&a).as_deref(), Some("App A"));
+        assert_eq!(engine.app_name(&a), title(&engine));
         // The identity outlives the windows.
-        engine.apply(removed(1));
         engine.apply(removed(2));
+        engine.apply(removed(4));
         assert_eq!(engine.app_name(&a).as_deref(), Some("App A"));
     }
 }
