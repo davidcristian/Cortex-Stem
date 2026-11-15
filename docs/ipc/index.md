@@ -17,7 +17,12 @@ change control") and is logged in the [changelog](changelog.md).
   `camelCase` (Tauri converts them). A failed command rejects with a `string`.
 - **Events** are `listen(name, handler)`. Each payload is a full snapshot, not a diff.
   `DockState.revision` never decreases, and the UI ignores a snapshot older than the one it
-  shows.
+  shows. A page listens on its own window (`TauriBackend` passes the target
+  `{ kind: 'WebviewWindow', label }`). So an event that Rust sends to one window (`emit_to`,
+  written "to one dock window" in these files) reaches only that window's page. A broadcast
+  (`emit`) reaches every page, and an event sent to every dock window (`emit_filter`) reaches
+  every dock page. A listener without a target (`{ kind: 'Any' }`, the default of `listen`) would
+  also receive the events sent to other windows.
 - The frontend never calls `invoke` or `listen` directly. It uses the `Backend` interface in
   `src/lib/ipc/backend.ts`. `MockBackend` implements the same contract for runs in a browser and
   in Playwright.

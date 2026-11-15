@@ -10,7 +10,10 @@ Win+T for the stock taskbar:
   as `toggleShortcut` (ignoring case and modifier order) registers nothing and logs a warning. A
   change takes effect without a restart.
 - On a press, Rust runs these steps:
-  1. It stores the window that is in front at that moment: the engine's active window.
+  1. It stores the window that is in front at that moment: the engine's active window, or the
+     settings window when that is the foreground window. (The engine never takes Stem's own
+     windows for the foreground, so its active window is then the app behind the settings
+     window.)
   2. It picks the dock window on that window's monitor with `monitors = all`. Otherwise, or when
      that monitor has no dock, it picks `dock`.
   3. It shows that dock window if the tray or the toggle shortcut hid it, or sends it
@@ -34,9 +37,11 @@ Win+T for the stock taskbar:
   auto-hide state machine keeps the panel up.
 - Every Escape that does not cancel a drag, and every `dock://release-focus`, blurs the focused
   item and calls `release_dock_focus`. Rust does nothing unless the stored press was that dock's.
-  Rust activates the stored window again if it still exists (through the activation path), else
-  it leaves the foreground alone. Enter and Space click the item, as they do without the
-  shortcut.
+  A call from another dock window keeps the stored press while the press's dock is still the
+  foreground window, and clears it when that dock is no longer in front. Rust activates the
+  stored window again if it still exists (an app's window through the activation path, the
+  settings window with Tauri's `set_focus`), else it leaves the foreground alone. Enter and Space
+  click the item, as they do without the shortcut.
 - A click supersedes the stored window: Rust clears the window and keeps the press. A click here
   is `primary_click`, `launch_app`, `window_action`, or an item menu entry other than *Pin to
   Stem*, *Unpin from Stem*, *Stem settings…* and *Quit Stem*. The dock keeps the keyboard, so a

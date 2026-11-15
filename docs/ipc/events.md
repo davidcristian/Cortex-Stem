@@ -1,7 +1,7 @@
 # Events (Rust → UI)
 
 These are the events that the Rust app sends to the pages. [Principles](index.md#principles) says
-how a page listens.
+how a page listens and which pages an event reaches.
 
 | Event                | Payload                         | When                                                         |
 |----------------------|---------------------------------|--------------------------------------------------------------|
