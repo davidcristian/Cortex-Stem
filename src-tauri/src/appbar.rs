@@ -105,6 +105,21 @@ enum GrantChange {
 }
 
 impl Bar {
+    /// Take `current`, the window's handle now, as the bar's window. A bar
+    /// left with another handle belongs to a window that is gone (a dock
+    /// window destroyed and re-created under the same label): it starts
+    /// over for the new window, and when it had asked for a band the old
+    /// handle comes back so that band can be given back. A handle that
+    /// cannot be read (`None`) keeps the one the bar has.
+    fn rebind(&mut self, current: Option<NativeWindowHandle>) -> Option<NativeWindowHandle> {
+        if current.is_none() || self.handle == current {
+            return None;
+        }
+        let old = std::mem::take(self);
+        self.handle = current;
+        old.handle.filter(|_| old.sent.is_some())
+    }
+
     /// Take `wanted` as the request in effect; `true` when it differs from
     /// the one sent last and must go to the platform. A release keeps the
     /// band it had as the band given back (placed on until the work area
@@ -293,7 +308,10 @@ pub fn on_settings_changed(app: &AppHandle, settings: &Settings) {
 /// ([`request_for`]): hand a changed request to the platform, which queues
 /// it. Called on the main thread whenever an input may have changed: the
 /// window placed (`windows::place`), shown or hidden, its page's panel
-/// report, the setting. Cheap when nothing changed.
+/// report, the setting. Cheap when nothing changed. The bar always speaks
+/// for the window's handle of the moment ([`Bar::rebind`]): an entry a
+/// destroyed window of the same label left behind gives its band back and
+/// starts over, so a re-created dock window never inherits a dead handle.
 pub fn sync(app: &AppHandle, window: &WebviewWindow) {
     let Some(bars) = app.try_state::<AppBars>() else {
         return;
@@ -302,16 +320,22 @@ pub fn sync(app: &AppHandle, window: &WebviewWindow) {
     let inputs = crate::windows::app_bar_inputs(app, window, enabled);
     let wanted = request_for(&inputs);
     let label = window.label();
-    let handle = {
+    let current = crate::windows::native_handle(window);
+    let (stale, send) = {
         let mut map = bars.bars.lock();
         let bar = map.entry(label.to_owned()).or_default();
-        if bar.handle.is_none() {
-            bar.handle = crate::windows::native_handle(window);
-        }
-        if !bar.want(wanted) {
-            return;
-        }
-        bar.handle
+        let stale = bar.rebind(current);
+        (stale, bar.want(wanted).then_some(bar.handle))
+    };
+    if let Some(old) = stale {
+        log::debug!(
+            "dock window {label:?}: its bar belonged to an earlier window ({:#x}); that band is given back",
+            old.0
+        );
+        request(app, label, Some(old), None);
+    }
+    let Some(handle) = send else {
+        return;
     };
     match wanted {
         Some(request) => log::debug!(
@@ -666,6 +690,36 @@ mod tests {
         assert!(bar.want(Some(left)));
         assert_eq!(bar.grant, None);
         assert_eq!(bar.released, None);
+    }
+
+    #[test]
+    fn a_bar_left_by_an_earlier_window_of_the_label_starts_over_for_the_new_one() {
+        const OLD: NativeWindowHandle = NativeWindowHandle(0x10);
+        const NEW: NativeWindowHandle = NativeWindowHandle(0x20);
+        // The first sync of a window takes its handle; nothing to give back.
+        let mut bar = Bar::default();
+        assert_eq!(bar.rebind(Some(OLD)), None);
+        assert_eq!(bar.handle, Some(OLD));
+        assert!(bar.want(Some(BOTTOM)));
+        bar.take_grant(Some(grant(BOTTOM, BAND)));
+        // The same window again, or a handle that cannot be read: kept.
+        assert_eq!(bar.rebind(Some(OLD)), None);
+        assert_eq!(bar.rebind(None), None);
+        assert_eq!(bar.handle, Some(OLD));
+        assert_eq!(bar.sent, Some(BOTTOM));
+        // A re-created window of the same label: the old band is given back
+        // through the old handle and the bar asks again for the new one.
+        assert_eq!(bar.rebind(Some(NEW)), Some(OLD));
+        assert_eq!(bar.handle, Some(NEW));
+        assert_eq!((bar.sent, bar.grant, bar.released), (None, None, None));
+        assert!(bar.want(Some(BOTTOM)), "the request goes out again");
+        // A bar that never asked for a band has nothing to give back.
+        let mut idle = Bar {
+            handle: Some(OLD),
+            ..Bar::default()
+        };
+        assert_eq!(idle.rebind(Some(NEW)), None);
+        assert_eq!(idle.handle, Some(NEW));
     }
 
     #[test]
