@@ -40,7 +40,9 @@
 //! reports the band through the sink, from that thread. So this module
 //! runs its requests on the main thread, where the window getters are
 //! direct calls, without ever sending a message to the shell there; the
-//! sink hops back to the main thread to place the window.
+//! sink hops back to the main thread to place the window. The platform
+//! reports the band after every request it applied and keeps asking for a
+//! band it could not take, so a request is sent once, when it changes.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -67,7 +69,9 @@ pub struct AppBars {
     bars: Mutex<HashMap<String, Bar>>,
 }
 
-/// One dock window's bar, as this module asked for it.
+/// One dock window's bar, as this module asked for it. Its bookkeeping is
+/// plain data ([`Bar::want`], [`Bar::take_grant`], [`Bar::band`]), so it is
+/// unit-tested without an `AppHandle`.
 #[derive(Debug, Clone, Default)]
 struct Bar {
     handle: Option<NativeWindowHandle>,
@@ -79,6 +83,94 @@ struct Bar {
     /// The band given back last, placed on until the work area has grown
     /// over it ([`granted_band`]); dropped with the next request.
     released: Option<AppBarGrant>,
+}
+
+/// What a report of the platform changed for a bar ([`Bar::take_grant`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GrantChange {
+    /// Nothing: the band it already had, or still none.
+    Same,
+    /// A new band for the request in effect: lay the window out on it.
+    Granted(AppBarGrant),
+    /// The band it had is gone.
+    Gone,
+}
+
+impl Bar {
+    /// Take `wanted` as the request in effect; `true` when it differs from
+    /// the one sent last and must go to the platform. A release keeps the
+    /// band it had as the band given back (placed on until the work area
+    /// has grown over it); a request drops the band given back, and the band
+    /// it had unless that answers the same edge of the same monitor (the
+    /// thickness may still be on its way).
+    fn want(&mut self, wanted: Option<AppBarRequest>) -> bool {
+        if self.sent == wanted {
+            return false;
+        }
+        self.sent = wanted;
+        match wanted {
+            None => {
+                if let Some(grant) = self.grant.take() {
+                    self.released = Some(grant);
+                }
+            }
+            Some(request) => {
+                self.released = None;
+                if self
+                    .grant
+                    .is_some_and(|grant| !grant_fits(&grant, &request))
+                {
+                    self.grant = None;
+                }
+            }
+        }
+        true
+    }
+
+    /// The platform reported `grant` for this window. Kept only when it
+    /// answers the request in effect (a band for an earlier edge or
+    /// monitor, or one reported after a release, counts as none). `sent`
+    /// stays as it is on a `None`: the platform keeps asking for that
+    /// request and reports the band once it holds it (`AppBarSink`).
+    fn take_grant(&mut self, grant: Option<AppBarGrant>) -> GrantChange {
+        let grant = grant.filter(|grant| self.sent.is_some_and(|sent| grant_fits(grant, &sent)));
+        if self.grant == grant {
+            return GrantChange::Same;
+        }
+        self.grant = grant;
+        match grant {
+            Some(grant) => GrantChange::Granted(grant),
+            None => GrantChange::Gone,
+        }
+    }
+
+    /// The band the window goes on for `edge` of `monitor` ([`granted_band`]):
+    /// the band granted for exactly that place while it is asked for, or the
+    /// band given back last for that place while `monitor`'s work area
+    /// still leaves it out. A band given back that no longer applies (another
+    /// place, or a work area grown over it) is forgotten. `label` is for the
+    /// log.
+    fn band(&mut self, label: &str, edge: DockPosition, monitor: &MonitorInfo) -> Option<Rect> {
+        let fits = |grant: &AppBarGrant| {
+            grant.request.edge == edge && grant.request.monitor == monitor.bounds
+        };
+        if let (Some(sent), Some(grant)) = (self.sent, self.grant) {
+            return (fits(&grant) && grant_fits(&grant, &sent)).then_some(grant.rect);
+        }
+        let released = self.released?;
+        if !fits(&released) {
+            self.released = None;
+            return None;
+        }
+        if work_area_excludes(monitor.work_area, released.rect, edge) {
+            return Some(released.rect);
+        }
+        log::debug!(
+            "dock window {label:?}: the band given back is free again; placing on the work area"
+        );
+        self.released = None;
+        None
+    }
 }
 
 /// What decides a dock window's request ([`request_for`]); gathered by
@@ -207,22 +299,8 @@ pub fn sync(app: &AppHandle, window: &WebviewWindow) {
         if bar.handle.is_none() {
             bar.handle = crate::windows::native_handle(window);
         }
-        if bar.sent == wanted {
+        if !bar.want(wanted) {
             return;
-        }
-        bar.sent = wanted;
-        match wanted {
-            None => {
-                if let Some(grant) = bar.grant.take() {
-                    bar.released = Some(grant);
-                }
-            }
-            Some(request) => {
-                bar.released = None;
-                if bar.grant.is_some_and(|grant| !grant_fits(&grant, &request)) {
-                    bar.grant = None;
-                }
-            }
         }
         bar.handle
     };
@@ -268,25 +346,7 @@ pub fn granted_band(
 ) -> Option<Rect> {
     let bars = app.try_state::<AppBars>()?;
     let mut map = bars.bars.lock();
-    let bar = map.get_mut(label)?;
-    let fits =
-        |grant: &AppBarGrant| grant.request.edge == edge && grant.request.monitor == monitor.bounds;
-    if let (Some(sent), Some(grant)) = (bar.sent, bar.grant) {
-        return (fits(&grant) && grant_fits(&grant, &sent)).then_some(grant.rect);
-    }
-    let released = bar.released?;
-    if !fits(&released) {
-        bar.released = None;
-        return None;
-    }
-    if work_area_excludes(monitor.work_area, released.rect, edge) {
-        return Some(released.rect);
-    }
-    log::debug!(
-        "dock window {label:?}: the band given back is free again; placing on the work area"
-    );
-    bar.released = None;
-    None
+    map.get_mut(label)?.band(label, edge, monitor)
 }
 
 /// Give every band back before the app ends (`RunEvent::Exit`), on the
@@ -347,11 +407,12 @@ fn sink(app: &AppHandle) -> AppBarSink {
 
 /// The platform reported the band of the window `handle` (its own thread,
 /// or the caller's for the mock). Remembered when it answers what was last
-/// asked for that window; a new band lays the window out again, at the
-/// next turn of the main thread's loop. A band that is gone moves nothing:
-/// the window stays on the old band's edge side, the work area's edge once
-/// the shell has given the band back, and the next monitor report lays it
-/// out from the work area again.
+/// asked for that window ([`Bar::take_grant`]); a new band lays the window
+/// out again, at the next turn of the main thread's loop. A band that is
+/// gone moves nothing: the window stays on the old band's edge side, the
+/// work area's edge once the shell has given the band back, and the next
+/// monitor report lays it out from the work area again; the platform keeps
+/// asking for the band and reports it once it holds it again.
 fn on_grant(app: &AppHandle, handle: NativeWindowHandle, grant: Option<AppBarGrant>) {
     let Some(bars) = app.try_state::<AppBars>() else {
         return;
@@ -365,13 +426,9 @@ fn on_grant(app: &AppHandle, handle: NativeWindowHandle, grant: Option<AppBarGra
             );
             return;
         };
-        let grant = grant.filter(|grant| bar.sent.is_some_and(|sent| grant_fits(grant, &sent)));
-        if bar.grant == grant {
-            return;
-        }
-        bar.grant = grant;
-        match grant {
-            Some(grant) => {
+        match bar.take_grant(grant) {
+            GrantChange::Same => None,
+            GrantChange::Granted(grant) => {
                 log::debug!(
                     "dock window {label:?}: the shell granted {:?} on the {:?} edge",
                     grant.rect,
@@ -379,8 +436,11 @@ fn on_grant(app: &AppHandle, handle: NativeWindowHandle, grant: Option<AppBarGra
                 );
                 Some(label.clone())
             }
-            None => {
-                log::debug!("dock window {label:?}: no band is reserved any more");
+            GrantChange::Gone => {
+                log::debug!(
+                    "dock window {label:?}: no band is reserved any more (the platform asks \
+                     for it again)"
+                );
                 None
             }
         }
@@ -530,5 +590,159 @@ mod tests {
                 ..request
             }
         ));
+    }
+
+    // -- Bar ---------------------------------------------------------------
+
+    const BOTTOM: AppBarRequest = AppBarRequest {
+        monitor: MONITOR,
+        edge: DockPosition::Bottom,
+        thickness: 72,
+    };
+    /// The band above a 48 px taskbar.
+    const BAND: Rect = Rect::new(0, 960, 1920, 72);
+
+    fn grant(request: AppBarRequest, rect: Rect) -> AppBarGrant {
+        AppBarGrant { request, rect }
+    }
+
+    /// [`MONITOR`] with its work area as the platform reports it.
+    fn monitor(work_area: Rect) -> MonitorInfo {
+        MonitorInfo {
+            id: stem_core::MonitorId("DISPLAY1".into()),
+            name: "DISPLAY1".into(),
+            bounds: MONITOR,
+            work_area,
+            scale_factor: 1.0,
+            is_primary: true,
+        }
+    }
+
+    /// A 48 px taskbar and the band above it reserved.
+    fn reserved() -> MonitorInfo {
+        monitor(Rect::new(0, 0, 1920, 960))
+    }
+
+    /// A bar that asked for [`BOTTOM`] and holds [`BAND`].
+    fn holding() -> Bar {
+        let mut bar = Bar::default();
+        assert!(bar.want(Some(BOTTOM)));
+        assert_eq!(
+            bar.take_grant(Some(grant(BOTTOM, BAND))),
+            GrantChange::Granted(grant(BOTTOM, BAND))
+        );
+        bar
+    }
+
+    #[test]
+    fn a_bar_sends_only_a_changed_request_and_keeps_a_band_that_still_fits() {
+        let mut bar = Bar::default();
+        assert!(!bar.want(None), "nothing to give back");
+        assert!(bar.want(Some(BOTTOM)));
+        assert!(!bar.want(Some(BOTTOM)), "the same request again");
+        bar.take_grant(Some(grant(BOTTOM, BAND)));
+        // Another thickness on the same edge: the band stays until the new
+        // one arrives.
+        let thicker = AppBarRequest {
+            thickness: 96,
+            ..BOTTOM
+        };
+        assert!(bar.want(Some(thicker)));
+        assert_eq!(bar.grant, Some(grant(BOTTOM, BAND)));
+        // Another edge: the band is dropped.
+        let left = AppBarRequest {
+            edge: DockPosition::Left,
+            ..BOTTOM
+        };
+        assert!(bar.want(Some(left)));
+        assert_eq!(bar.grant, None);
+        assert_eq!(bar.released, None);
+    }
+
+    #[test]
+    fn a_release_keeps_the_band_as_the_one_given_back_until_the_next_request() {
+        let mut bar = holding();
+        assert!(bar.want(None));
+        assert_eq!(bar.grant, None);
+        assert_eq!(bar.released, Some(grant(BOTTOM, BAND)));
+        assert!(bar.want(Some(BOTTOM)));
+        assert_eq!(bar.released, None);
+    }
+
+    #[test]
+    fn only_a_band_for_the_request_in_effect_is_kept() {
+        let mut bar = holding();
+        assert_eq!(
+            bar.take_grant(Some(grant(BOTTOM, BAND))),
+            GrantChange::Same,
+            "the same band reported again"
+        );
+        // A band reported for the old edge after the window asked for the
+        // top edge counts as none.
+        let top = AppBarRequest {
+            edge: DockPosition::Top,
+            ..BOTTOM
+        };
+        bar.want(Some(top));
+        assert_eq!(bar.take_grant(Some(grant(BOTTOM, BAND))), GrantChange::Same);
+        assert_eq!(bar.grant, None);
+        let top_band = Rect::new(0, 0, 1920, 72);
+        assert_eq!(
+            bar.take_grant(Some(grant(top, top_band))),
+            GrantChange::Granted(grant(top, top_band))
+        );
+        // The platform lost the band: gone, and the request stays sent (the
+        // platform asks again).
+        assert_eq!(bar.take_grant(None), GrantChange::Gone);
+        assert_eq!(bar.sent, Some(top));
+        assert_eq!(bar.take_grant(None), GrantChange::Same);
+        // A band reported after a release is not kept.
+        bar.want(None);
+        assert_eq!(
+            bar.take_grant(Some(grant(top, top_band))),
+            GrantChange::Same
+        );
+        assert_eq!(bar.grant, None);
+    }
+
+    #[test]
+    fn the_window_goes_on_the_band_granted_for_its_place() {
+        let mut bar = holding();
+        assert_eq!(
+            bar.band("dock", DockPosition::Bottom, &reserved()),
+            Some(BAND)
+        );
+        // Not for another edge, nor another monitor.
+        assert_eq!(bar.band("dock", DockPosition::Left, &reserved()), None);
+        let other = MonitorInfo {
+            bounds: Rect::new(1920, 0, 1920, 1080),
+            ..reserved()
+        };
+        assert_eq!(bar.band("dock", DockPosition::Bottom, &other), None);
+        // Nor once the band is gone.
+        bar.take_grant(None);
+        assert_eq!(bar.band("dock", DockPosition::Bottom, &reserved()), None);
+    }
+
+    #[test]
+    fn a_band_given_back_is_placed_on_until_the_work_area_grows_over_it() {
+        let mut bar = holding();
+        bar.want(None);
+        // The work area as last reported still leaves the band out.
+        assert_eq!(
+            bar.band("dock", DockPosition::Bottom, &reserved()),
+            Some(BAND)
+        );
+        // Another place forgets it.
+        assert_eq!(bar.band("dock", DockPosition::Top, &reserved()), None);
+        assert_eq!(bar.released, None);
+
+        let mut bar = holding();
+        bar.want(None);
+        // The shell took it back: the work area reaches the taskbar again.
+        let grown = monitor(Rect::new(0, 0, 1920, 1032));
+        assert_eq!(bar.band("dock", DockPosition::Bottom, &grown), None);
+        assert_eq!(bar.released, None);
+        assert_eq!(bar.band("dock", DockPosition::Bottom, &reserved()), None);
     }
 }
