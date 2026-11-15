@@ -85,14 +85,15 @@ const SETTLE_TIMEOUT_MS = 10_000;
 /**
  * JavaScript time allowed in a 3 s window. A settled page measures 0 (the
  * probe's evaluations come through DevTools and are not counted); the
- * control's frame loop measures about 6 ms per second.
+ * frame loop control, 1 ms of script in each frame, about 190 ms, and it
+ * must trip this budget.
  */
 const SCRIPT_BUDGET_MS = 3;
 /**
  * Main-thread task time allowed in a 3 s window. A settled page measures
- * 1–2 ms (the probe's evaluations and the CDP calls themselves); the
- * control's frame loop about 20 ms per second. The margin is for loaded
- * hosts.
+ * 1–2 ms (the probe's evaluations and the CDP calls themselves); the frame
+ * loop control about 230 ms, and it must trip this budget. The margin is
+ * for loaded hosts.
  */
 const TASK_BUDGET_MS = 25;
 
@@ -503,6 +504,11 @@ interface Watch {
 const FULL_WATCH: Watch = { settleTimeoutMs: SETTLE_TIMEOUT_MS, windowMs: WINDOW_MS };
 /** For the controls, which never settle: give up on settling soon, watch briefly. */
 const CONTROL_WATCH: Watch = { settleTimeoutMs: 500, windowMs: 1_000 };
+/**
+ * For busy work held to the window's budgets (they are per `WINDOW_MS`):
+ * give up on settling soon, watch a full window.
+ */
+const BUSY_WATCH: Watch = { settleTimeoutMs: 500, windowMs: WINDOW_MS };
 
 /** Wait for the settled condition, then watch the page for `windowMs`. */
 async function measure(
@@ -840,23 +846,34 @@ test.describe('the dock page goes quiet once it has settled', () => {
             const box = document.body.appendChild(document.createElement('div'));
             let width = 0;
             const spin = (): void => {
-              // A style write and a layout read every frame.
+              // A style write and a layout read every frame, and 1 ms of
+              // script: about 6 % of a core at 60 Hz, far over both budgets
+              // on any host.
               width = (width + 1) % 8;
               box.style.width = `${width}px`;
               void box.offsetWidth;
+              const until = performance.now() + 1;
+              while (performance.now() < until) {
+                // Spin.
+              }
               requestAnimationFrame(spin);
             };
             requestAnimationFrame(spin);
             setInterval(() => undefined, 1_000);
           });
         },
-        watch: CONTROL_WATCH,
+        // A full window: the time budgets are per `WINDOW_MS`.
+        watch: BUSY_WATCH,
         check: (m) => {
           const busy = busyWork(m).join('\n');
           expect.soft(busy, 'the probe sees the loop').toMatch(/never settled/);
           expect.soft(m.layouts, 'the loop lays out').toBeGreaterThan(0);
           expect.soft(m.styleRecalcs, 'the loop recalculates style').toBeGreaterThan(0);
-          expect.soft(m.scriptMs, 'the loop runs script').toBeGreaterThan(0);
+          // Both budgets trip, so the checks on them can fail.
+          expect.soft(m.scriptMs, 'the loop runs script').toBeGreaterThan(SCRIPT_BUDGET_MS);
+          expect.soft(m.taskMs, 'the loop takes main-thread time').toBeGreaterThan(TASK_BUDGET_MS);
+          expect.soft(busy, 'over the script budget').toMatch(/(^|\n)script \d+\.\d ms/);
+          expect.soft(busy, 'over the task budget').toMatch(/(^|\n)tasks \d+\.\d ms/);
           expect.soft(busy, 'the frame callbacks').toMatch(/frame callbacks: \d+×/);
           expect
             .soft(busy, 'the interval')
