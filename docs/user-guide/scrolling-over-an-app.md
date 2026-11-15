@@ -21,7 +21,10 @@ on every monitor and _Show only windows on the dock's monitor_ on, those are
 the windows on the dock's monitor.
 
 A fast spin of the wheel moves on at most one window every 150 ms, not one
-per notch, so each window has time to come to the front.
+per notch, so each window has time to come to the front. Sometimes Windows
+does not let Stem bring a window forward (an app running as administrator
+can cause this). A notice then appears next to the dock, and the next notch
+goes on to the window after it.
 
 Scrolling over a fixed item, or over a pinned app without windows, does
 nothing. Scrolling never starts an app. With the default, _Does nothing_, the
