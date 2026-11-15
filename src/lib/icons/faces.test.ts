@@ -3,7 +3,14 @@ import { describe, expect, it } from 'vitest';
 import type { ClockFormat } from '$lib/ipc/generated/ClockFormat';
 import type { PowerStatus } from '$lib/ipc/generated/PowerStatus';
 
-import { batteryFace, clockText, msUntilNextMinute, timeFontSize } from './faces';
+import {
+  BATTERY_FILL_WIDTH,
+  BATTERY_MIN_FILL,
+  batteryFace,
+  clockText,
+  msUntilNextMinute,
+  timeFontSize,
+} from './faces';
 
 /** Sunday 15 November 2026, 10:42:30.250 local time. */
 const SUNDAY_MORNING = new Date(2026, 10, 15, 10, 42, 30, 250);
@@ -156,9 +163,11 @@ describe('batteryFace', () => {
   it('fills to the percent and writes it in the locale', () => {
     expect(batteryFace(power({}), 'en-US')).toEqual({
       level: 0.76,
+      fill: BATTERY_FILL_WIDTH * 0.76,
       percentText: '76%',
       glyph: null,
       saver: false,
+      low: false,
     });
     expect(plain(batteryFace(power({ percent: 5 }), 'fr-FR').percentText)).toBe('5 %');
     expect(batteryFace(power({ percent: 0 }), 'en-US').level).toBe(0);
@@ -180,15 +189,52 @@ describe('batteryFace', () => {
   it('has no fill and a dash without a known charge, or before any state', () => {
     expect(batteryFace(power({ percent: null }))).toEqual({
       level: null,
+      fill: null,
       percentText: '–',
       glyph: null,
       saver: false,
+      low: false,
     });
     expect(batteryFace(null)).toEqual({
       level: null,
+      fill: null,
       percentText: '–',
       glyph: null,
       saver: false,
+      low: false,
     });
+  });
+
+  it('draws a low charge with a visible fill: never narrower than the minimum, none when empty', () => {
+    expect(BATTERY_MIN_FILL).toBeGreaterThanOrEqual(4);
+    expect(batteryFace(power({ percent: 5 })).fill).toBe(BATTERY_MIN_FILL);
+    expect(batteryFace(power({ percent: 1 })).fill).toBe(BATTERY_MIN_FILL);
+    expect(batteryFace(power({ percent: 0 })).fill).toBeNull();
+    // Above the minimum the fill is the charge's share again.
+    expect(batteryFace(power({ percent: 50 })).fill).toBe(BATTERY_FILL_WIDTH / 2);
+    expect(batteryFace(power({ percent: 100 })).fill).toBe(BATTERY_FILL_WIDTH);
+    for (let percent = 1; percent <= 100; percent += 1) {
+      const fill = batteryFace(power({ percent })).fill!;
+      expect(fill).toBeGreaterThanOrEqual(BATTERY_MIN_FILL);
+      expect(fill).toBeLessThanOrEqual(BATTERY_FILL_WIDTH);
+    }
+  });
+
+  it('takes the low-charge colour below 20 % while not charging, unless battery saver is on', () => {
+    expect(batteryFace(power({ percent: 19 })).low).toBe(true);
+    expect(batteryFace(power({ percent: 5 })).low).toBe(true);
+    expect(batteryFace(power({ percent: 0 })).low).toBe(true);
+    expect(batteryFace(power({ percent: 20 })).low).toBe(false);
+    // Charging: the bolt says it is getting better.
+    expect(batteryFace(power({ percent: 5, charging: true, onAc: true })).low).toBe(false);
+    // On AC power without charging, the battery is not charging either.
+    expect(batteryFace(power({ percent: 5, onAc: true })).low).toBe(true);
+    // Saver's colour wins.
+    expect(batteryFace(power({ percent: 5, saver: true }))).toMatchObject({
+      saver: true,
+      low: false,
+    });
+    expect(batteryFace(power({ percent: null })).low).toBe(false);
+    expect(batteryFace(null).low).toBe(false);
   });
 });

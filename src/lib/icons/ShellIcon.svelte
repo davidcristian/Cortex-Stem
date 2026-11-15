@@ -131,8 +131,10 @@
   {:else if name === 'battery' && battery !== null}
     <!-- A battery filled to the charge, a bolt while charging, a plug on AC
          power without charging, the percent below; amber while battery
-         saver is on. The glyph is outlined in the panel's tint so
-         it reads over the fill as well as over the empty part. -->
+         saver is on, red below 20 % while not charging, and never
+         a fill too thin to see (`batteryFace`). The glyph is
+         outlined in the panel's tint so it reads over the fill as well as
+         over the empty part. -->
     <rect x="2" y="2" width="60" height="60" rx="14" fill="var(--tile-neutral)" />
     <rect
       x="10"
@@ -145,13 +147,14 @@
       stroke-width="3"
     />
     <rect x="51.5" y="21.5" width="3.5" height="9" rx="1.5" fill="currentColor" />
-    {#if battery.level !== null && battery.level > 0}
+    {#if battery.fill !== null}
       <rect
         class="fill"
         class:saver={battery.saver}
+        class:low={battery.low}
         x="14"
         y="19"
-        width={Math.max(2, 32 * battery.level)}
+        width={battery.fill}
         height="14"
         rx="2"
       />
@@ -270,9 +273,26 @@
     fill: currentColor;
   }
 
-  /* Battery saver: amber, as Windows shows it, on either panel tint. */
+  /* The battery's warning colours, theme tokens like those
+     of app.css, set on the root so a dock.css can set them too (they are
+     not among the stable variables): battery saver's amber, as Windows
+     shows it, on either panel tint; a low charge in Windows 11's critical
+     colour (Fluent's SystemFillColorCritical), lighter on the dark panel. */
+  :global(:root) {
+    --battery-saver: #f2a900;
+    --battery-low: #ff99a4;
+  }
+
+  :global(:root[data-theme='light']) {
+    --battery-low: #c42b1c;
+  }
+
   .fill.saver {
-    fill: #f2a900;
+    fill: var(--battery-saver);
+  }
+
+  .fill.low {
+    fill: var(--battery-low);
   }
 
   .glyph {

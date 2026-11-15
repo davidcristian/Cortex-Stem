@@ -106,16 +106,40 @@ export function timeFontSize(text: Pick<ClockText, 'time' | 'dayPeriod'>): numbe
   return Math.max(11, Math.min(22, Math.floor(TIME_WIDTH / Math.max(width, 0.1))));
 }
 
+/** The fill's width at 100 %, in face units (the battery's inside on the 64-unit face). */
+export const BATTERY_FILL_WIDTH = 32;
+/**
+ * The narrowest fill for any charge above 0, in face units: 5 %
+ * would be 1.6 units, about 1 px on a 48 px icon and lost in the fill's
+ * rounded corners; 5 units is about 4 px there.
+ */
+export const BATTERY_MIN_FILL = 5;
+/** Below this charge, while not charging, the fill takes the low-charge colour. */
+export const BATTERY_LOW_LEVEL = 0.2;
+
 /** What the battery face shows. */
 export interface BatteryFace {
-  /** The fill, 0 to 1; `null` when the charge is not known (no fill). */
+  /** The charge, 0 to 1; `null` when it is not known. */
   level: number | null;
+  /**
+   * The fill's width in face units: the charge's share of
+   * [`BATTERY_FILL_WIDTH`], never below [`BATTERY_MIN_FILL`]; `null` for no
+   * fill (an empty battery, or a charge not known).
+   */
+  fill: number | null;
   /** The charge as text in the page's locale (`76%`), or `–` when not known. */
   percentText: string;
   /** A bolt while charging, a plug on AC power without charging, else none. */
   glyph: 'bolt' | 'plug' | null;
   /** Battery saver is on: the fill takes the saver colour. */
   saver: boolean;
+  /**
+   * The charge is below [`BATTERY_LOW_LEVEL`] and the battery is not
+   * charging, with battery saver off: the fill takes the low-charge colour.
+   * Saver's colour wins, as on a phone: Windows turns saver on at 20 % by
+   * default, so its colour already says the charge is low.
+   */
+  low: boolean;
 }
 
 /**
@@ -125,8 +149,11 @@ export interface BatteryFace {
 export function batteryFace(power: PowerStatus | null, locale?: string): BatteryFace {
   const percent = power?.percent ?? null;
   const level = percent === null ? null : Math.min(100, Math.max(0, percent)) / 100;
+  const saver = power?.saver ?? false;
   return {
     level,
+    fill:
+      level === null || level === 0 ? null : Math.max(BATTERY_MIN_FILL, BATTERY_FILL_WIDTH * level),
     percentText:
       level === null
         ? '–'
@@ -134,6 +161,7 @@ export function batteryFace(power: PowerStatus | null, locale?: string): Battery
             level,
           ),
     glyph: power?.charging ? 'bolt' : power?.onAc ? 'plug' : null,
-    saver: power?.saver ?? false,
+    saver,
+    low: level !== null && level < BATTERY_LOW_LEVEL && !power?.charging && !saver,
   };
 }

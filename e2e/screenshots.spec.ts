@@ -2192,6 +2192,47 @@ test.describe('clock and battery', () => {
     });
   }
 
+  for (const scheme of ['dark', 'light'] as const) {
+    test(`a battery at 5 % (${scheme}): a fill that shows, in the low-charge colour; saver's amber wins`, async ({
+      page,
+    }) => {
+      await page.clock.setFixedTime(NOW);
+      await page.emulateMedia({ colorScheme: scheme });
+      await openDock(page);
+      await switchOn(page);
+      const battery = page.locator(BATTERY);
+      const fill = battery.locator('rect.fill');
+      await setPower(page, { ...ON_BATTERY, percent: 5 });
+      await expect(battery).toHaveAttribute('aria-label', 'Battery 5 %');
+      // 5 units of the 32 a full battery has, not 1.6: about 4 px of a 48 px icon.
+      expect(await fillWidth(page)).toBe(5);
+      await expect(fill).toHaveClass(/\blow\b/);
+      expect(await computed(fill, 'fill')).toBe(
+        scheme === 'dark' ? 'rgb(255, 153, 164)' : 'rgb(196, 43, 28)',
+      );
+      await expect.poll(() => runningAnimations(page)).toBe(0);
+      const box = (await battery.boundingBox())!;
+      await page.screenshot({
+        path: `${OUT}/dock-battery-5-${scheme}.png`,
+        clip: { x: box.x - 24, y: box.y - 12, width: box.width + 48, height: box.height + 24 },
+      });
+
+      // At 20 % the colour is the usual one again.
+      await setPower(page, { ...ON_BATTERY, percent: 20 });
+      await expect(battery).toHaveAttribute('aria-label', 'Battery 20 %');
+      await expect(fill).not.toHaveClass(/\blow\b/);
+      // Charging, a low charge is no warning: the usual colour and the bolt.
+      await setPower(page, { ...ON_BATTERY, percent: 5, charging: true, onAc: true });
+      await expect(battery.locator('path.glyph')).toHaveCount(1);
+      await expect(fill).not.toHaveClass(/\blow\b/);
+      // With battery saver on, its amber wins.
+      await setPower(page, { ...ON_BATTERY, percent: 5, saver: true });
+      await expect(battery.locator('rect.fill.saver')).toHaveCount(1);
+      await expect(battery.locator('rect.fill.low')).toHaveCount(0);
+      expect(await computed(fill, 'fill')).toBe('rgb(242, 169, 0)');
+    });
+  }
+
   test('on a left dock the clock’s title pill wraps into even lines, with no lone day period', async ({
     page,
   }) => {
