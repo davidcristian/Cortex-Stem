@@ -29,3 +29,8 @@ goes on to the window after it.
 Scrolling over a fixed item, or over a pinned app without windows, does
 nothing. Scrolling never starts an app. With the default, _Does nothing_, the
 wheel does nothing anywhere on the dock.
+
+Windows sends the wheel to the window under the pointer, and so to the dock,
+only while Settings → Bluetooth & devices → Mouse → _Scroll inactive windows
+when hovering over them_ is on. It is on unless you turned it off. With it
+off, the wheel scrolls the app you are working in instead.
