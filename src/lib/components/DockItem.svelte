@@ -168,7 +168,13 @@
       now = null;
     };
   });
-  const clock = $derived(isClock && now !== null ? clockText(now, clockFormat) : null);
+  // Every `dock://state` brings a new `clockFormat` object; the face is
+  // rebuilt only when one of its two values changes.
+  const clockLocale = $derived(clockFormat?.locale ?? null);
+  const clockHour12 = $derived(clockFormat?.hour12 ?? null);
+  const clock = $derived(
+    isClock && now !== null ? clockText(now, { locale: clockLocale, hour12: clockHour12 }) : null,
+  );
   /** The title pill's text and the accessible name's start: the clock's is the full date and time. */
   const title = $derived(clock?.full ?? item.title);
   /**
