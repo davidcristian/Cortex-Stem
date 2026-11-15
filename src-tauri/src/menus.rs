@@ -14,12 +14,12 @@
 //!
 //! Item ids encode the action: `ctx:activate:<windowId>`,
 //! `ctx:launch:<appId>`, `ctx:pin:<appId>`, `ctx:unpin:<appId>`,
-//! `ctx:close-all:<dockLabel>:<appId>` (the dock whose windows it closes;
-//! dock labels have no `:`, app ids may), `ctx:shell:<shellAction>`
-//! (camelCase, as serialised), `ctx:settings`, `ctx:quit`. Everything starts
-//! with `ctx:` because the tray's items (`tray.rs`) share the same global
-//! event stream and must not collide; ids without the prefix are not ours
-//! and are ignored.
+//! `ctx:hide:<appId>`, `ctx:close-all:<dockLabel>:<appId>` (the
+//! dock whose windows it closes; dock labels have no `:`, app ids may),
+//! `ctx:shell:<shellAction>` (camelCase, as serialised), `ctx:settings`,
+//! `ctx:quit`. Everything starts with `ctx:` because the tray's items
+//! (`tray.rs`) share the same global event stream and must not collide; ids
+//! without the prefix are not ours and are ignored.
 //!
 //! Threading: `popup_at` runs the modal menu loop on the main thread, so the
 //! command blocks until the menu closes (as every Win32 context menu does;
@@ -262,8 +262,9 @@ fn shell_entry<'a>(menu: Builder<'a>, action: ShellAction, text: &str) -> Builde
 }
 
 /// An app item: its windows (activate), *New window*, *Pin* / *Unpin*,
-/// *Close all windows* (of the dock window `dock`). `item` is the dock's
-/// view of it, so the windows are the ones that dock lists.
+/// *Hide from Stem* for an unpinned app, *Close all windows* (of
+/// the dock window `dock`). `item` is the dock's view of it, so the windows
+/// are the ones that dock lists.
 fn app_entries<'a>(
     app: &AppHandle,
     mut menu: Builder<'a>,
@@ -301,6 +302,13 @@ fn app_entries<'a>(
             .build(app)
             .map_err(|e| e.to_string())?;
         menu = menu.item(&pin);
+    }
+    if !pinned {
+        // Every unpinned item is a running app (the engine lists no other),
+        // and hiding needs no launch target, so a `class:` app has it too. A
+        // pinned app is never hidden (`hide_app` would refuse it). No
+        // confirmation: *Show* on the settings page undoes it.
+        menu = menu.text(MenuAction::Hide(app_id.clone()).id(), "Hide from Stem");
     }
     if !item.windows.is_empty() {
         menu = menu.text(
@@ -356,6 +364,8 @@ enum MenuAction {
     Launch(AppId),
     Pin(AppId),
     Unpin(AppId),
+    /// Stop showing the app on every dock.
+    Hide(AppId),
     /// Every window of `app` that the dock window `dock` lists.
     CloseAll {
         dock: String,
@@ -373,6 +383,7 @@ impl MenuAction {
             Self::Launch(app) => format!("{ID_PREFIX}launch:{}", app.as_str()),
             Self::Pin(app) => format!("{ID_PREFIX}pin:{}", app.as_str()),
             Self::Unpin(app) => format!("{ID_PREFIX}unpin:{}", app.as_str()),
+            Self::Hide(app) => format!("{ID_PREFIX}hide:{}", app.as_str()),
             Self::CloseAll { dock, app } => {
                 format!("{ID_PREFIX}close-all:{dock}:{}", app.as_str())
             }
@@ -398,6 +409,7 @@ impl MenuAction {
             "launch" => app().map(Self::Launch),
             "pin" => app().map(Self::Pin),
             "unpin" => app().map(Self::Unpin),
+            "hide" => app().map(Self::Hide),
             // The dock label first: it has no `:`, the app id may.
             "close-all" => arg.split_once(':').and_then(|(dock, app)| {
                 (!dock.is_empty() && !app.is_empty()).then(|| Self::CloseAll {
@@ -474,6 +486,7 @@ fn perform(service: &DockService, action: &MenuAction) -> ServiceResult<()> {
         MenuAction::Launch(app) => service.launch_app(app),
         MenuAction::Pin(app) => service.pin_app(app),
         MenuAction::Unpin(app) => service.unpin_app(app),
+        MenuAction::Hide(app) => service.hide_app(app),
         MenuAction::CloseAll { dock, app } => close_all(service, dock, app),
         MenuAction::Shell(shell) => service.shell_action(*shell),
         // Handled on the main thread by `on_menu_event`.
@@ -513,6 +526,8 @@ mod tests {
                 "aumid:Microsoft.WindowsCalculator_8wekyb3d8bbwe!App".into(),
             )),
             MenuAction::Unpin(AppId("uri:ms-settings:".into())),
+            MenuAction::Hide(AppId("exe:c:/windows/notepad.exe".into())),
+            MenuAction::Hide(AppId("class:notepad".into())),
             MenuAction::CloseAll {
                 dock: "dock-DISPLAY3".into(),
                 app: AppId("class:notepad".into()),
@@ -556,6 +571,10 @@ mod tests {
         );
         assert_eq!(MenuAction::Activate(WindowId(7)).id(), "ctx:activate:7");
         assert_eq!(
+            MenuAction::Hide(AppId("exe:c:/windows/notepad.exe".into())).id(),
+            "ctx:hide:exe:c:/windows/notepad.exe"
+        );
+        assert_eq!(
             MenuAction::CloseAll {
                 dock: "dock-DISPLAY3".into(),
                 app: AppId("exe:c:/windows/notepad.exe".into()),
@@ -575,6 +594,8 @@ mod tests {
             "ctx:activate:",
             "ctx:activate:x",
             "ctx:launch:",
+            "ctx:hide:",
+            "ctx:hide",
             "ctx:shell:OpenStartMenu",
             "ctx:shell:",
             "ctx:close-all",

@@ -20,8 +20,9 @@ settings window opening.
     there were any windows; *New window* (`launch_app`, only when the app can be launched:
     pinned, or an `exe:` or `aumid:` id); *Pin to Stem* or *Unpin from Stem* (`pin_app` /
     `unpin_app`; *Pin to Stem* is disabled for apps without a launch target, that is `class:`
-    ids); and *Close all windows* when the dock lists windows (it closes each window that the
-    dock lists when the entry is chosen).
+    ids); *Hide from Stem* for an unpinned app (see [Hidden apps](hidden-apps.md)); and *Close
+    all windows* when the dock lists windows (it closes each window that the dock lists when the
+    entry is chosen).
   - `launcher`: *Open Start menu*; `taskView`: *Open Task View*; `showDesktop`: *Show desktop*;
     `quickSettings`: *Open Quick Settings*; `notificationCenter`: *Open Notification Center*;
     `recycleBin`: *Open*, *Empty Recycle Bin…* (all through `shell_action`).

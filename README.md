@@ -44,7 +44,7 @@ dock to pin it.
 **Clicks and menus.** A click starts an app, brings its window to the front, minimises it or cycles
 through its windows. Whether a click on the app in front minimises it is a setting. A right-click
 opens a native Windows menu: the app's windows, _New window_, _Pin to Stem_ or _Unpin from Stem_,
-_Close all windows_, settings and quit.
+_Hide from Stem_, _Close all windows_, settings and quit.
 
 **Look.** Icons grow near the pointer, tooltips name the app, and an icon bounces while its app
 starts. Up to three dots per app show its open windows, dimmed while all of them are minimised. An

@@ -64,6 +64,8 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         pin_app,
         pin_target,
         unpin_app,
+        hide_app,
+        unhide_app,
         reorder_pinned,
         get_icon,
         set_dock_content_size,
@@ -183,6 +185,20 @@ async fn pin_target(service: State<'_, AppService>, target: LaunchTarget) -> Cmd
 #[tauri::command]
 async fn unpin_app(service: State<'_, AppService>, app_id: AppId) -> CmdResult<()> {
     checked("unpin_app", &app_id, service.0.unpin_app(&app_id))
+}
+
+/// Stop showing a running, unpinned app on every dock
+/// (`docs/ipc/hidden-apps.md`); the service saves it and rejects a pinned
+/// or unknown app.
+#[tauri::command]
+async fn hide_app(service: State<'_, AppService>, app_id: AppId) -> CmdResult<()> {
+    checked("hide_app", &app_id, service.0.hide_app(&app_id))
+}
+
+/// Show a hidden app again; an id that is not hidden is no error.
+#[tauri::command]
+async fn unhide_app(service: State<'_, AppService>, app_id: AppId) -> CmdResult<()> {
+    checked("unhide_app", &app_id, service.0.unhide_app(&app_id))
 }
 
 #[tauri::command]
