@@ -61,7 +61,10 @@ instead.
 - The dock takes only the 12-hour or 24-hour clock and the region's way of
   writing the date, not the format pattern itself. It does not show literal
   text or seconds from a custom time format: a custom `HH'h'mm` gives `14:05`
-  on the dock.
+  on the dock. It does not use the pattern's hour digits or Windows' AM and
+  PM symbols either. A 12-hour `h:mm tt` under English (United Kingdom)
+  shows `2:05 pm` on the dock and `02:05 pm` in its pill, where the taskbar
+  uses Windows' symbols (such as `2:05 PM`).
 - A change of format applies within a second, without restarting Stem.
 - A click opens your notifications and the calendar, as Win+N does. Its menu
   has _Open Notification Center_ and _Date and time settings_, which opens
