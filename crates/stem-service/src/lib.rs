@@ -51,6 +51,8 @@
 #![forbid(unsafe_code)]
 
 pub mod icon_cache;
+#[cfg(test)]
+mod perf_tests;
 mod reidentify;
 pub mod store;
 
