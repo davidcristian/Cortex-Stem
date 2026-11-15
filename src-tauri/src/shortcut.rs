@@ -146,7 +146,8 @@ pub fn on_settings_changed(app: &AppHandle, settings: &Settings) {
     }
 }
 
-/// Make the registered shortcuts match `wanted` ([`plan`]). Main thread.
+/// Make the registered shortcuts match `wanted` ([`plan`], [`steps`]).
+/// Main thread.
 fn apply(app: &AppHandle, wanted: &Wanted) {
     let (Some(plugin), Some(state)) = (
         app.try_state::<GlobalShortcut<Wry>>(),
@@ -156,45 +157,84 @@ fn apply(app: &AppHandle, wanted: &Wanted) {
     };
     let plans = plan(&wanted[0], &wanted[1]);
     let mut applied = state.applied.lock();
+    let steps = steps(&applied.registered, &plans);
 
-    // Everything that is no longer wanted goes first, so a chord one
-    // shortcut gives up is free for the other.
-    for kind in Kind::ALL {
-        let i = kind.index();
-        let desired = plans[i].as_ref().ok().copied().flatten();
-        if applied.registered[i] == desired {
-            continue;
+    for &(kind, old) in &steps.unregister {
+        applied.registered[kind.index()] = None;
+        match plugin.unregister(old) {
+            Ok(()) => log::debug!("{} {old} unregistered", kind.name()),
+            Err(e) => log::warn!("{} {old}: unregistering failed: {e}", kind.name()),
         }
-        if let Some(old) = applied.registered[i].take() {
-            match plugin.unregister(old) {
-                Ok(()) => log::debug!("{} {old} unregistered", kind.name()),
-                Err(e) => log::warn!("{} {old}: unregistering failed: {e}", kind.name()),
+    }
+
+    let mut refused: [Option<String>; 2] = [None, None];
+    for &(kind, shortcut) in &steps.register {
+        match plugin.on_shortcut(shortcut, kind.handler()) {
+            Ok(()) => applied.registered[kind.index()] = Some(shortcut),
+            Err(e) => {
+                refused[kind.index()] = Some(format!(
+                    "it could not be registered ({e}); another app may hold it"
+                ));
             }
         }
     }
 
     for kind in Kind::ALL {
         let i = kind.index();
-        let outcome = match &plans[i] {
-            Ok(None) => Outcome::None,
-            Err(reason) => Outcome::Refused(reason.clone()),
-            Ok(Some(shortcut)) if applied.registered[i] == Some(*shortcut) => {
-                Outcome::Active(*shortcut)
-            }
-            Ok(Some(shortcut)) => match plugin.on_shortcut(*shortcut, kind.handler()) {
-                Ok(()) => {
-                    applied.registered[i] = Some(*shortcut);
-                    Outcome::Active(*shortcut)
-                }
-                Err(e) => Outcome::Refused(format!(
-                    "it could not be registered ({e}); another app may hold it"
-                )),
-            },
-        };
+        let outcome = outcome(&plans[i], refused[i].take());
         if applied.outcome[i].as_ref() != Some(&outcome) {
             log_outcome(kind, &wanted[i], &outcome);
             applied.outcome[i] = Some(outcome);
         }
+    }
+}
+
+/// What it takes to make the registered shortcuts match their plans: the
+/// shortcuts to unregister, then the ones to register, each with its kind.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Steps {
+    unregister: Vec<(Kind, Shortcut)>,
+    register: Vec<(Kind, Shortcut)>,
+}
+
+/// The [`Steps`] from `registered` (what is registered now) to `plans`
+/// ([`plan`]), both indexed by [`Kind::index`]. A shortcut that is
+/// registered and still wanted is left alone; one that is no longer wanted
+/// (another chord, none, or refused) is unregistered; a wanted one that is
+/// not registered is registered. [`apply`] runs every unregistering before
+/// any registering, so a chord one shortcut gives up is free for the
+/// other, also when the two trade places in one change. Pure.
+fn steps(
+    registered: &[Option<Shortcut>; 2],
+    plans: &[Result<Option<Shortcut>, String>; 2],
+) -> Steps {
+    let mut steps = Steps::default();
+    for kind in Kind::ALL {
+        let i = kind.index();
+        let desired = plans[i].as_ref().ok().copied().flatten();
+        if registered[i] == desired {
+            continue;
+        }
+        if let Some(old) = registered[i] {
+            steps.unregister.push((kind, old));
+        }
+        if let Some(new) = desired {
+            steps.register.push((kind, new));
+        }
+    }
+    steps
+}
+
+/// What became of a shortcut with this `plan` once [`apply`] ran its
+/// [`Steps`]: `refused` is why Windows refused to register it, if it did.
+/// A planned shortcut that needed no registering was registered already.
+/// Pure.
+fn outcome(plan: &Result<Option<Shortcut>, String>, refused: Option<String>) -> Outcome {
+    match (plan, refused) {
+        (_, Some(reason)) => Outcome::Refused(reason),
+        (Err(reason), None) => Outcome::Refused(reason.clone()),
+        (Ok(None), None) => Outcome::None,
+        (Ok(Some(shortcut)), None) => Outcome::Active(*shortcut),
     }
 }
 
@@ -376,6 +416,95 @@ mod tests {
             [_, Err(reason)] => assert!(!reason.contains("toggle shortcut"), "{reason}"),
             other => panic!("Shift+D must be refused, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn every_shortcut_given_up_is_unregistered_before_any_is_registered() {
+        let toggle = parsed("Ctrl+Alt+D");
+        let focus = parsed("Ctrl+Alt+Shift+D");
+        let f8 = parsed("Ctrl+Shift+F8");
+        let both = [Some(toggle), Some(focus)];
+        let steps_to =
+            |registered: &[Option<Shortcut>; 2], t: &str, f: &str| steps(registered, &plan(t, f));
+
+        // The first request registers both; the same request again does
+        // nothing.
+        assert_eq!(
+            steps_to(&[None, None], "Ctrl+Alt+D", "Ctrl+Alt+Shift+D"),
+            Steps {
+                unregister: vec![],
+                register: vec![(Kind::Toggle, toggle), (Kind::Focus, focus)],
+            }
+        );
+        assert_eq!(
+            steps_to(&both, "ctrl+alt+d", "Ctrl+Alt+Shift+D"),
+            Steps::default()
+        );
+        // One changes: the other is left alone.
+        assert_eq!(
+            steps_to(&both, "Ctrl+Alt+D", "Ctrl+Shift+F8"),
+            Steps {
+                unregister: vec![(Kind::Focus, focus)],
+                register: vec![(Kind::Focus, f8)],
+            }
+        );
+        // The two trade places in one change: both chords are given up
+        // first, so neither registration collides with the other's old one.
+        assert_eq!(
+            steps_to(&both, "Ctrl+Alt+Shift+D", "Ctrl+Alt+D"),
+            Steps {
+                unregister: vec![(Kind::Toggle, toggle), (Kind::Focus, focus)],
+                register: vec![(Kind::Toggle, focus), (Kind::Focus, toggle)],
+            }
+        );
+        // The toggle is turned off and the focus shortcut takes its chord.
+        assert_eq!(
+            steps_to(&both, "", "Ctrl+Alt+D"),
+            Steps {
+                unregister: vec![(Kind::Toggle, toggle), (Kind::Focus, focus)],
+                register: vec![(Kind::Focus, toggle)],
+            }
+        );
+        // The focus shortcut moves onto the toggle's chord: refused, so it
+        // is only unregistered.
+        assert_eq!(
+            steps_to(&both, "Ctrl+Alt+D", "alt+ctrl+d"),
+            Steps {
+                unregister: vec![(Kind::Focus, focus)],
+                register: vec![],
+            }
+        );
+        // A shortcut Windows refused earlier (not registered) is tried
+        // again; both off unregisters both.
+        assert_eq!(
+            steps_to(&[Some(toggle), None], "Ctrl+Alt+D", "Ctrl+Alt+Shift+D"),
+            Steps {
+                unregister: vec![],
+                register: vec![(Kind::Focus, focus)],
+            }
+        );
+        assert_eq!(
+            steps_to(&both, "", ""),
+            Steps {
+                unregister: vec![(Kind::Toggle, toggle), (Kind::Focus, focus)],
+                register: vec![],
+            }
+        );
+    }
+
+    #[test]
+    fn the_outcome_is_the_plan_unless_windows_refused_the_registration() {
+        let focus = parsed("Ctrl+Alt+Shift+D");
+        assert_eq!(outcome(&Ok(None), None), Outcome::None);
+        assert_eq!(outcome(&Ok(Some(focus)), None), Outcome::Active(focus));
+        assert_eq!(
+            outcome(&Err("it needs Ctrl".to_owned()), None),
+            Outcome::Refused("it needs Ctrl".to_owned())
+        );
+        assert_eq!(
+            outcome(&Ok(Some(focus)), Some("held by another app".to_owned())),
+            Outcome::Refused("held by another app".to_owned())
+        );
     }
 
     #[test]
