@@ -40,6 +40,27 @@ pub fn file_name(path: &str) -> &str {
     trimmed.rsplit(['/', '\\']).next().unwrap_or(trimmed)
 }
 
+/// The folder an executable starts in when its launch target names none:
+/// the exe's own folder, as Explorer and the stock taskbar use,
+/// instead of whatever folder Stem itself runs in (System32 when Windows
+/// starts it at sign-in). A drive root keeps its separator (`C:\app.exe` →
+/// `C:\`; a bare `C:` would mean that drive's current folder). Quotes and
+/// surrounding blanks are ignored; `None` for a bare file name or a path
+/// that ends in a separator.
+pub fn default_working_dir(exe_path: &str) -> Option<&str> {
+    let path = exe_path.trim().trim_matches('"').trim();
+    let at = path.rfind(['\\', '/'])?;
+    let (dir, file) = (&path[..at], &path[at + 1..]);
+    if dir.is_empty() || file.is_empty() {
+        return None;
+    }
+    Some(if dir.ends_with(':') {
+        &path[..=at]
+    } else {
+        dir
+    })
+}
+
 /// File name without its extension (`C:\A\b.exe` → `b`). Dot-files keep
 /// their name.
 pub fn file_stem(path: &str) -> String {
@@ -858,6 +879,33 @@ mod tests {
             "",
         ] {
             assert_eq!(packaged_exe(path), None, "{path}");
+        }
+    }
+
+    #[test]
+    fn an_exe_starts_in_its_own_folder_unless_told_otherwise() {
+        let cases = [
+            (
+                r"C:\Program Files\App\app.exe",
+                Some(r"C:\Program Files\App"),
+            ),
+            (r"C:\app.exe", Some(r"C:\")),
+            ("D:/Games/old/game.exe", Some("D:/Games/old")),
+            (
+                r"\\server\share\tools\tool.exe",
+                Some(r"\\server\share\tools"),
+            ),
+            (
+                r#" "C:\Program Files\App\app.exe" "#,
+                Some(r"C:\Program Files\App"),
+            ),
+            ("app.exe", None),
+            (r"C:\Apps\", None),
+            (r"\app.exe", None),
+            ("", None),
+        ];
+        for (path, expected) in cases {
+            assert_eq!(default_working_dir(path), expected, "{path:?}");
         }
     }
 

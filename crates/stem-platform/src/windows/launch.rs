@@ -2,7 +2,10 @@
 //!
 //! Contract:
 //! - `Exe` -> `ShellExecuteExW` with `SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI`,
-//!   verb `open`, arguments and working directory honoured.
+//!   verb `open`, arguments and working directory honoured; without a
+//!   working directory the exe starts in its own folder
+//!   (`rules::identity::default_working_dir`), as from Explorer, never in
+//!   Stem's own current directory.
 //! - `Shortcut` -> `ShellExecuteExW` on the `.lnk` itself (the shell resolves it).
 //! - `StoreApp` -> `IApplicationActivationManager::ActivateApplication`
 //!   (fallback: `ShellExecuteExW("shell:AppsFolder\<aumid>")`).
@@ -28,7 +31,7 @@ use windows::core::{PCWSTR, w};
 
 use super::util;
 use crate::PlatformResult;
-use crate::rules::identity::{apps_folder_parsing_name, join_command_line};
+use crate::rules::identity::{apps_folder_parsing_name, default_working_dir, join_command_line};
 
 pub fn launch(target: &LaunchTarget) -> PlatformResult<()> {
     let _com = util::ComApartment::sta();
@@ -38,13 +41,16 @@ pub fn launch(target: &LaunchTarget) -> PlatformResult<()> {
             args,
             working_dir,
         } => {
+            let path = path.to_string_lossy();
             let parameters = join_command_line(args);
-            let directory = working_dir.as_deref().map(|d| d.to_string_lossy());
-            shell_execute(
-                &path.to_string_lossy(),
-                Some(&parameters),
-                directory.as_deref(),
-            )
+            // An explicit folder (a shortcut's "Start in") wins; else the
+            // exe's own, never the folder Stem runs in.
+            let directory = working_dir
+                .as_deref()
+                .map(|d| d.to_string_lossy().into_owned())
+                .filter(|d| !d.trim().is_empty())
+                .or_else(|| default_working_dir(&path).map(str::to_owned));
+            shell_execute(&path, Some(&parameters), directory.as_deref())
         }
         LaunchTarget::Shortcut { path } => shell_execute(&path.to_string_lossy(), None, None),
         LaunchTarget::StoreApp { app_user_model_id } => {
