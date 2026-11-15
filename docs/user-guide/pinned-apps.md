@@ -11,8 +11,8 @@ and three buttons: move it up, move it down, and unpin it. To pin an app,
 drag its `.exe` or shortcut onto the dock, or right-click its running icon
 and choose _Pin to Stem_ (see [Drag and drop](#drag-and-drop)).
 
-In the file, the pinned apps are the `pinned` array, from left to right,
-empty by default. Each entry has three keys:
+In the file, the pinned apps are the [`pinned`](../SETTINGS.md#pinned) array,
+from left to right, empty by default. Each entry has three keys:
 
 - `id`: the same id the app's windows get, so a pin and its running windows
   share one icon.

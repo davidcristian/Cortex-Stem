@@ -78,7 +78,8 @@ running dock. After a crash, the next start says so once and offers to open the 
 _Reset to defaults_, and ends with an About section that shows the version and the paths of the
 settings and log files and opens their folders.
 
-Every setting is described in the [user guide](docs/user-guide/index.md).
+Every setting is described in the [user guide](docs/user-guide/index.md), and every key of the
+settings file, with its type, range and default, in the [settings reference](docs/SETTINGS.md).
 
 ## In action
 

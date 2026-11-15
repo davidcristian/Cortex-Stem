@@ -1,11 +1,13 @@
 # Stem user guide
 
-This guide lists every setting and explains how the dock behaves. For
+This guide explains the settings window and how the dock behaves. Every key
+of the settings file, with its type, range and default, is in the
+[settings reference](../SETTINGS.md), which is generated from the source. For
 installing and building, see the [README](../../README.md).
 
 | File | What it covers |
 | ---- | -------------- |
-| [settings-window.md](settings-window.md) | Every section of the settings window, the settings file, and the key and default of each setting |
+| [settings-window.md](settings-window.md) | Every section of the settings window, the settings file and the keys behind each section |
 | [pinned-apps.md](pinned-apps.md) | The _Pinned apps_ section, the `pinned` array, and pinning and rearranging apps by drag and drop |
 | [clicking-an-app.md](clicking-an-app.md) | The order of the dock's items, what a click and a right-click on an app do, and the running dots |
 | [auto-hide.md](auto-hide.md) | The auto-hide modes, how to bring a hidden dock back, and fullscreen apps |
