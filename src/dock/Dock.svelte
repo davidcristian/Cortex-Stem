@@ -2564,13 +2564,16 @@
     right: 0;
   }
 
+  /* A contrast theme: no blur and a 2 px line in the text colour
+     (`--panel-border` is `--text` there, app.css) for every preset. Both
+     are the preset's values, under the user's `--stem-panel-blur` and
+     `--stem-panel-hairline` like everywhere else (docs/THEMING.md). */
   .dock-panel.high-contrast {
-    -webkit-backdrop-filter: none;
-    backdrop-filter: none;
+    --preset-panel-blur: none;
   }
 
   .dock-panel.high-contrast::before {
-    border: 2px solid var(--text);
+    border-width: 2px;
   }
 
   /* The drop gap: one slot long at rest, the icon box against its

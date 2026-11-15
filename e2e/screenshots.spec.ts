@@ -5597,6 +5597,34 @@ test.describe('theme presets and the user dock.css', () => {
     await expectLook(page, 'dark', 'minimal', DARK_ACCENT_RGB);
   });
 
+  test('under a contrast theme the user\u2019s blur and hairline still apply, on the 2 px contrast line', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openDock(page);
+    const panel = page.locator(PANEL);
+    await setOsTheme(page, { highContrast: true });
+    await expect(page.locator('html')).toHaveAttribute('data-high-contrast', '');
+    await expect(panel).toHaveCSS('backdrop-filter', 'none');
+
+    await reloadWith(
+      page,
+      '.dock-stage { --stem-panel-blur: blur(12px); --stem-panel-hairline: rgb(255, 185, 0); }',
+    );
+    await expect(panel).toHaveCSS('backdrop-filter', 'blur(12px)');
+    expect(await computed(panel, 'border-top-color', '::before')).toBe('rgb(255, 185, 0)');
+    expect(await computed(panel, 'border-top-width', '::before')).toBe('2px');
+    // The variables it does not set keep the contrast values.
+    await expect(panel).toHaveCSS('background-color', 'rgb(28, 28, 30)');
+    await expect(panel).toHaveCSS('box-shadow', 'none');
+
+    // Without the file: the contrast panel, unblurred, in the text colour.
+    await reloadWith(page, null);
+    await expect(panel).toHaveCSS('backdrop-filter', 'none');
+    expect(await computed(panel, 'border-top-color', '::before')).toBe('rgb(255, 255, 255)');
+    expect(await computed(panel, 'border-top-width', '::before')).toBe('2px');
+  });
+
   test('a dock.css rule keyed on the preset or the colour mode is measured and reported again when they change', async ({
     page,
   }) => {
