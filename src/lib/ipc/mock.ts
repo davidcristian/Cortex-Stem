@@ -1232,18 +1232,21 @@ class Engine {
 
   /**
    * `DockEngine::app_name`: the resolved display name, else the
-   * title of the app's first-seen tracked window (shown or not); `null`
-   * when the engine knows nothing of the app.
+   * title of the app's first shown window (what its item's title falls
+   * back to), else of its first-seen tracked window (an app with none
+   * shown has no item); `null` when the engine knows nothing of the app.
    */
   appName(appId: AppId): string | null {
     const identity = this.identities.get(appId);
     if (identity) {
       return identity.displayName;
     }
-    const first = [...this.windows.values()]
-      .filter((t) => appIdFor(t.raw) === appId)
-      .sort((a, b) => a.seq - b.seq)[0];
-    return first?.raw.title ?? null;
+    const first =
+      this.firstWindowOf(appId) ??
+      [...this.windows.values()]
+        .filter((t) => appIdFor(t.raw) === appId)
+        .sort((a, b) => a.seq - b.seq)[0]?.raw;
+    return first?.title ?? null;
   }
 
   firstWindowOf(appId: AppId): RawWindow | undefined {
@@ -1793,7 +1796,8 @@ export class MockBackend implements Backend {
       this.log(`show ${appId}`);
       const settings = structuredClone(this.engine.settings);
       settings.hiddenApps = settings.hiddenApps.filter((h) => h.id !== appId);
-      this.applySettings(settings);
+      // Validated like every change in Rust (`mutate_settings`).
+      this.applySettings(validateSettings(settings));
     });
   }
 

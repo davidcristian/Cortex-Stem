@@ -750,6 +750,33 @@ describe('hidden apps (docs/ipc/hidden-apps.md; mirror of hide_app / unhide_app)
     expect((await b.getSettings()).hiddenApps).toEqual([{ id: CODE, name: 'lib.rs — Stem' }]);
   });
 
+  it("the fallback name is the item's title: a cloaked window seen first does not name it", async () => {
+    const b = new MockBackend({ latencyMs: [0, 0], identityDelayMs: 60_000, log: false });
+    backends.push(b);
+    const window = (id: number, title: string, isCloaked: boolean): RawWindow => ({
+      id,
+      title,
+      className: 'ToolClass',
+      processId: 1000 + id,
+      exePath: 'C:\\Tools\\tool.exe',
+      appUserModelId: null,
+      isVisible: true,
+      isMinimized: false,
+      isCloaked,
+      // Unknown, so a cloaked window counts as away (not shown).
+      onCurrentDesktop: null,
+      monitor: 'mock-primary',
+      rect: null,
+      iconKey: null,
+    });
+    b.pushWindow(window(51, 'helper, cloaked', true));
+    b.pushWindow(window(50, 'Tool main', false));
+    const tool = 'exe:c:/tools/tool.exe';
+    expect(item(await b.getDockState(), app(tool)).title).toBe('Tool main');
+    await b.hideApp(tool);
+    expect((await b.getSettings()).hiddenApps).toEqual([{ id: tool, name: 'Tool main' }]);
+  });
+
   it('a settings document that hides an app hides it; pinned, blank and repeated entries are dropped', async () => {
     const b = fast();
     const s = await b.getSettings();
