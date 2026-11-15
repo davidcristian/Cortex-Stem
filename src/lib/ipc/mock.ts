@@ -1453,7 +1453,11 @@ class Engine {
    * with windows on that dock activates the window after (`next`) or
    * before (`previous`) the one in front, wrapping around, or the first
    * (`next`) or the last (`previous`) when none of them is in front;
-   * anything else is `nothing`.
+   * anything else is `nothing`. The engine's memory of the window a
+   * dock's last notch tried (`note_scroll_activation`, for an activation
+   * Windows refuses or reports late) is not mirrored: here every
+   * activation succeeds and takes the foreground at once, so stepping
+   * from the foreground is the same.
    */
   scrollAction(itemKey: string, dock: string, direction: ScrollDirection): ScrollEffect {
     const item = this.snapshot().items.find((i) => i.key === itemKey);
