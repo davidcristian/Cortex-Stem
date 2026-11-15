@@ -6,9 +6,9 @@ Date: 2026-11-04 · Status: accepted
 
 With `AutoHideMode::Always` the dock slides away `autoHide.delayMs` after
 the pointer has left it, and comes back when the pointer touches the
-bottom edge. The question is how the reveal is detected: a `GetCursorPos`
-poll on the events thread while the dock is hidden, or a low-level mouse
-hook.
+bottom edge (the dock's own edge; see "Every edge" below). The question is
+how the reveal is detected: a `GetCursorPos` poll on the events thread
+while the dock is hidden, or a low-level mouse hook.
 
 The platform already tracks the pointer for every dock window on the
 hit-test thread (raw input with `RIDEV_INPUTSINK`, plus a 4 Hz safety
@@ -16,17 +16,19 @@ poll). It switches the window between click-through and hit-testable from
 two rectangles the UI reports: the `panel` (entering it makes the window
 take clicks) and the `envelope` (leaving it makes the window click-through
 again). The dock window's bottom edge is the bottom edge of its monitor's
-work area.
+work area (on `top`, `left` and `right` the window is flush with that edge
+of the work area instead).
 
 ## Decision
 
 - **No new platform mechanism.** While hidden, the UI reports a thin reveal
   strip as both `panel` and `envelope`: the bottom 2 CSS px of the dock
-  window, as wide as the resting panel. The hit-test thread makes the
-  window hit-testable when the pointer enters the strip, as it does for the
-  panel, and the webview's own `pointerenter` on the strip element starts
-  the reveal. A low-level mouse hook and a second poll on the events thread
-  are rejected
+  window, as wide as the resting panel (on every edge, the 2 px along the
+  window's edge side, as long as the panel; see "Every edge" below). The
+  hit-test thread makes the window hit-testable when the pointer enters the
+  strip, as it does for the panel, and the webview's own `pointerenter` on
+  the strip element starts the reveal. A low-level mouse hook and a second
+  poll on the events thread are rejected
   ([Detecting the reveal](../research/auto-hide.md#detecting-the-reveal)).
 - **The state machine is presentation and lives in the UI**, as a pure,
   unit-tested module beside the magnification maths
@@ -41,11 +43,12 @@ work area.
   stock taskbar does. A file dragged over
   the reveal strip also reveals the dock, because an OLE drag sends no
   pointer events.
-- **Motion:** the panel slides out by its own height plus its margin to
-  the edge and its shadow, with `transform: translateY` over 200 ms
-  (`ease-in` out, `ease-out` back in). With `prefers-reduced-motion` it
-  fades instead. The dock window keeps its size and place, so no
-  `SetWindowPos` happens on hide or reveal.
+- **Motion:** the panel slides out towards its edge by its own thickness
+  plus its margin to the edge and its shadow, with `transform: translateY`
+  over 200 ms (`ease-in` out, `ease-out` back in; `translateX` on `left`
+  and `right`). With `prefers-reduced-motion` it fades instead. The dock
+  window keeps its size and place, so no `SetWindowPos` happens on hide or
+  reveal.
 - **Settings:** `autoHide.mode` is `off` (the default), `always` or
   `whenOverlapped` (see "When overlapped" below). `autoHide.delayMs` is
   250 ms by default and at most 5000 ms.
@@ -55,13 +58,14 @@ work area.
 
 ## Consequences
 
-- The reveal zone is the work area's bottom edge. That is the screen's
-  edge only when the stock taskbar is hidden or auto-hidden; with a visible
-  stock taskbar, the strip sits just above it. Fullscreen alone is
+- The reveal zone is the work area's edge on the dock's side (its bottom
+  edge for a dock on `bottom`). That is the screen's edge only when no
+  stock taskbar (or other app bar) is visible on that side; with a visible
+  stock taskbar there, the strip sits just inside it. Fullscreen alone is
   the exception: then there is no strip (see "Fullscreen").
-- While the dock is hidden, a click within 2 px of the work area's bottom
-  edge goes to the dock (the strip is hit-testable while the pointer is
-  inside it). macOS has the same reveal zone.
+- While the dock is hidden, a click within 2 px of the work area's edge on
+  the dock's side goes to the dock (the strip is hit-testable while the
+  pointer is inside it). macOS has the same reveal zone.
 - Touch and pen produce no hover, so they cannot reveal a hidden dock; the
   global shortcut and the tray toggle still show it.
 - The reveal itself needs no IPC beyond the hit region and the content size
@@ -103,7 +107,7 @@ the strip and the hit region follow. No setting turns this off: like the
 stock taskbar's, it is always on.
 
 Fullscreen above a visible stock taskbar gets no strip. The dock window
-sits on the work area's bottom edge, which with the stock taskbar visible (the
+sits on the work area's edge, which with the stock taskbar visible (the
 default) is about 48 px above the screen's bottom edge. A fullscreen app
 covers the taskbar too, so a strip there would be a line across the
 fullscreen picture, and every pointer crossing it would flash the dock over
@@ -115,8 +119,9 @@ area, while both of these hold:
   the overlap does not count);
 - this dock's monitor (from `get_monitors` / `dock://monitors`, matched by
   the page's own monitor) has a work area that stops short of its bounds on
-  the bottom edge
-  (`workArea.y + workArea.height < bounds.y + bounds.height`).
+  the dock's edge (on `bottom`,
+  `workArea.y + workArea.height < bounds.y + bounds.height`; the other
+  edges are in "Every edge" below).
 
 No clickable area means a 0 × 0 rectangle at the viewport's origin as both
 `panel` and `envelope` ([`docs/ipc/hit-region.md`](../ipc/hit-region.md)
@@ -233,4 +238,10 @@ bring the panel back.
   is `hidden`, the notices' container moves down by the panel box and its
   bottom margin (`transform: translateY`, the same 200 ms as the slide,
   none under reduced motion). The notices then sit 6 px above the bottom
-  edge and move back up with the panel. Toasts are never suppressed.
+  edge and move back up with the panel. This describes a dock on `bottom`;
+  "Every edge" below has the other edges. Toasts are never suppressed.
+
+## Every edge
+
+[Research: auto-hide](../research/auto-hide.md#every-edge) describes the
+slide, the reveal strip and the fullscreen exception on each edge.
