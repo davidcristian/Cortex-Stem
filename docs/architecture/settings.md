@@ -54,13 +54,14 @@ worker:
   within about 1 s. A live state that cannot be read (no tray, no reply)
   never writes or deletes the marker. The mock platform keeps the marker
   in memory.
-- `behavior.toggleShortcut` (`shortcut.rs`):
+- `behavior.toggleShortcut` and `behavior.focusShortcut` (`shortcut.rs`):
   `tauri-plugin-global-shortcut`, which registers with `RegisterHotKey` on a
   hidden main-thread window and makes callers wait for the main thread. So
-  a change is posted to the main thread without waiting. There it
-  unregisters the old shortcut and registers the new one. A press runs
-  `windows::toggle_dock` (what the tray icon's left click runs) in
-  `src-tauri/src/windows.rs`.
+  a change is posted to the main thread without waiting. A change plans
+  both shortcuts again, unregistering first. A focus shortcut on the
+  toggle's key combination registers nothing. A press runs
+  `windows::toggle_dock` (what the tray icon's left click runs) or
+  `windows::on_focus_shortcut`, both in `src-tauri/src/windows.rs`.
 
 Both plugins are registered in `setup` rather than in the builder, so a
 plugin that fails to start disables only its own feature, and their own

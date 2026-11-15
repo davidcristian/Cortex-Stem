@@ -27,8 +27,8 @@ to the file that covers that section now.
   `minimal`), and the user's `dock.css`: `get_user_css`, `reload_user_css`, `open_user_css`,
   `UserCss` and the `dock://user-css` event. New section [Themes](themes.md).
 - **v1.19 (keyboard entry):** `Settings.behavior.focusShortcut` (default `Ctrl+Alt+Shift+D`),
-  the `dock://focus` event and the `release_dock_focus` command. New section
-  [Keyboard entry](keyboard-entry.md).
+  the `dock://focus` and `dock://release-focus` events and the `release_dock_focus` command. New
+  section [Keyboard entry](keyboard-entry.md).
 - **v1.18 (report provenance):** `edge` on `set_dock_content_size`, `set_dock_hit_region` and
   `set_dock_panel_rect`, and `viewport` on `set_dock_panel_rect`. Rust drops a report measured
   for another edge and re-anchors a panel rect measured in an older viewport, so the engine's

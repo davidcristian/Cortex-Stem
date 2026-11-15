@@ -23,6 +23,8 @@ pointer's pill takes precedence) and the focus ring. It never magnifies,
 and it holds [auto-hide](auto-hide.md) (`focus`, a hold that does not
 reveal). Labels add "minimised" and "needs attention".
 
-Nothing moves keyboard focus into the `WS_EX_NOACTIVATE` window, so the
-keyboard alone does not get into the dock. Assumes that a screen reader can
-still reach the items through UI Automation.
+The keyboard reaches the `WS_EX_NOACTIVATE` window through the focus
+shortcut ([`docs/ipc/keyboard-entry.md`](../ipc/keyboard-entry.md)).
+Rust makes the dock the foreground window with the activation fallbacks,
+keeps the style, and sends `dock://focus`. Escape or a second press gives
+the focus back.

@@ -19,16 +19,33 @@ Win+T for the stock taskbar:
      path; the hotkey press gives Stem the right to take the foreground).
   5. It emits `dock://focus` to the dock window.
 
-  A press while a dock window already has the focus works like Escape.
+  A press while a dock window still has the keyboard from an earlier press (it is the foreground
+  window, and the stored press was its own) sends it `dock://release-focus` instead, and the page
+  does what Escape does. A press while a dock window is in front without that condition (after an
+  Escape that had no window to go back to) runs steps 1 to 5 again. When the activation fails,
+  Rust logs a warning, clears the stored press and sends nothing. Only the picked window is
+  shown: a press never shows the other windows of a set that the toggle hid.
 - The page focuses its roving tab stop (the one toolbar item with `tabindex="0"`): the active
-  app's item when there is one, else the first item. The focus ring and the title pill show as
-  they do for Tab, and the `focus` hold of the auto-hide state machine keeps the panel up.
-- Escape calls `release_dock_focus`. Rust activates the stored window again if it still exists
-  (through the activation path), else it leaves the foreground alone. Enter and Space click the
-  item, as they do without the shortcut.
-- A click that activates or launches something supersedes the stored window: Rust clears the
-  window.
-- When the dock window loses the activation any other way (a click elsewhere, Alt+Tab), Rust
-  clears the stored window too.
-- `MockBackend.requestFocus()` emits `dock://focus` as a press would. `release_dock_focus` is
-  recorded (`calls` entry `releaseDockFocus`).
+  app's item when there is one, else the first item. It calls `focus({ focusVisible: true })`,
+  because Chromium chooses whether a script's focus matches `:focus-visible` from the page's last
+  input, and the shortcut's keys never reach the page. The page focuses after the DOM update.
+  When its panel is still slid out (after a press during the slide), the page brings it back
+  itself. The focus ring and the title pill show as they do for Tab, and the `focus` hold of the
+  auto-hide state machine keeps the panel up.
+- Every Escape that does not cancel a drag, and every `dock://release-focus`, blurs the focused
+  item and calls `release_dock_focus`. Rust does nothing unless the stored press was that dock's.
+  Rust activates the stored window again if it still exists (through the activation path), else
+  it leaves the foreground alone. Enter and Space click the item, as they do without the
+  shortcut.
+- A click supersedes the stored window: Rust clears the window and keeps the press. A click here
+  is `primary_click`, `launch_app`, `window_action`, or an item menu entry other than *Pin to
+  Stem*, *Unpin from Stem*, *Stem settings…* and *Quit Stem*. The dock keeps the keyboard, so a
+  press while it is still in front releases the focus.
+- When the dock window loses the activation any other way (a click elsewhere, Alt+Tab: Tauri's
+  `Focused(false)` while another window is the foreground window), Rust clears the whole stored
+  press.
+- `MockBackend.requestFocus()` emits what a press would. While the page's dock has the keyboard
+  from an earlier press (until `release_dock_focus`, `pushForeground` or an activation), it emits
+  `dock://release-focus`. Otherwise it emits `dock://show` first while the page last reported
+  its panel slid out (`set_dock_auto_hidden(true)`), then `dock://focus`. `release_dock_focus`
+  is recorded (`calls` entry `releaseDockFocus`).
