@@ -159,9 +159,9 @@ describe('userCssStatus', () => {
   it('says whether the dock uses the file', () => {
     expect(userCssStatus(null)).toBe('Not read yet');
     expect(userCssStatus(file('a {}'))).toMatch(/^In use/);
-    for (const edit of ['none', 'unread', 'read'] as const) {
-      expect(userCssStatus(file('a {}'), edit)).toMatch(/^In use/);
-      expect(userCssStatus(null, edit)).toBe('Not read yet');
+    for (const last of ['none', 'edit', 'reload'] as const) {
+      expect(userCssStatus(file('a {}'), last)).toMatch(/^In use/);
+      expect(userCssStatus(null, last)).toBe('Not read yet');
     }
   });
 
@@ -172,19 +172,19 @@ describe('userCssStatus', () => {
     expect(none).not.toMatch(/missing|unreadable|UTF-8|64 KiB/);
   });
 
-  it('after Edit, asks for a Reload; read again after it, lists what can go wrong', () => {
-    expect(userCssStatus(file(null), 'unread')).toBe(
+  it('after Edit, asks for a Reload; read by a Reload, Edit or not, lists what can go wrong', () => {
+    expect(userCssStatus(file(null), 'edit')).toBe(
       'Not in use yet: save the file, then press Reload',
     );
-    expect(userCssStatus(file(null), 'read')).toMatch(
+    expect(userCssStatus(file(null), 'reload')).toMatch(
       /^Not in use: the file is missing, unreadable, not UTF-8 or larger than 64 KiB/,
     );
   });
 
-  it('says a run that saves no files has no dock.css, whatever Edit did', () => {
+  it('says a run that saves no files has no dock.css, whatever the user did', () => {
     const noFiles: UserCss = { path: '(not saved: the mock platform)', css: null };
-    for (const edit of ['none', 'unread', 'read'] as const) {
-      expect(userCssStatus(noFiles, edit)).toBe(
+    for (const last of ['none', 'edit', 'reload'] as const) {
+      expect(userCssStatus(noFiles, last)).toBe(
         'Not in use: this run saves no files, so it has no dock.css',
       );
     }

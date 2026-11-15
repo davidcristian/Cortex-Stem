@@ -112,13 +112,15 @@ export function applyUserCss(doc: Document, css: string | null): boolean {
 }
 
 /**
- * What the settings page knows of *Edit dock.css* (`open_user_css`, which
- * creates the file from the template when there is none, so the file is
- * there once it has succeeded): `'none'` it has not run in this window;
- * `'unread'` it ran after the last read; `'read'` it ran, and the file was
- * read again since (*Reload*).
+ * What the user last did in the settings page's dock.css row, which says
+ * what the last read means (`UserCss` does not say why it found nothing):
+ * `'none'` nothing yet, the last read is the one at start; `'edit'`
+ * *Edit dock.css* ran since the last read (`open_user_css` creates the
+ * file from the template when there is none, so the file is there once it
+ * has succeeded); `'reload'` the last read was a *Reload*, after an *Edit*
+ * or not: pressing it says the user expects a file.
  */
-export type UserCssEdit = 'none' | 'unread' | 'read';
+export type UserCssAction = 'none' | 'edit' | 'reload';
 
 /**
  * What the settings page says about the file under its path: whether the
@@ -126,14 +128,14 @@ export type UserCssEdit = 'none' | 'unread' | 'read';
  * found nothing, so the page tells the cases apart by what it saw:
  *
  * - a path in parentheses: a run that saves no files has no `dock.css`;
- * - before any *Edit*: the normal case, no file yet (a file Stem could not
- *   use reads the same, so the text points to the log for that);
+ * - only the read at start: the normal case, no file yet (a file Stem
+ *   could not use reads the same, so the text points to the log for that);
  * - after an *Edit*, before a *Reload*: the file is there but not read;
- * - read again after an *Edit*: the file was there, so a read that found
+ * - read by a *Reload*: the user expects a file, so a read that found
  *   nothing failed, and the reasons Rust may have had are listed (its log
- *   says which one).
+ *   says which one; "missing" covers a Reload with no file at all).
  */
-export function userCssStatus(payload: UserCss | null, edit: UserCssEdit = 'none'): string {
+export function userCssStatus(payload: UserCss | null, last: UserCssAction = 'none'): string {
   if (payload === null) {
     return 'Not read yet';
   }
@@ -143,12 +145,12 @@ export function userCssStatus(payload: UserCss | null, edit: UserCssEdit = 'none
   if (payload.path.startsWith('(')) {
     return 'Not in use: this run saves no files, so it has no dock.css';
   }
-  switch (edit) {
+  switch (last) {
     case 'none':
       return 'Not in use: there is no dock.css yet. Edit dock.css creates one from a template; if you already have one, the log says why it is not used';
-    case 'unread':
+    case 'edit':
       return 'Not in use yet: save the file, then press Reload';
-    case 'read':
+    case 'reload':
       return 'Not in use: the file is missing, unreadable, not UTF-8 or larger than 64 KiB (the log says which)';
   }
 }

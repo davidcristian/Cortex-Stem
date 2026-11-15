@@ -7551,5 +7551,37 @@ test.describe('theme presets and the user dock.css', () => {
         'Not in use: the file is missing, unreadable, not UTF-8 or larger than 64 KiB (the log says which)',
       );
     });
+
+    test('a Reload without an Edit says why a file is not used, not that there is none', async ({
+      page,
+    }) => {
+      await openSettings(page);
+      const status = page.locator('[data-row="user-css"] [data-user-css-status]');
+      await expect(status).toContainText('Not in use: there is no dock.css yet.');
+      // A file from an earlier session, or written outside this window, that
+      // Stem cannot use; no Edit in this window. Reload says the user has one.
+      await page.evaluate(() => {
+        (window as unknown as DemoWindow).__dockMock?.writeUserCss('a'.repeat(64 * 1024 + 1));
+      });
+      await page.getByRole('button', { name: 'Reload dock.css' }).click();
+      await expect.poll(() => userCssCalls(page)).toEqual(['reloadUserCss']);
+      await expect(status).toHaveText(
+        'Not in use: the file is missing, unreadable, not UTF-8 or larger than 64 KiB (the log says which)',
+      );
+      // Fixed and reloaded: in use; broken again: the failure again, never
+      // "no dock.css yet".
+      await page.evaluate(() => {
+        (window as unknown as DemoWindow).__dockMock?.writeUserCss('a {}');
+      });
+      await page.getByRole('button', { name: 'Reload dock.css' }).click();
+      await expect(status).toHaveText('In use since the last start or Reload');
+      await page.evaluate(() => {
+        (window as unknown as DemoWindow).__dockMock?.writeUserCss(null);
+      });
+      await page.getByRole('button', { name: 'Reload dock.css' }).click();
+      await expect(status).toHaveText(
+        'Not in use: the file is missing, unreadable, not UTF-8 or larger than 64 KiB (the log says which)',
+      );
+    });
   });
 });

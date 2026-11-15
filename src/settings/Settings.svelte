@@ -4,7 +4,7 @@
   import { watchDevicePixelRatio } from '$lib/dock/dpr';
   import { moveItem } from '$lib/dock/reorder';
   import { accentColor, resolveTheme } from '$lib/dock/theme';
-  import { userCssStatus, type UserCssEdit } from '$lib/dock/user-css';
+  import { userCssStatus, type UserCssAction } from '$lib/dock/user-css';
   import type { DockPosition } from '$lib/ipc/generated/DockPosition';
   import type { HiddenApp } from '$lib/ipc/generated/HiddenApp';
   import type { IconKey } from '$lib/ipc/generated/IconKey';
@@ -214,14 +214,14 @@
   // row's own notice, apart from the footer's save status.
   let userCss = $state.raw<UserCss | null>(null);
   let userCssError = $state<string | null>(null);
-  /** What the row knows of *Edit dock.css*, for its status (`userCssStatus`). */
-  let userCssEdit = $state<UserCssEdit>('none');
+  /** What the user last did in the row, which the status reads (`userCssStatus`). */
+  let userCssLast = $state<UserCssAction>('none');
 
   async function editUserCss(): Promise<void> {
     userCssError = null;
     try {
       await store.backend.openUserCss();
-      userCssEdit = 'unread';
+      userCssLast = 'edit';
     } catch (err) {
       userCssError = `Couldn't open dock.css: ${describeError(err)}`;
       console.error('open_user_css failed:', err);
@@ -232,9 +232,9 @@
     userCssError = null;
     try {
       userCss = await store.backend.reloadUserCss();
-      if (userCssEdit === 'unread') {
-        userCssEdit = 'read';
-      }
+      // Pressing Reload says there is a file, Edit or not: a read that
+      // finds nothing failed, whatever window or session made the file.
+      userCssLast = 'reload';
     } catch (err) {
       userCssError = `Couldn't read dock.css: ${describeError(err)}`;
       console.error('reload_user_css failed:', err);
@@ -499,7 +499,7 @@
               <span class="file-label">Your styles (dock.css)</span>
               <span class="file-detail"><code>{userCss?.path ?? '…'}</code></span>
               <span class="file-detail" data-user-css-status
-                >{userCssStatus(userCss, userCssEdit)}</span
+                >{userCssStatus(userCss, userCssLast)}</span
               >
             </div>
             <div class="actions">
