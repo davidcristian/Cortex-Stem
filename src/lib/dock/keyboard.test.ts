@@ -49,7 +49,15 @@ describe('isNavigationKey', () => {
 
 describe('isFocusable', () => {
   it('takes every kind but a separator', () => {
-    const kinds: DockItemKind[] = ['app', 'launcher', 'taskView', 'showDesktop', 'recycleBin'];
+    const kinds: DockItemKind[] = [
+      'app',
+      'launcher',
+      'taskView',
+      'showDesktop',
+      'quickSettings',
+      'notificationCenter',
+      'recycleBin',
+    ];
     for (const kind of kinds) {
       expect(isFocusable({ kind })).toBe(true);
     }
