@@ -585,6 +585,9 @@ pub struct Behavior {
     /// registered, and the toggle shortcut keeps those keys. Empty means no
     /// shortcut.
     pub focus_shortcut: String,
+    /// What turning the mouse wheel over an app's icon does. A change
+    /// applies at once.
+    pub scroll_action: ScrollAction,
 }
 
 impl Default for Behavior {
@@ -597,8 +600,25 @@ impl Default for Behavior {
             click_through: true,
             toggle_shortcut: DEFAULT_TOGGLE_SHORTCUT.to_owned(),
             focus_shortcut: DEFAULT_FOCUS_SHORTCUT.to_owned(),
+            scroll_action: ScrollAction::None,
         }
     }
+}
+
+/// What the mouse wheel does over an app's icon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub enum ScrollAction {
+    /// The wheel does nothing (the default).
+    None,
+    /// Over an app with open windows, each wheel notch brings the app's
+    /// next window to the front (wheel turned towards you) or its previous
+    /// one (turned away). After the last window comes the first again, and
+    /// a minimised window is restored. The dock switches windows at most
+    /// once every 150 ms. Only the windows that this dock lists take part,
+    /// as for a click.
+    CycleWindows,
 }
 
 /// An app pinned to the dock.
@@ -807,6 +827,7 @@ mod tests {
                         "Nope+?",
                     ])
                     .to_owned(),
+                scroll_action: rng.pick(&[ScrollAction::None, ScrollAction::CycleWindows]),
             },
             pinned: (0..rng.below(8))
                 .map(|_| {
@@ -927,6 +948,39 @@ mod tests {
             assert!(s.to_json_pretty().contains(r#""focusShortcut""#));
             assert_eq!(Settings::from_json(&s.to_json_pretty()).unwrap(), s);
         }
+    }
+
+    #[test]
+    fn scroll_action_defaults_to_none_and_round_trips_in_camel_case() {
+        assert_eq!(Behavior::default().scroll_action, ScrollAction::None);
+
+        // A file written before the field existed gets the default next to
+        // its other behaviour values.
+        let old = Settings::from_json(r#"{"behavior": {"clickActiveMinimizes": false}}"#).unwrap();
+        assert!(!old.behavior.click_active_minimizes);
+        assert_eq!(old.behavior.scroll_action, ScrollAction::None);
+
+        for (action, name) in [
+            (ScrollAction::None, "none"),
+            (ScrollAction::CycleWindows, "cycleWindows"),
+        ] {
+            assert_eq!(serde_json::to_string(&action).unwrap(), format!("{name:?}"));
+            let json = format!(r#"{{"behavior": {{"scrollAction": {name:?}}}}}"#);
+            let s = Settings::from_json(&json).unwrap();
+            assert_eq!(s.behavior.scroll_action, action);
+            assert!(
+                s.to_json_pretty()
+                    .contains(&format!(r#""scrollAction": {name:?}"#))
+            );
+            assert_eq!(Settings::from_json(&s.to_json_pretty()).unwrap(), s);
+        }
+
+        // Like every other enum value: a name Stem does not know makes the
+        // file unusable rather than silently `none`.
+        assert!(matches!(
+            Settings::from_json(r#"{"behavior": {"scrollAction": "cycle"}}"#),
+            Err(SettingsError::Parse(_))
+        ));
     }
 
     #[test]

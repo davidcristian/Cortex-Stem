@@ -60,11 +60,11 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use crate::events::{EngineInput, PlatformEvent};
 use crate::model::{
     AppId, AppIdentity, DockFacts, DockItem, DockItemKind, DockState, IconKey, MonitorId,
-    MonitorInfo, PowerStatus, RawWindow, Rect, RecycleBinState, ShellAction, ThemeInfo, WindowId,
-    WindowInfo,
+    MonitorInfo, PowerStatus, RawWindow, Rect, RecycleBinState, ScrollDirection, ShellAction,
+    ThemeInfo, WindowId, WindowInfo,
 };
 use crate::overlap;
-use crate::settings::{MonitorMode, Settings};
+use crate::settings::{MonitorMode, ScrollAction, Settings};
 
 /// Derive the grouping identity of a window from what the platform reported.
 pub fn app_id_for(raw: &RawWindow) -> AppId {
@@ -110,6 +110,25 @@ pub enum ItemAction {
     Shell(ShellAction),
     /// Nothing sensible to do (unknown item, app without launch target, ...).
     None,
+}
+
+/// The effect of one wheel notch over a dock item
+/// (`docs/ipc/scrolling-over-an-item.md`): what
+/// [`DockEngine::scroll_action`] decides. How often it may happen is the
+/// caller's business (the service's 150 ms gate per dock window).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollEffect {
+    /// Bring this window to the front (`WindowAction::Activate`, which also
+    /// restores a minimised one).
+    Activate(WindowId),
+    /// Nothing to do: `behavior.scrollAction` is `none`, the item is not an
+    /// app (a fixed item, a separator), or the dock lists none of its
+    /// windows.
+    Nothing,
+    /// The key names no item of the snapshot: a key the page made up, an
+    /// item that has gone, or a hidden app's. The caller rejects it
+    /// as `primary_click` rejects such a key.
+    UnknownItem,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -868,6 +887,60 @@ impl DockEngine {
             Some(pos) => ItemAction::ActivateWindow(windows[(pos + 1) % windows.len()]),
             None => ItemAction::ActivateWindow(windows[0]),
         }
+    }
+
+    /// Decide what one wheel notch `direction` over `item_key` in the dock
+    /// window `dock` does (`docs/ipc/scrolling-over-an-item.md`).
+    ///
+    /// - a key the snapshot has no item for is [`ScrollEffect::UnknownItem`],
+    ///   whatever the setting;
+    /// - with `behavior.scrollAction = cycleWindows`, an app item whose app
+    ///   has windows that dock lists ([`Self::windows_on_dock`], first-seen
+    ///   order, as its menu lists them) activates, for
+    ///   [`ScrollDirection::Next`], the window after the one in the
+    ///   foreground and, for [`ScrollDirection::Previous`], the one before
+    ///   it, wrapping around at either end; when none of them is in front,
+    ///   `Next` activates the first and `Previous` the last. A lone window
+    ///   in front is its own neighbour: activated again, which changes
+    ///   nothing;
+    /// - anything else ([`ScrollAction::None`], a fixed item, a separator,
+    ///   an app item with no window on that dock) is
+    ///   [`ScrollEffect::Nothing`].
+    pub fn scroll_action(
+        &self,
+        item_key: &str,
+        dock: &str,
+        direction: ScrollDirection,
+    ) -> ScrollEffect {
+        let Some(item) = self
+            .snapshot()
+            .items
+            .into_iter()
+            .find(|i| i.key == item_key)
+        else {
+            return ScrollEffect::UnknownItem;
+        };
+        if self.settings.behavior.scroll_action == ScrollAction::None {
+            return ScrollEffect::Nothing;
+        }
+        let Some(app_id) = item.app_id.filter(|_| item.kind == DockItemKind::App) else {
+            return ScrollEffect::Nothing;
+        };
+        let windows = self.windows_on_dock(&app_id, dock);
+        let count = windows.len();
+        if count == 0 {
+            return ScrollEffect::Nothing;
+        }
+        let in_front = self
+            .foreground
+            .and_then(|fg| windows.iter().position(|w| *w == fg));
+        let index = match (in_front, direction) {
+            (Some(pos), ScrollDirection::Next) => (pos + 1) % count,
+            (Some(pos), ScrollDirection::Previous) => (pos + count - 1) % count,
+            (None, ScrollDirection::Next) => 0,
+            (None, ScrollDirection::Previous) => count - 1,
+        };
+        ScrollEffect::Activate(windows[index])
     }
 }
 
@@ -3655,5 +3728,198 @@ mod tests {
         engine.apply(removed(2));
         engine.apply(removed(4));
         assert_eq!(engine.app_name(&a).as_deref(), Some("App A"));
+    }
+
+    // ----- scrolling over an item ---------------------------------------------------
+
+    const A_KEY: &str = "app:exe:c:/a.exe";
+
+    fn cycling(mut settings: Settings) -> Settings {
+        settings.behavior.scroll_action = ScrollAction::CycleWindows;
+        settings
+    }
+
+    fn activates(id: u64) -> ScrollEffect {
+        ScrollEffect::Activate(WindowId(id))
+    }
+
+    #[test]
+    fn a_scroll_cycles_the_items_windows_from_the_one_in_front_and_wraps() {
+        use ScrollDirection::{Next, Previous};
+        let mut engine = DockEngine::new(cycling(minimal_settings()));
+        engine.apply(added(win(1, r"C:\a.exe", "A1")));
+        let mut minimised = win(2, r"C:\a.exe", "A2");
+        minimised.is_minimized = true;
+        engine.apply(added(minimised));
+        engine.apply(added(cloaked(win(9, r"C:\a.exe", "on another desktop"))));
+        engine.apply(added(win(3, r"C:\a.exe", "A3")));
+        engine.apply(added(win(4, r"C:\b.exe", "B")));
+
+        // None of A's windows in front: next is the first, previous the last.
+        assert_eq!(engine.scroll_action(A_KEY, DOCK, Next), activates(1));
+        assert_eq!(engine.scroll_action(A_KEY, DOCK, Previous), activates(3));
+        engine.apply(foreground(Some(4)));
+        assert_eq!(engine.scroll_action(A_KEY, DOCK, Next), activates(1));
+        assert_eq!(engine.scroll_action(A_KEY, DOCK, Previous), activates(3));
+
+        // From each window in front, its neighbours in first-seen order; the
+        // minimised one takes part, the cloaked one does not.
+        for (front, next, previous) in [(1, 2, 3), (2, 3, 1), (3, 1, 2)] {
+            engine.apply(foreground(Some(front)));
+            assert_eq!(
+                engine.scroll_action(A_KEY, DOCK, Next),
+                activates(next),
+                "next from {front}"
+            );
+            assert_eq!(
+                engine.scroll_action(A_KEY, DOCK, Previous),
+                activates(previous),
+                "previous from {front}"
+            );
+        }
+
+        // A lone window in front is its own neighbour either way.
+        engine.apply(foreground(Some(4)));
+        for direction in [Next, Previous] {
+            assert_eq!(
+                engine.scroll_action("app:exe:c:/b.exe", DOCK, direction),
+                activates(4)
+            );
+        }
+    }
+
+    #[test]
+    fn a_scroll_does_nothing_unless_cycling_over_an_app_with_windows() {
+        use ScrollDirection::{Next, Previous};
+        let settings = Settings {
+            pinned: vec![pin(r"C:\p.exe")],
+            ..Settings::default()
+        };
+        let mut engine = DockEngine::new(settings.clone());
+        engine.apply(added(win(1, r"C:\a.exe", "A1")));
+        engine.apply(added(win(2, r"C:\a.exe", "A2")));
+        let state = engine.snapshot();
+        assert!(keys(&state).contains(&"sep:1"), "{:?}", keys(&state));
+        assert!(!settings.items.task_view);
+
+        // `none`, the default: nothing anywhere, but an unknown key is still
+        // an error.
+        assert_eq!(settings.behavior.scroll_action, ScrollAction::None);
+        for direction in [Next, Previous] {
+            assert_eq!(
+                engine.scroll_action(A_KEY, DOCK, direction),
+                ScrollEffect::Nothing
+            );
+            assert_eq!(
+                engine.scroll_action("nonsense", DOCK, direction),
+                ScrollEffect::UnknownItem
+            );
+        }
+
+        engine.apply(EngineInput::SettingsChanged(cycling(settings.clone())));
+        assert_eq!(engine.scroll_action(A_KEY, DOCK, Next), activates(1));
+        for direction in [Next, Previous] {
+            // Fixed items and separators have no windows to cycle.
+            for key in ["fixed:launcher", "fixed:recycle-bin", "sep:1"] {
+                assert_eq!(
+                    engine.scroll_action(key, DOCK, direction),
+                    ScrollEffect::Nothing,
+                    "{key}"
+                );
+            }
+            // A pinned app without windows is not launched.
+            assert_eq!(
+                engine.scroll_action("app:exe:c:/p.exe", DOCK, direction),
+                ScrollEffect::Nothing
+            );
+            // Keys of items the dock does not show.
+            for key in ["nonsense", "fixed:task-view", "app:exe:c:/gone.exe"] {
+                assert_eq!(
+                    engine.scroll_action(key, DOCK, direction),
+                    ScrollEffect::UnknownItem,
+                    "{key}"
+                );
+            }
+        }
+
+        // A hidden app has no item: its key is unknown, as for a click.
+        let mut hiding = cycling(settings);
+        hiding.hidden_apps = vec![hidden(r"C:\a.exe", "A")];
+        engine.apply(EngineInput::SettingsChanged(hiding));
+        assert_eq!(
+            engine.scroll_action(A_KEY, DOCK, Next),
+            ScrollEffect::UnknownItem
+        );
+        assert_eq!(engine.primary_action(A_KEY, DOCK), ItemAction::None);
+
+        // Its last window gone, an unpinned app's item is gone too.
+        engine.apply(EngineInput::SettingsChanged(cycling(Settings::default())));
+        engine.apply(removed(1));
+        engine.apply(removed(2));
+        assert_eq!(
+            engine.scroll_action(A_KEY, DOCK, Next),
+            ScrollEffect::UnknownItem
+        );
+    }
+
+    #[test]
+    fn a_scroll_cycles_only_the_windows_the_calling_dock_lists() {
+        use ScrollDirection::{Next, Previous};
+        let mut engine = two_docks(true, true);
+        let mut settings = cycling(engine.settings().clone());
+        engine.apply(EngineInput::SettingsChanged(settings.clone()));
+        // Notepad: A (1) on the primary, B (2) and C (3) on the second
+        // monitor, D (4) on the primary.
+        engine.apply(added(on_monitor(win(3, NOTEPAD, "C"), SECOND)));
+        engine.apply(added(on_monitor(win(4, NOTEPAD, "D"), PRIMARY)));
+
+        // A in front: the second dock has none of its windows in front.
+        engine.apply(foreground(Some(1)));
+        assert_eq!(engine.scroll_action(NOTEPAD_KEY, DOCK, Next), activates(4));
+        assert_eq!(
+            engine.scroll_action(NOTEPAD_KEY, DOCK, Previous),
+            activates(4)
+        );
+        assert_eq!(
+            engine.scroll_action(NOTEPAD_KEY, SECOND_DOCK, Next),
+            activates(2)
+        );
+        assert_eq!(
+            engine.scroll_action(NOTEPAD_KEY, SECOND_DOCK, Previous),
+            activates(3)
+        );
+        engine.apply(foreground(Some(3)));
+        assert_eq!(
+            engine.scroll_action(NOTEPAD_KEY, SECOND_DOCK, Next),
+            activates(2)
+        );
+        assert_eq!(engine.scroll_action(NOTEPAD_KEY, DOCK, Next), activates(1));
+
+        // A dock with no window of the app on its monitor: nothing, and no
+        // launch of the pinned app.
+        engine.apply(updated(on_monitor(win(2, NOTEPAD, "B"), PRIMARY)));
+        engine.apply(updated(on_monitor(win(3, NOTEPAD, "C"), PRIMARY)));
+        assert_eq!(
+            engine.scroll_action(NOTEPAD_KEY, SECOND_DOCK, Next),
+            ScrollEffect::Nothing
+        );
+        assert_eq!(engine.scroll_action(NOTEPAD_KEY, DOCK, Next), activates(4));
+
+        // The setting off: every dock cycles every window, in first-seen
+        // order.
+        settings.behavior.show_only_current_monitor = false;
+        engine.apply(EngineInput::SettingsChanged(settings));
+        for dock in [DOCK, SECOND_DOCK] {
+            assert_eq!(
+                engine.scroll_action(NOTEPAD_KEY, dock, Next),
+                activates(4),
+                "{dock}"
+            );
+            assert_eq!(
+                engine.scroll_action(NOTEPAD_KEY, dock, Previous),
+                activates(2),
+                "{dock}"
+            );
+        }
     }
 }

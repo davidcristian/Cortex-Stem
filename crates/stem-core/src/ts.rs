@@ -25,11 +25,12 @@ use ts_rs::{Config, ExportError, TS};
 use crate::model::{
     AppFolder, AppId, AppIdentity, AppInfo, DockFacts, DockItem, DockItemKind, DockState, IconKey,
     LaunchTarget, MonitorId, MonitorInfo, PowerStatus, RawWindow, Rect, RecycleBinState,
-    ShellAction, ThemeInfo, UserCss, WindowAction, WindowId, WindowInfo,
+    ScrollDirection, ShellAction, ThemeInfo, UserCss, WindowAction, WindowId, WindowInfo,
 };
 use crate::settings::{
     Appearance, AutoHide, AutoHideMode, Backdrop, Behavior, DockPosition, FixedItems, HiddenApp,
-    Magnification, MonitorMode, PinnedApp, Settings, SystemIntegration, ThemeMode, ThemePreset,
+    Magnification, MonitorMode, PinnedApp, ScrollAction, Settings, SystemIntegration, ThemeMode,
+    ThemePreset,
 };
 
 /// One exported binding, as ts-rs sees it.
@@ -85,6 +86,7 @@ exported_types! {
     RawWindow,
     Rect,
     RecycleBinState,
+    ScrollDirection,
     ShellAction,
     ThemeInfo,
     UserCss,
@@ -103,6 +105,7 @@ exported_types! {
     Magnification,
     MonitorMode,
     PinnedApp,
+    ScrollAction,
     Settings,
     SystemIntegration,
     ThemeMode,
@@ -126,6 +129,7 @@ const IPC_PAYLOAD_TYPES: &[&str] = &[
     "AppInfo",
     "AppFolder",
     "UserCss",
+    "ScrollDirection",
 ];
 
 const BARREL_FILE: &str = "index.ts";

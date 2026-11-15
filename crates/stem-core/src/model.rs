@@ -428,6 +428,18 @@ pub enum WindowAction {
     Close,
 }
 
+/// Which way one wheel notch over a dock item went (`scroll_item`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub enum ScrollDirection {
+    /// The wheel turned towards the user (a positive `deltaY`): the window
+    /// after the item's one in front.
+    Next,
+    /// The wheel turned away from the user: the window before it.
+    Previous,
+}
+
 /// Shell-level actions behind the fixed items.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -527,6 +539,22 @@ mod tests {
             serde_json::to_value(&some).unwrap()["css"],
             ".dock-stage { --stem-dot: red; }"
         );
+    }
+
+    #[test]
+    fn scroll_direction_crosses_ipc_as_next_and_previous() {
+        for (direction, name) in [
+            (ScrollDirection::Next, "next"),
+            (ScrollDirection::Previous, "previous"),
+        ] {
+            let json = serde_json::to_string(&direction).unwrap();
+            assert_eq!(json, format!("{name:?}"));
+            assert_eq!(
+                serde_json::from_str::<ScrollDirection>(&json).unwrap(),
+                direction
+            );
+        }
+        assert!(serde_json::from_str::<ScrollDirection>(r#""up""#).is_err());
     }
 
     #[test]

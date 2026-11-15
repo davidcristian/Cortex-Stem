@@ -28,6 +28,8 @@ export type { PowerStatus } from "./PowerStatus";
 export type { RawWindow } from "./RawWindow";
 export type { Rect } from "./Rect";
 export type { RecycleBinState } from "./RecycleBinState";
+export type { ScrollAction } from "./ScrollAction";
+export type { ScrollDirection } from "./ScrollDirection";
 export type { Settings } from "./Settings";
 export type { ShellAction } from "./ShellAction";
 export type { SystemIntegration } from "./SystemIntegration";
