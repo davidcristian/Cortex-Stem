@@ -11,11 +11,14 @@ arguments are named and how a failed command rejects.
 | `get_theme`             | none                                        | `ThemeInfo`        | |
 | `get_monitors`          | none                                        | `MonitorInfo[]`    | |
 | `primary_click`         | `{ itemKey: string }`                       | `void`             | the engine chooses the action (launch, activate, minimise, cycle windows or a shell action) among the windows the calling dock window lists (see [Dock windows per monitor](windows.md#dock-windows-per-monitor)) |
+| `scroll_item`           | `{ itemKey: string, direction: ScrollDirection }` | `void` | the wheel turned one notch over an item of the calling dock window. Rust chooses what it does (see [Scrolling over an item](scrolling-over-an-item.md), v1.24). |
 | `window_action`         | `{ windowId: WindowId, action: WindowAction }` | `void`          | a direct action on one window (the window list in a menu, a middle click, and so on) |
 | `launch_app`            | `{ appId: AppId }`                          | `void`             | starts a new instance; emits `dock://item-bounce` |
 | `pin_app`               | `{ appId: AppId }`                          | `void`             | pins a running app (the app needs a known launch target) |
 | `pin_target`            | `{ target: LaunchTarget }`                  | `AppId`            | pins a dropped or chosen file, shortcut or Store app; returns the canonical id |
 | `unpin_app`             | `{ appId: AppId }`                          | `void`             | |
+| `hide_app`              | `{ appId: AppId }`                          | `void`             | stops showing a running, unpinned app on every dock (see [Hidden apps](hidden-apps.md), v1.23) |
+| `unhide_app`            | `{ appId: AppId }`                          | `void`             | shows a hidden app again (see [Hidden apps](hidden-apps.md)) |
 | `reorder_pinned`        | `{ order: AppId[] }`                        | `void`             | the new order of the pinned apps; pinned ids that are not listed keep their relative order at the end |
 | `get_icon`              | `{ iconKey: IconKey, size: number }`        | `string \| null`   | a PNG as a `data:` URL; `null` for `shell:*` keys and unknown keys |
 | `set_dock_content_size` | `{ width: number, height: number, edge: DockPosition }` (CSS px)| `void` | the UI's content size; Rust sizes the calling window (see [Sizing protocol](sizing-protocol.md); `edge`: see [Report provenance](report-provenance.md)) |

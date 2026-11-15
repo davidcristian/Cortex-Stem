@@ -1,6 +1,6 @@
 # IPC contract: Rust ⇄ frontend
 
-**Contract version: 1.21 (quick settings and notification items).**
+**Contract version: 1.24 (scrolling over an item).**
 The files in this folder are the contract between the Rust app (`src-tauri`) and the pages in
 `src/`. A change to the contract follows the contract change rules in `AGENTS.md` ("IPC contract
 change control") and is logged in the [changelog](changelog.md).
@@ -37,7 +37,10 @@ change control") and is logged in the [changelog](changelog.md).
 | [toggle-while-hidden.md](toggle-while-hidden.md) | How the tray click and the toggle shortcut bring back a panel that auto-hide slid out |
 | [keyboard-entry.md](keyboard-entry.md) | The focus shortcut that gives a dock window the keyboard focus, and Escape |
 | [context-menus.md](context-menus.md) | The native right-click menus and their entries |
+| [scrolling-over-an-item.md](scrolling-over-an-item.md) | What the mouse wheel does over a dock item |
+| [widget-items.md](widget-items.md) | The clock and battery items |
 | [icon-keys.md](icon-keys.md) | The `shell:` icon keys and the icons that `get_icon` returns |
+| [hidden-apps.md](hidden-apps.md) | Hiding a running app from every dock and showing it again |
 | [file-drags.md](file-drags.md) | Files dragged from Explorer: pinning them, and dropping them on the Recycle Bin |
 | [themes.md](themes.md) | The theme presets and the user's `dock.css` |
 | [about.md](about.md) | The settings page's About section |

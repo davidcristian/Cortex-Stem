@@ -3,6 +3,19 @@
 This file lists every version of the [IPC contract](index.md), newest first. A section name links
 to the file that covers that section now.
 
+- **v1.24 (scrolling over an item):** `Settings.behavior.scrollAction` (`ScrollAction`: `none`,
+  `cycleWindows`) and `scroll_item { itemKey, direction: ScrollDirection }`. New section
+  [Scrolling over an item](scrolling-over-an-item.md).
+- **v1.23 (hidden apps):** `Settings.hiddenApps` (`HiddenApp { id, name }`), `hide_app` and
+  `unhide_app`, and *Hide from Stem* in an unpinned app's menu. New section
+  [Hidden apps](hidden-apps.md).
+- **v1.22 (clock and battery items):** `Settings.items.clock` and `Settings.items.battery`,
+  `DockItemKind` `clock` and `battery` (item keys `fixed:clock`, `fixed:battery`; icon keys
+  `shell:clock`, `shell:battery`), `DockState.power: PowerStatus` from the new
+  `PlatformEvent::PowerChanged`, and `ShellAction` `openDateTimeSettings` and
+  `openPowerSettings`. New section
+  [Clock and battery items](widget-items.md#clock-and-battery-items-v122). The
+  [Context menus](context-menus.md) heading, missing since v1.18, is restored.
 - **v1.21 (quick settings and notification items):** Two optional fixed items.
   `Settings.items.quickSettings` and `Settings.items.notificationCenter` (both default `false`)
   add `DockItemKind` `quickSettings` and `notificationCenter`, with icon keys
