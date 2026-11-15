@@ -397,10 +397,11 @@ fn is_dock_target(target: &EventTarget) -> bool {
     }
 }
 
-/// Send `css` to every dock window as `dock://user-css`. Listeners a page
-/// registers without a target (`listen`, the frontend's way) receive every
-/// event whatever the filter, so the settings page would get it too if it
-/// listened; it does not, and takes `reload_user_css`'s answer instead.
+/// Send `css` to every dock window as `dock://user-css`. The pages listen
+/// on their own window (`TauriBackend.on`, target `WebviewWindow`), so the
+/// filter applies: the settings page would not get it even if it listened
+/// (a listener without a target receives every event whatever the filter);
+/// it takes `reload_user_css`'s answer instead.
 pub fn emit_to_docks(app: &AppHandle, css: &UserCss) {
     if let Err(e) = app.emit_filter(crate::events::USER_CSS, css, is_dock_target) {
         log::warn!("failed to emit {}: {e}", crate::events::USER_CSS);

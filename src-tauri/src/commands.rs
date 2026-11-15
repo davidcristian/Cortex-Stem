@@ -401,10 +401,12 @@ async fn delete_to_recycle_bin(
 /// The calling dock window gives the keyboard focus back (Escape, or a
 /// second press of the focus shortcut through `dock://release-focus`;
 /// `docs/ipc/keyboard-entry.md`): the window that was in front
-/// when the focus shortcut was pressed comes back to the foreground, if the
-/// focus shortcut's session is this dock's and that window still exists
-/// (a click on a dock forgets it); otherwise the foreground is left alone
-/// and the command resolves. Only a dock window may call it. `async`: the
+/// when the focus shortcut was pressed (an app's, or the settings window)
+/// comes back to the foreground, if the focus shortcut's session is this
+/// dock's and that window still exists (a click on a dock forgets it);
+/// otherwise the foreground is left alone and the command resolves. A call
+/// from a dock that does not hold the session leaves it alone while the
+/// holder is still in front. Only a dock window may call it. `async`: the
 /// activation is the foreground chain, which must not run on the main thread.
 #[tauri::command]
 async fn release_dock_focus(
@@ -423,7 +425,12 @@ async fn release_dock_focus(
     checked(
         "release_dock_focus",
         &label,
-        crate::windows::give_focus_back(&focus, service.0.platform().as_ref(), &label),
+        crate::windows::release_dock_focus(
+            window.app_handle(),
+            &focus,
+            service.0.platform().as_ref(),
+            &label,
+        ),
     )
 }
 
