@@ -1833,13 +1833,13 @@
   }
 
   /**
-   * `FocusOptions.focusVisible` (HTML; not in TypeScript's DOM types yet):
-   * `true` asks the browser to show the focus as keyboard focus whatever
-   * its heuristics say.
+   * The options of `HTMLElement.focus` with `focusVisible` (HTML; not in
+   * TypeScript's DOM types yet): `true` asks the browser to show the focus
+   * as keyboard focus whatever its heuristics say.
    */
-  interface VisibleFocusOptions extends FocusOptions {
+  type VisibleFocusOptions = NonNullable<Parameters<HTMLElement['focus']>[0]> & {
     focusVisible?: boolean;
-  }
+  };
 
   /**
    * Move the focus to the item `key`. `visible` (the focus shortcut):
