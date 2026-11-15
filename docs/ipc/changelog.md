@@ -3,6 +3,10 @@
 This file lists every version of the [IPC contract](index.md), newest first. A section name links
 to the file that covers that section now.
 
+- **v1.26 (fixes):** No command, event or payload type changed.
+  [Keyboard entry](keyboard-entry.md): *Hide from Stem* no longer supersedes the window that the
+  focus shortcut stored, just as *Pin to Stem* and *Unpin from Stem* do not, so Escape after
+  hiding an app from its menu gives the focus back.
 - **v1.25 (the clock's regional format):** `DockState.clockFormat: ClockFormat { locale, hour12
   }` from the new `PlatformEvent::ClockFormatChanged`: the clock follows the Windows regional
   format instead of the display language. New subsection

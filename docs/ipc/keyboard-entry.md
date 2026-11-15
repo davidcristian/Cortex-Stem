@@ -44,7 +44,8 @@ Win+T for the stock taskbar:
   click the item, as they do without the shortcut.
 - A click supersedes the stored window: Rust clears the window and keeps the press. A click here
   is `primary_click`, `launch_app`, `window_action`, or an item menu entry other than *Pin to
-  Stem*, *Unpin from Stem*, *Stem settings…* and *Quit Stem*. The dock keeps the keyboard, so a
+  Stem*, *Unpin from Stem*, *Hide from Stem*, *Stem settings…* and *Quit Stem*. The entries left
+  out only change the settings or act on Stem itself (v1.26). The dock keeps the keyboard, so a
   press while it is still in front releases the focus.
 - When the dock window loses the activation any other way (a click elsewhere, Alt+Tab: Tauri's
   `Focused(false)` while another window is the foreground window), Rust clears the whole stored

@@ -459,10 +459,7 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
             crate::request_quit(app);
         }
         action => {
-            // An entry that activates, launches or acts on windows
-            // supersedes the window the focus shortcut would go back to, as
-            // a click does; pinning does not.
-            if !matches!(action, MenuAction::Pin(_) | MenuAction::Unpin(_)) {
+            if supersedes_focus(&action) {
                 crate::windows::forget_dock_focus(app, "a menu entry");
             }
             let Some(service) = app.try_state::<AppService>().map(|s| Arc::clone(&s.0)) else {
@@ -477,6 +474,26 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
                 }
             }));
         }
+    }
+}
+
+/// Whether choosing `action` supersedes the window the focus shortcut would
+/// go back to (docs/ipc/keyboard-entry.md), as a click does: an
+/// entry that activates, launches or acts on windows does; pinning,
+/// unpinning and hiding only edit the settings, and the settings
+/// and quit entries act on Stem itself, so those do not. Exhaustive, so
+/// that a new entry has to be decided here.
+fn supersedes_focus(action: &MenuAction) -> bool {
+    match action {
+        MenuAction::Activate(_)
+        | MenuAction::Launch(_)
+        | MenuAction::CloseAll { .. }
+        | MenuAction::Shell(_) => true,
+        MenuAction::Pin(_)
+        | MenuAction::Unpin(_)
+        | MenuAction::Hide(_)
+        | MenuAction::Settings
+        | MenuAction::Quit => false,
     }
 }
 
@@ -604,6 +621,35 @@ mod tests {
             "ctx:close-all::exe:c:/a.exe",
         ] {
             assert_eq!(MenuAction::parse(id), None, "{id}");
+        }
+    }
+
+    #[test]
+    fn only_entries_that_act_on_windows_supersede_the_focus_shortcut() {
+        let notepad = || AppId("exe:c:/windows/notepad.exe".into());
+        // They activate, launch or act on windows, as a click does.
+        for action in [
+            MenuAction::Activate(WindowId(0x1_0042)),
+            MenuAction::Launch(notepad()),
+            MenuAction::CloseAll {
+                dock: "dock".into(),
+                app: notepad(),
+            },
+            MenuAction::Shell(ShellAction::OpenStartMenu),
+            MenuAction::Shell(ShellAction::EmptyRecycleBin),
+        ] {
+            assert!(supersedes_focus(&action), "{action:?}");
+        }
+        // Settings changes (Hide among them) and Stem's own entries:
+        // Escape still gives the focus back to the window in front at the press.
+        for action in [
+            MenuAction::Pin(notepad()),
+            MenuAction::Unpin(notepad()),
+            MenuAction::Hide(notepad()),
+            MenuAction::Settings,
+            MenuAction::Quit,
+        ] {
+            assert!(!supersedes_focus(&action), "{action:?}");
         }
     }
 
