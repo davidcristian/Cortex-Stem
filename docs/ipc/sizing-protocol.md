@@ -63,6 +63,14 @@ smaller instead of cutting off its ends:
 - The page computes the fitted size again when the viewport's length, the items, `iconSize`,
   magnification or `position` change, without an animation. It never does so while a drag is in
   progress (the drag finishes at the size it started with).
+- After a change of `position` to the other axis, the page lays itself out before Rust moves its
+  window (Sizing protocol, step 5). While the window is still longer across the new edge than
+  along it, the page fits to the work area's length along the new edge: its monitor's
+  `workArea` divided by its `scaleFactor`, which is the length Rust gives the moved window. It
+  does so until a resize leaves the window longer along the new edge than across it, or for at
+  most 1 s when no move comes (in `MockBackend`, or after a failed move). Without a monitor list
+  it fits to the viewport. The most that magnification can add is the page's growth bound
+  `(maxScale − 1) × (size + 8) × (rangeIcons + 0.5)`.
 - Every geometry report (`set_dock_content_size`, `set_dock_hit_region`, `set_dock_panel_rect`)
   describes the panel as drawn, at the fitted size; Rust handles these reports like any other.
 - `Settings.iconSize` keeps the user's value. The dock's root element has `data-fitted` while

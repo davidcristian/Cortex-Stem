@@ -134,6 +134,7 @@ Notes:
 | `.dock-stage`                                                    | The dock's root element; the place to set the variables for every preset.                  |
 | `.dock-stage[data-theme="standard"]` (`"solid"`, `"minimal"`)    | The dock with that preset (`appearance.theme`).                                            |
 | `.dock-stage[data-edge="bottom"]` (`"left"`, `"right"`, `"top"`) | The dock on that screen edge (`position`).                                                 |
+| `.dock-stage[data-fitted]`                                       | The dock drawn smaller than _Icon size_ because it would not fit its edge.                 |
 | `html[data-theme="dark"]`, `html[data-theme="light"]`            | The page in dark or light mode (_Colour mode_ and Windows). Put it in front of the others. |
 | `html[data-high-contrast]`                                       | A Windows contrast theme is on.                                                            |
 

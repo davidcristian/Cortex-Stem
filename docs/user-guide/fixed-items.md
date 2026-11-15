@@ -38,7 +38,9 @@ instead.
   below it.
 - A bolt shows while the battery charges, and a plug while the PC is plugged
   in without charging.
-- The fill turns amber while battery saver (energy saver) is on.
+- The fill turns amber while battery saver (energy saver) is on. It turns red
+  below 20 % while the battery is not charging and saver is off. However low
+  the charge, a thin strip of fill stays visible.
 - Its name says the same in words (`Battery 73 %, charging`). While Windows
   does not report the charge, the name is just `Battery`.
 - It updates within moments of a change, and after the PC wakes up.
