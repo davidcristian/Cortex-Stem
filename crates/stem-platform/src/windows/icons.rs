@@ -58,8 +58,9 @@
 //! `exe:`, `file:` and `aumid:` results are cached per (key, size) in
 //! memory; `hwnd:` results are **not** cached (window icons are cheap to
 //! read, the window may change its icon, and a stale entry could outlive the
-//! window), the UI caches them per key for the session. Nothing is cached
-//! on disk.
+//! window), the UI caches them per key for the session. Across sessions,
+//! `stem_service::icon_cache` keeps the results for `exe:` and `file:` keys
+//! of local PE images on disk.
 //!
 //! Ownership rules (see `docs/development/windows-rules.md`):
 //! - icons from `WM_GETICON` / `GCLP_HICON` are **shared** with the window and
