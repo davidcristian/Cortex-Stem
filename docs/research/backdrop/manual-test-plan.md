@@ -1,7 +1,7 @@
 # Backdrop research: manual test plan (Windows 11, build 22621 or later)
 
 This plan checks the [assumptions](assumptions.md) and the
-prototype of the [backdrop research](index.md) on Windows.
+[prototype](prototype.md) of the [backdrop research](index.md) on Windows.
 Step 1 tests the [CSS look](css-look.md). Steps 2 to 15 test the prototype,
 which reads `appearance.backdrop` from `settings.json` (edit the file with
 Stem stopped) and logs one `info` line naming the backdrop in effect.

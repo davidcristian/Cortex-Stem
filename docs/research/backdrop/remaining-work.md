@@ -1,7 +1,7 @@
 # Backdrop research: remaining work
 
 This page lists what the [backdrop research](index.md) leaves to build
-after its prototype.
+after its [prototype](prototype.md).
 
 - **An ADR (next free number): backdrop window.** It records
   [option 6](backdrop-window.md) or the decision not to ship, the z-order rule, the shape, and the thread the

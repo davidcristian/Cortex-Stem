@@ -5,7 +5,7 @@ choice for `appearance.backdrop`, with the [CSS look](css-look.md) as the
 fallback where Windows cannot draw them. The workspace lists the
 `window-vibrancy` crate. Both values are read from and written to
 `settings.json`, but the settings page shows them disabled. Set by hand in
-`settings.json`, they turn on the prototype under the
+`settings.json`, they turn on the [prototype](prototype.md) under the
 primary dock's panel; every other dock draws the built-in CSS look.
 
 The problem is the shape of the dock window. The window spans the full

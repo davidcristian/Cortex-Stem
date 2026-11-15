@@ -21,6 +21,8 @@ Stem contains.
   Microsoft's documentation does not confirm.
 - [manual-test-plan.md](manual-test-plan.md): the manual test on Windows 11
   build 22621 or later that checks the assumptions and the prototype.
+- [prototype.md](prototype.md): the prototype of option 6 that Stem
+  contains, and where it differs from the design.
 - [remaining-work.md](remaining-work.md): what the prototype does not
   contain yet.
 - [sources.md](sources.md): the documentation, code and reports this note

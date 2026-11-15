@@ -232,7 +232,7 @@ The [FAQ](docs/user-guide/faq.md) in the user guide answers common questions abo
 | [docs/RELEASING.md](docs/RELEASING.md) | How a release is built, and what the installer and the uninstaller do |
 | [docs/code-signing/](docs/code-signing/index.md) | The options for signing `stem.exe` and the installer, and what SmartScreen shows |
 | [docs/adr/](docs/adr/) | The architecture decisions, one record each |
-| [docs/research/backdrop/](docs/research/backdrop/index.md) | Acrylic or Mica behind the dock panel: the options |
+| [docs/research/backdrop/](docs/research/backdrop/index.md) | Acrylic or Mica behind the dock panel: the options and the prototype |
 | [docs/research/jump-lists/](docs/research/jump-lists/index.md) | Jump lists and recent documents in the dock's menu |
 | [docs/research/notification-area/](docs/research/notification-area/index.md) | What replacing or mirroring the notification area would take, and why Stem does not |
 | [docs/research/thumbnail-probe/](docs/research/thumbnail-probe/index.md) | The probe that tests DWM window thumbnails before window previews are built |
