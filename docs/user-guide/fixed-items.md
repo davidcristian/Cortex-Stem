@@ -52,12 +52,17 @@ instead.
 
 - The icon shows the time over the short weekday and the day. Its name (and
   the pill over it) is the full date and time.
-- All three use the format of your Windows display language (Settings →
-  Time & language → Language & region → _Windows display language_). The
-  clock does not use the _Regional format_ set there, or a time format you
-  changed, such as a 24-hour clock. With an English (United States) display
-  language and an English (United Kingdom) region, the taskbar shows `14:05`
-  and the dock shows `2:05 PM`.
+- All three use your _Regional format_ (Settings → Time & language →
+  Language & region → _Regional format_), as the taskbar's clock does,
+  whatever your display language. English (United Kingdom) shows `14:05`,
+  English (United States) shows `2:05 PM`.
+- A 12-hour or 24-hour _Short time_ that you chose (_Regional format_ →
+  _Change formats_, or the Control Panel's Region settings) is used too.
+- The dock takes only the 12-hour or 24-hour clock and the region's way of
+  writing the date, not the format pattern itself. It does not show literal
+  text or seconds from a custom time format: a custom `HH'h'mm` gives `14:05`
+  on the dock.
+- A change of format applies within a second, without restarting Stem.
 - A click opens your notifications and the calendar, as Win+N does. Its menu
   has _Open Notification Center_ and _Date and time settings_, which opens
   that page of the Windows Settings app.
