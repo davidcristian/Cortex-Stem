@@ -24,6 +24,9 @@ sends Windows the keyboard shortcut (Win+A or Win+N). Windows then opens its
 panel where it always does, in the corner of the screen, not beside the
 dock. While a window that runs as administrator is in front, Windows may
 ignore the shortcut, as it ignores keys that Stem sends to such a window.
+Click these items without holding Ctrl, Shift or Alt. Windows may add a key
+you hold to the shortcut: Win+Ctrl+N, for example, opens Narrator's settings
+instead.
 
 ## The Recycle Bin item
 

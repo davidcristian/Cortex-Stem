@@ -26,6 +26,13 @@
 //! above zero means the first events went in and the rest did not, so keys
 //! can be down that no inserted event releases; [`send_chord`] releases them
 //! before it returns the error (see [`held_after`]).
+//!
+//! The events carry only the chord's own keys. A modifier the user holds
+//! while clicking (Ctrl, Shift, Alt) is still down in the system's key
+//! state, so Windows may take it as part of the chord: a Ctrl+click on the
+//! Notification Center item can read as Win+Ctrl+N, which Microsoft lists
+//! as *Open Narrator settings*. Nothing here releases held modifiers or
+//! ignores modified clicks.
 
 use stem_core::ShellAction;
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
