@@ -4533,4 +4533,74 @@ test.describe('the dock on the left, right and top edges', () => {
       402,
     );
   });
+
+  // The settings change reaches several effects at once (the magnification's
+  // and the work area's report too, and ending a file drag reports the hit
+  // region): none of them may send the bottom row's box, or a thickness
+  // made from it, under the new edge.
+  for (const during of ['at rest', 'during a file drag'] as const) {
+    test(`a position change ${during} reports nothing measured on the old edge`, async ({
+      page,
+    }) => {
+      await openDock(page);
+      await expect.poll(() => lastPanelRect(page)).toBeDefined();
+      if (during === 'during a file drag') {
+        await expect.poll(() => lastRegion(page)).toBeDefined();
+        const atRest = (await lastRegion(page))!;
+        const a = await box(page.locator(PINNED).nth(1));
+        const b = await box(page.locator(PINNED).nth(2));
+        await fileDrag(page, {
+          type: 'enter',
+          paths: ['C:\\Tools\\PuTTY\\putty.exe'],
+          position: { x: (centreOf(a).x + centreOf(b).x) / 2, y: centreOf(a).y },
+        });
+        await expect(page.locator(GAP)).toHaveCount(1);
+        // The drag's own region (one slot longer) has gone out on the bottom edge.
+        await expect
+          .poll(async () => (await lastRegion(page))!.envelope.width - atRest.envelope.width)
+          .toBeGreaterThanOrEqual(SLOT - 1);
+      }
+      const mark = await page.evaluate(
+        () => ((window as unknown as DemoWindow).__dockMock?.calls ?? []).length,
+      );
+
+      await patchSettings(page, { position: 'left' });
+      await page.setViewportSize(SIDE_VIEWPORT);
+      await expect(page.locator(PANEL)).toHaveAttribute('aria-orientation', 'vertical');
+      const thickness = Math.ceil(
+        ICON + 2 * PANEL_PADDING + EDGE_MARGIN + ICON * (MAX_SCALE - 1) + SIDE_HEADROOM,
+      );
+      await expect.poll(async () => (await lastSize(page))?.width).toBe(thickness);
+      await expect.poll(async () => (await lastRegion(page))?.panel.x).toBe(EDGE_MARGIN);
+      await expect.poll(async () => (await lastPanelRect(page))?.x).toBe(EDGE_MARGIN);
+      const since = await page.evaluate(
+        (m) =>
+          ((window as unknown as DemoWindow).__dockMock?.calls ?? []).slice(m).flatMap((c) => {
+            switch (c.type) {
+              case 'setDockHitRegion':
+                return [{ type: c.type, rect: c.panel as Rect }];
+              case 'setDockPanelRect':
+                return [{ type: c.type, rect: c.rect as Rect }];
+              case 'setDockContentSize':
+                return [{ type: c.type, width: c.width as number }];
+              default:
+                return [];
+            }
+          }),
+        mark,
+      );
+      expect(since.map((c) => c.type)).toEqual(
+        expect.arrayContaining(['setDockContentSize', 'setDockHitRegion', 'setDockPanelRect']),
+      );
+      for (const call of since) {
+        if ('rect' in call) {
+          // A column 8 px from the left side, not the row centred along the bottom.
+          expect(call.rect.x, call.type).toBe(EDGE_MARGIN);
+          expect(call.rect.height, call.type).toBeGreaterThan(call.rect.width);
+        } else {
+          expect(call.width, call.type).toBe(thickness);
+        }
+      }
+    });
+  }
 });

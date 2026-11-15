@@ -945,6 +945,14 @@
   /** The viewport when `measured` was taken: the one its coordinates refer to. */
   let measuredViewport: Viewport = { width: 0, height: 0 };
   /**
+   * The edge `measured` was laid out for. After a position change
+   * the old box describes the old layout until the next measurement, and
+   * effects of the same `dock://settings` (the magnification's, the work
+   * area's) can report before the edge's own effect runs: `restingPanel`
+   * hides the old box from every report meanwhile.
+   */
+  let measuredEdge: DockEdge | null = null;
+  /**
    * The inline margins that hold the panel on whole device pixels.
    * The stage centres the panel along the dock, so with an odd
    * `innerWidth − panelWidth` every bitmap inside would sit on a half pixel
@@ -1005,6 +1013,7 @@
       rect = restRect(panel);
     }
     measured = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+    measuredEdge = edge;
     measuredViewport = viewportNow();
     const whole = integerRect(measured);
     const resting = spanAlong(axis, { left: whole.x, top: whole.y, ...whole });
@@ -1019,6 +1028,14 @@
       stripBox = { start: resting.start, length, gap };
     }
     reportSize();
+  }
+
+  /**
+   * `measured`, when there is one for the current edge and it is not empty:
+   * what every size, hit-region and panel-rect report is made from.
+   */
+  function restingPanel(): Rect | null {
+    return measured !== null && measuredEdge === edge && measured.width !== 0 ? measured : null;
   }
 
   /** Write `snapMargins` to the CSS margins they stand for on this edge (`snapMarginProperties`). */
@@ -1056,18 +1073,19 @@
    * panel, its magnification growth and room for the shadow at both ends.
    */
   function reportSize(): void {
-    if (measured === null || measured.width === 0) {
+    const rest = restingPanel();
+    if (rest === null) {
       return;
     }
     const lengthOf = (panelLength: number): number =>
       Math.ceil(panelLength + 2 * SIDE_SLACK + maxGrowth(slotPx, magnify));
     const rise = iconSize * (magnify.maxScale - 1);
     const width = vertical
-      ? Math.ceil(measured.width + snapMargins.edge + rise + SIDE_HEADROOM)
-      : lengthOf(measured.width);
+      ? Math.ceil(rest.width + snapMargins.edge + rise + SIDE_HEADROOM)
+      : lengthOf(rest.width);
     const height = vertical
-      ? lengthOf(measured.height)
-      : Math.ceil(measured.height + snapMargins.edge + rise + HEADROOM);
+      ? lengthOf(rest.height)
+      : Math.ceil(rest.height + snapMargins.edge + rise + HEADROOM);
     if (width !== reported.width || height !== reported.height) {
       reported = { width, height };
       void backend.setDockContentSize(width, height).catch(report('set_dock_content_size', false));
@@ -1092,19 +1110,20 @@
    * (`autoHideHitRegion`).
    */
   function currentHitRegion(): HitRegion | null {
-    if (measured === null || measured.width === 0) {
+    const rest = restingPanel();
+    if (rest === null) {
       return null;
     }
     const viewport = viewportNow();
     if (drag?.started) {
       const { dx, dy } = edgeShift(edge, measuredViewport, viewport);
       return {
-        panel: integerRect({ ...measured, x: measured.x + dx, y: measured.y + dy }),
+        panel: integerRect({ ...rest, x: rest.x + dx, y: rest.y + dy }),
         envelope: { x: 0, y: 0, width: viewport.width, height: viewport.height },
       };
     }
     const region = hitRegionFor(
-      measured,
+      rest,
       // A file drag's gap lengthens the panel by one slot: the
       // window keeps taking the drag there, magnification or not.
       maxGrowth(slotPx, magnify) + (fileDrag !== null ? slotPx : 0),
@@ -1138,11 +1157,12 @@
    * only when it changed.
    */
   function reportDockPanel(): void {
-    if (measured === null || measured.width === 0) {
+    const rest = restingPanel();
+    if (rest === null) {
       return;
     }
     const { dx, dy } = edgeShift(edge, measuredViewport, viewportNow());
-    const panel = integerRect({ ...measured, x: measured.x + dx, y: measured.y + dy });
+    const panel = integerRect({ ...rest, x: rest.x + dx, y: rest.y + dy });
     if (reportedPanel !== null && sameRect(reportedPanel, panel)) {
       return;
     }
@@ -1181,12 +1201,15 @@
   });
 
   // The edge changed (a `dock://settings` with another position): the
-  // stylesheet has already laid the panel out for it (`data-edge`). Whatever
-  // was going on along the old axis stops, the snap margins of the old edge
-  // go (they are other CSS margins now), and everything is measured and
-  // reported again for the new one; Rust moves the window meanwhile and
-  // keeps its old thickness until the next `set_dock_content_size`
-  // (docs/ipc/sizing-protocol.md, step 5).
+  // stylesheet has already laid the panel out for it (`data-edge`). The
+  // measurement of the old edge goes first (`restingPanel` already ignores
+  // it): ending a file drag reports the hit region, and so does a drag's end
+  // when it moves the auto-hide phase, and none of those may send the old
+  // edge's rest box. Then whatever was going on along the old axis stops,
+  // the snap margins of the old edge go (they are other CSS margins now),
+  // and everything is measured and reported again for the new one; Rust
+  // moves the window meanwhile and keeps its old thickness until the next
+  // `set_dock_content_size` (docs/ipc/sizing-protocol.md, step 5).
   let laidOutEdge: DockEdge | null = null;
   $effect(() => {
     const now = edge;
@@ -1196,17 +1219,17 @@
       if (before === null || before === now) {
         return;
       }
+      measured = null;
+      stripBox = null;
+      reported = { width: 0, height: 0 };
+      reportedHit = null;
+      reportedPanel = null;
       cancelDrag(false);
       clearDragStyles();
       endFileDrag(false, false);
       leaveHoverState();
       snapMargins = { start: 0, edge: EDGE_MARGIN };
       panelEl?.style.removeProperty('margin');
-      measured = null;
-      stripBox = null;
-      reported = { width: 0, height: 0 };
-      reportedHit = null;
-      reportedPanel = null;
       scheduleMeasure();
     });
   });
