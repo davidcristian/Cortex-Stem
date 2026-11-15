@@ -920,6 +920,26 @@
     void backend.openSettings().catch(report('Opening Settings'));
   }
 
+  /**
+   * Let go of the keyboard: Escape, and a second press of the focus
+   * shortcut (`dock://release-focus`). The focused item, if there is
+   * one, loses the focus: its pill goes, and with auto-hide on the
+   * countdown starts. Rust is asked to give the keyboard focus back
+   * (`release_dock_focus`): it brings back the window that was in front
+   * when the focus shortcut was pressed, and does nothing when the shortcut
+   * did not bring the keyboard here. Housekeeping: a failure only logs.
+   * Whether an item lost the focus.
+   */
+  function letGo(): boolean {
+    const active = document.activeElement;
+    const blurred = active instanceof HTMLElement && panelEl?.contains(active) === true;
+    if (blurred) {
+      active.blur();
+    }
+    void backend.releaseDockFocus().catch(report('release_dock_focus', false));
+    return blurred;
+  }
+
   /** Keyboard shortcuts while the dock window has focus. */
   function onwindowkeydown(e: KeyboardEvent): void {
     if (e.key === 'Escape' && drag !== null) {
@@ -927,19 +947,11 @@
       cancelDrag(true);
       return;
     }
-    // Otherwise Escape lets go of the focused item: its pill goes,
-    // and with auto-hide on the countdown starts. It also gives the
-    // keyboard focus back: Rust brings back the window that was in
-    // front when the focus shortcut was pressed, and does nothing when the
-    // shortcut did not bring the keyboard here. Housekeeping: a failure
-    // only logs.
+    // Otherwise Escape lets go of the keyboard.
     if (e.key === 'Escape') {
-      const active = document.activeElement;
-      if (active instanceof HTMLElement && panelEl?.contains(active)) {
+      if (letGo()) {
         e.preventDefault();
-        active.blur();
       }
-      void backend.releaseDockFocus().catch(report('release_dock_focus', false));
       return;
     }
     if (e.key === ',' && e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
@@ -1980,16 +1992,24 @@
     const onFocusRequested = (): void => {
       void focusEntry();
     };
+    // A second press of the focus shortcut while this dock has the keyboard:
+    // what Escape does. A pointer drag in progress is the
+    // pointer's and stays.
+    const onReleaseRequested = (): void => {
+      letGo();
+    };
     dark.addEventListener('change', onDark);
     motion.addEventListener('change', onMotion);
     document.addEventListener('visibilitychange', onVisibility);
     const offShow = backend.on('dock://show', onShowRequested);
     const offFocus = backend.on('dock://focus', onFocusRequested);
+    const offRelease = backend.on('dock://release-focus', onReleaseRequested);
     const offFileDrag = backend.onFileDrag(onfiledrag);
     void store.start();
     return () => {
       offShow();
       offFocus();
+      offRelease();
       offFileDrag();
       endFileDrag(false, false);
       finishLanding(false);

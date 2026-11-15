@@ -46,6 +46,12 @@ export interface BackendEvents {
    * shortcut gave it the keyboard focus; focus the toolbar's entry item.
    */
   'dock://focus': null;
+  /**
+   * To one dock window: the focus shortcut was pressed again while
+   * this dock still has the keyboard from the first press; do what Escape
+   * does (let go of the focused item and call `releaseDockFocus`).
+   */
+  'dock://release-focus': null;
 }
 
 export type BackendEvent = keyof BackendEvents;

@@ -1398,6 +1398,17 @@ export class MockBackend implements Backend {
    * the focus shortcut reads (`requestFocus`).
    */
   private autoHidden = false;
+  /**
+   * Whether this page's dock window has the keyboard from a press of the
+   * focus shortcut: Rust's `DockFocus` session for it while it is
+   * the foreground window, so the next press lets go (`requestFocus`). Set
+   * by a press that gave it the focus; cleared when the page gives the
+   * focus back (`releaseDockFocus`) and when another window comes to the
+   * front (`pushForeground`, an activation), which the real dock sees as
+   * losing the activation. A click that launches or minimises leaves it
+   * set, as it leaves the real dock in front.
+   */
+  private shortcutFocus = false;
 
   constructor(options: MockOptions = {}) {
     const scenario = SCENARIOS[options.scenario ?? 'default']();
@@ -1812,6 +1823,7 @@ export class MockBackend implements Backend {
   releaseDockFocus(): Promise<void> {
     return this.command(() => {
       this.record({ type: 'releaseDockFocus' });
+      this.shortcutFocus = false;
       this.log('release_dock_focus');
     });
   }
@@ -1920,13 +1932,21 @@ export class MockBackend implements Backend {
 
   /**
    * The focus shortcut was pressed (docs/ipc/keyboard-entry.md):
-   * what `windows::on_focus_shortcut` sends this page's dock window once it
-   * has made it the foreground window. A panel the page last reported slid
-   * out by auto-hide is asked back first (`dock://show`, as `requestShow`
-   * does); then one `dock://focus` with a `null` payload. A browser has no
-   * foreground to take, so nothing else happens.
+   * what `windows::on_focus_shortcut` sends this page's dock window. While
+   * the dock has the keyboard from an earlier press (`shortcutFocus`), one
+   * `dock://release-focus`: the page does what Escape does. Otherwise, once
+   * Rust has made it the foreground window: a panel the page last reported
+   * slid out by auto-hide is asked back first (`dock://show`, as
+   * `requestShow` does), then one `dock://focus`. Payloads are `null`. A
+   * browser has no foreground to take, so nothing else happens.
    */
   requestFocus(): void {
+    if (this.shortcutFocus) {
+      this.log('dock focus release requested');
+      this.emit('dock://release-focus', null);
+      return;
+    }
+    this.shortcutFocus = true;
     if (this.autoHidden) {
       this.log('dock reveal requested');
       this.emit('dock://show', null);
@@ -1936,6 +1956,9 @@ export class MockBackend implements Backend {
   }
 
   pushForeground(id: WindowId | null): void {
+    // Another window (or the desktop) came to the front: the dock window
+    // lost the activation, and with it the focus shortcut's keyboard.
+    this.shortcutFocus = false;
     if (this.engine.setForeground(id)) {
       this.emitState();
     }
@@ -2087,6 +2110,8 @@ export class MockBackend implements Backend {
       case 'activate':
         changed = this.engine.upsertWindow({ ...tracked.raw, isMinimized: false });
         changed = this.engine.setForeground(windowId) || changed;
+        // The window takes the foreground from the dock.
+        this.shortcutFocus = false;
         break;
       case 'minimize':
         changed = this.engine.upsertWindow({ ...tracked.raw, isMinimized: true });

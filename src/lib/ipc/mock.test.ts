@@ -606,21 +606,23 @@ describe('revisions and events', () => {
   it('requestFocus emits dock://focus, after dock://show while the page reports its panel slid out; releaseDockFocus is recorded', async () => {
     const b = fast();
     const events: string[] = [];
-    const offShow = b.on('dock://show', (payload) => {
-      events.push(`show:${String(payload)}`);
-    });
-    const offFocus = b.on('dock://focus', (payload) => {
-      events.push(`focus:${String(payload)}`);
-    });
+    const offs = (['dock://show', 'dock://focus', 'dock://release-focus'] as const).map((name) =>
+      b.on(name, (payload) => {
+        events.push(`${name.slice('dock://'.length)}:${String(payload)}`);
+      }),
+    );
     const states = recordStates(b);
 
     b.requestFocus();
     expect(events).toEqual(['focus:null']);
-    // With the panel slid out, the press brings it back first.
+    // The page gives the focus back; with the panel slid out, the next
+    // press brings it back first.
+    await b.releaseDockFocus();
     await b.setDockAutoHidden(true);
     events.length = 0;
     b.requestFocus();
     expect(events).toEqual(['show:null', 'focus:null']);
+    await b.releaseDockFocus();
     await b.setDockAutoHidden(false);
     events.length = 0;
     b.requestFocus();
@@ -628,17 +630,63 @@ describe('revisions and events', () => {
 
     await b.releaseDockFocus();
     await b.releaseDockFocus();
-    expect(b.calls.filter((c) => c.type === 'releaseDockFocus')).toEqual([
-      { type: 'releaseDockFocus' },
-      { type: 'releaseDockFocus' },
-    ]);
+    expect(b.calls.filter((c) => c.type === 'releaseDockFocus')).toHaveLength(4);
+    expect(b.calls.filter((c) => c.type === 'releaseDockFocus').at(-1)).toEqual({
+      type: 'releaseDockFocus',
+    });
     // Neither touches the snapshot or the settings.
     expect(states).toHaveLength(0);
 
-    offShow();
-    offFocus();
+    for (const off of offs) {
+      off();
+    }
     b.requestFocus();
     expect(events).toEqual(['focus:null']);
+  });
+
+  it('a second requestFocus while the dock has the keyboard emits dock://release-focus, until the focus is given back or another window comes to the front', async () => {
+    const b = fast();
+    const events: string[] = [];
+    const offs = (['dock://show', 'dock://focus', 'dock://release-focus'] as const).map((name) =>
+      b.on(name, () => {
+        events.push(name.slice('dock://'.length));
+      }),
+    );
+    const press = (): string[] => {
+      events.length = 0;
+      b.requestFocus();
+      return [...events];
+    };
+
+    // Enter, then a second press lets go; the page answers with
+    // releaseDockFocus, and the third press enters again.
+    expect(press()).toEqual(['focus']);
+    expect(press()).toEqual(['release-focus']);
+    expect(press()).toEqual(['release-focus']);
+    await b.releaseDockFocus();
+    expect(press()).toEqual(['focus']);
+
+    // A click that minimises or launches leaves the dock in front with the
+    // keyboard: the next press still lets go.
+    const state = await b.getDockState();
+    const shown = state.items.flatMap((item) => item.windows).find((w) => !w.isMinimized)!;
+    await b.windowAction(shown.id, 'minimize');
+    expect(press()).toEqual(['release-focus']);
+    const app = state.items.find((item) => item.kind === 'app' && item.appId !== null)!;
+    await b.launchApp(app.appId!);
+    expect(b.calls.filter((c) => c.type === 'launch')).toHaveLength(1);
+    expect(press()).toEqual(['release-focus']);
+
+    // A window brought to the front (a click that activates, or one from
+    // elsewhere) takes the activation from the dock: the next press enters.
+    await b.windowAction(shown.id, 'activate');
+    expect(press()).toEqual(['focus']);
+    b.pushForeground(null);
+    expect(press()).toEqual(['focus']);
+
+    for (const off of offs) {
+      off();
+    }
   });
 
   it('setFullscreen mirrors FullscreenChanged: in the dock’s facts, one state event per change', async () => {

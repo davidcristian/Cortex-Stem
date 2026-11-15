@@ -54,7 +54,11 @@ interface DemoWindow {
     setTheme: (theme: ThemeInfo) => void;
     /** `dock://show`: the tray or the shortcut pressed while the panel is auto-hidden. */
     requestShow: () => void;
-    /** A press of the focus shortcut: `dock://show` if the panel is slid out, then `dock://focus`. */
+    /**
+     * A press of the focus shortcut: `dock://release-focus` while the dock has the
+     * keyboard from an earlier press, else `dock://show` if the panel is slid out, then
+     * `dock://focus`.
+     */
     requestFocus: () => void;
     /** What `get_app_info` answers from now on. */
     setAppInfo: (info: Partial<AppInfo>) => void;
@@ -3974,7 +3978,10 @@ test.describe('keyboard navigation', () => {
   /** How often the page asked Rust to give the keyboard focus back. */
   const releases = (page: Page): Promise<number> => callsOfType(page, 'releaseDockFocus');
 
-  /** A press of the focus shortcut, as Rust tells the page about it (`dock://focus`). */
+  /**
+   * A press of the focus shortcut, as Rust tells the page about it: `dock://focus`, or
+   * `dock://release-focus` while the dock still has the keyboard from the last press.
+   */
   function pressFocusShortcut(page: Page): Promise<void> {
     return page.evaluate(() => {
       (window as unknown as DemoWindow).__dockMock?.requestFocus();
@@ -4066,16 +4073,76 @@ test.describe('keyboard navigation', () => {
 
     await pressFocusShortcut(page);
     await expectKeyboardFocusOn(page, SPOTIFY);
-    // A second press while the dock has the focus is Rust's to handle (it
-    // gives the focus back like Escape); a repeated `dock://focus` only
-    // puts the keyboard on the entry item again.
+    // A repeated `dock://focus` (a press that crossed a release on its way)
+    // only puts the keyboard on the entry item again.
     await page.keyboard.press('ArrowRight');
     expect(await focused(page)).not.toBe(SPOTIFY);
-    await pressFocusShortcut(page);
+    await page.evaluate(() => {
+      const mock = (window as unknown as DemoWindow).__dockMock as unknown as {
+        emit: (event: string, payload: null) => void;
+      };
+      mock.emit('dock://focus', null);
+    });
     await expectKeyboardFocusOn(page, SPOTIFY);
     await page.keyboard.press('Escape');
     await expect.poll(() => releases(page)).toBe(1);
     expect(await primaryClicks(page)).toEqual([SPOTIFY]);
+  });
+
+  test('a second press of the focus shortcut lets go like Escape, also with nothing to go back to; the next press enters again', async ({
+    page,
+  }) => {
+    await openDock(page);
+    const panel = page.locator(PANEL);
+    await spyPrimaryClick(page);
+    await page.mouse.move(640, 10);
+    await patchSettings(page, { autoHide: { mode: 'always', delayMs: DELAY } });
+    await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+    const keys = await itemKeys(page);
+
+    // From the desktop (nothing in front): the first item takes it.
+    await foreground(page, null);
+    await pressFocusShortcut(page);
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+    await expectKeyboardFocusOn(page, keys[0]!);
+
+    // The second press: the ring and the pill go and Rust is asked, once,
+    // to give the focus back, as for Escape.
+    await pressFocusShortcut(page);
+    await expect.poll(() => focused(page)).toBeNull();
+    await expect(page.locator('.tooltip')).toHaveCount(0);
+    await expect.poll(() => releases(page)).toBe(1);
+    await page.waitForTimeout(150);
+    expect(await releases(page)).toBe(1);
+    // The `focus` hold is gone: as after Escape, the dock stays until the
+    // pointer has been over it and left, then slides away.
+    const box = (await panel.boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.move(640, 10);
+    await expect(panel).toHaveAttribute('data-autohide', 'pending');
+    await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+
+    // The third press enters again, sliding the dock back in.
+    await pressFocusShortcut(page);
+    await expect(panel).toHaveAttribute('data-autohide', 'shown');
+    await expectKeyboardFocusOn(page, keys[0]!);
+    await page.keyboard.press('Escape');
+    await expect.poll(() => releases(page)).toBe(2);
+
+    // Enter on the active app's item minimises it, which leaves the dock
+    // in front with the keyboard: the next press still lets go.
+    await foreground(page, CODE_WINDOW_ID);
+    await pressFocusShortcut(page);
+    await expectKeyboardFocusOn(page, CODE_KEY);
+    await page.keyboard.press('Enter');
+    await expect.poll(() => primaryClicks(page)).toEqual([CODE_KEY]);
+    await expect(slot(page, CODE_KEY)).not.toHaveAttribute('aria-label', /, active$/);
+    expect(await focused(page)).toBe(CODE_KEY);
+    await pressFocusShortcut(page);
+    await expect.poll(() => focused(page)).toBeNull();
+    await expect(page.locator('.tooltip')).toHaveCount(0);
+    await expect.poll(() => releases(page)).toBe(3);
+    expect(await primaryClicks(page)).toEqual([CODE_KEY]);
   });
 
   test('with auto-hide always, the focus shortcut brings a slid-out dock back and keeps it up until Escape', async ({
