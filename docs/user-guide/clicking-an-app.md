@@ -9,7 +9,8 @@ edge):
 1. the fixed items Start, Task View and Show Desktop;
 2. the pinned apps, in your order;
 3. the other running apps, in the order they appeared;
-4. the fixed items Quick Settings, Notification Center and the Recycle Bin.
+4. the fixed items Quick Settings, Notification Center, Battery, Clock and
+   the Recycle Bin.
 
 Windows of the same app share one icon.
 

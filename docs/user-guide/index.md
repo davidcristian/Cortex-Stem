@@ -12,7 +12,7 @@ installing and building, see the [README](../../README.md).
 | [clicking-an-app.md](clicking-an-app.md) | The order of the dock's items, what a click and a right-click on an app do, and the running dots |
 | [themes.md](themes.md) | The _Standard_, _Solid_ and _Minimal_ themes and your own `dock.css` |
 | [auto-hide.md](auto-hide.md) | The auto-hide modes, how to bring a hidden dock back, and fullscreen apps |
-| [fixed-items.md](fixed-items.md) | Start, Task View, Show Desktop, Quick Settings, Notification Center and the Recycle Bin |
+| [fixed-items.md](fixed-items.md) | Start, Task View, Show Desktop, Quick Settings, Notification Center, the battery and clock items and the Recycle Bin |
 | [keyboard-shortcuts.md](keyboard-shortcuts.md) | The toggle shortcut, the focus shortcut and how to write a shortcut |
 | [starting-with-windows.md](starting-with-windows.md) | The startup entry that starts Stem when you sign in |
 | [hiding-the-windows-taskbar.md](hiding-the-windows-taskbar.md) | How Stem hides the Windows taskbar and puts your taskbar setting back |

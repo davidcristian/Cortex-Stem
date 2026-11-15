@@ -10,6 +10,10 @@ or off under Settings → [Items](settings-window.md#items).
   and the other quick toggles), as Win+A does.
 - **Notification Center** opens your notifications and the calendar, as
   Win+N does.
+- **Battery** shows the battery's charge. See
+  [The battery item](#the-battery-item).
+- **Clock** shows the time and the date. See
+  [The clock item](#the-clock-item).
 - **Recycle Bin**: see [The Recycle Bin item](#the-recycle-bin-item).
 
 The menus of Start, Task View, Show Desktop, Quick Settings and Notification
@@ -18,8 +22,8 @@ _Open Task View_, _Show desktop_, _Open Quick Settings_ and _Open
 Notification Center_. Like every menu, they end with _Stem settings…_ and
 _Quit Stem_.
 
-Quick Settings and Notification Center come just before the Recycle Bin, in
-that order. For a click on either of the two items, Stem
+Quick Settings, Notification Center, Battery and Clock come just before
+the Recycle Bin, in that order. For a click on any of the four, Stem
 sends Windows the keyboard shortcut (Win+A or Win+N). Windows then opens its
 panel where it always does, in the corner of the screen, not beside the
 dock. While a window that runs as administrator is in front, Windows may
@@ -27,6 +31,30 @@ ignore the shortcut, as it ignores keys that Stem sends to such a window.
 Click these items without holding Ctrl, Shift or Alt. Windows may add a key
 you hold to the shortcut: Win+Ctrl+N, for example, opens Narrator's settings
 instead.
+
+## The battery item
+
+- The battery in the icon fills to the charge, and the percent is written
+  below it.
+- A bolt shows while the battery charges, and a plug while the PC is plugged
+  in without charging.
+- The fill turns amber while battery saver (energy saver) is on.
+- Its name says the same in words (`Battery 73 %, charging`).
+- It updates within moments of a change, and after the PC wakes up.
+- A PC without a battery (most desktops) never shows the item, even with the
+  switch on.
+- A click opens quick settings, as Win+A does. Its menu has _Open Quick
+  Settings_ and _Power and battery settings_, which opens that page of the
+  Windows Settings app.
+
+## The clock item
+
+- The icon shows the time over the short weekday and the day. Its name (and
+  the pill over it) is the full date and time.
+- All three use the format of your language and region.
+- A click opens your notifications and the calendar, as Win+N does. Its menu
+  has _Open Notification Center_ and _Date and time settings_, which opens
+  that page of the Windows Settings app.
 
 ## The Recycle Bin item
 
