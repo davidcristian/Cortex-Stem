@@ -443,6 +443,8 @@
   /** The pointer's latest position over the panel (viewport CSS px); only its coordinate along the dock counts. */
   let pointerX = 0;
   let pointerY = 0;
+  /** A move put the pointer over the panel and no leave has come since, magnification on or not. */
+  let pointerOver = false;
   let hovering = false;
   let frame = 0;
   let settleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -483,11 +485,14 @@
   // icon size, the magnification, the preset) moves and resizes the slots,
   // but no pointer event says so, and the scales would stay where the old
   // layout put them. One frame works them out again from where the pointer
-  // last was (it reads the new layout); nothing repeats.
+  // last was (it reads the new layout); nothing repeats. Magnification
+  // turned on under it starts the hover a move would have started.
   $effect(() => {
     void settings;
     void slotPx;
-    void magnify;
+    if (pointerOver && magnify.maxScale > 1 && !drag?.started && !restoringAfterDrag) {
+      startHover();
+    }
     if (hovering) {
       scheduleFrame();
     }
@@ -569,13 +574,22 @@
       // `pointerenter` came (after a drag or a native menu).
       autoHideSend({ type: 'pointer', inside: true });
     }
+    // Where it is, kept even while nothing magnifies: magnification turned
+    // on under a resting pointer starts from there.
+    pointerX = e.clientX;
+    pointerY = e.clientY;
+    pointerOver = true;
     // No hover until the window is measured at rest after a drag: the
     // hover would hold off that measurement (`restoringAfterDrag`).
     if (magnify.maxScale <= 1 || drag?.started || restoringAfterDrag) {
       return;
     }
-    pointerX = e.clientX;
-    pointerY = e.clientY;
+    startHover();
+    scheduleFrame();
+  }
+
+  /** The pointer is over the panel and magnifies: no settle pending. */
+  function startHover(): void {
     if (!hovering) {
       hovering = true;
       settling = false;
@@ -584,7 +598,6 @@
         settleTimer = null;
       }
     }
-    scheduleFrame();
   }
 
   function onpanelpointerenter(): void {
@@ -593,6 +606,7 @@
   }
 
   function onpanelpointerleave(): void {
+    pointerOver = false;
     hovering = false;
     wheelNotches.reset();
     // The settle below measures; the next visit may hover again.
@@ -844,6 +858,7 @@
    */
   function leaveHoverState(): void {
     clearTooltip();
+    pointerOver = false;
     hovering = false;
     settling = false;
     if (settleTimer !== null) {

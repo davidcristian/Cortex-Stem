@@ -969,33 +969,41 @@ test.describe('dock in mock mode', () => {
     expect(await scaleOf(page, 3)).toBeGreaterThan(1.1);
     // A larger icon size moves every slot: the largest scale is still the
     // one of the slot under the pointer.
+    const underPointerIsLargest = (): Promise<boolean> =>
+      page.evaluate(
+        ([selector, x]) => {
+          const slots = Array.from(document.querySelectorAll<HTMLElement>(selector));
+          const scales = slots.map((el) => Number(el.style.getPropertyValue('--scale') || '1'));
+          const under = slots.findIndex((el) => {
+            const r = el.getBoundingClientRect();
+            return x >= r.left && x < r.right;
+          });
+          return under !== -1 && scales[under] === Math.max(...scales) && scales[under]! > 1;
+        },
+        [APP_SLOT, pointer.x] as const,
+      );
     const before = await page.locator(APP_SLOT).first().boundingBox();
     await patchSettingsAlone(page, { iconSize: 64 });
     await expect
       .poll(async () => (await page.locator(APP_SLOT).first().boundingBox())?.width)
       .toBeGreaterThan(before!.width);
-    await expect
-      .poll(() =>
-        page.evaluate(
-          ([selector, x]) => {
-            const slots = Array.from(document.querySelectorAll<HTMLElement>(selector));
-            const scales = slots.map((el) => Number(el.style.getPropertyValue('--scale') || '1'));
-            const under = slots.findIndex((el) => {
-              const r = el.getBoundingClientRect();
-              return x >= r.left && x < r.right;
-            });
-            return under !== -1 && scales[under] === Math.max(...scales) && scales[under]! > 1;
-          },
-          [APP_SLOT, pointer.x] as const,
-        ),
-      )
-      .toBe(true);
+    await expect.poll(underPointerIsLargest).toBe(true);
     // Off: everything back at rest, the rest bitmaps shown.
     await patchSettingsAlone(page, { magnification: { enabled: false } });
     await expect.poll(() => scaleOf(page, 3)).toBe(1);
     await expect
       .poll(async () => (await iconPairs(page)).every((pair) => !pair.magnifiedAttr))
       .toBe(true);
+
+    // The pointer leaves and comes back while nothing magnifies, then rests;
+    // magnification turned on under it magnifies at once, around it.
+    await page.mouse.move(10, 10);
+    await page.mouse.move(pointer.x, pointer.y);
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+    // Nothing above scale 1 yet.
+    expect(await underPointerIsLargest()).toBe(false);
+    await patchSettingsAlone(page, { magnification: { enabled: true } });
+    await expect.poll(underPointerIsLargest).toBe(true);
   });
 
   test('twenty apps', async ({ page }) => {

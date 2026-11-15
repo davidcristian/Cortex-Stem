@@ -878,7 +878,8 @@ test.describe('the dock page goes quiet once it has settled', () => {
       hoverScenario('left'),
       {
         // A settings change under a resting pointer works the scales
-        // out again, once, and nothing repeats after it.
+        // out again, once, and nothing repeats after it; nor after
+        // magnification is turned on under it.
         name: 'magnification on, the pointer resting on an icon through a settings change',
         setup: async (page) => {
           await page.locator(APP_SLOT).nth(3).hover();
@@ -890,11 +891,18 @@ test.describe('the dock page goes quiet once it has settled', () => {
               () => undefined;
           });
           await patchSettings(page, { iconSize: 56, magnification: { maxScale: 1.3 } });
+          await expect.poll(() => scaleOf(page, 3)).toBeLessThanOrEqual(1.3);
+          // Off, the pointer out and back while nothing magnifies, then on.
+          await patchSettings(page, { magnification: { enabled: false } });
+          await expect.poll(() => scaleOf(page, 3)).toBe(1);
+          await page.mouse.move(10, 10);
+          await page.locator(APP_SLOT).nth(3).hover();
+          await patchSettings(page, { magnification: { enabled: true } });
+          await expect.poll(() => scaleOf(page, 3)).toBeGreaterThan(1.1);
           await page.evaluate(() => {
             delete (window as unknown as { __dockMock: Record<string, unknown> }).__dockMock
               .emitState;
           });
-          await expect.poll(() => scaleOf(page, 3)).toBeLessThanOrEqual(1.3);
           await expect(page.locator('.tooltip')).toHaveCount(1);
         },
       },
