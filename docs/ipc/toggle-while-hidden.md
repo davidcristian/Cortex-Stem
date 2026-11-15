@@ -27,6 +27,7 @@ back whatever hid it. Rust makes the decision, and it needs one fact from the UI
   hide the window. The next press shows it again, and the panel comes back with it. That means at
   most one extra press, and no round trip is spent on preventing it.
 - Failure notices (toasts) are never suppressed by auto-hide. While the panel is slid out, they
-  are shown just above the window's bottom edge and move back up with the panel.
+  are shown just inside the window's edge side (just above its bottom edge on `bottom`,
+  [Sizing protocol](sizing-protocol.md)) and move back out with the panel.
 - `MockBackend` records the call (`calls` entry `setDockAutoHidden`), and `requestShow()` emits
   `dock://show` as `toggle_dock` would.

@@ -1,6 +1,6 @@
 # IPC contract: Rust ⇄ frontend
 
-**Contract version: 1.15 (clicks per dock).**
+**Contract version: 1.16 (screen edges).**
 The files in this folder are the contract between the Rust app (`src-tauri`) and the pages in
 `src/`. A change to the contract follows the contract change rules in `AGENTS.md` ("IPC contract
 change control") and is logged in the [changelog](changelog.md).
@@ -30,7 +30,7 @@ change control") and is logged in the [changelog](changelog.md).
 | [events.md](events.md) | The events that Rust sends to the pages, and the startup sequence |
 | [state-snapshot.md](state-snapshot.md) | `DockState`: the per-dock facts |
 | [commands.md](commands.md) | The commands that the pages call |
-| [sizing-protocol.md](sizing-protocol.md) | How Rust sizes a dock window |
+| [sizing-protocol.md](sizing-protocol.md) | How Rust sizes a dock window, and the layout on each edge |
 | [hit-region.md](hit-region.md) | Where a dock window takes clicks, and the reveal strip of auto-hide |
 | [dock-panel.md](dock-panel.md) | The resting panel rect that the `overlapped` fact is computed from |
 | [toggle-while-hidden.md](toggle-while-hidden.md) | How the tray click and the toggle shortcut bring back a panel that auto-hide slid out |

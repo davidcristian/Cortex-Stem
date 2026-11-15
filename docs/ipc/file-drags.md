@@ -18,13 +18,14 @@ command or event to this contract; a drop on the bin calls `delete_to_recycle_bi
   ([Hit region](hit-region.md)): from the moment the cursor enters `panel` until it leaves
   `envelope`. With `behavior.clickThrough` off it is received anywhere in the window, but only a
   drop over the panel pins. While a file drag is in the window, the UI reports an `envelope` one
-  slot wider (half a slot at each end) to make room for the gap below. With auto-hide on and the
-  dock hidden, a file drag over the reveal strip reveals the dock, and any file drag in the
-  window keeps it up until `leave` or `drop`.
-- **Gap.** Over the panel itself (not the transparent margin above it), a drag that includes at
-  least one `.lnk` or `.exe` path opens a one-slot gap among the pinned apps at the insertion
-  index. The insertion index is the number of pinned items whose drawn centre is left of the
-  pointer. A drag with nothing pinnable opens no gap.
+  slot longer along the main axis (half a slot at each end) to make room for the gap below. With
+  auto-hide on and the dock hidden, a file drag over the reveal strip reveals the dock, and any
+  file drag in the window keeps it up until `leave` or `drop`.
+- **Gap.** Over the panel itself (not the transparent margin beside it), a drag that includes
+  at least one `.lnk` or `.exe` path opens a one-slot gap among the pinned apps at the insertion
+  index. The insertion index is the number of pinned items whose drawn centre is before the
+  pointer along the main axis: left of it on a horizontal dock, above it on a vertical one. A drag
+  with nothing pinnable opens no gap.
 - **Over the Recycle Bin.** While the pointer is over the Recycle Bin item's slot
   (`DockItem.kind` `recycleBin`), or over the panel's padding past it, no gap opens, whatever the
   drag contains (any file type, folders). The padding counts because the bin is the last item: a

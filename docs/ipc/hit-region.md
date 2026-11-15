@@ -15,19 +15,24 @@ transparent parts. The UI tells Rust where the visible dock is:
   removed, icon size, separators), never per magnification frame. While a drag-to-reorder is in
   progress, the UI reports the whole viewport as `envelope` and restores the real one afterwards.
   While a file is dragged over the window ([File drags](file-drags.md)), the `envelope` is one
-  slot wider, for the gap that opens in the panel.
+  slot longer along the main axis, for the gap that opens in the panel.
 - Auto-hide is active when `autoHide.mode = always` (ADR-0008), when the dock's `fullscreen`
   fact is set, or when `autoHide.mode = whenOverlapped` and the dock's `overlapped` fact is set
   (both facts from the dock's own entry in
   [`DockState.docks`](state-snapshot.md#dockstatedocks)). While auto-hide is active and the dock
   is hidden, the UI reports the reveal strip as both `panel` and `envelope`. The strip is the
-  bottom 2 CSS px of the window, as long as the resting panel. While the dock is shown, the UI
-  reports an `envelope` grown out to the window's bottom edge to include the strip.
+  2 CSS px of the window along its edge side, as long as the resting panel: the bottom 2 px on
+  `bottom`, the leftmost 2 px on `left`, and so on ([Sizing protocol](sizing-protocol.md)). While
+  the dock is shown, the UI reports an `envelope` grown out to the window's edge side to include
+  the strip.
 
   Exception: there is no strip while only the `fullscreen` fact makes auto-hide active (the mode
   is not `always`; under `whenOverlapped` the fullscreen window is itself the overlap) and the
-  dock's monitor has `workArea.y + workArea.height < bounds.y + bounds.height`: a visible stock
-  taskbar is below the dock window. The hidden dock then reports a
+  dock's monitor has a work area that stops short of its bounds on the dock's edge. That is
+  `workArea.y + workArea.height < bounds.y + bounds.height` on `bottom`, `workArea.y > bounds.y`
+  on `top`, `workArea.x > bounds.x` on `left` and
+  `workArea.x + workArea.width < bounds.x + bounds.width` on `right`: a visible stock taskbar or
+  another app bar is between the dock window and the screen edge. The hidden dock then reports a
   0×0 rect at the origin as both `panel` and `envelope`, so the window takes no clicks. Only
   `dock://show` (the tray, the toggle shortcut) or an app asking for attention brings it back.
 

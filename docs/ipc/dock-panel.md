@@ -29,12 +29,14 @@ show and hide in a loop. So the UI reports the resting panel separately:
   monitor with a registered window. A window registered without a monitor (the app had no
   monitor list yet) has no entry until it is placed.
 - `MockBackend` records the call (`calls` entry `setDockPanelRect`) and converts it as the app
-  layer would for a dock window flush with the bottom of its monitor's work area, at that
-  monitor's scale (`panelOnScreen`): the viewport's bottom-left corner is the work area's
-  bottom-left corner. The viewport height is `window.innerHeight`, or
-  `MockOptions.viewportHeight`, or the work area's height where there is no `window`. One mock
-  serves one page, so it registers the panel under that page's dock window
-  (`MockOptions.monitor`, the page's `?monitor=`; `pageLabel`).
+  layer would for a dock window flush with its edge (`Settings.position`, v1.16) of its monitor's
+  work area, at that monitor's scale (`panelOnScreen`). On `bottom` the viewport's bottom-left
+  corner is the work area's bottom-left corner; on `top` and `left` its top-left corner is the
+  work area's top-left corner; on `right` its top-right corner is the work area's top-right
+  corner. The viewport is `window.innerWidth` × `window.innerHeight`, or
+  `MockOptions.viewportWidth` / `MockOptions.viewportHeight`, or the work area's size where there
+  is no `window`. One mock serves one page, so it registers the panel under that page's dock
+  window (`MockOptions.monitor`, the page's `?monitor=`; `pageLabel`).
 
   The mock's demo windows have frames on their monitor, none within the bottom 250 px of the
   work area, where the panel rests. `moveWindow(id, rect)` moves one window (a rect-only
