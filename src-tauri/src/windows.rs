@@ -1918,12 +1918,15 @@ pub fn toggle_dock(app: &AppHandle) {
         }
     };
     log::debug!("toggle_dock: {action:?}");
+    if action == Toggle::Hide {
+        // The backdrop goes before the windows: no material without its panel.
+        crate::backdrop::on_panel(app, &primary, None);
+    }
     for window in dock_windows(app) {
         let label = window.label().to_owned();
         let result = match action {
             Toggle::Hide => window.hide().inspect(|()| {
                 log::debug!("dock window {label:?} hidden");
-                crate::backdrop::on_panel(app, &window, None);
                 if let Some(service) = app.try_state::<crate::AppService>() {
                     service
                         .0
