@@ -22,7 +22,10 @@
 //! and Stem is not elevated) and that neither the return value nor
 //! `GetLastError` says UIPI was the cause; a count short of the events given
 //! is logged at `warn` and returned as an error, and a refusal that still
-//! reports every event cannot be seen here.
+//! reports every event cannot be seen here. A short count
+//! above zero means the first events went in and the rest did not, so keys
+//! can be down that no inserted event releases; [`send_chord`] releases them
+//! before it returns the error (see [`held_after`]).
 
 use stem_core::ShellAction;
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
@@ -66,6 +69,13 @@ fn toggle_desktop() -> PlatformResult<()> {
 
 /// Press every key in order, then release them in reverse, in one
 /// `SendInput` call so the sequence cannot interleave with real input.
+///
+/// On a short count the keys that the inserted events left down are released
+/// with a second call before the error is returned, so a chord cut short
+/// never leaves the Windows key held (which would turn every later keystroke
+/// into a Windows shortcut). When only the Windows key's press went in, its
+/// release is a tap of that key alone, which may open Start; that is the
+/// lesser harm.
 fn send_chord(keys: &[VIRTUAL_KEY]) -> PlatformResult<()> {
     let inputs: Vec<INPUT> = keys
         .iter()
@@ -76,14 +86,49 @@ fn send_chord(keys: &[VIRTUAL_KEY]) -> PlatformResult<()> {
     // `cbsize` is their size; SendInput copies them.
     let sent = unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
     if sent as usize != inputs.len() {
+        // Read the error before anything else can overwrite it.
         let err = util::last_error();
         log::warn!(
             "SendInput injected {sent} of {} events: {err}",
             inputs.len()
         );
+        release(held_after(keys, sent as usize));
         return Err(err);
     }
     Ok(())
+}
+
+/// The keys of `keys` that are still down when only the first `sent` events
+/// of its chord (every key down in order, then every key up in reverse) were
+/// inserted: the ones pressed and not yet released, in press order.
+fn held_after(keys: &[VIRTUAL_KEY], sent: usize) -> &[VIRTUAL_KEY] {
+    let pressed = sent.min(keys.len());
+    let released = sent.saturating_sub(keys.len()).min(pressed);
+    &keys[..pressed - released]
+}
+
+/// Release `held` (in press order) in reverse, in one `SendInput` call, and
+/// log the outcome; a failure here has nothing left to fall back on.
+fn release(held: &[VIRTUAL_KEY]) {
+    if held.is_empty() {
+        return;
+    }
+    let inputs: Vec<INPUT> = held.iter().rev().map(|&k| key_input(k, true)).collect();
+    // SAFETY: as in `send_chord`: fully initialised INPUT structures and
+    // their size; SendInput copies them.
+    let sent = unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
+    if sent as usize == inputs.len() {
+        log::warn!(
+            "SendInput released {} key(s) the short chord left down",
+            inputs.len()
+        );
+    } else {
+        let err = util::last_error();
+        log::warn!(
+            "SendInput released {sent} of {} key(s) the short chord left down: {err}",
+            inputs.len()
+        );
+    }
 }
 
 fn key_input(key: VIRTUAL_KEY, up: bool) -> INPUT {
@@ -102,5 +147,44 @@ fn key_input(key: VIRTUAL_KEY, up: bool) -> INPUT {
                 dwExtraInfo: 0,
             },
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_short_chord_releases_exactly_the_keys_it_left_down() {
+        let chord = [VK_LWIN, VK_A];
+        // Events: Win down, A down, A up, Win up.
+        assert_eq!(held_after(&chord, 0), &[] as &[VIRTUAL_KEY]);
+        assert_eq!(held_after(&chord, 1), &[VK_LWIN]);
+        assert_eq!(held_after(&chord, 2), &[VK_LWIN, VK_A]);
+        assert_eq!(held_after(&chord, 3), &[VK_LWIN]);
+        assert_eq!(held_after(&chord, 4), &[] as &[VIRTUAL_KEY]);
+        // A count past the chord's length (never returned) holds nothing.
+        assert_eq!(held_after(&chord, 9), &[] as &[VIRTUAL_KEY]);
+
+        // The Start menu's chord: Win down, Win up.
+        assert_eq!(held_after(&[VK_LWIN], 0), &[] as &[VIRTUAL_KEY]);
+        assert_eq!(held_after(&[VK_LWIN], 1), &[VK_LWIN]);
+        assert_eq!(held_after(&[VK_LWIN], 2), &[] as &[VIRTUAL_KEY]);
+
+        // Three keys: every prefix of the six events.
+        let three = [VK_LWIN, VK_N, VK_TAB];
+        let held: Vec<&[VIRTUAL_KEY]> = (0..=6).map(|sent| held_after(&three, sent)).collect();
+        assert_eq!(
+            held,
+            [
+                &[][..],
+                &[VK_LWIN][..],
+                &[VK_LWIN, VK_N][..],
+                &[VK_LWIN, VK_N, VK_TAB][..],
+                &[VK_LWIN, VK_N][..],
+                &[VK_LWIN][..],
+                &[][..],
+            ]
+        );
     }
 }
