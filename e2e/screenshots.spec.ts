@@ -4076,8 +4076,10 @@ test.describe('settings window', () => {
     await expect(page.locator('label[for="scroll-action"]')).toHaveText('Scrolling over an app');
     await expect(select).toHaveValue('none');
     await expect(select.locator('option')).toHaveText(['Does nothing', 'Cycles its windows']);
+    // What the row is about first, then what the one choice that does
+    // something does: not as if it always cycled.
     await expect(page.locator('#scroll-action-description')).toContainText(
-      'each notch of the wheel over an app',
+      "What the mouse wheel does over an app's icon. With Cycles its windows, each notch of the wheel over an app",
     );
     // In the Behaviour section, right after the click row.
     const rows = await page
@@ -4408,6 +4410,10 @@ test.describe('settings window', () => {
     await expect(showDesktop).toHaveAccessibleName('Show Desktop');
     await expect(page.locator('#item-task-view-description')).toHaveText(/open windows/);
     await expect(page.locator('#item-show-desktop-description')).toHaveText(/Minimises every/);
+    // Like its neighbours, the bin says what it does.
+    await expect(page.locator('#item-recycle-bin-description')).toHaveText(
+      'Shows whether the bin is empty and opens it; files dropped on it go to the bin',
+    );
 
     await taskView.click();
     await expect.poll(async () => (await saved())?.taskView).toBe(true);
@@ -7353,6 +7359,10 @@ test.describe('theme presets and the user dock.css', () => {
         'Solid (opaque)',
         'Minimal (icons only)',
       ]);
+      // "them" are the three looks just named; the dock.css row is in this card.
+      await expect(page.locator('#appearance-theme-description')).toHaveText(
+        'How the panel is drawn: translucent, opaque or icons only. Your dock.css, further down, can change any of them.',
+      );
       const opacity = page.locator('#opacity');
       await expect(opacity).toBeEnabled();
 
@@ -7370,7 +7380,13 @@ test.describe('theme presets and the user dock.css', () => {
       const row = page.locator('[data-row="user-css"]');
       await expect(row.locator('code')).toHaveText(DOCK_CSS_PATH);
       const status = row.locator('[data-user-css-status]');
-      await expect(status).toContainText('Not in use');
+      // No file, the normal case: what Edit does, not a failure.
+      await expect(status).toContainText(
+        'Not in use: there is no dock.css yet. Edit dock.css creates one from a template',
+      );
+      await expect(status).not.toContainText(/unreadable|UTF-8|64 KiB/);
+      await row.scrollIntoViewIfNeeded();
+      await row.screenshot({ path: `${OUT}/settings-user-css-none.png` });
 
       // Edit creates the file from the template; nothing is read yet.
       await page.getByRole('button', { name: 'Edit dock.css' }).click();
@@ -7378,7 +7394,7 @@ test.describe('theme presets and the user dock.css', () => {
       expect(
         await page.evaluate(() => (window as unknown as DemoWindow).__dockMock?.userCssOnDisk()),
       ).toContain('dock.css');
-      await expect(status).toContainText('Not in use');
+      await expect(status).toHaveText('Not in use yet: save the file, then press Reload');
 
       // The user saves the file; Reload reads it.
       await page.evaluate(() => {
@@ -7410,6 +7426,16 @@ test.describe('theme presets and the user dock.css', () => {
       // The next attempt clears it.
       await page.getByRole('button', { name: 'Reload dock.css' }).click();
       await expect(page.locator('.file-error')).toHaveCount(0);
+
+      // A file that is there but cannot be used, read after an Edit: the
+      // reasons Rust may have had.
+      await page.evaluate(() => {
+        (window as unknown as DemoWindow).__dockMock?.writeUserCss('a'.repeat(64 * 1024 + 1));
+      });
+      await page.getByRole('button', { name: 'Reload dock.css' }).click();
+      await expect(status).toHaveText(
+        'Not in use: the file is missing, unreadable, not UTF-8 or larger than 64 KiB (the log says which)',
+      );
     });
   });
 });

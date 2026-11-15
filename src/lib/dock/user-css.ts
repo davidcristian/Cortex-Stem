@@ -112,16 +112,43 @@ export function applyUserCss(doc: Document, css: string | null): boolean {
 }
 
 /**
- * What the settings page says about the file under its path: whether the
- * dock uses it, and if not, the reasons Rust may have had (its log says
- * which one).
+ * What the settings page knows of *Edit dock.css* (`open_user_css`, which
+ * creates the file from the template when there is none, so the file is
+ * there once it has succeeded): `'none'` it has not run in this window;
+ * `'unread'` it ran after the last read; `'read'` it ran, and the file was
+ * read again since (*Reload*).
  */
-export function userCssStatus(payload: UserCss | null): string {
+export type UserCssEdit = 'none' | 'unread' | 'read';
+
+/**
+ * What the settings page says about the file under its path: whether the
+ * dock uses it, and if not, why. `UserCss` does not say why a read
+ * found nothing, so the page tells the cases apart by what it saw:
+ *
+ * - a path in parentheses: a run that saves no files has no `dock.css`;
+ * - before any *Edit*: the normal case, no file yet (a file Stem could not
+ *   use reads the same, so the text points to the log for that);
+ * - after an *Edit*, before a *Reload*: the file is there but not read;
+ * - read again after an *Edit*: the file was there, so a read that found
+ *   nothing failed, and the reasons Rust may have had are listed (its log
+ *   says which one).
+ */
+export function userCssStatus(payload: UserCss | null, edit: UserCssEdit = 'none'): string {
   if (payload === null) {
     return 'Not read yet';
   }
-  if (payload.css === null) {
-    return 'Not in use: the file is missing, unreadable, not UTF-8 or larger than 64 KiB (the log says which)';
+  if (payload.css !== null) {
+    return 'In use since the last start or Reload';
   }
-  return 'In use since the last start or Reload';
+  if (payload.path.startsWith('(')) {
+    return 'Not in use: this run saves no files, so it has no dock.css';
+  }
+  switch (edit) {
+    case 'none':
+      return 'Not in use: there is no dock.css yet. Edit dock.css creates one from a template; if you already have one, the log says why it is not used';
+    case 'unread':
+      return 'Not in use yet: save the file, then press Reload';
+    case 'read':
+      return 'Not in use: the file is missing, unreadable, not UTF-8 or larger than 64 KiB (the log says which)';
+  }
 }

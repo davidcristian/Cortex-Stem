@@ -4,7 +4,7 @@
   import { watchDevicePixelRatio } from '$lib/dock/dpr';
   import { moveItem } from '$lib/dock/reorder';
   import { accentColor, resolveTheme } from '$lib/dock/theme';
-  import { userCssStatus } from '$lib/dock/user-css';
+  import { userCssStatus, type UserCssEdit } from '$lib/dock/user-css';
   import type { DockPosition } from '$lib/ipc/generated/DockPosition';
   import type { HiddenApp } from '$lib/ipc/generated/HiddenApp';
   import type { IconKey } from '$lib/ipc/generated/IconKey';
@@ -214,11 +214,14 @@
   // row's own notice, apart from the footer's save status.
   let userCss = $state.raw<UserCss | null>(null);
   let userCssError = $state<string | null>(null);
+  /** What the row knows of *Edit dock.css*, for its status (`userCssStatus`). */
+  let userCssEdit = $state<UserCssEdit>('none');
 
   async function editUserCss(): Promise<void> {
     userCssError = null;
     try {
       await store.backend.openUserCss();
+      userCssEdit = 'unread';
     } catch (err) {
       userCssError = `Couldn't open dock.css: ${describeError(err)}`;
       console.error('open_user_css failed:', err);
@@ -229,6 +232,9 @@
     userCssError = null;
     try {
       userCss = await store.backend.reloadUserCss();
+      if (userCssEdit === 'unread') {
+        userCssEdit = 'read';
+      }
     } catch (err) {
       userCssError = `Couldn't read dock.css: ${describeError(err)}`;
       console.error('reload_user_css failed:', err);
@@ -369,7 +375,7 @@
           <SettingRow
             id="appearance-theme"
             label="Theme"
-            description="How the panel is drawn; your dock.css, below, can change each of them"
+            description="How the panel is drawn: translucent, opaque or icons only. Your dock.css, further down, can change any of them."
           >
             <Select
               id="appearance-theme"
@@ -492,7 +498,9 @@
             <div class="file-text">
               <span class="file-label">Your styles (dock.css)</span>
               <span class="file-detail"><code>{userCss?.path ?? '…'}</code></span>
-              <span class="file-detail" data-user-css-status>{userCssStatus(userCss)}</span>
+              <span class="file-detail" data-user-css-status
+                >{userCssStatus(userCss, userCssEdit)}</span
+              >
             </div>
             <div class="actions">
               <button
@@ -540,7 +548,7 @@
           <SettingRow
             id="scroll-action"
             label="Scrolling over an app"
-            description="Cycles its windows: each notch of the wheel over an app's icon brings its next open window to the front, or the previous one when you scroll up; a minimised window is restored"
+            description="What the mouse wheel does over an app's icon. With Cycles its windows, each notch of the wheel over an app brings its next open window to the front, or the previous one when you scroll up; a minimised window is restored."
           >
             <Select
               id="scroll-action"
@@ -787,7 +795,11 @@
                 })}
             />
           </SettingRow>
-          <SettingRow id="item-recycle-bin" label="Recycle Bin">
+          <SettingRow
+            id="item-recycle-bin"
+            label="Recycle Bin"
+            description="Shows whether the bin is empty and opens it; files dropped on it go to the bin"
+          >
             <Toggle
               id="item-recycle-bin"
               checked={settings.items.recycleBin}
