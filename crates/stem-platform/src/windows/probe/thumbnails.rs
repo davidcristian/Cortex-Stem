@@ -1112,8 +1112,13 @@ fn update_again(clock: Clock, placement: &Placement) -> Option<Call> {
 
 fn unregister(clock: Clock, thumb: isize) -> Call {
     let (result, micros) = clock.time(|| {
-        // SAFETY: `thumb` is a registration of this process that the caller
-        // has taken out of its slot, so it is unregistered exactly once.
+        // SAFETY: `thumb` is a registration handle of this process, a plain
+        // value that DWM checks (a stale one fails with an HRESULT). Callers
+        // take it out of its slot first; the phase 2 worker's slot forgets
+        // it when the worker reports the call. Only a worker stuck inside
+        // this very call can see the clean-up unregister it a second time;
+        // that call fails, or ends a registration of this process that the
+        // clean-up is ending anyway. No memory is involved either way.
         unsafe { DwmUnregisterThumbnail(thumb) }
     });
     Call::of("DwmUnregisterThumbnail", &result, micros)
