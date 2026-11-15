@@ -6171,6 +6171,52 @@ test.describe('theme presets and the user dock.css', () => {
         await page.screenshot({ path: `${OUT}/dock-theme-${preset}-left-${scheme}.png` });
       }
     });
+
+    test(`in minimal, ${scheme} mode, Stem's own tiles are nearly opaque in the panel's tint, over the other mode's wallpaper`, async ({
+      page,
+    }) => {
+      await page.emulateMedia({ colorScheme: scheme });
+      await openDock(page);
+      if (scheme === 'light') {
+        await setOsTheme(page, { dark: false, accent: LIGHT_ACCENT });
+      }
+      await patchSettings(page, {
+        items: { taskView: true, quickSettings: true, battery: true, clock: true },
+      });
+      const tiles = ['taskView', 'quickSettings', 'battery', 'clock'].map((kind) =>
+        page.locator(`.slot[data-kind="${kind}"] svg > rect`).first(),
+      );
+      for (const tile of tiles) {
+        await expect(tile).toBeVisible();
+      }
+      await expect(page.locator('.slot[data-kind="clock"] text.time')).toHaveText(/\d/);
+      // Elsewhere the tile is a light wash over the panel.
+      const wash = scheme === 'dark' ? 'rgba(255, 255, 255, 0.16)' : 'rgba(0, 0, 0, 0.14)';
+      for (const tile of tiles) {
+        await expect(tile).toHaveCSS('fill', wash);
+      }
+      await setPreset(page, 'minimal');
+      await expectLook(page, scheme, 'minimal', accent);
+      const tint = scheme === 'dark' ? 'rgba(28, 28, 30, 0.85)' : 'rgba(244, 244, 246, 0.85)';
+      for (const tile of tiles) {
+        await expect(tile).toHaveCSS('fill', tint);
+      }
+      // The case the tiles must survive: dark mode over a bright wallpaper,
+      // light mode over a dark one (the demo's follows the mode).
+      const other = scheme === 'dark' ? 'light' : 'dark';
+      await page.evaluate((w) => {
+        document.documentElement.dataset.wallpaper = w;
+      }, other);
+      await expect(page.locator('html')).toHaveAttribute('data-wallpaper', other);
+      await page.mouse.move(640, 10);
+      await expect.poll(() => runningAnimations(page)).toBe(0);
+      await page.screenshot({ path: `${OUT}/dock-theme-minimal-tiles-${scheme}.png` });
+      // Back to standard: the wash again.
+      await setPreset(page, 'standard');
+      for (const tile of tiles) {
+        await expect(tile).toHaveCSS('fill', wash);
+      }
+    });
   }
 
   test('a contrast theme draws the contrast panel whatever the preset; Transparency effects off leaves solid opaque', async ({

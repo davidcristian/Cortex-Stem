@@ -2336,13 +2336,19 @@
   /* `minimal`: no panel at all, only the icons, the dots and the
      separators, which sit on the wallpaper and so take more contrast. The
      panel keeps its box (padding, hit region, size), so a preset change
-     never moves an icon. */
+     never moves an icon. Stem's own neutral tiles (Task View, Show
+     Desktop, Quick Settings, Notification Center, the clock, the battery)
+     are a light wash over the panel elsewhere; with no panel under them
+     they take a nearly opaque tile in the panel's tint, so their text and
+     lines read over any wallpaper (`--panel-tint` follows the colour
+     mode). */
   :global(html:not([data-high-contrast])) .dock-stage[data-theme='minimal'] {
     --preset-panel-fill: transparent;
     --preset-panel-blur: none;
     --preset-panel-hairline: transparent;
     --preset-panel-shadow: none;
     --preset-separator: rgb(255 255 255 / 0.5);
+    --tile-neutral: rgb(var(--panel-tint) / 0.85);
   }
 
   :global(html[data-theme='light']:not([data-high-contrast])) .dock-stage[data-theme='minimal'] {
