@@ -526,17 +526,18 @@ fn get_user_css(user_css: State<'_, UserCssState>) -> UserCss {
     user_css.current()
 }
 
-/// Read `dock.css` again (`user_css::UserCssState::reload`, which logs what
-/// came of it) and send the result to every dock window as
+/// Read `dock.css` again (`user_css::UserCssState::reload_and`, which logs
+/// what came of it) and send the result to every dock window as
 /// `dock://user-css`. The read touches the disk, so it runs on
-/// Tauri's blocking pool like `open_app_folder`; the command resolves with
-/// what the docks were sent.
+/// Tauri's blocking pool like `open_app_folder`; the read, the stored
+/// result and the emit happen under one lock, so two Reloads at once leave
+/// the docks on the later read. The command resolves with what the docks
+/// were sent.
 #[tauri::command]
 async fn reload_user_css(app: AppHandle) -> CmdResult<UserCss> {
     let joined = tauri::async_runtime::spawn_blocking(move || {
-        let css = app.state::<UserCssState>().reload();
-        crate::user_css::emit_to_docks(&app, &css);
-        css
+        app.state::<UserCssState>()
+            .reload_and(|css| crate::user_css::emit_to_docks(&app, css))
     })
     .await;
     checked(

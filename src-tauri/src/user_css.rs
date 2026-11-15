@@ -17,6 +17,10 @@
 //! ([`open_file`]): a stock Windows may have no app for `.css`, and the
 //! shell, asked without UI, then refuses instead of offering its picker.
 //!
+//! Reloads are serialised ([`UserCssState::reload_and`]): the read, the
+//! stored result and what the docks are sent always belong to the same
+//! read, and the last Reload pressed is the one that stays.
+//!
 //! A run without a settings file (the mock platform, a profile that could
 //! not be used) has no `dock.css` either: the path is a note in parentheses,
 //! nothing is read and `open_user_css` rejects.
@@ -300,6 +304,10 @@ pub struct UserCssState {
     /// The file; `None` when nothing is saved this run.
     file: Option<PathBuf>,
     current: Mutex<UserCss>,
+    /// Held for a whole reload (read, store, publish), so two at once
+    /// cannot finish in the wrong order. Separate from `current`, so
+    /// `get_user_css` never waits for the disk.
+    reloading: Mutex<()>,
 }
 
 impl UserCssState {
@@ -316,6 +324,7 @@ impl UserCssState {
         Self {
             file,
             current: Mutex::new(UserCss { path, css: None }),
+            reloading: Mutex::new(()),
         }
     }
 
@@ -325,16 +334,32 @@ impl UserCssState {
     }
 
     /// Read the file again, log what came of it and keep the result.
-    /// Blocking (disk): `setup` calls it once; the command, on the blocking
-    /// pool.
+    /// Blocking (disk): `setup` calls it once, before any dock window
+    /// exists, so there is no one to tell.
     pub fn reload(&self) -> UserCss {
+        self.reload_and(|_| {})
+    }
+
+    /// [`UserCssState::reload`], then `publish` the result (the command
+    /// sends it to the docks), all under one lock: a second reload waits
+    /// until the first has published, so the stored result and the last
+    /// thing the docks were sent are always the same, latest read. Without
+    /// it, two Reloads around a save could store and send the new text and
+    /// then the old. Blocking (disk): the command runs it on the blocking
+    /// pool.
+    pub fn reload_and(&self, publish: impl FnOnce(&UserCss)) -> UserCss {
+        let _reloading = self.reloading.lock();
         let css = self
             .file
             .as_deref()
             .and_then(|file| report(file, read_file(file)));
-        let mut current = self.current.lock();
-        current.css = css;
-        current.clone()
+        let read = {
+            let mut current = self.current.lock();
+            current.css = css;
+            current.clone()
+        };
+        publish(&read);
+        read
     }
 
     /// The file `open_user_css` opens, written from [`TEMPLATE`] first if
@@ -632,6 +657,61 @@ mod tests {
         assert_eq!(path_of(Some(r" D:\Win ")), r"D:\Win\System32\notepad.exe");
         assert_eq!(path_of(Some("")), "notepad.exe");
         assert_eq!(path_of(None), "notepad.exe");
+    }
+
+    #[test]
+    fn a_reload_waits_for_the_one_before_it_to_publish() {
+        use std::sync::mpsc;
+        use std::sync::{Arc, Mutex as StdMutex};
+        use std::time::Duration;
+
+        let dir = scratch_dir("serial");
+        let file = dir.join(FILE_NAME);
+        let state = Arc::new(UserCssState::new(Some(&dir.join("settings.json")), false));
+        let published = Arc::new(StdMutex::new(Vec::<Option<String>>::new()));
+        std::fs::write(&file, "old {}").unwrap();
+
+        // The first reload has read "old {}" and is publishing; it waits
+        // there until released.
+        let (in_publish_tx, in_publish) = mpsc::channel();
+        let (release, release_rx) = mpsc::channel::<()>();
+        let first = {
+            let (state, published) = (Arc::clone(&state), Arc::clone(&published));
+            std::thread::spawn(move || {
+                state.reload_and(|css| {
+                    in_publish_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    published.lock().unwrap().push(css.css.clone());
+                })
+            })
+        };
+        in_publish.recv().unwrap();
+
+        // A save and a second Reload meanwhile: it must not read, store or
+        // publish before the first has published.
+        std::fs::write(&file, "new {}").unwrap();
+        let second = {
+            let (state, published) = (Arc::clone(&state), Arc::clone(&published));
+            std::thread::spawn(move || {
+                state.reload_and(|css| published.lock().unwrap().push(css.css.clone()))
+            })
+        };
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(
+            !second.is_finished(),
+            "the second reload ran past the first"
+        );
+        assert!(published.lock().unwrap().is_empty());
+
+        release.send(()).unwrap();
+        assert_eq!(first.join().unwrap().css.as_deref(), Some("old {}"));
+        assert_eq!(second.join().unwrap().css.as_deref(), Some("new {}"));
+        assert_eq!(
+            *published.lock().unwrap(),
+            [Some("old {}".to_owned()), Some("new {}".to_owned())]
+        );
+        assert_eq!(state.current().css.as_deref(), Some("new {}"));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
