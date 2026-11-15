@@ -18,11 +18,12 @@ to the file that covers that section now.
   [Context menus](context-menus.md) heading, missing since v1.18, is restored.
 - **v1.21 (quick settings and notification items):** Two optional fixed items.
   `Settings.items.quickSettings` and `Settings.items.notificationCenter` (both default `false`)
-  add `DockItemKind` `quickSettings` and `notificationCenter`, with icon keys
-  `shell:quick-settings` and `shell:notification-center` (drawn by the page, like the other
-  `shell:` keys). They are placed in the trailing group before the Recycle Bin, in that order. A
-  click runs `ShellAction` `openQuickSettings` (Win+A) or `openNotificationCenter` (Win+N), which
-  the platform sends as a key chord (`SendInput`). Their menus follow the Task View item's.
+  add `DockItemKind` `quickSettings` and `notificationCenter` (item keys `fixed:quick-settings`
+  and `fixed:notification-center`), with icon keys `shell:quick-settings` and
+  `shell:notification-center` (drawn by the page, like the other `shell:` keys). They are placed
+  in the trailing group before the Recycle Bin, in that order. A click runs `ShellAction`
+  `openQuickSettings` (Win+A) or `openNotificationCenter` (Win+N), which the platform sends as a
+  key chord (`SendInput`). Their menus follow the Task View item's.
 - **v1.20 (themes):** `Settings.appearance.theme` (`ThemePreset`: `standard`, `solid`,
   `minimal`), and the user's `dock.css`: `get_user_css`, `reload_user_css`, `open_user_css`,
   `UserCss` and the `dock://user-css` event. New section [Themes](themes.md).

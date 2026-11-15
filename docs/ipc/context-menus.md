@@ -23,6 +23,7 @@ settings window opening.
     ids); and *Close all windows* when the dock lists windows (it closes each window that the
     dock lists when the entry is chosen).
   - `launcher`: *Open Start menu*; `taskView`: *Open Task View*; `showDesktop`: *Show desktop*;
+    `quickSettings`: *Open Quick Settings*; `notificationCenter`: *Open Notification Center*;
     `recycleBin`: *Open*, *Empty Recycle Bin…* (all through `shell_action`).
   - Every item menu ends with a separator, *Stem settings…* (`open_settings`) and *Quit Stem*
     (`quit`).

@@ -8,6 +8,8 @@ built-in SVG:
 | `shell:start`               | launcher / Start                                   |
 | `shell:task-view`           | Task View                                          |
 | `shell:show-desktop`        | Show Desktop                                       |
+| `shell:quick-settings`      | Quick Settings (v1.21)                             |
+| `shell:notification-center` | Notification Center (v1.21)                        |
 | `shell:recycle-bin-empty`   | Recycle Bin, empty                                 |
 | `shell:recycle-bin-full`    | Recycle Bin, has items                             |
 
