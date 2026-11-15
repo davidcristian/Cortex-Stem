@@ -3861,6 +3861,27 @@ test.describe('settings window', () => {
     }
   });
 
+  test("the auto-hide note names the dock's own edge as the way back", async ({ page }) => {
+    await openSettings(page);
+    const description = page.locator('#auto-hide-description');
+    await expect(description).toContainText(
+      "Touch the screen's bottom edge below it to bring it back.",
+    );
+    const position = page.locator('#position');
+    for (const [edge, where] of [
+      ['left', 'left edge beside it'],
+      ['top', 'top edge above it'],
+      ['right', 'right edge beside it'],
+      ['bottom', 'bottom edge below it'],
+    ] as const) {
+      await position.selectOption(edge);
+      await expect(description).toContainText(`Touch the screen's ${where} to bring it back.`);
+      if (edge !== 'bottom') {
+        await expect(description).not.toContainText('bottom');
+      }
+    }
+  });
+
   test('auto-hide offers always and "when a window overlaps", and the notes say what each does', async ({
     page,
   }) => {

@@ -5,6 +5,7 @@
   import { moveItem } from '$lib/dock/reorder';
   import { accentColor, resolveTheme } from '$lib/dock/theme';
   import { userCssStatus } from '$lib/dock/user-css';
+  import type { DockPosition } from '$lib/ipc/generated/DockPosition';
   import type { HiddenApp } from '$lib/ipc/generated/HiddenApp';
   import type { IconKey } from '$lib/ipc/generated/IconKey';
   import type { PinnedApp } from '$lib/ipc/generated/PinnedApp';
@@ -54,6 +55,17 @@
   });
 
   const edit = (mutate: (draft: Settings) => void): void => store.edit(mutate);
+
+  /**
+   * Where a hidden dock comes back from: the screen's edge on the
+   * dock's own side, the reveal strip of ADR-0008, in the auto-hide row.
+   */
+  const REVEAL_EDGE: Record<DockPosition, string> = {
+    bottom: "the screen's bottom edge below it",
+    top: "the screen's top edge above it",
+    left: "the screen's left edge beside it",
+    right: "the screen's right edge beside it",
+  };
 
   // --- Formatting -------------------------------------------------------------
   const px = (v: number): string => `${Math.round(v)} px`;
@@ -572,7 +584,9 @@
           <SettingRow
             id="auto-hide"
             label="Auto-hide"
-            description="Always: slides the dock away whenever the pointer leaves it. When a window overlaps: only while a window covers the dock, and back as soon as none does. Touch the bottom edge below it to bring it back. Works best with click-through on: with it off, the space the hidden dock leaves still takes clicks."
+            description="Always: slides the dock away whenever the pointer leaves it. When a window overlaps: only while a window covers the dock, and back as soon as none does. Touch {REVEAL_EDGE[
+              settings.position
+            ]} to bring it back. Works best with click-through on: with it off, the space the hidden dock leaves still takes clicks."
           >
             <Select
               id="auto-hide"
