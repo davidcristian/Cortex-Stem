@@ -274,16 +274,19 @@
   }
 
   /* The battery's warning colours, theme tokens like those
-     of app.css, set on the root so a dock.css can set them too (they are
-     not among the stable variables): battery saver's amber, as Windows
-     shows it, on either panel tint; a low charge in Windows 11's critical
-     colour (Fluent's SystemFillColorCritical), lighter on the dark panel. */
-  :global(:root) {
+     of app.css: battery saver's amber, as Windows shows it, on either
+     panel tint; a low charge in Windows 11's critical colour (Fluent's
+     SystemFillColorCritical), lighter on the dark panel. Set on the root
+     with no specificity (`:where`), the light value after the dark one,
+     so any rule that sets them wins in both colour modes, a plain `:root`
+     in a dock.css included. They are internal, not among the stable
+     variables of docs/THEMING.md, and may change with an update. */
+  :global(:where(:root)) {
     --battery-saver: #f2a900;
     --battery-low: #ff99a4;
   }
 
-  :global(:root[data-theme='light']) {
+  :global(:where(:root[data-theme='light'])) {
     --battery-low: #c42b1c;
   }
 

@@ -2303,6 +2303,16 @@ test.describe('clock and battery', () => {
       await expect(battery.locator('rect.fill.saver')).toHaveCount(1);
       await expect(battery.locator('rect.fill.low')).toHaveCount(0);
       expect(await computed(fill, 'fill')).toBe('rgb(242, 169, 0)');
+
+      // The colours are tokens with no specificity: a plain `:root` rule,
+      // as a dock.css would write it, wins in either colour mode.
+      await page.addStyleTag({
+        content: ':root { --battery-low: rgb(0, 128, 0); --battery-saver: rgb(0, 0, 255); }',
+      });
+      expect(await computed(fill, 'fill')).toBe('rgb(0, 0, 255)');
+      await setPower(page, { ...ON_BATTERY, percent: 5 });
+      await expect(fill).toHaveClass(/\blow\b/);
+      expect(await computed(fill, 'fill')).toBe('rgb(0, 128, 0)');
     });
   }
 
