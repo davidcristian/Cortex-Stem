@@ -36,8 +36,9 @@ What the code does, as far as it matters here:
   `WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE` on the window
   (`crates/stem-platform/src/windows/dock_window.rs`). A click never
   activates the dock window, and the system never activates it on its own.
-  It is the foreground window only while one of its native context menus
-  is open.
+  It is the foreground window only after the focus shortcut
+  (`behavior.focusShortcut`) moves the keyboard into it, and while one of
+  its native context menus is open.
 - Click-through toggles `WS_EX_LAYERED | WS_EX_TRANSPARENT` on the dock
   window at every pass-through transition: each time the pointer enters
   the panel or leaves the envelope ([layered windows][window-features]).

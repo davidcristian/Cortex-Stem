@@ -76,6 +76,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         open_app_folder,
         crate::menus::show_item_menu,
         crate::menus::show_dock_menu,
+        release_dock_focus,
     ]
 }
 
@@ -116,13 +117,16 @@ fn get_monitors(service: State<'_, AppService>) -> Vec<MonitorInfo> {
 /// A click on a dock item. The calling window's label names the dock it
 /// happened in, whose own view of the windows the service acts on
 /// (`docs/ipc/windows.md` §Dock windows per monitor); the payload is the item key
-/// alone.
+/// alone. Whatever it does supersedes the window the focus shortcut would
+/// go back to.
 #[tauri::command]
 async fn primary_click(
+    app: AppHandle,
     window: tauri::WebviewWindow,
     service: State<'_, AppService>,
     item_key: String,
 ) -> CmdResult<()> {
+    crate::windows::forget_dock_focus(&app, "a click on an item");
     let dock = window.label();
     checked(
         "primary_click",
@@ -131,12 +135,16 @@ async fn primary_click(
     )
 }
 
+/// A direct action on one window; like a click, it supersedes the window
+/// the focus shortcut would go back to.
 #[tauri::command]
 async fn window_action(
+    app: AppHandle,
     service: State<'_, AppService>,
     window_id: WindowId,
     action: WindowAction,
 ) -> CmdResult<()> {
+    crate::windows::forget_dock_focus(&app, "a window action");
     checked(
         "window_action",
         &(window_id, action),
@@ -144,8 +152,15 @@ async fn window_action(
     )
 }
 
+/// Start a new instance; like a click, it supersedes the window the focus
+/// shortcut would go back to.
 #[tauri::command]
-async fn launch_app(service: State<'_, AppService>, app_id: AppId) -> CmdResult<()> {
+async fn launch_app(
+    app: AppHandle,
+    service: State<'_, AppService>,
+    app_id: AppId,
+) -> CmdResult<()> {
+    crate::windows::forget_dock_focus(&app, "a launch");
     checked("launch_app", &app_id, service.0.launch_app(&app_id))
 }
 
@@ -375,6 +390,37 @@ async fn delete_to_recycle_bin(
             Err::<(), _>(format!("the delete task did not finish: {e}")),
         ),
     }
+}
+
+/// The calling dock window gives the keyboard focus back (Escape;
+/// `docs/ipc/keyboard-entry.md`): the window that was in front when the
+/// focus shortcut was pressed comes back to the foreground, if the focus
+/// shortcut's session is this dock's and that window still exists;
+/// otherwise the foreground is left alone and the command resolves. Only a
+/// dock window may call it. `async`: the activation is the foreground chain,
+/// which must not run on the main thread.
+#[tauri::command]
+async fn release_dock_focus(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    service: State<'_, AppService>,
+) -> CmdResult<()> {
+    let label = window.label().to_owned();
+    if !label.starts_with(crate::windows::DOCK_LABEL) {
+        return checked(
+            "release_dock_focus",
+            &label,
+            Err::<(), _>("only dock windows take the keyboard focus"),
+        );
+    }
+    let Some(previous) = crate::windows::take_dock_focus(&app, &label) else {
+        return Ok(());
+    };
+    checked(
+        "release_dock_focus",
+        &(&label, previous),
+        crate::windows::return_focus(service.0.platform().as_ref(), &label, previous),
+    )
 }
 
 /// Open the settings window, or focus it if it is already open.
