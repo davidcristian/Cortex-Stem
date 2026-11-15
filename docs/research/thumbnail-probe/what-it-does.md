@@ -66,7 +66,7 @@ pixels.
 | Phase | What happens | Look at |
 |-------|--------------|---------|
 | 1 | slots 1 to 9 registered on the window's own thread | every slot: picture, black, or grey; ticking or frozen clock; picture inside its yellow outline; slots 5 and 6 on the monitor and in a screenshot |
-| 2 | a worker thread updates slot 1, unregisters slot 2 and registers it again | slots 1 and 2 still show their pictures |
+| 2 | a worker thread updates slot 1, unregisters slot 2 and registers it again; the probe waits for it at most 5 s and keeps pumping its window's messages meanwhile | slots 1 and 2 still show their pictures. If the worker does not finish in time, the probe prints which call it is still in, then the summary, and stops |
 | 3.1 | `WS_EX_LAYERED` set on the probe window, `SetLayeredWindowAttributes(alpha 255, LWA_ALPHA)` | do the pictures stay, flicker, freeze or vanish |
 | 3.2 | every thumbnail updated again while layered | any change from 3.1 |
 | 3.3 | `WS_EX_LAYERED` removed, `RedrawWindow` | do the pictures come back on their own |

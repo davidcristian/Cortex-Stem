@@ -38,4 +38,6 @@ probe at any pause.
 
 Ctrl+C, Ctrl+Break, closing the console and the probe window's close button
 also stop the probe. Each of them runs the same clean-up: the probe
-unregisters every thumbnail, then destroys every window of its own.
+unregisters every thumbnail, then destroys every window of its own. If the
+probe ever hangs, a second Ctrl+C ends the process at once; Windows then
+frees its thumbnails and windows.

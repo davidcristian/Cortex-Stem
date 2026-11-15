@@ -44,7 +44,14 @@ phases named here are described in [What the probe does](what-it-does.md).
   dock window's thread, as the ADR plans. Slow calls move them to a
   platform thread. The A6 worker-thread line, with `ok` results and slot 2
   showing its picture after phase 2, shows that registering, updating and
-  unregistering work from a thread that does not own the destination.
+  unregistering work from a thread that does not own the destination. The
+  probe window keeps pumping its messages during phase 2, as the dock's UI
+  thread would, so a worker call that waits for the destination's thread
+  shows as a slow worker call rather than a hang. A line
+  `A6 worker thread: did not finish within … ms: still in <call>` means
+  that call blocks when made from another thread; Stem then keeps every DWM
+  call on the dock window's thread. The probe stops after that line
+  (summary first), so that run does not settle A5 and A11.
 - **A7, the source size includes the invisible resize borders, and cropping
   to the frame removes them.** Slots 1 and 2 in the table. `size (DWM)`
   equal to `window` and larger than `frame` means the source includes the

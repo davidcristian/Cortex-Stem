@@ -28,11 +28,14 @@
 //!   change its source.
 //! - It pauses for Enter between phases: registration; calls from a worker
 //!   thread (A6); a layered destination (A5); a second registration of one
-//!   source (A11). It ends with a summary table.
+//!   source (A11). It ends with a summary table. It waits for the worker at
+//!   most `WORKER_DEADLINE`, pumping its messages meanwhile; a worker that
+//!   does not finish is recorded as the A6 answer and the probe stops there,
+//!   summary first.
 //! - It unregisters every thumbnail and destroys every window of its own
 //!   before it exits: on Enter at the end, `q` and Enter at any pause,
 //!   Ctrl+C, Ctrl+Break, closing the console, or the destination's close
-//!   button.
+//!   button. A second Ctrl+C while it is stopping ends the process at once.
 //!
 //! Failures are printed and the probe goes on; nothing here panics. Output
 //! goes to stdout through `writeln!`, whose errors are ignored (a closed
@@ -44,7 +47,7 @@ use std::io::{BufRead, Write};
 use std::process::ExitCode;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU8, Ordering};
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::time::{Duration, Instant};
 
 use stem_core::RawWindow;
@@ -126,6 +129,11 @@ const TICK_MS: u32 = 250;
 const COLUMNS: usize = 5;
 /// A thumbnail call slower than this is flagged (ADR-0009: one frame).
 const SLOW_MICROS: f64 = 16_000.0;
+/// How long phase 2 waits for its worker thread (A6). A DWM call takes well
+/// under a millisecond; a worker still busy after this is itself the answer.
+const WORKER_DEADLINE: Duration = Duration::from_secs(5);
+/// The slice phase 2 waits for a worker message between two message pumps.
+const WORKER_SLICE: Duration = Duration::from_millis(10);
 /// Windows' iconic position of a minimised window.
 const ICONIC_COORDINATE: i32 = -32_000;
 const TASK_MANAGER_CLASS: &str = "TaskManagerWindow";
@@ -290,6 +298,7 @@ enum Quit {
     CloseButton = 5,
     StdinClosed = 6,
     MessageLoop = 7,
+    WorkerStuck = 8,
 }
 
 /// Why the probe stops (a `Quit` value), 0 while it runs.
@@ -319,6 +328,7 @@ fn quit_text() -> &'static str {
         5 => "the probe window's close button",
         6 => "stdin was closed",
         7 => "the message loop ended",
+        8 => "the A6 worker thread did not finish",
         _ => "the probe finished",
     }
 }
@@ -335,7 +345,10 @@ fn wake(dest: isize) {
 }
 
 /// Console control handler: Ctrl+C, Ctrl+Break and closing the console stop
-/// the probe through its normal clean-up instead of killing it.
+/// the probe through its normal clean-up instead of killing it. A Ctrl+C or
+/// Ctrl+Break once the probe is already stopping (for example while a DWM
+/// call hangs) is left to Windows' default handler, which ends the process;
+/// Windows then frees every thumbnail and window the process had.
 unsafe extern "system" fn on_console_event(kind: u32) -> BOOL {
     let reason = match kind {
         CTRL_C_EVENT => Quit::CtrlC,
@@ -343,6 +356,9 @@ unsafe extern "system" fn on_console_event(kind: u32) -> BOOL {
         CTRL_CLOSE_EVENT => Quit::ConsoleClosed,
         _ => return FALSE,
     };
+    if kind != CTRL_CLOSE_EVENT && quitting() {
+        return FALSE;
+    }
     request_quit(reason);
     wake(DEST.load(Ordering::SeqCst));
     if kind == CTRL_CLOSE_EVENT {
@@ -1097,6 +1113,66 @@ fn unregister(clock: Clock, thumb: isize) -> Call {
     Call::of("DwmUnregisterThumbnail", &result, micros)
 }
 
+// ---- the worker thread of phase 2 (A6) ------------------------------------------
+
+/// What the phase 2 worker sends back: one message per finished step, so a
+/// call that never returns shows as the step that is missing.
+enum WorkerEvent {
+    /// A call returned on the worker. `unregistered` is the thumbnail it
+    /// unregistered (slot 2's old one), which the slot then forgets.
+    Call {
+        call: Call,
+        unregistered: Option<isize>,
+    },
+    /// Slot 2's new registration, made on the worker.
+    Placement(Placement),
+    /// Every step is done.
+    Finished,
+}
+
+/// How the wait for the worker ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WorkerEnd {
+    Finished,
+    /// The worker's channel closed before `Finished` (it panicked).
+    Vanished,
+    /// The probe was asked to stop while it waited.
+    Stopped,
+    /// `WORKER_DEADLINE` passed first.
+    TimedOut,
+}
+
+/// The A6 worker-thread result line: what returned, and, when the worker did
+/// not finish, the step it was still in.
+fn worker_result(
+    end: WorkerEnd,
+    returned: &[String],
+    pending: Option<&str>,
+    waited: Duration,
+) -> String {
+    let returned = if returned.is_empty() {
+        "nothing".to_owned()
+    } else {
+        returned.join("; ")
+    };
+    let pending = pending.unwrap_or("its last message");
+    let waited = waited.as_millis();
+    match end {
+        WorkerEnd::Finished => returned,
+        WorkerEnd::Vanished => format!(
+            "the worker thread ended before it finished (it panicked) in {pending}; \
+             returned before: {returned}"
+        ),
+        WorkerEnd::Stopped => format!(
+            "stopped waiting after {waited} ms: still in {pending}; returned before: {returned}"
+        ),
+        WorkerEnd::TimedOut => format!(
+            "did not finish within {waited} ms: still in {pending} (a thread affinity or a \
+             blocking call); returned before: {returned}"
+        ),
+    }
+}
+
 // ---- painting ----------------------------------------------------------------
 
 /// What the destination paints; filled by the probe, read by `WM_PAINT`.
@@ -1531,20 +1607,26 @@ fn work_area() -> RECT {
 fn pump_for(duration: Duration) {
     let end = Instant::now() + duration;
     while Instant::now() < end && !quitting() {
-        loop {
-            let mut message = MSG::default();
-            // SAFETY: `message` is a live out-struct; a NULL window takes any
-            // message of this thread.
-            let more = unsafe { PeekMessageW(&mut message, None, 0, 0, PM_REMOVE) };
-            if !more.as_bool() {
-                break;
-            }
-            // SAFETY: `message` was filled by PeekMessageW.
-            let _ = unsafe { TranslateMessage(&message) };
-            // SAFETY: as above; dispatches to this thread's procedures.
-            unsafe { DispatchMessageW(&message) };
-        }
+        pump_pending();
         std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Dispatches every message waiting for this thread, including messages
+/// other threads send to its windows, and returns.
+fn pump_pending() {
+    loop {
+        let mut message = MSG::default();
+        // SAFETY: `message` is a live out-struct; a NULL window takes any
+        // message of this thread.
+        let more = unsafe { PeekMessageW(&mut message, None, 0, 0, PM_REMOVE) };
+        if !more.as_bool() {
+            break;
+        }
+        // SAFETY: `message` was filled by PeekMessageW.
+        let _ = unsafe { TranslateMessage(&message) };
+        // SAFETY: as above; dispatches to this thread's procedures.
+        unsafe { DispatchMessageW(&message) };
     }
 }
 
@@ -1687,6 +1769,9 @@ struct Probe {
     results: Vec<String>,
     /// What was typed at each pause.
     notes: Vec<(String, String)>,
+    /// The phase 2 worker's messages when it did not finish in time; the
+    /// clean-up reads what arrived late.
+    late_worker: Option<Receiver<WorkerEvent>>,
     cleaned: bool,
 }
 
@@ -1710,6 +1795,7 @@ impl Probe {
             calls: Vec::new(),
             results: Vec::new(),
             notes: Vec::new(),
+            late_worker: None,
             cleaned: false,
         };
         register_class(instance, &probe.dest_class, destination_proc)?;
@@ -2069,7 +2155,9 @@ impl Probe {
         }
 
         self.set_header("Phase 2 of 4: calls from a worker thread (A6)");
-        self.phase_worker_thread();
+        if !self.phase_worker_thread() {
+            return false;
+        }
         if !self.pause(
             input,
             "phase 2",
@@ -2201,22 +2289,47 @@ impl Probe {
         format!("{registered} of {with_source} sources registered")
     }
 
-    fn phase_worker_thread(&mut self) {
+    /// Phase 2 (A6): a worker thread updates slot 1, unregisters slot 2 and
+    /// registers it again. This thread waits at most `WORKER_DEADLINE` for
+    /// it, in short slices, and keeps pumping its windows' messages
+    /// meanwhile (as the dock's UI thread would), so neither a worker call
+    /// that needs the destination's thread nor one that blocks can hang the
+    /// probe. Returns false when the worker did not finish: the probe then
+    /// stops, since later phases call DWM again.
+    fn phase_worker_thread(&mut self) -> bool {
         let clock = self.clock;
         let dest = self.dest().0 as isize;
         let normal = self.slots.first().and_then(|slot| {
             let placement = slot.placement.as_ref()?;
             Some((placement.thumb?, placement.placed?, placement.crop))
         });
-        let uncropped = self.slots.get_mut(1).and_then(|slot| {
+        // Slot 2 keeps its registration until the worker reports that it
+        // unregistered it, so a worker that cannot start, or never gets
+        // there, leaves the slot's record and the clean-up right.
+        let uncropped = self.slots.get(1).and_then(|slot| {
             let source = slot.source?.0 as isize;
-            let old = slot.placement.as_mut().and_then(|p| p.thumb.take());
+            let old = slot.placement.as_ref().and_then(|p| p.thumb);
             Some((source, old, slot.rects.image, slot.plan.crop))
         });
+        let mut steps: Vec<&'static str> = Vec::new();
+        if normal.is_some() {
+            steps.push("DwmUpdateThumbnailProperties(slot 1)");
+        }
+        if let Some((_, old, _, _)) = uncropped {
+            if old.is_some() {
+                steps.push("DwmUnregisterThumbnail(slot 2)");
+            }
+            steps.push(
+                "slot 2's registration (DwmRegisterThumbnail, DwmQueryThumbnailSourceSize, \
+                 DwmUpdateThumbnailProperties)",
+            );
+        }
+        let (sender, events) = mpsc::channel();
         let spawned = std::thread::Builder::new()
             .name("probe-worker".to_owned())
             .spawn(move || {
-                let mut calls = Vec::new();
+                // A send fails only when the probe stopped listening; the
+                // worker then has nobody to tell and just goes on.
                 if let Some((thumb, placed, crop)) = normal {
                     let props = thumbnail_props(placed, crop);
                     let (result, micros) = clock.time(|| {
@@ -2224,54 +2337,141 @@ impl Probe {
                         // process; `props` outlives the call.
                         unsafe { DwmUpdateThumbnailProperties(thumb, &props) }
                     });
-                    calls.push(Call::of(
+                    let call = Call::of(
                         "worker: DwmUpdateThumbnailProperties(slot 1)",
                         &result,
                         micros,
-                    ));
+                    );
+                    let _ = sender.send(WorkerEvent::Call {
+                        call,
+                        unregistered: None,
+                    });
                 }
-                let mut placement = None;
                 if let Some((source, old, image, crop)) = uncropped {
                     if let Some(old) = old {
                         let mut call = unregister(clock, old);
                         call.api = "worker: DwmUnregisterThumbnail(slot 2)";
-                        calls.push(call);
+                        let _ = sender.send(WorkerEvent::Call {
+                            call,
+                            unregistered: Some(old),
+                        });
                     }
                     let dest = HWND(dest as *mut c_void);
                     let source = HWND(source as *mut c_void);
-                    placement = Some(register_into(clock, dest, source, image, crop));
+                    let placement = register_into(clock, dest, source, image, crop);
+                    let _ = sender.send(WorkerEvent::Placement(placement));
                 }
-                (calls, placement)
+                let _ = sender.send(WorkerEvent::Finished);
             });
-        let outcome = match spawned {
-            Ok(handle) => handle
-                .join()
-                .map_err(|_| "the worker thread panicked".to_owned()),
-            Err(e) => Err(format!("could not start a worker thread: {e}")),
-        };
-        match outcome {
-            Ok((calls, placement)) => {
-                let mut lines: Vec<String> = calls.iter().map(Call::describe).collect();
-                self.calls.extend(calls);
-                if let Some(mut placement) = placement {
-                    for call in placement.calls() {
-                        lines.push(format!("worker: {}", call.describe()));
-                    }
-                    self.calls.extend(placement.calls());
-                    if let Some(slot) = self.slots.get_mut(1) {
-                        placement.crop_note = format!("{} (worker thread)", placement.crop_note);
-                        slot.placement = Some(placement);
+        if let Err(e) = spawned {
+            let why =
+                format!("could not start a worker thread ({e}); slot 2 keeps its registration");
+            say!("    {why}");
+            self.results.push(format!("A6 worker thread: {why}"));
+            return true;
+        }
+        // The thread is not joined: a worker stuck in a call must not stop
+        // this one. Once finished it ends on its own; if it never does, the
+        // process ending takes it along.
+
+        let started = Instant::now();
+        let mut returned = Vec::new();
+        let mut done = 0;
+        let end = loop {
+            pump_pending();
+            match events.recv_timeout(WORKER_SLICE) {
+                Ok(WorkerEvent::Finished) => break WorkerEnd::Finished,
+                Ok(event) => {
+                    done += 1;
+                    for line in self.take_worker_event(event) {
+                        say!("    {line}");
+                        returned.push(line);
                     }
                 }
-                for line in &lines {
-                    say!("    {line}");
-                }
-                self.results
-                    .push(format!("A6 worker thread: {}", lines.join("; ")));
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => break WorkerEnd::Vanished,
             }
-            Err(why) => {
-                say!("    {why}");
-                self.results.push(format!("A6 worker thread: {why}"));
+            if quitting() {
+                break WorkerEnd::Stopped;
+            }
+            if started.elapsed() >= WORKER_DEADLINE {
+                break WorkerEnd::TimedOut;
+            }
+        };
+        let line = worker_result(end, &returned, steps.get(done).copied(), started.elapsed());
+        if end != WorkerEnd::Finished {
+            say!("    {line}");
+        }
+        self.results.push(format!("A6 worker thread: {line}"));
+        match end {
+            WorkerEnd::Finished => true,
+            WorkerEnd::Stopped => {
+                self.late_worker = Some(events);
+                say!("stopping: {}", quit_text());
+                false
+            }
+            WorkerEnd::Vanished | WorkerEnd::TimedOut => {
+                self.late_worker = Some(events);
+                request_quit(Quit::WorkerStuck);
+                emit(
+                    "The probe stops here and prints its summary: later phases call DWM again \
+                     and could hang the same way. The line above is the A6 answer.",
+                );
+                false
+            }
+        }
+    }
+
+    /// Applies one worker message to the slots and the call record; returns
+    /// the lines to print.
+    fn take_worker_event(&mut self, event: WorkerEvent) -> Vec<String> {
+        match event {
+            WorkerEvent::Call { call, unregistered } => {
+                if let Some(thumb) = unregistered {
+                    self.forget_thumb(1, thumb);
+                }
+                let line = call.describe();
+                self.calls.push(call);
+                vec![line]
+            }
+            WorkerEvent::Placement(mut placement) => {
+                let calls = placement.calls();
+                let lines = calls
+                    .iter()
+                    .map(|call| format!("worker: {}", call.describe()))
+                    .collect();
+                self.calls.extend(calls);
+                placement.crop_note = format!("{} (worker thread)", placement.crop_note);
+                if let Some(slot) = self.slots.get_mut(1) {
+                    slot.placement = Some(placement);
+                }
+                lines
+            }
+            WorkerEvent::Finished => Vec::new(),
+        }
+    }
+
+    /// Drops `thumb` from slot `index`'s record once it was unregistered.
+    fn forget_thumb(&mut self, index: usize, thumb: isize) {
+        if let Some(placement) = self
+            .slots
+            .get_mut(index)
+            .and_then(|slot| slot.placement.as_mut())
+            && placement.thumb == Some(thumb)
+        {
+            placement.thumb = None;
+        }
+    }
+
+    /// Reads what a phase 2 worker that did not finish in time has sent
+    /// since, so its registration of slot 2 is unregistered with the rest.
+    fn collect_late_worker(&mut self) {
+        let Some(events) = self.late_worker.take() else {
+            return;
+        };
+        while let Ok(event) = events.try_recv() {
+            for line in self.take_worker_event(event) {
+                say!("late from the worker thread: {line}");
             }
         }
     }
@@ -2459,6 +2659,7 @@ impl Probe {
             return;
         }
         self.cleaned = true;
+        self.collect_late_worker();
         let clock = self.clock;
         let mut done = 0;
         let mut failed = 0;
@@ -2560,7 +2761,8 @@ fn banner() {
     emit("It opens one window of its own ('Stem thumbnail probe') and six source windows of");
     emit("its own, reads Task Manager, Calculator and a window on another virtual desktop if");
     emit("they are open, and changes no other app's window. Stop at any pause with q and");
-    emit("Enter, Ctrl+C, or the probe window's close button; it always cleans up.");
+    emit("Enter, Ctrl+C, or the probe window's close button; it always cleans up. If it");
+    emit("ever hangs, a second Ctrl+C ends the process at once (Windows then frees it all).");
 }
 
 /// Runs the probe (see the module documentation). Never panics.
@@ -2828,5 +3030,41 @@ mod tests {
         assert_eq!(lines.len(), 3);
         assert!(lines[0].contains("2 calls") && lines[0].contains("slowest 20000 us"));
         assert_eq!(lines[2], "A6: 1 of 3 DWM calls took longer than 16 ms");
+    }
+
+    #[test]
+    fn worker_result_names_the_step_that_did_not_return() {
+        let returned = vec!["worker: DwmUpdateThumbnailProperties(slot 1) ok in 30 us".to_owned()];
+        let waited = Duration::from_millis(5_004);
+        assert_eq!(
+            worker_result(WorkerEnd::Finished, &returned, None, waited),
+            returned[0]
+        );
+        let stuck = worker_result(
+            WorkerEnd::TimedOut,
+            &returned,
+            Some("DwmUnregisterThumbnail(slot 2)"),
+            waited,
+        );
+        assert!(
+            stuck.starts_with(
+                "did not finish within 5004 ms: still in DwmUnregisterThumbnail(slot 2)"
+            )
+        );
+        assert!(stuck.ends_with(
+            "returned before: worker: DwmUpdateThumbnailProperties(slot 1) ok in 30 us"
+        ));
+        let stopped = worker_result(
+            WorkerEnd::Stopped,
+            &[],
+            Some("slot 2's registration"),
+            waited,
+        );
+        assert_eq!(
+            stopped,
+            "stopped waiting after 5004 ms: still in slot 2's registration; returned before: nothing"
+        );
+        let vanished = worker_result(WorkerEnd::Vanished, &[], None, waited);
+        assert!(vanished.contains("panicked) in its last message"));
     }
 }
