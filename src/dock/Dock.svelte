@@ -271,6 +271,18 @@
       scheduleMeasure();
     }
   });
+  // Its rules may key on the preset (the stage's `data-theme`) or the
+  // colour mode and a contrast theme (`<html>`'s attributes,
+  // docs/THEMING.md): a change of those can move the panel without
+  // resizing it (a margin), which the ResizeObserver below does not see
+  // (it sees a padding or a border change: it watches the border box).
+  // The built-in presets keep the box.
+  $effect(() => {
+    void preset;
+    void theme;
+    void highContrast;
+    untrack(scheduleMeasure);
+  });
 
   // --- Icons ------------------------------------------------------------------
   // The rest bitmaps first: they are what shows at startup; the magnified
@@ -1300,7 +1312,9 @@
       return;
     }
     const observer = new ResizeObserver(scheduleMeasure);
-    observer.observe(panel);
+    // The border box: what is measured, and what a padding or border
+    // change (dock.css) resizes without touching the content.
+    observer.observe(panel, { box: 'border-box' });
     return () => {
       observer.disconnect();
       if (measureFrame !== 0) {

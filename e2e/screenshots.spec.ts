@@ -5597,6 +5597,67 @@ test.describe('theme presets and the user dock.css', () => {
     await expectLook(page, 'dark', 'minimal', DARK_ACCENT_RGB);
   });
 
+  test('a dock.css rule keyed on the preset or the colour mode is measured and reported again when they change', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openDock(page);
+    // A padding for a preset: the content box (the slots) stays, the border
+    // box and the panel's place change. An offset for a colour mode: the
+    // panel moves and keeps its size, so no ResizeObserver sees it.
+    await reloadWith(
+      page,
+      [
+        '.dock-stage[data-theme="minimal"] .dock-panel { padding: 2px; }',
+        'html[data-theme="light"] .dock-stage[data-theme="standard"] .dock-panel { top: -12px; }',
+      ].join('\n'),
+    );
+    const viewport = { width: 1280, height: 240 };
+
+    /** The latest three reports agree with the panel's box on screen now. */
+    async function expectReportsOf(box: Rect, size: { width: number; height: number }) {
+      const near = (a: Rect | undefined): boolean =>
+        a !== undefined &&
+        Math.abs(a.x - box.x) <= 1 &&
+        Math.abs(a.y - box.y) <= 1 &&
+        Math.abs(a.width - box.width) <= 1 &&
+        Math.abs(a.height - box.height) <= 1;
+      await expect.poll(async () => near((await panelRects(page)).at(-1)?.rect)).toBe(true);
+      const panelRect = (await panelRects(page)).at(-1);
+      expect(panelRect?.edge).toBe('bottom');
+      expect(panelRect?.viewport).toEqual(viewport);
+      await expect.poll(async () => near((await hitRegions(page)).at(-1)?.panel)).toBe(true);
+      expect((await contentSizes(page)).at(-1)).toEqual(size);
+    }
+
+    const standard = await panelBox(page);
+    const standardSize = (await contentSizes(page)).at(-1)!;
+
+    // The preset: smaller by the padding it takes off on every side.
+    await setPreset(page, 'minimal');
+    await expect.poll(async () => (await panelBox(page)).width).toBeLessThan(standard.width);
+    const minimal = await panelBox(page);
+    expect(minimal.height).toBeLessThan(standard.height);
+    await expect
+      .poll(async () => (await contentSizes(page)).at(-1)?.width)
+      .toBeLessThan(standardSize.width);
+    const minimalSize = (await contentSizes(page)).at(-1)!;
+    expect(minimalSize.height).toBeLessThan(standardSize.height);
+    await expectReportsOf(minimal, minimalSize);
+
+    // Back to standard: the panel's own padding again.
+    await setPreset(page, 'standard');
+    await expect.poll(() => panelBox(page)).toEqual(standard);
+    await expectReportsOf(standard, standardSize);
+
+    // The colour mode: 12 px further from the edge in light mode, the same
+    // size, so the same content size.
+    await setOsTheme(page, { dark: false });
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+    await expect.poll(() => panelBox(page)).toEqual({ ...standard, y: standard.y - 12 });
+    await expectReportsOf({ ...standard, y: standard.y - 12 }, standardSize);
+  });
+
   test('a dock.css there at start styles every stable variable, after the page\u2019s own styles', async ({
     page,
   }) => {
