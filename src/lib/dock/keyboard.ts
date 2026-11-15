@@ -159,3 +159,53 @@ export function entryKey(items: readonly EntryItem[]): string | null {
   const active = items.find((i) => i.kind === 'app' && i.isActive);
   return active?.key ?? tabStopKey(items, null);
 }
+
+/** What `isBrowserShortcut` reads of a `KeyboardEvent`. */
+export type ShortcutKeys = Pick<
+  KeyboardEvent,
+  'key' | 'ctrlKey' | 'altKey' | 'metaKey' | 'shiftKey'
+>;
+
+/** Keys that mean a browser command whatever the modifiers: find next, reload, caret browsing. */
+const BROWSER_FUNCTION_KEYS: ReadonlySet<string> = new Set([
+  'F3',
+  'F5',
+  'F7',
+  'BrowserBack',
+  'BrowserForward',
+  'BrowserRefresh',
+]);
+/** Ctrl+<letter>: reload, find, find next, print, save, view source, history, downloads, open. */
+const BROWSER_CTRL_LETTERS: ReadonlySet<string> = new Set([
+  'r',
+  'f',
+  'g',
+  'p',
+  's',
+  'u',
+  'h',
+  'j',
+  'o',
+]);
+
+/**
+ * Whether `e` is one of WebView2's browser shortcuts, which mean nothing
+ * in a dock and would reload the page (F5, Ctrl+R), print it (Ctrl+P),
+ * open a find bar (Ctrl+F), save its HTML (Ctrl+S) or go back (Alt+Left)
+ * while the focus shortcut gives the dock the keyboard. The page
+ * cancels them on keydown, which keeps WebView2 from acting on them. The
+ * developer tools' shortcuts (F12, Ctrl+Shift+I) are left alone: release
+ * builds have no developer tools. AltGr (Ctrl+Alt) never counts, so it
+ * still types.
+ */
+export function isBrowserShortcut(e: ShortcutKeys): boolean {
+  if (BROWSER_FUNCTION_KEYS.has(e.key)) {
+    return true;
+  }
+  const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+  if (e.altKey && !e.ctrlKey && !e.metaKey && (key === 'ArrowLeft' || key === 'ArrowRight')) {
+    return true;
+  }
+  const ctrlOnly = e.ctrlKey && !e.altKey && !e.metaKey;
+  return ctrlOnly && (e.shiftKey ? key === 'r' : BROWSER_CTRL_LETTERS.has(key));
+}

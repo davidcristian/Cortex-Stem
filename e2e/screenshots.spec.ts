@@ -975,6 +975,26 @@ test.describe('dock in mock mode', () => {
     // Ctrl+, opens the settings window while the dock has focus.
     await page.keyboard.press('Control+,');
     await expect.poll(() => callsOfType(page, 'openSettings')).toBe(1);
+
+    // WebView2's browser shortcuts are cancelled on keydown (no reload,
+    // find bar, print or back); the dock's own keys are not.
+    const cancelled = await page.evaluate(() =>
+      [
+        { key: 'F5' },
+        { key: 'r', ctrlKey: true },
+        { key: 'f', ctrlKey: true },
+        { key: 'p', ctrlKey: true },
+        { key: 'ArrowLeft', altKey: true },
+        { key: 'ArrowRight' },
+        { key: 'Enter' },
+      ].map((init) => {
+        // At the window: what reaches `onwindowkeydown` without an item's own handling.
+        const e = new KeyboardEvent('keydown', { ...init, bubbles: true, cancelable: true });
+        window.dispatchEvent(e);
+        return e.defaultPrevented;
+      }),
+    );
+    expect(cancelled).toEqual([true, true, true, true, true, false, false]);
   });
 
   test.describe('drag to reorder pinned apps', () => {

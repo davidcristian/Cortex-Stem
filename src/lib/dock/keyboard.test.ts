@@ -4,6 +4,7 @@ import type { DockItemKind } from '$lib/ipc/generated/DockItemKind';
 
 import {
   entryKey,
+  isBrowserShortcut,
   isFocusable,
   isNavigationKey,
   nextFocusIndex,
@@ -271,5 +272,59 @@ describe('entryKey', () => {
     expect(entryKey([entry('app:a'), entry('launcher', 'launcher', true)])).toBe('app:a');
     expect(entryKey([entry('separator:0', 'separator', true)])).toBeNull();
     expect(entryKey([])).toBeNull();
+  });
+});
+
+describe('isBrowserShortcut', () => {
+  const press = (
+    key: string,
+    mods: Partial<Record<'ctrl' | 'alt' | 'meta' | 'shift', boolean>> = {},
+  ) => ({
+    key,
+    ctrlKey: mods.ctrl ?? false,
+    altKey: mods.alt ?? false,
+    metaKey: mods.meta ?? false,
+    shiftKey: mods.shift ?? false,
+  });
+
+  it('catches the reload, find, print, save and history keys of WebView2', () => {
+    for (const e of [
+      press('F5'),
+      press('F5', { ctrl: true }),
+      press('F3', { shift: true }),
+      press('F7'),
+      press('BrowserRefresh'),
+      press('r', { ctrl: true }),
+      press('R', { ctrl: true, shift: true }),
+      press('f', { ctrl: true }),
+      press('p', { ctrl: true }),
+      press('S', { ctrl: true }),
+      press('ArrowLeft', { alt: true }),
+      press('ArrowRight', { alt: true }),
+    ]) {
+      expect(isBrowserShortcut(e), JSON.stringify(e)).toBe(true);
+    }
+  });
+
+  it('leaves the dock keys, the settings shortcut, typing and the developer tools alone', () => {
+    for (const e of [
+      press('ArrowLeft'),
+      press('ArrowRight', { shift: true }),
+      press('Enter'),
+      press(' '),
+      press('Home'),
+      press('End'),
+      press('Escape'),
+      press('F10', { shift: true }),
+      press('ContextMenu'),
+      press(',', { ctrl: true }),
+      press('r'),
+      press('f', { ctrl: true, alt: true }),
+      press('i', { ctrl: true, shift: true }),
+      press('F12'),
+      press('f', { ctrl: true, shift: true }),
+    ]) {
+      expect(isBrowserShortcut(e), JSON.stringify(e)).toBe(false);
+    }
   });
 });

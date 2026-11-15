@@ -56,7 +56,13 @@
   } from '$lib/dock/geometry';
   import { iconSources, type IconSources } from '$lib/dock/icon-size';
   import { gapTransition, itemTransition } from '$lib/dock/item-transition';
-  import { entryKey, nextFocusIndex, successorKey, tabStopKey } from '$lib/dock/keyboard';
+  import {
+    entryKey,
+    isBrowserShortcut,
+    nextFocusIndex,
+    successorKey,
+    tabStopKey,
+  } from '$lib/dock/keyboard';
   import { computeScales, maxGrowth, slotCentres, type MagnifyParams } from '$lib/dock/magnify';
   import { dockFactsFor, dockMonitor, itemsForMonitor, monitorFromSearch } from '$lib/dock/monitor';
   import {
@@ -1061,6 +1067,12 @@
     if (e.key === ',' && e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
       e.preventDefault();
       openSettings();
+      return;
+    }
+    // WebView2's own shortcuts (reload, find, print, save, back): nothing
+    // a dock does, and a reload would reset the page.
+    if (isBrowserShortcut(e)) {
+      e.preventDefault();
     }
   }
 
