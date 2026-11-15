@@ -658,18 +658,23 @@
                 })}
             />
           </SettingRow>
+          <!-- ADR-0010: Rust registers each dock window as an
+               AppBar; a dock that auto-hides reserves nothing, so the
+               switch is greyed out while Auto-hide is on. -->
           <SettingRow
             id="reserve-space"
             label="Reserve screen space"
-            description="Maximised windows stop above the dock"
-            disabled
-            tag="M4"
+            description="Maximised windows stop short of the dock instead of going under it. Applies while Auto-hide is off: a dock that hides itself reserves nothing."
+            disabled={settings.autoHide.mode !== 'off'}
           >
             <Toggle
               id="reserve-space"
               checked={settings.system.reserveScreenSpace}
-              disabled
-              onchange={() => {}}
+              disabled={settings.autoHide.mode !== 'off'}
+              onchange={(v) =>
+                edit((s) => {
+                  s.system.reserveScreenSpace = v;
+                })}
             />
           </SettingRow>
           <SettingRow

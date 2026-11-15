@@ -62,11 +62,11 @@ the pointer to the bottom edge under the dock to bring it back. Fullscreen apps 
 presentations) hide the dock of their monitor. By default, clicks outside the panel go to the
 desktop and the windows behind it.
 
-**Edges and monitors.** The dock sits on the bottom edge. It does not reserve screen space, so
-maximised windows extend under it. You can have one dock per monitor, following monitors as they
-are plugged in and out, with an option to list only each monitor's windows on its dock. A change of
-display scale applies without a restart. By default the dock lists only the windows on the current
-virtual desktop.
+**Edges and monitors.** The dock sits on the bottom edge. While auto-hide is
+off, it can reserve its band of the screen, as the stock taskbar does, so maximised windows stop
+short of it. You can have one dock per monitor, following monitors as they are plugged in and out,
+with an option to list only each monitor's windows on its dock. A change of display scale applies
+without a restart. By default the dock lists only the windows on the current virtual desktop.
 
 **Taskbar, keyboard and tray.** Stem can hide the stock taskbar while it runs, and puts it back on
 quit. It can start when you sign in. By default, `Ctrl+Alt+D` shows or hides the dock from any app.

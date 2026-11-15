@@ -2762,7 +2762,28 @@ test.describe('settings window', () => {
     // overlaps" is available.
     await expect(page.locator('#position option[value="left"]')).toBeDisabled();
     await expect(page.locator('#auto-hide option[value="whenOverlapped"]')).toBeEnabled();
-    await expect(page.locator('#reserve-space')).toBeDisabled();
+
+    // Reserve screen space is live (the switch, no M4 tag) while
+    // Auto-hide is off, and greyed out while the dock hides itself: a dock
+    // that auto-hides reserves nothing (Rust applies the same rule).
+    const reserve = page.locator('#reserve-space');
+    await expect(reserve).toBeEnabled();
+    await expect(reserve).not.toBeChecked();
+    await expect(page.locator('label[for="reserve-space"] .tag')).toHaveCount(0);
+    await expect(page.locator('#reserve-space-description')).toContainText('Auto-hide is off');
+    await reserve.click();
+    await expect(reserve).toBeChecked();
+    await expect(page.locator('.status')).toHaveText('Saved');
+    expect((await page.evaluate(SETTINGS_MOCK))?.system.reserveScreenSpace).toBe(true);
+    await page.locator('#auto-hide').selectOption('always');
+    await expect(reserve).toBeDisabled();
+    await expect(reserve).toBeChecked();
+    await expect(page.locator('.status')).toHaveText('Saved');
+    expect((await page.evaluate(SETTINGS_MOCK))?.autoHide.mode).toBe('always');
+    await page.locator('#auto-hide').selectOption('off');
+    await expect(reserve).toBeEnabled();
+    await expect(page.locator('.status')).toHaveText('Saved');
+    expect((await page.evaluate(SETTINGS_MOCK))?.autoHide.mode).toBe('off');
 
     // One dock per monitor: *All monitors* can be chosen and the
     // per-monitor filter is a live switch (no M3 tags left), which applies

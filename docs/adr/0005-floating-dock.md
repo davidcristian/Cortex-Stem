@@ -32,5 +32,5 @@ the stock taskbar) is a different product with different layout rules
   click-through outside the panel (the hit region,
   `docs/ipc/hit-region.md`). The headroom is kept minimal.
 - Maximised windows sit under the dock unless auto-hide or reservation is
-  on.
+  on. The user guide describes both settings.
 - Vertical positions (left and right) are a later layout variant.

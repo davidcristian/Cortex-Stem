@@ -118,8 +118,15 @@ space_ and _Write a log file_ are the [`system`](../SETTINGS.md#system) keys.
 - _Hide the Windows taskbar_ turns on Windows' own taskbar auto-hide while
   Stem runs, and puts your setting back when Stem quits. See
   [Hiding the Windows taskbar](hiding-the-windows-taskbar.md).
-- _Reserve screen space_ is greyed out. It is not implemented, so maximised
-  windows still extend under the dock.
+- _Reserve screen space_ takes a band at the dock's edge out of the work
+  area (the part of the screen that maximised windows fill), as the stock
+  taskbar does. Maximised windows then stop short of the dock instead of
+  going under it. The band is as thick as the resting panel plus its margin
+  to the screen edge. Magnified icons still reach past the band, over other
+  windows. The setting works only while _Auto-hide_ is off, because a dock
+  that hides itself reserves nothing. The switch is greyed out while
+  auto-hide is on. A change applies at once. A dock hidden from the tray or
+  with the toggle shortcut gives its band back until it is shown again.
 - _Write a log file_ is read when Stem starts, so a change applies after a
   restart (the tray icon's _Restart_ does one). See
   [The log file](crashes-and-logs.md#the-log-file).
