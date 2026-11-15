@@ -5,8 +5,8 @@ does not remove the taskbar. It turns on Windows' own _Automatically hide the
 taskbar_ option, the same one as in Settings → Personalization → Taskbar →
 Taskbar behaviors. The taskbar still slides up when the pointer touches the
 bottom edge of the screen beside the dock, so the tray, the clock and quick
-settings stay reachable. The dock moves down to the screen edge, because the
-work area grows.
+settings stay reachable. A dock at the bottom moves down to the screen edge,
+because the work area grows.
 
 Before the first change, Stem saves whether auto-hide was already on, in
 `%LOCALAPPDATA%\dev.davidcristian.stem\taskbar.json`. Turning the setting

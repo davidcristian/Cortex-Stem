@@ -2,7 +2,7 @@
 
 With _Monitors_ (Settings →
 [Position & monitors](settings-window.md#position--monitors)) set to _All
-monitors_, every monitor gets its own dock, centred at the bottom of that
+monitors_, every monitor gets its own dock, centred on the same edge of that
 monitor and drawn at that monitor's scale. Stem adds, removes and moves docks
 when monitors are plugged in, unplugged or made primary. Each dock magnifies,
 auto-hides and reveals on its own. A fullscreen app hides only the dock on

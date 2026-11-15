@@ -1,9 +1,10 @@
 # Clicking an app
 
 This page describes the order of the items on the dock, what a click and a
-right-click on an app's icon do, and what the dots under an icon show.
+right-click on an app's icon do, and what the dots next to an icon show.
 
-The dock shows these items from left to right:
+The dock shows these items from left to right (from top to bottom on a side
+edge):
 
 1. the fixed items Start, Task View and Show Desktop;
 2. the pinned apps, in your order;
@@ -33,13 +34,13 @@ notice appears on the dock, and the app may only flash. The
 [FAQ](faq.md#why-does-a-click-on-an-app-sometimes-only-make-it-flash) has
 more.
 
-Dots under an icon show the app's open windows: one dot per window, at most
-three. The dots are dimmed when all the windows are minimised. _Running
-indicators_ off removes the dots. An app that requests attention (its button
-would flash on the stock taskbar) gets an orange pill in place of its dots,
-even with _Running indicators_ off. Its icon also wiggles until you switch to
-the app. With Windows' _Animation effects_ off, the icon does not wiggle and
-only the pill shows the request.
+Dots between an icon and the screen edge show the app's open windows: one
+dot per window, at most three. The dots are dimmed when all the windows are
+minimised. _Running indicators_ off removes the dots. An app that requests
+attention (its button would flash on the stock taskbar) gets an orange pill
+in place of its dots, even with _Running indicators_ off. Its icon also
+wiggles until you switch to the app. With Windows' _Animation effects_ off,
+the icon does not wiggle and only the pill shows the request.
 
 A right-click opens a menu. The menu of an app lists:
 
@@ -53,5 +54,5 @@ Every menu ends with _Stem settings…_ and _Quit Stem_. A right-click on the
 panel between icons opens a menu with only those two entries.
 
 If a click fails (the window is gone, or Windows does not allow the action),
-a notice appears above the dock for a few seconds. A menu entry that fails
+a notice appears next to the dock for a few seconds. A menu entry that fails
 only writes a warning to the log.
