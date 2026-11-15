@@ -852,6 +852,7 @@ fn push_dock_panel(
     let monitor = monitor_id_of(app, label);
     if !window.is_visible().map_err(|e| e.to_string())? {
         service.set_dock_panel(label, monitor, None);
+        crate::backdrop::on_panel(app, window, None);
         return Ok(());
     }
     let origin = window.outer_position().map_err(|e| e.to_string())?;
@@ -861,6 +862,7 @@ fn push_dock_panel(
         "dock panel of {label:?}: {css:?} css at {scale}x from {origin:?} -> {panel:?} on {monitor:?}"
     );
     service.set_dock_panel(label, monitor, Some(panel));
+    crate::backdrop::on_panel(app, window, Some(((origin.x, origin.y), css, scale)));
     Ok(())
 }
 
@@ -891,6 +893,7 @@ fn sync_dock_panel(window: &WebviewWindow, origin: Option<(i32, i32)>) {
                     dock.monitor,
                     Some(panel_on_screen(origin, css, scale)),
                 );
+                crate::backdrop::on_panel(app, window, Some((origin, css, scale)));
                 Ok(())
             }
             Err(e) => Err(e.to_string()),
@@ -1859,6 +1862,7 @@ pub fn set_auto_hidden(
             window.label(),
             if hidden { "auto-hidden" } else { "shown" }
         );
+        crate::backdrop::on_auto_hidden(app, window, hidden);
     }
     Ok(())
 }
@@ -1918,6 +1922,7 @@ pub fn toggle_dock(app: &AppHandle) {
         let result = match action {
             Toggle::Hide => window.hide().inspect(|()| {
                 log::debug!("dock window {label:?} hidden");
+                crate::backdrop::on_panel(app, &window, None);
                 if let Some(service) = app.try_state::<crate::AppService>() {
                     service
                         .0

@@ -51,8 +51,9 @@ starts. Up to three dots per app show its open windows, dimmed while all of them
 app that asks for attention gets an orange pill in place of its dots and wiggles until you switch
 to it. The dock follows the Windows accent colour, light and dark mode, transparency effects and
 contrast themes, with a light or dark override. The settings window offers one backdrop, which the
-page draws itself (`css`, named _Blur (built in)_). The Acrylic and Mica backdrops are not
-available.
+page draws itself (`css`, named _Blur (built in)_). `acrylic` or `mica`,
+written into the settings file, turns on an experimental native backdrop behind the primary dock's
+panel on Windows 11 22H2 or later.
 
 **Fixed items.** Start and the Recycle Bin are on by default. Task View and Show Desktop items can
 be turned on. The Recycle Bin item shows whether the bin is full, opens or empties it, and moves

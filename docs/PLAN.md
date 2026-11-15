@@ -46,9 +46,11 @@ shortcut that shows or hides the dock.
 **Status.** Done, except the backdrop option. Theme sync also follows
 Windows' _Transparency effects_.
 
-The settings file accepts
+The backdrop option is an experimental prototype. The settings file accepts
 `acrylic` and `mica` for `appearance.backdrop`, and the settings page does not
-offer them. With either value the panel draws the CSS backdrop (`css`).
+offer them. On Windows 11 22H2 or later, a native window under the primary
+dock's panel shows the material. On older builds, on every other dock and
+under a contrast theme, the panel draws the CSS backdrop (`css`).
 
 **Planned.** The finished Acrylic and Mica options
 ([research](research/backdrop/index.md)).

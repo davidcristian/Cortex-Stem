@@ -113,7 +113,7 @@ Assessment:
   class, procedure, attributes, region, placement, restacking), a trait
   method and its mock, about 150 lines in `stem-app` (per-label routing,
   conversion, hiding on toggle and fullscreen), the UI's live box and an IPC
-  change. A prototype first: about a day.
+  change.
 - Risk: medium. Four facts the design depends on are undocumented (A3, A4,
   A6, A7). The prototype tests them before anything else is built.
 

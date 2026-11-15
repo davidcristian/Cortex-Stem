@@ -7,7 +7,8 @@
 //! - wires plugins (single-instance, logging, autostart, global shortcut)
 //!   and the tray icon, and applies the settings that belong to the shell
 //!   (`autostart`, `taskbar`, `appbar`, `shortcut`, click-through in
-//!   `windows`, the tray's check mark),
+//!   `windows`, the tray's check mark, the native backdrop prototype in
+//!   `backdrop`),
 //! - reports a crash of the previous run at the next start (`crash`),
 //! - knows where its own files are (`AppPaths`) for the settings page's
 //!   About section.
@@ -20,6 +21,7 @@
 
 mod appbar;
 mod autostart;
+mod backdrop;
 mod commands;
 mod crash;
 mod menus;
@@ -180,6 +182,8 @@ pub fn run() {
             app.manage(windows::DockAutoHidden::default());
             app.manage(windows::SettingsWindowTheme::default());
             app.manage(appbar::AppBars::default());
+            app.manage(backdrop::DockBackdropState::default());
+            backdrop::init(app.handle(), &service);
             menus::init(app.handle())?;
 
             // Before the dock windows: their first panel reports ask for
@@ -506,9 +510,14 @@ fn forward_events(app: AppHandle, service: &DockService) {
                 // After `windows`: a position change moves the windows
                 // first, and the bands follow them.
                 appbar::on_settings_changed(&app, settings);
+                // The backdrop prototype follows the setting and the theme.
+                backdrop::on_settings_changed(&app, settings);
                 emitted
             }
-            ServiceEvent::Theme(theme) => app.emit(events::THEME, theme),
+            ServiceEvent::Theme(theme) => {
+                backdrop::on_theme_changed(&app, theme);
+                app.emit(events::THEME, theme)
+            }
             ServiceEvent::Monitors(monitors) => {
                 windows::on_monitors_changed(&app, monitors.clone());
                 app.emit(events::MONITORS, monitors)

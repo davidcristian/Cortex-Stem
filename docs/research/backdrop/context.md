@@ -4,8 +4,9 @@ The goal of the [backdrop research](index.md) is an *Acrylic* and a *Mica*
 choice for `appearance.backdrop`, with the [CSS look](css-look.md) as the
 fallback where Windows cannot draw them. The workspace lists the
 `window-vibrancy` crate. Both values are read from and written to
-`settings.json`, but the settings page shows them disabled, and the panel
-always uses the built-in CSS look.
+`settings.json`, but the settings page shows them disabled. Set by hand in
+`settings.json`, they turn on the prototype under the
+primary dock's panel; every other dock draws the built-in CSS look.
 
 The problem is the shape of the dock window. The window spans the full
 length of one edge of its monitor's work area and is transparent

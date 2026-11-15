@@ -2,8 +2,8 @@
 
 This note compares the ways to show a Windows system material (Acrylic or
 Mica) behind the dock's panel. It recommends option 6, a second native
-window under the panel, and proposes a prototype of that option before
-an ADR.
+window under the panel, and describes the prototype of that option that
+Stem contains.
 
 ## Contents
 
@@ -21,7 +21,7 @@ an ADR.
   Microsoft's documentation does not confirm.
 - [manual-test-plan.md](manual-test-plan.md): the manual test on Windows 11
   build 22621 or later that checks the assumptions and the prototype.
-- [remaining-work.md](remaining-work.md): what is left to build, the
-  prototype first.
+- [remaining-work.md](remaining-work.md): what the prototype does not
+  contain yet.
 - [sources.md](sources.md): the documentation, code and reports this note
   relies on.

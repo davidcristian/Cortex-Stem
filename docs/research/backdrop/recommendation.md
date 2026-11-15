@@ -22,7 +22,9 @@ Either way:
 - The CSS look stays the default, and the fallback for builds before 22621,
   contrast themes and any failure of the window. The rule that picks the
   effective backdrop (setting, build, contrast theme) belongs in
-  `stem-core` as pure Rust, like other behaviour.
+  `stem-core` as pure Rust, like other behaviour. In the prototype,
+  `effective` in `src-tauri/src/backdrop.rs` applies the setting and the
+  contrast theme, and `stem-platform` checks the build.
 - Do not use `window-vibrancy`; remove it from `[workspace.dependencies]`.
   Tauri keeps its own copy.
 - If test step 1 confirms A1, rename the built-in choice from *Blur (built

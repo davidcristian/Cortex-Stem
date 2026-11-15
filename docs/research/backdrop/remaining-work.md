@@ -1,13 +1,8 @@
 # Backdrop research: remaining work
 
-This page lists what the [backdrop research](index.md) leaves to build.
+This page lists what the [backdrop research](index.md) leaves to build
+after its prototype.
 
-- **Backdrop window prototype.** The window of
-  [option 6](backdrop-window.md) for the primary dock, sized at rest from
-  `set_dock_panel_rect` and driven by `appearance.backdrop` in
-  `settings.json`, with no UI or IPC change. Its results settle A2 to A10
-  ([Assumptions](assumptions.md)) through steps 2 to 15 of the
-  [manual test plan](manual-test-plan.md).
 - **An ADR (next free number): backdrop window.** It records
   [option 6](backdrop-window.md) or the decision not to ship, the z-order rule, the shape, and the thread the
   window runs on (the main thread would be an exception to the threading
@@ -17,7 +12,8 @@ This page lists what the [backdrop research](index.md) leaves to build.
   prototype: `Platform::set_dock_backdrop` takes rect, radius, material and
   theme (or `None`), the dock subclass and its topmost re-assert restack
   the backdrop, the mock records the calls, and other platforms return
-  `Unsupported`. No dock sends its panel to it yet.
+  `Unsupported`. `src-tauri/src/backdrop.rs` serves only the primary dock;
+  secondary docks (*Monitors* at *All monitors*) get no backdrop.
 - **Live panel box and effective backdrop (IPC change).** The UI reports
   the live panel box while it changes and `null` during the slide. Rust
   reports the effective backdrop from a pure `stem-core` rule. Both

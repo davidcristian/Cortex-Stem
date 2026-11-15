@@ -1,18 +1,24 @@
 # Backdrop research: manual test plan (Windows 11, build 22621 or later)
 
-This plan checks the [assumptions](assumptions.md) and the proposed
+This plan checks the [assumptions](assumptions.md) and the
 prototype of the [backdrop research](index.md) on Windows.
-Step 1 tests the [CSS look](css-look.md) and runs on the current build.
-Steps 2 to 15 need the prototype ([Remaining work](remaining-work.md)),
+Step 1 tests the [CSS look](css-look.md). Steps 2 to 15 test the prototype,
 which reads `appearance.backdrop` from `settings.json` (edit the file with
 Stem stopped) and logs one `info` line naming the backdrop in effect.
+
+The prototype sizes the material from the panel at rest and serves only
+the primary dock. With it, the material keeps the panel's resting box while
+the panel changes size (steps 7 and 8), and only the primary dock has a
+material (step 13). The expected results of those steps apply in full once
+the live panel box and a backdrop window for every dock exist
+([Remaining work](remaining-work.md)).
 
 1. Set `"backdrop": "css"`. Fill a Notepad window with text and move it
    behind the panel. Expected (A1): the text under the panel is sharp, only
    tinted. Keep a screenshot either way; the name of the built-in choice
    depends on it.
 2. Run `winver` and note the build. Stop Stem, set `"backdrop": "acrylic"`,
-   start the prototype. Expected (A2, A3): the `info` line names Acrylic; the
+   start Stem. Expected (A2, A3): the `info` line names Acrylic; the
    material shows inside the panel only, nothing beside or above it; the
    windows behind the panel look blurred.
 3. Click into Notepad, wait 10 s, then drag Notepad behind the panel.
