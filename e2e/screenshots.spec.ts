@@ -5,6 +5,7 @@ import { expect, test, type Locator, type Page } from '@playwright/test';
 import type { AppInfo } from '../src/lib/ipc/generated/AppInfo';
 import type { DockState } from '../src/lib/ipc/generated/DockState';
 import type { MonitorInfo } from '../src/lib/ipc/generated/MonitorInfo';
+import type { PowerStatus } from '../src/lib/ipc/generated/PowerStatus';
 import type { RawWindow } from '../src/lib/ipc/generated/RawWindow';
 import type { Rect } from '../src/lib/ipc/generated/Rect';
 import type { Settings } from '../src/lib/ipc/generated/Settings';
@@ -70,6 +71,8 @@ interface DemoWindow {
     reloadUserCss: () => Promise<UserCss>;
     /** The mock's dock.css on "disk" (`null`: none). */
     userCssOnDisk: () => string | null;
+    /** `PowerChanged` as the events thread reports it: only a different reading counts. */
+    setPower: (status: PowerStatus) => void;
   };
 }
 
@@ -1607,6 +1610,253 @@ test.describe('Quick Settings and Notification Center', () => {
     );
     expect(xs.size).toBe(1);
     await page.screenshot({ path: `${OUT}/dock-quick-settings-left.png` });
+  });
+});
+
+test.describe('clock and battery', () => {
+  // A fixed place and time: Sunday 15 November 2026, 10:42 in Berlin, read
+  // in US English, so the faces and names are the same on every host.
+  test.use({ locale: 'en-US', timezoneId: 'Europe/Berlin' });
+  const NOW = '2026-11-15T10:42:00+01:00';
+  const CLOCK = '.slot[data-kind="clock"]';
+  const BATTERY = '.slot[data-kind="battery"]';
+  /** The dock's last slots with both on: one separator, battery, clock, the bin. */
+  const TRAILING = ['sep:3', 'fixed:battery', 'fixed:clock', 'fixed:recycle-bin'];
+  /** The full date and time, as `Intl` writes it (a narrow no-break space before AM is `\s`). */
+  const FULL = /^Sunday, November 15, 2026 at 10:42\sAM$/;
+  /** The demo's laptop (`DEMO_POWER` in src/lib/ipc/mock.ts). */
+  const ON_BATTERY: PowerStatus = {
+    hasBattery: true,
+    percent: 76,
+    charging: false,
+    onAc: false,
+    saver: false,
+  };
+  const CHARGING: PowerStatus = { ...ON_BATTERY, percent: 64, charging: true, onAc: true };
+  const SAVER: PowerStatus = { ...ON_BATTERY, percent: 18, saver: true };
+
+  /** The keys of the rendered slots (items and separators), in dock order. */
+  function keys(page: Page): Promise<string[]> {
+    return page
+      .locator('.dock-panel > .slot:not([data-leaving])')
+      .evaluateAll((els) => els.map((el) => (el as HTMLElement).dataset.key ?? ''));
+  }
+
+  /** What the mock recorded for one call type, oldest first. */
+  function recorded(page: Page, type: string, field: string): Promise<unknown[]> {
+    return page.evaluate(
+      ([t, f]) =>
+        ((window as unknown as DemoWindow).__dockMock?.calls ?? [])
+          .filter((c) => c.type === t)
+          .map((c) => c[f]),
+      [type, field] as const,
+    );
+  }
+
+  /** A new power reading, as the events thread reports it. */
+  async function setPower(page: Page, status: PowerStatus): Promise<void> {
+    await page.evaluate((s) => (window as unknown as DemoWindow).__dockMock!.setPower(s), status);
+  }
+
+  /** The battery face's fill width in face units (of 32), or `null` without a fill. */
+  function fillWidth(page: Page): Promise<number | null> {
+    return page
+      .locator(`${BATTERY} svg`)
+      .evaluate((svg) => Number(svg.querySelector('rect.fill')?.getAttribute('width') ?? NaN))
+      .then((w) => (Number.isNaN(w) ? null : w));
+  }
+
+  /** Both on, as the settings window would; wait until they are drawn and still. */
+  async function switchOn(page: Page): Promise<void> {
+    await patchSettings(page, { items: { battery: true, clock: true } });
+    await expect.poll(async () => (await keys(page)).slice(-4)).toEqual(TRAILING);
+    await expect.poll(() => runningAnimations(page)).toBe(0);
+  }
+
+  test('are off by default; on, they sit before the Recycle Bin with their faces, names, clicks and menus', async ({
+    page,
+  }) => {
+    await page.clock.setFixedTime(NOW);
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openDock(page);
+    await expect(page.locator(`${CLOCK}, ${BATTERY}`)).toHaveCount(0);
+    expect((await keys(page)).slice(-2)).toEqual(['sep:3', 'fixed:recycle-bin']);
+
+    await switchOn(page);
+    const clock = page.locator(CLOCK);
+    const battery = page.locator(BATTERY);
+    // The clock: its name is the full date and time; the face the time over
+    // the short weekday and day.
+    await expect(clock).toHaveAttribute('aria-label', FULL);
+    await expect(clock).toHaveAttribute('data-icon', 'shell');
+    await expect(clock.locator('text.time')).toHaveText(/^10:42\sAM$/);
+    await expect(clock.locator('text.date')).toHaveText('Sun 15');
+    // The battery: Rust's title; the face fills to the percent and writes it.
+    await expect(battery).toHaveAttribute('aria-label', 'Battery 76 %');
+    await expect(battery.locator('text.percent')).toHaveText('76%');
+    expect(await fillWidth(page)).toBeCloseTo(32 * 0.76, 5);
+    await expect(battery.locator('.glyph')).toHaveCount(0);
+    await expect(battery.locator('rect.fill.saver')).toHaveCount(0);
+    for (const slot of [clock, battery]) {
+      // Start stays the toolbar's one tab stop; these are reached by arrow.
+      await expect(slot).toHaveAttribute('tabindex', '-1');
+      await expect.poll(async () => (await slot.locator('svg').boundingBox())?.width).toBe(ICON);
+    }
+    await page.screenshot({ path: `${OUT}/dock-clock-battery-dark.png` });
+
+    // The clock's title pill is the full date and time too.
+    await clock.hover();
+    await expect(page.locator('.tooltip')).toHaveText(FULL);
+    await battery.hover();
+    await expect(page.locator('.tooltip')).toHaveText('Battery 76 %');
+    await page.mouse.move(640, 10);
+    await expect(page.locator('.tooltip')).toHaveCount(0);
+
+    // A click on each runs its panel: the clock Notification Center (with
+    // the calendar), the battery Quick Settings. One at a time.
+    await clock.click();
+    await expect.poll(() => recorded(page, 'shell', 'action')).toEqual(['openNotificationCenter']);
+    await battery.click();
+    await expect
+      .poll(() => recorded(page, 'shell', 'action'))
+      .toEqual(['openNotificationCenter', 'openQuickSettings']);
+    // A right-click asks Rust for the item's menu.
+    await clock.click({ button: 'right' });
+    await battery.click({ button: 'right' });
+    await expect
+      .poll(() => recorded(page, 'showItemMenu', 'itemKey'))
+      .toEqual(['fixed:clock', 'fixed:battery']);
+    await page.mouse.move(640, 10);
+
+    // Charging: a bolt, the new percent, the title says so.
+    await setPower(page, CHARGING);
+    await expect(battery).toHaveAttribute('aria-label', 'Battery 64 %, charging');
+    await expect(battery.locator('text.percent')).toHaveText('64%');
+    await expect(battery.locator('path.glyph')).toHaveCount(1);
+    expect(await fillWidth(page)).toBeCloseTo(32 * 0.64, 5);
+    await expect.poll(() => runningAnimations(page)).toBe(0);
+    await page.screenshot({ path: `${OUT}/dock-clock-battery-charging-dark.png` });
+    const bolt = await battery.locator('path.glyph').getAttribute('d');
+
+    // Plugged in at 100 % without charging: a plug instead of the bolt.
+    await setPower(page, { ...CHARGING, percent: 100, charging: false });
+    await expect(battery).toHaveAttribute('aria-label', 'Battery 100 %, plugged in');
+    await expect(battery.locator('path.glyph')).toHaveCount(1);
+    expect(await battery.locator('path.glyph').getAttribute('d')).not.toBe(bolt);
+    expect(await fillWidth(page)).toBeCloseTo(32, 5);
+
+    // Battery saver: the amber fill.
+    await setPower(page, SAVER);
+    await expect(battery).toHaveAttribute('aria-label', 'Battery 18 %, battery saver on');
+    await expect(battery.locator('rect.fill.saver')).toHaveCount(1);
+    await expect(battery.locator('.glyph')).toHaveCount(0);
+    await page.screenshot({ path: `${OUT}/dock-clock-battery-saver-dark.png` });
+
+    // An unknown charge: no fill, a dash, the title without a percent.
+    await setPower(page, { ...ON_BATTERY, percent: null });
+    await expect(battery).toHaveAttribute('aria-label', 'Battery');
+    await expect(battery.locator('text.percent')).toHaveText('–');
+    expect(await fillWidth(page)).toBeNull();
+
+    // A desktop PC: no battery, so no battery item; the clock stays.
+    await setPower(page, { ...ON_BATTERY, hasBattery: false, percent: null, onAc: true });
+    await expect(battery).toHaveCount(0);
+    await expect
+      .poll(async () => (await keys(page)).slice(-3))
+      .toEqual(['sep:3', 'fixed:clock', 'fixed:recycle-bin']);
+
+    // Both off, live: they go, the separator before the bin stays.
+    await patchSettings(page, { items: { battery: false, clock: false } });
+    await expect(page.locator(`${CLOCK}, ${BATTERY}`)).toHaveCount(0);
+    await expect
+      .poll(async () => (await keys(page)).slice(-2))
+      .toEqual(['sep:3', 'fixed:recycle-bin']);
+  });
+
+  test('in the light theme, charging and with battery saver', async ({ page }) => {
+    await page.clock.setFixedTime(NOW);
+    await page.emulateMedia({ colorScheme: 'light' });
+    await openDock(page);
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+    await switchOn(page);
+    await setPower(page, CHARGING);
+    await expect(page.locator(BATTERY)).toHaveAttribute('aria-label', 'Battery 64 %, charging');
+    await page.screenshot({ path: `${OUT}/dock-clock-battery-charging-light.png` });
+    await setPower(page, SAVER);
+    await expect(page.locator(`${BATTERY} rect.fill.saver`)).toHaveCount(1);
+    await page.screenshot({ path: `${OUT}/dock-clock-battery-saver-light.png` });
+  });
+
+  for (const scheme of ['dark', 'light'] as const) {
+    test(`on a left dock (${scheme}): in the column just above the Recycle Bin`, async ({
+      page,
+    }) => {
+      await page.clock.setFixedTime(NOW);
+      await page.emulateMedia({ colorScheme: scheme });
+      await page.setViewportSize({ width: 360, height: 900 });
+      await openDock(page, 'mock=1&position=left');
+      await switchOn(page);
+      await setPower(page, scheme === 'dark' ? CHARGING : SAVER);
+      const order = await page.$$eval('.dock-panel > .slot:not([data-leaving])', (els) =>
+        els.map((el) => {
+          const r = el.getBoundingClientRect();
+          return {
+            key: (el as HTMLElement).dataset.key ?? '',
+            x: r.left,
+            y: r.top,
+            bottom: r.bottom,
+          };
+        }),
+      );
+      expect(order.slice(-4).map((s) => s.key)).toEqual(TRAILING);
+      for (let i = 1; i < order.length; i += 1) {
+        expect(order[i]!.y).toBeGreaterThan(order[i - 1]!.y);
+      }
+      expect(order.at(-1)!.bottom).toBeLessThanOrEqual(900);
+      const xs = new Set(
+        await page
+          .locator(`${CLOCK}, ${BATTERY}`)
+          .evaluateAll((els) => els.map((el) => Math.round(el.getBoundingClientRect().left))),
+      );
+      expect(xs.size).toBe(1);
+      await expect(page.locator(`${CLOCK} text.time`)).toHaveText(/^10:42\sAM$/);
+      await expect.poll(() => runningAnimations(page)).toBe(0);
+      await page.screenshot({ path: `${OUT}/dock-clock-battery-left-${scheme}.png` });
+    });
+  }
+
+  test('the clock turns over at the minute and catches up when the page is shown again', async ({
+    page,
+  }) => {
+    // Time flows from a minute before, so the page loads normally; then it
+    // is paused just before 10:43 and moved by hand.
+    await page.clock.install({ time: '2026-11-15T10:41:00+01:00' });
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openDock(page);
+    await patchSettings(page, { items: { clock: true } });
+    const clock = page.locator(CLOCK);
+    await expect(clock).toBeVisible();
+    await page.clock.pauseAt('2026-11-15T10:42:59+01:00');
+    await expect(clock.locator('text.time')).toHaveText(/^10:42\sAM$/);
+    await expect(clock).toHaveAttribute('aria-label', FULL);
+
+    // The minute boundary: the one timer fires and the face moves on.
+    await page.clock.runFor(1_500);
+    await expect(clock.locator('text.time')).toHaveText(/^10:43\sAM$/);
+    await expect(clock).toHaveAttribute('aria-label', /10:43\sAM$/);
+    await page.clock.runFor(60_000);
+    await expect(clock.locator('text.time')).toHaveText(/^10:44\sAM$/);
+
+    // A jump the timers did not see (the machine slept): nothing changes
+    // until the page is shown again, then the face is right at once.
+    await page.clock.setSystemTime('2026-11-15T13:07:20+01:00');
+    await expect(clock.locator('text.time')).toHaveText(/^10:44\sAM$/);
+    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    await expect(clock.locator('text.time')).toHaveText(/^1:07\sPM$/);
+    await expect(clock).toHaveAttribute('aria-label', /at 1:07\sPM$/);
+    // And from there it keeps to the minute.
+    await page.clock.runFor(40_000);
+    await expect(clock.locator('text.time')).toHaveText(/^1:08\sPM$/);
   });
 });
 
@@ -3469,7 +3719,8 @@ test.describe('settings window', () => {
       .evaluateAll((els) => els.map((el) => el.id));
     expect(rows.indexOf('item-quick-settings')).toBe(rows.indexOf('item-show-desktop') + 1);
     expect(rows.indexOf('item-notification-center')).toBe(rows.indexOf('item-quick-settings') + 1);
-    expect(rows.indexOf('item-recycle-bin')).toBe(rows.indexOf('item-notification-center') + 1);
+    // The battery and clock switches come next, then the Recycle Bin.
+    expect(rows.indexOf('item-recycle-bin')).toBe(rows.indexOf('item-notification-center') + 3);
 
     await quickSettings.click();
     await expect.poll(async () => (await saved())?.quickSettings).toBe(true);
@@ -3482,6 +3733,46 @@ test.describe('settings window', () => {
     await page.screenshot({ path: `${OUT}/settings-items-quick-settings.png` });
     await quickSettings.click();
     await expect.poll(async () => (await saved())?.quickSettings).toBe(false);
+  });
+
+  test('the battery and the clock have switches, off by default, that apply at once', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openSettings(page);
+    const saved = async (): Promise<Settings['items'] | undefined> =>
+      (await page.evaluate(SETTINGS_MOCK))?.items;
+    const battery = page.locator('#item-battery');
+    const clock = page.locator('#item-clock');
+    await expect(battery).not.toBeChecked();
+    await expect(clock).not.toBeChecked();
+    await expect(battery).toHaveAccessibleName('Battery');
+    await expect(clock).toHaveAccessibleName('Clock');
+    await expect(page.locator('#item-battery-description')).toHaveText(
+      /only on a PC with a battery/,
+    );
+    await expect(page.locator('#item-clock-description')).toHaveText(/time and the date/);
+    // In the dock's order: after Notification Center, battery before clock,
+    // then the Recycle Bin.
+    const rows = await page
+      .locator('section[aria-labelledby="h-items"] [role="switch"]')
+      .evaluateAll((els) => els.map((el) => el.id));
+    expect(rows.indexOf('item-battery')).toBe(rows.indexOf('item-notification-center') + 1);
+    expect(rows.indexOf('item-clock')).toBe(rows.indexOf('item-battery') + 1);
+    expect(rows.indexOf('item-recycle-bin')).toBe(rows.indexOf('item-clock') + 1);
+
+    await battery.click();
+    await expect.poll(async () => (await saved())?.battery).toBe(true);
+    await clock.click();
+    await expect.poll(async () => (await saved())?.clock).toBe(true);
+    await expect(page.locator('.status')).toHaveText('Saved');
+    await expect(battery).toBeChecked();
+    await expect(clock).toBeChecked();
+    await clock.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: `${OUT}/settings-items-clock-battery.png` });
+    await battery.click();
+    await expect.poll(async () => (await saved())?.battery).toBe(false);
+    await expect.poll(async () => (await saved())?.clock).toBe(true);
   });
 
   test('follows a contrast theme and the accent of Windows; forced colours keep switches and sliders readable', async ({

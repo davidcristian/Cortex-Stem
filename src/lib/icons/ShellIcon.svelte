@@ -1,12 +1,30 @@
 <script lang="ts">
   // Built-in vector art for the `shell:` icon namespace (docs/ipc/icon-keys.md).
   // Tiles use the same 22 % corner radius as app icons so the row reads as one.
+  import type { PowerStatus } from '$lib/ipc/generated/PowerStatus';
+
+  import { batteryFace, DAY_PERIOD_SCALE, timeFontSize, type ClockText } from './faces';
+
   interface Props {
     /** The key without its `shell:` prefix, e.g. `start`, `recycle-bin-full`. */
     name: string;
+    /** The clock face's text (`shell:clock`); `null` draws the bare tile. */
+    clock?: ClockText | null;
+    /** `DockState.power`, for the battery face (`shell:battery`). */
+    power?: PowerStatus | null;
   }
 
-  let { name }: Props = $props();
+  let { name, clock = null, power = null }: Props = $props();
+
+  const battery = $derived(name === 'battery' ? batteryFace(power) : null);
+  const timeSize = $derived(clock === null ? 0 : timeFontSize(clock));
+  /** The day period with the space that parts it from the time, before or after it. */
+  const periodBefore = $derived(
+    clock !== null && clock.periodFirst && clock.dayPeriod !== '' ? `${clock.dayPeriod} ` : '',
+  );
+  const periodAfter = $derived(
+    clock !== null && !clock.periodFirst && clock.dayPeriod !== '' ? ` ${clock.dayPeriod}` : '',
+  );
 </script>
 
 <svg viewBox="0 0 64 64" aria-hidden="true" focusable="false">
@@ -92,6 +110,59 @@
       stroke-width="3"
       stroke-linecap="round"
     />
+  {:else if name === 'clock'}
+    <!-- The time over the short weekday and day, in the page's
+         locale; the day period of a 12-hour clock at half size. -->
+    <rect x="2" y="2" width="60" height="60" rx="14" fill="var(--tile-neutral)" />
+    {#if clock !== null}
+      <text class="face time" x="32" y="31" font-size={timeSize} text-anchor="middle"
+        ><tspan class="period" font-size={timeSize * DAY_PERIOD_SCALE}>{periodBefore}</tspan><tspan
+          >{clock.time}</tspan
+        ><tspan class="period" font-size={timeSize * DAY_PERIOD_SCALE}>{periodAfter}</tspan></text
+      >
+      <text class="face date" x="32" y="49" font-size="12" text-anchor="middle"
+        >{clock.weekday} {clock.day}</text
+      >
+    {/if}
+  {:else if name === 'battery' && battery !== null}
+    <!-- A battery filled to the charge, a bolt while charging, a plug on AC
+         power without charging, the percent below; amber while battery
+         saver is on. The glyph is outlined in the panel's tint so
+         it reads over the fill as well as over the empty part. -->
+    <rect x="2" y="2" width="60" height="60" rx="14" fill="var(--tile-neutral)" />
+    <rect
+      x="10"
+      y="15"
+      width="40"
+      height="22"
+      rx="5"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="3"
+    />
+    <rect x="51.5" y="21.5" width="3.5" height="9" rx="1.5" fill="currentColor" />
+    {#if battery.level !== null && battery.level > 0}
+      <rect
+        class="fill"
+        class:saver={battery.saver}
+        x="14"
+        y="19"
+        width={Math.max(2, 32 * battery.level)}
+        height="14"
+        rx="2"
+      />
+    {/if}
+    {#if battery.glyph === 'bolt'}
+      <path class="glyph" d="M33 16.5 L24.5 27.5 H30.5 L28 35.5 L36.5 24.5 H30.5 Z" />
+    {:else if battery.glyph === 'plug'}
+      <path
+        class="glyph"
+        d="M26.5 17h2v4h3v-4h2v4h2v4.5a5.5 5.5 0 0 1-4.5 5.4V35h-2v-4.1a5.5 5.5 0 0 1-4.5-5.4V21h2Z"
+      />
+    {/if}
+    <text class="face percent" x="32" y="53" font-size="14" text-anchor="middle"
+      >{battery.percentText}</text
+    >
   {:else if name === 'recycle-bin-empty' || name === 'recycle-bin-full'}
     <!-- A free-standing silver bin, like the macOS Trash: fluted body with a
          horizontal "cylinder" gradient, a flared rim, and a lid that sits flat
@@ -177,5 +248,34 @@
     width: 100%;
     height: 100%;
     color: var(--text);
+  }
+
+  .face {
+    fill: currentColor;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* The text colour, a little quieter than the time; the accent was too
+     faint on the dark tile. */
+  .date {
+    opacity: 0.75;
+  }
+
+  .fill {
+    fill: currentColor;
+  }
+
+  /* Battery saver: amber, as Windows shows it, on either panel tint. */
+  .fill.saver {
+    fill: #f2a900;
+  }
+
+  .glyph {
+    fill: currentColor;
+    stroke: rgb(var(--panel-tint));
+    stroke-width: 1.5;
+    stroke-linejoin: round;
+    paint-order: stroke;
   }
 </style>

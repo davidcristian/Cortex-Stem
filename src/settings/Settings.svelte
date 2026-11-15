@@ -652,6 +652,34 @@
                 })}
             />
           </SettingRow>
+          <SettingRow
+            id="item-battery"
+            label="Battery"
+            description="The battery's charge; only on a PC with a battery. Opens quick settings"
+          >
+            <Toggle
+              id="item-battery"
+              checked={settings.items.battery}
+              onchange={(v) =>
+                edit((s) => {
+                  s.items.battery = v;
+                })}
+            />
+          </SettingRow>
+          <SettingRow
+            id="item-clock"
+            label="Clock"
+            description="The time and the date. Opens your notifications and the calendar"
+          >
+            <Toggle
+              id="item-clock"
+              checked={settings.items.clock}
+              onchange={(v) =>
+                edit((s) => {
+                  s.items.clock = v;
+                })}
+            />
+          </SettingRow>
           <SettingRow id="item-recycle-bin" label="Recycle Bin">
             <Toggle
               id="item-recycle-bin"

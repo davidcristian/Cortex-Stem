@@ -6,9 +6,9 @@ them across sessions.
 The platform returns PNG bytes for an `IconKey` at a requested size. The UI
 requests them with `get_icon` and caches them. Keys are namespaced:
 `hwnd:<id>:<pid>`, `exe:`, `file:`, `aumid:` and `shell:`. The frontend
-draws `shell:*` icons from built-in vector art. The Windows implementation
-finds a source image for each key and converts it to an RGBA PNG with alpha
-preserved.
+draws `shell:*` icons from built-in vector art (the clock and battery
+faces from live data). The Windows implementation finds a source
+image for each key and converts it to an RGBA PNG with alpha preserved.
 
 **PE images.** An `exe:` or `file:` key that names a PE image (`.exe`,
 `.dll`, `.scr`) is read from the file's own resources (the `PE resources`

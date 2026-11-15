@@ -8,9 +8,11 @@
 
   import { awayTranslate, axisOf, menuAnchor, type DockEdge } from '$lib/dock/edge';
   import { itemTransition } from '$lib/dock/item-transition';
+  import { clockText, msUntilNextMinute } from '$lib/icons/faces';
   import ShellIcon from '$lib/icons/ShellIcon.svelte';
   import { isShellIconKey } from '$lib/ipc/backend';
   import type { DockItem } from '$lib/ipc/generated/DockItem';
+  import type { PowerStatus } from '$lib/ipc/generated/PowerStatus';
 
   interface Props {
     item: DockItem;
@@ -63,6 +65,11 @@
      * transform only, so nothing reflows while the drag moves.
      */
     dropTarget: boolean;
+    /**
+     * `DockState.power`: the battery item draws its face from it.
+     * `null` (the default) before the page has a state.
+     */
+    power?: PowerStatus | null;
     onprimary: (item: DockItem) => void;
     onmiddle: (item: DockItem) => void;
     /**
@@ -92,6 +99,7 @@
     edge = 'bottom',
     tabStop,
     dropTarget,
+    power = null,
     onprimary,
     onmiddle,
     oncontext,
@@ -117,6 +125,42 @@
   /** A second, larger bitmap exists for magnification; `data-magnified` swaps to it. */
   const dual = $derived(iconState === 'loaded' && typeof magnifiedIconUrl === 'string');
   const windowCount = $derived(item.windows.length);
+
+  /**
+   * The clock item reads the page's own clock: `now` is set when the
+   * item mounts, at each minute boundary by one `setTimeout`, and when the
+   * page becomes visible again (after a sleep the timer may be late). Only a
+   * clock item runs the timer, and only while it is mounted.
+   */
+  const isClock = $derived(item.kind === 'clock');
+  let now = $state<Date | null>(null);
+  $effect(() => {
+    if (!isClock) {
+      return;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const tick = (): void => {
+      const current = new Date();
+      now = current;
+      timer = setTimeout(tick, msUntilNextMinute(current));
+    };
+    const onVisibility = (): void => {
+      if (document.visibilityState === 'visible') {
+        clearTimeout(timer);
+        tick();
+      }
+    };
+    tick();
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVisibility);
+      now = null;
+    };
+  });
+  const clock = $derived(isClock && now !== null ? clockText(now) : null);
+  /** The title pill's text and the accessible name's start: the clock's is the full date and time. */
+  const title = $derived(clock?.full ?? item.title);
   /**
    * An app asking for attention also gets a still cue: its dots give
    * way to one short pill in the attention colour, shown even with the
@@ -136,7 +180,7 @@
   });
   const allMinimised = $derived(windowCount > 0 && item.windows.every((w) => w.isMinimized));
   const label = $derived.by(() => {
-    const parts = [item.title];
+    const parts = [title];
     if (windowCount === 1) {
       parts.push('1 window');
     } else if (windowCount > 1) {
@@ -265,7 +309,7 @@
   onpointerleave={() => onhover(null)}
 >
   {#if tooltip}
-    <div class="tooltip" role="tooltip">{item.title}</div>
+    <div class="tooltip" role="tooltip">{title}</div>
   {/if}
   <div class="bouncer" bind:this={bouncer}>
     <div
@@ -275,7 +319,7 @@
     >
       <div class="icon" class:dual>
         {#if shellName !== null}
-          <ShellIcon name={shellName} />
+          <ShellIcon name={shellName} {clock} {power} />
         {:else if iconState === 'loaded'}
           <!-- `decoding="sync"`: the hidden one of the pair is decoded in the
                paint that first shows it, so switching never leaves a blank frame. -->

@@ -2176,6 +2176,7 @@
               focusTooltipKey === item.key ||
               (dropTargetKey === item.key && tooltipsEnabled)}
             dropTarget={dropTargetKey === item.key}
+            power={store.state.power}
             bounce={bounceEnabled && store.bounceKey === item.key ? store.bounceSerial : 0}
             animate={itemMotion}
             enter={introsEnabled && item.key !== landedKey}

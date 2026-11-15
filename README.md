@@ -57,7 +57,7 @@ written into the settings file, turns on an experimental native backdrop behind 
 panel on Windows 11 22H2 or later.
 
 **Fixed items.** Start and the Recycle Bin are on by default. Task View, Show Desktop, Quick
-Settings and Notification Center items can be turned on. The Recycle Bin
+Settings, Notification Center, battery and clock items can be turned on. The Recycle Bin
 item shows whether the bin is full, opens or empties it, and moves files dropped on it to the bin.
 
 **Auto-hide and fullscreen.** The dock can hide always, or only while a window overlaps it. Move
