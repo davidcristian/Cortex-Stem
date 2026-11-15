@@ -4573,20 +4573,23 @@ test.describe('the dock on the left, right and top edges', () => {
       await expect.poll(async () => (await lastSize(page))?.width).toBe(thickness);
       await expect.poll(async () => (await lastRegion(page))?.panel.x).toBe(EDGE_MARGIN);
       await expect.poll(async () => (await lastPanelRect(page))?.x).toBe(EDGE_MARGIN);
+      type Report = { type: string; rect: Rect } | { type: string; width: number };
       const since = await page.evaluate(
         (m) =>
-          ((window as unknown as DemoWindow).__dockMock?.calls ?? []).slice(m).flatMap((c) => {
-            switch (c.type) {
-              case 'setDockHitRegion':
-                return [{ type: c.type, rect: c.panel as Rect }];
-              case 'setDockPanelRect':
-                return [{ type: c.type, rect: c.rect as Rect }];
-              case 'setDockContentSize':
-                return [{ type: c.type, width: c.width as number }];
-              default:
-                return [];
-            }
-          }),
+          ((window as unknown as DemoWindow).__dockMock?.calls ?? [])
+            .slice(m)
+            .flatMap((c): Report[] => {
+              switch (c.type) {
+                case 'setDockHitRegion':
+                  return [{ type: c.type, rect: c.panel as Rect }];
+                case 'setDockPanelRect':
+                  return [{ type: c.type, rect: c.rect as Rect }];
+                case 'setDockContentSize':
+                  return [{ type: c.type, width: c.width as number }];
+                default:
+                  return [];
+              }
+            }),
         mark,
       );
       expect(since.map((c) => c.type)).toEqual(
