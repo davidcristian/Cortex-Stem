@@ -4,8 +4,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::model::{
-    AppId, AppIdentity, MonitorId, MonitorInfo, PowerStatus, RawWindow, Rect, RecycleBinState,
-    ThemeInfo, WindowId,
+    AppId, AppIdentity, ClockFormat, MonitorId, MonitorInfo, PowerStatus, RawWindow, Rect,
+    RecycleBinState, ThemeInfo, WindowId,
 };
 use crate::settings::Settings;
 
@@ -49,6 +49,11 @@ pub enum PlatformEvent {
     /// the last one sent (plus once after the start snapshot). The engine
     /// keeps it as `DockState::power`.
     PowerChanged(PowerStatus),
+    /// The user's regional format changed: the platform's fresh
+    /// reading of the locale and the short time format's hour cycle, sent
+    /// only when it differs from the last one sent (plus once after the
+    /// start snapshot). The engine keeps it as `DockState::clock_format`.
+    ClockFormatChanged(ClockFormat),
 }
 
 /// Everything the engine can be fed.

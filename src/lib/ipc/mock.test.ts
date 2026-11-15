@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { panelRectReport } from '$lib/dock/geometry';
+import type { ClockFormat } from '$lib/ipc/generated/ClockFormat';
 import type { DockState } from '$lib/ipc/generated/DockState';
 import type { PowerStatus } from '$lib/ipc/generated/PowerStatus';
 import type { Settings } from '$lib/ipc/generated/Settings';
@@ -551,6 +552,52 @@ describe('click semantics (mirror of DockEngine::primary_action)', () => {
       });
       await expect(b.primaryClick('shell:clock')).rejects.toMatch(/unknown dock item/);
       await expect(b.primaryClick('shell:battery')).rejects.toMatch(/unknown dock item/);
+    });
+
+    describe("the clock's regional format (v1.25)", () => {
+      const BRITISH: ClockFormat = { locale: 'en-GB', hour12: false };
+
+      it('is unknown unless an option gives one', async () => {
+        expect((await fast().getDockState()).clockFormat).toEqual({ locale: null, hour12: null });
+        const b = fast({ clockFormat: BRITISH });
+        const state = await b.getDockState();
+        expect(state.clockFormat).toEqual(BRITISH);
+        // Only the snapshot carries it: no item changes with it.
+        expect(keys(state)).toEqual(keys(await fast().getDockState()));
+      });
+
+      it('setClockFormat emits a state only for a different reading, whatever the settings', async () => {
+        const b = fast();
+        const states = recordStates(b);
+        b.setClockFormat({ locale: null, hour12: null });
+        expect(states).toHaveLength(0);
+
+        b.setClockFormat(BRITISH);
+        expect(states).toHaveLength(1);
+        expect(states[0]!.clockFormat).toEqual(BRITISH);
+        // The clock is off: only `clockFormat` changed.
+        expect(keys(states[0]!)).not.toContain('fixed:clock');
+        b.setClockFormat({ ...BRITISH });
+        expect(states).toHaveLength(1);
+
+        // Each field on its own is a change.
+        b.setClockFormat({ ...BRITISH, hour12: true });
+        b.setClockFormat({ locale: 'en-US', hour12: true });
+        b.setClockFormat({ locale: 'en-US', hour12: null });
+        expect(states).toHaveLength(4);
+        expect(states[3]!.revision).toBeGreaterThan(states[0]!.revision);
+
+        // With the clock on, its item is Rust's whatever the format.
+        const clock = item(await withItems(b, { clock: true }), 'fixed:clock');
+        b.setClockFormat({ locale: 'ko-KR', hour12: true });
+        expect(item(states.at(-1)!, 'fixed:clock')).toEqual(clock);
+
+        // The reading is a copy: changing what was passed changes nothing.
+        const reading: ClockFormat = { locale: 'de-DE', hour12: false };
+        b.setClockFormat(reading);
+        reading.locale = 'fr-FR';
+        expect((await b.getDockState()).clockFormat).toEqual({ locale: 'de-DE', hour12: false });
+      });
     });
   });
 

@@ -10,6 +10,7 @@ export type { AutoHide } from "./AutoHide";
 export type { AutoHideMode } from "./AutoHideMode";
 export type { Backdrop } from "./Backdrop";
 export type { Behavior } from "./Behavior";
+export type { ClockFormat } from "./ClockFormat";
 export type { DockFacts } from "./DockFacts";
 export type { DockItem } from "./DockItem";
 export type { DockItemKind } from "./DockItemKind";

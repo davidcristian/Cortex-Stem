@@ -324,6 +324,12 @@ pub struct DockState {
     /// is drawn from it.
     #[serde(default)]
     pub power: PowerStatus,
+    /// The user's regional format for the clock: the last
+    /// `PlatformEvent::ClockFormatChanged`, whatever the settings say; both
+    /// fields `null` until the first one. The clock item's face, title pill
+    /// and accessible name are formatted with it.
+    #[serde(default)]
+    pub clock_format: ClockFormat,
 }
 
 /// The power source and the system battery, part of [`DockState`].
@@ -346,6 +352,26 @@ pub struct PowerStatus {
     pub on_ac: bool,
     /// Battery saver (energy saver) is on.
     pub saver: bool,
+}
+
+/// The user's regional format as Windows has it, for the clock,
+/// part of [`DockState`]. The page's own locale is WebView2's language,
+/// which follows the Windows display language rather than the regional
+/// format, so the clock takes its locale and hour cycle from here. The
+/// platform reads it (`Platform::clock_format`; `GetUserDefaultLocaleName`
+/// and the short time format on Windows) and reports changes with
+/// `PlatformEvent::ClockFormatChanged`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub struct ClockFormat {
+    /// The regional format's BCP 47 name, such as `en-GB`; `null` when the
+    /// platform does not say.
+    pub locale: Option<String>,
+    /// `true` when the user's short time format is a 12-hour one (`h`),
+    /// `false` for a 24-hour one (`H`); `null` when the platform does not
+    /// say (or the format shows no hour).
+    pub hour12: Option<bool>,
 }
 
 /// What one dock window needs to know about its own monitor, part
@@ -657,6 +683,49 @@ mod tests {
                 .unwrap();
         assert_eq!(state.revision, 3);
         assert_eq!(state.power, PowerStatus::default());
+    }
+
+    #[test]
+    fn clock_format_serialises_in_camel_case_with_nulls() {
+        assert_eq!(
+            serde_json::to_value(ClockFormat::default()).unwrap(),
+            serde_json::json!({ "locale": null, "hour12": null })
+        );
+        let british = ClockFormat {
+            locale: Some("en-GB".into()),
+            hour12: Some(false),
+        };
+        let json = serde_json::to_value(&british).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "locale": "en-GB", "hour12": false })
+        );
+        assert_eq!(
+            serde_json::from_value::<ClockFormat>(json).unwrap(),
+            british
+        );
+        // In the snapshot under its camelCase name.
+        let state = DockState {
+            clock_format: british.clone(),
+            ..DockState::default()
+        };
+        assert_eq!(
+            serde_json::to_value(&state).unwrap()["clockFormat"],
+            serde_json::json!({ "locale": "en-GB", "hour12": false })
+        );
+    }
+
+    #[test]
+    fn dock_state_without_a_clock_format_still_deserialises() {
+        // `clockFormat` arrived with IPC v1.25; a document written
+        // before it reads as the engine's "nothing known yet".
+        let state: DockState = serde_json::from_str(
+            r#"{"revision":4,"items":[],"foreground":null,"docks":[],
+                "power":{"hasBattery":false,"percent":null,"charging":false,"onAc":false,"saver":false}}"#,
+        )
+        .unwrap();
+        assert_eq!(state.revision, 4);
+        assert_eq!(state.clock_format, ClockFormat::default());
     }
 
     #[test]

@@ -29,6 +29,7 @@ import type { AppFolder } from '$lib/ipc/generated/AppFolder';
 import type { AppId } from '$lib/ipc/generated/AppId';
 import type { AppIdentity } from '$lib/ipc/generated/AppIdentity';
 import type { AppInfo } from '$lib/ipc/generated/AppInfo';
+import type { ClockFormat } from '$lib/ipc/generated/ClockFormat';
 import type { DockFacts } from '$lib/ipc/generated/DockFacts';
 import type { DockItem } from '$lib/ipc/generated/DockItem';
 import type { DockItemKind } from '$lib/ipc/generated/DockItemKind';
@@ -135,6 +136,14 @@ export interface MockOptions {
    * `setPower` changes it afterwards.
    */
   power?: PowerStatus;
+  /**
+   * The regional format when the backend starts
+   * (`PlatformEvent::ClockFormatChanged` after the power reading).
+   * Absent: nothing known (`locale` and `hour12` both `null`, as
+   * `MockPlatform`), so the clock follows the page's own locale;
+   * `setClockFormat` changes it afterwards.
+   */
+  clockFormat?: ClockFormat;
 }
 
 /**
@@ -157,6 +166,9 @@ const NO_POWER: Readonly<PowerStatus> = Object.freeze({
   onAc: false,
   saver: false,
 });
+
+/** What the engine knows before the first regional-format reading: nothing. */
+const NO_CLOCK_FORMAT: Readonly<ClockFormat> = Object.freeze({ locale: null, hour12: null });
 
 /**
  * The battery item's title (`battery_title` in engine.rs):
@@ -1003,6 +1015,8 @@ class Engine {
   recycleBin: RecycleBinState = { itemCount: 0, sizeBytes: 0 };
   /** The last power reading, `DockState.power`; nothing known at first. */
   power: PowerStatus = { ...NO_POWER };
+  /** The last regional-format reading, `DockState.clockFormat`; nothing known at first. */
+  clockFormat: ClockFormat = { ...NO_CLOCK_FORMAT };
   private nextSeq = 1;
   revision = 0;
 
@@ -1206,6 +1220,19 @@ class Engine {
     return this.apply(changed);
   }
 
+  /**
+   * `PlatformEvent::ClockFormatChanged`: part of the snapshot
+   * whatever the settings say and nothing else, so only a different reading
+   * bumps the revision.
+   */
+  setClockFormat(format: ClockFormat): boolean {
+    const next: ClockFormat = { locale: format.locale, hour12: format.hour12 };
+    const changed =
+      next.locale !== this.clockFormat.locale || next.hour12 !== this.clockFormat.hour12;
+    this.clockFormat = next;
+    return this.apply(changed);
+  }
+
   setSettings(settings: Settings): boolean {
     const changed = JSON.stringify(settings) !== JSON.stringify(this.settings);
     this.settings = settings;
@@ -1378,6 +1405,7 @@ class Engine {
       foreground: this.foreground,
       docks: this.dockFacts(),
       power: { ...this.power },
+      clockFormat: { ...this.clockFormat },
     };
   }
 
@@ -1684,6 +1712,7 @@ export class MockBackend implements Backend {
     this.engine.snapshotWindows(scenario.windows);
     this.engine.setForeground(scenario.foreground);
     this.engine.setPower(options.power ?? DEMO_POWER);
+    this.engine.setClockFormat(options.clockFormat ?? NO_CLOCK_FORMAT);
 
     this.scheduleIdentityResolution();
   }
@@ -2374,6 +2403,23 @@ export class MockBackend implements Backend {
   setPower(status: PowerStatus): void {
     if (this.engine.setPower(status)) {
       this.log(`power ${batteryTitle(status)}${status.hasBattery ? '' : ' (no battery)'}`);
+      this.emitState();
+    }
+  }
+
+  /**
+   * The user changed the regional format or the short time format:
+   * what the events thread reports as `ClockFormatChanged` after a
+   * `WM_SETTINGCHANGE` for `intl`, only when it differs from the last
+   * reading. One `dock://state` when it does.
+   */
+  setClockFormat(format: ClockFormat): void {
+    if (this.engine.setClockFormat(format)) {
+      this.log(
+        `clock format ${format.locale ?? 'unknown locale'}, ${
+          format.hour12 === null ? 'unknown hour cycle' : format.hour12 ? '12-hour' : '24-hour'
+        }`,
+      );
       this.emitState();
     }
   }

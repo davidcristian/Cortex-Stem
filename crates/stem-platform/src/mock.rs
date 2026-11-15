@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use stem_core::{
-    AppId, AppIdentity, IconKey, LaunchTarget, MonitorId, MonitorInfo, PlatformEvent, PowerStatus,
-    RawWindow, Rect, RecycleBinState, ShellAction, ThemeInfo, WindowAction, WindowId,
+    AppId, AppIdentity, ClockFormat, IconKey, LaunchTarget, MonitorId, MonitorInfo, PlatformEvent,
+    PowerStatus, RawWindow, Rect, RecycleBinState, ShellAction, ThemeInfo, WindowAction, WindowId,
 };
 
 use crate::{
@@ -27,6 +27,10 @@ struct State {
     /// The power reading: no battery unless scripted (the demo has
     /// a laptop's).
     power: PowerStatus,
+    /// The regional format: nothing known unless scripted, in the
+    /// demo too (the TS mirror's `MockOptions.clockFormat` defaults to the
+    /// same), so the page's own locale formats the clock.
+    clock_format: ClockFormat,
     /// When set, `delete_to_recycle_bin` fails with this message.
     recycle_failure: Option<String>,
     /// Windows' own *Automatically hide the taskbar*; off unless
@@ -51,6 +55,7 @@ impl std::fmt::Debug for State {
             .field("theme", &self.theme)
             .field("recycle_bin", &self.recycle_bin)
             .field("power", &self.power)
+            .field("clock_format", &self.clock_format)
             .field("recycle_failure", &self.recycle_failure)
             .field("taskbar_auto_hide", &self.taskbar_auto_hide)
             .field("yes_no_answer", &self.yes_no_answer)
@@ -141,6 +146,7 @@ impl MockPlatform {
                 PlatformEvent::ThemeChanged(t) => s.theme = t.clone(),
                 PlatformEvent::RecycleBinChanged(r) => s.recycle_bin = *r,
                 PlatformEvent::PowerChanged(p) => s.power = *p,
+                PlatformEvent::ClockFormatChanged(f) => s.clock_format = f.clone(),
                 PlatformEvent::WindowAttention { .. } | PlatformEvent::FullscreenChanged { .. } => {
                 }
             }
@@ -188,6 +194,19 @@ impl MockPlatform {
             return false;
         }
         self.push(PlatformEvent::PowerChanged(status));
+        true
+    }
+
+    /// The user changed the regional format or the short time format:
+    /// report `format` the way the events thread does after a
+    /// `WM_SETTINGCHANGE` for `intl`, with one `ClockFormatChanged`, and
+    /// only when it differs from the reading before (the real thread's
+    /// change filter). Returns whether it was reported.
+    pub fn set_clock_format(&self, format: ClockFormat) -> bool {
+        if self.state.lock().clock_format == format {
+            return false;
+        }
+        self.push(PlatformEvent::ClockFormatChanged(format));
         true
     }
 
@@ -255,6 +274,7 @@ impl Platform for MockPlatform {
                 PlatformEvent::ForegroundChanged(s.foreground),
                 // Once after the snapshot, as the real events thread does.
                 PlatformEvent::PowerChanged(s.power),
+                PlatformEvent::ClockFormatChanged(s.clock_format.clone()),
             ]
         };
         for ev in initial {
@@ -405,6 +425,13 @@ impl Platform for MockPlatform {
     /// [`MockPlatform::set_power`] gave one); nothing is recorded.
     fn power_status(&self) -> PlatformResult<PowerStatus> {
         Ok(self.state.lock().power)
+    }
+
+    /// The scripted regional format (nothing known unless
+    /// [`MockPlatform::set_clock_format`] or a pushed event gave one);
+    /// nothing is recorded.
+    fn clock_format(&self) -> PlatformResult<ClockFormat> {
+        Ok(self.state.lock().clock_format.clone())
     }
 
     fn shell_action(&self, action: ShellAction) -> PlatformResult<()> {
@@ -736,7 +763,11 @@ mod tests {
         assert!(matches!(seen[3], PlatformEvent::WindowsSnapshot(ref w) if w.len() == 6));
         assert_eq!(seen[4], PlatformEvent::ForegroundChanged(Some(WindowId(2))));
         assert_eq!(seen[5], PlatformEvent::PowerChanged(demo_power()));
-        assert_eq!(seen.len(), 6);
+        assert_eq!(
+            seen[6],
+            PlatformEvent::ClockFormatChanged(ClockFormat::default())
+        );
+        assert_eq!(seen.len(), 7);
         assert!(p.start(Arc::new(|_| {})).is_err());
     }
 
@@ -759,9 +790,14 @@ mod tests {
         empty
             .start(Arc::new(move |ev| sink_seen.lock().push(ev)))
             .unwrap();
+        // The power reading, then the regional format last.
+        let seen = seen.lock();
         assert_eq!(
-            seen.lock().last(),
-            Some(&PlatformEvent::PowerChanged(PowerStatus::default()))
+            seen[seen.len() - 2..],
+            [
+                PlatformEvent::PowerChanged(PowerStatus::default()),
+                PlatformEvent::ClockFormatChanged(ClockFormat::default()),
+            ]
         );
     }
 
@@ -799,6 +835,66 @@ mod tests {
         p.push(PlatformEvent::PowerChanged(saver));
         assert_eq!(p.power_status().unwrap(), saver);
         assert!(!p.set_power(saver));
+        assert!(p.calls().is_empty());
+    }
+
+    #[test]
+    fn the_clock_format_is_unknown_unless_scripted_and_sent_after_the_snapshot() {
+        let p = MockPlatform::with_demo_scenario();
+        assert_eq!(p.clock_format().unwrap(), ClockFormat::default());
+        let british = ClockFormat {
+            locale: Some("en-GB".into()),
+            hour12: Some(false),
+        };
+        // Scripted before the start: the start sequence ends with it.
+        assert!(p.set_clock_format(british.clone()));
+        let seen: Arc<Mutex<Vec<PlatformEvent>>> = Arc::default();
+        let sink_seen = Arc::clone(&seen);
+        p.start(Arc::new(move |ev| sink_seen.lock().push(ev)))
+            .unwrap();
+        assert_eq!(
+            seen.lock().last(),
+            Some(&PlatformEvent::ClockFormatChanged(british.clone()))
+        );
+        assert_eq!(p.clock_format().unwrap(), british);
+    }
+
+    #[test]
+    fn set_clock_format_reports_only_a_change_and_records_no_call() {
+        let p = MockPlatform::with_demo_scenario();
+        let seen: Arc<Mutex<Vec<PlatformEvent>>> = Arc::default();
+        let sink_seen = Arc::clone(&seen);
+        p.start(Arc::new(move |ev| sink_seen.lock().push(ev)))
+            .unwrap();
+        seen.lock().clear();
+
+        // The same reading: nothing.
+        assert!(!p.set_clock_format(ClockFormat::default()));
+        assert!(seen.lock().is_empty());
+
+        // A 12-hour region: one event, and the reading follows.
+        let american = ClockFormat {
+            locale: Some("en-US".into()),
+            hour12: Some(true),
+        };
+        assert!(p.set_clock_format(american.clone()));
+        assert_eq!(
+            *seen.lock(),
+            vec![PlatformEvent::ClockFormatChanged(american.clone())]
+        );
+        assert_eq!(p.clock_format().unwrap(), american);
+        assert!(!p.set_clock_format(american.clone()));
+        assert_eq!(seen.lock().len(), 1);
+
+        // A custom 24-hour short time in the same region is a change too;
+        // a pushed reading is kept as well.
+        let custom = ClockFormat {
+            hour12: Some(false),
+            ..american
+        };
+        p.push(PlatformEvent::ClockFormatChanged(custom.clone()));
+        assert_eq!(p.clock_format().unwrap(), custom);
+        assert!(!p.set_clock_format(custom));
         assert!(p.calls().is_empty());
     }
 

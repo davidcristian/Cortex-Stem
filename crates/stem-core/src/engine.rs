@@ -42,6 +42,11 @@
 //! - `power` is the platform's last reading, stored as is and part
 //!   of the snapshot whatever the settings say; it also decides whether the
 //!   battery item exists (only with a system battery) and its title;
+//! - `clock_format` is the platform's last reading of the user's
+//!   regional format, stored as is and part of the snapshot whatever the
+//!   settings say; the engine draws nothing from it (the page formats the
+//!   clock with it), so a different reading bumps the revision and nothing
+//!   else;
 //! - a hidden app (`Settings::hidden_apps`) only loses its item: its
 //!   windows are tracked as before, so the foreground, fullscreen and
 //!   overlap facts and its identity are unchanged, and a click on its key
@@ -59,9 +64,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::events::{EngineInput, PlatformEvent};
 use crate::model::{
-    AppId, AppIdentity, DockFacts, DockItem, DockItemKind, DockState, IconKey, MonitorId,
-    MonitorInfo, PowerStatus, RawWindow, Rect, RecycleBinState, ScrollDirection, ShellAction,
-    ThemeInfo, WindowId, WindowInfo,
+    AppId, AppIdentity, ClockFormat, DockFacts, DockItem, DockItemKind, DockState, IconKey,
+    MonitorId, MonitorInfo, PowerStatus, RawWindow, Rect, RecycleBinState, ScrollDirection,
+    ShellAction, ThemeInfo, WindowId, WindowInfo,
 };
 use crate::overlap;
 use crate::settings::{MonitorMode, ScrollAction, Settings};
@@ -187,6 +192,9 @@ pub struct DockEngine {
     recycle_bin: RecycleBinState,
     /// The platform's last power reading; `DockState::power`.
     power: PowerStatus,
+    /// The platform's last reading of the regional format;
+    /// `DockState::clock_format`.
+    clock_format: ClockFormat,
     next_seq: u64,
     revision: u64,
 }
@@ -210,6 +218,7 @@ impl DockEngine {
             theme: ThemeInfo::default(),
             recycle_bin: RecycleBinState::default(),
             power: PowerStatus::default(),
+            clock_format: ClockFormat::default(),
             next_seq: 1,
             revision: 0,
         }
@@ -245,6 +254,13 @@ impl DockEngine {
     /// no percent until the first `PlatformEvent::PowerChanged`.
     pub fn power(&self) -> PowerStatus {
         self.power
+    }
+
+    /// The platform's last reading of the user's regional format:
+    /// no locale and no hour cycle until the first
+    /// `PlatformEvent::ClockFormatChanged`.
+    pub fn clock_format(&self) -> &ClockFormat {
+        &self.clock_format
     }
 
     /// The OS foreground window, if the engine tracks it. It may be a window
@@ -500,6 +516,10 @@ impl DockEngine {
             // item's presence and title), so `apply` bumps the revision
             // exactly when the reading differs from the one kept.
             PlatformEvent::PowerChanged(power) => self.power = power,
+            // Part of the snapshot (`DockState::clock_format`) and nothing
+            // else, so `apply` bumps the revision exactly when the reading
+            // differs from the one kept.
+            PlatformEvent::ClockFormatChanged(format) => self.clock_format = format,
             // Part of the snapshot (through the docks' facts), so `apply`
             // bumps the revision only when some dock's fact changes.
             PlatformEvent::FullscreenChanged { active, monitor } => {
@@ -793,6 +813,7 @@ impl DockEngine {
             foreground: self.foreground,
             docks: self.dock_facts(),
             power: self.power,
+            clock_format: self.clock_format.clone(),
         }
     }
 
@@ -3157,6 +3178,128 @@ mod tests {
         // Without a battery there is no battery item to build a menu from.
         engine.apply(power(PowerStatus::default()));
         assert!(engine.dock_item("fixed:battery", DOCK).is_none());
+    }
+
+    // ----- the clock's regional format ----------------------------------------
+
+    fn clock_format(locale: Option<&str>, hour12: Option<bool>) -> ClockFormat {
+        ClockFormat {
+            locale: locale.map(str::to_owned),
+            hour12,
+        }
+    }
+
+    fn format_changed(format: ClockFormat) -> EngineInput {
+        PlatformEvent::ClockFormatChanged(format).into()
+    }
+
+    #[test]
+    fn clock_format_is_unknown_until_the_first_reading_and_then_kept_as_sent() {
+        let mut engine = DockEngine::new(with_clock_and_battery(true, false));
+        assert_eq!(engine.clock_format(), &ClockFormat::default());
+        let state = engine.snapshot();
+        assert_eq!(state.clock_format.locale, None);
+        assert_eq!(state.clock_format.hour12, None);
+
+        // The first reading equal to "nothing known" changes nothing.
+        let r = state.revision;
+        assert!(!engine.apply(format_changed(ClockFormat::default())).changed);
+        assert_eq!(engine.snapshot().revision, r);
+
+        let british = clock_format(Some("en-GB"), Some(false));
+        assert!(engine.apply(format_changed(british.clone())).changed);
+        assert_eq!(engine.clock_format(), &british);
+        assert_eq!(engine.snapshot().clock_format, british);
+        // Stored as is: the engine does not judge the name.
+        let odd = clock_format(Some("not a locale"), None);
+        assert!(engine.apply(format_changed(odd.clone())).changed);
+        assert_eq!(engine.snapshot().clock_format, odd);
+    }
+
+    #[test]
+    fn clock_format_changed_bumps_the_revision_only_when_the_reading_differs() {
+        let mut engine = DockEngine::new(with_clock_and_battery(true, false));
+        let american = clock_format(Some("en-US"), Some(true));
+        assert!(engine.apply(format_changed(american.clone())).changed);
+        let r = engine.snapshot().revision;
+
+        // The same reading again (another `intl` broadcast): nothing.
+        assert!(!engine.apply(format_changed(american)).changed);
+        assert_eq!(engine.snapshot().revision, r);
+
+        // Each field on its own is a change: a custom 24-hour short time in
+        // the same region, then another region, then a reading that says
+        // less.
+        assert!(
+            engine
+                .apply(format_changed(clock_format(Some("en-US"), Some(false))))
+                .changed
+        );
+        assert!(
+            engine
+                .apply(format_changed(clock_format(Some("de-DE"), Some(false))))
+                .changed
+        );
+        assert!(
+            engine
+                .apply(format_changed(clock_format(Some("de-DE"), None)))
+                .changed
+        );
+        assert!(
+            engine
+                .apply(format_changed(clock_format(None, None)))
+                .changed
+        );
+        assert_eq!(engine.snapshot().revision, r + 4);
+
+        // `DockState::clock_format` is the platform's fact whatever the
+        // settings say: without the clock a change still reaches the page,
+        // and no item moves.
+        let mut engine = DockEngine::new(Settings::default());
+        let before = engine.snapshot().items;
+        assert!(
+            engine
+                .apply(format_changed(clock_format(Some("fr-FR"), Some(false))))
+                .changed
+        );
+        assert_eq!(
+            engine.snapshot().clock_format.locale.as_deref(),
+            Some("fr-FR")
+        );
+        assert_eq!(engine.snapshot().items, before);
+    }
+
+    #[test]
+    fn the_clock_item_is_the_same_in_any_regional_format() {
+        let mut settings = with_clock_and_battery(true, true);
+        let mut engine = DockEngine::new(settings.clone());
+        engine.apply(power(laptop(60)));
+        let items = engine.snapshot().items;
+        let clock = item(&engine.snapshot(), "fixed:clock").cloned().unwrap();
+        assert_eq!(clock.title, "Clock");
+
+        // The page formats the time; Rust's items do not change with it.
+        engine.apply(format_changed(clock_format(Some("ko-KR"), Some(true))));
+        assert_eq!(engine.snapshot().items, items);
+        assert_eq!(
+            engine.primary_action("fixed:clock", DOCK),
+            ItemAction::Shell(ShellAction::OpenNotificationCenter)
+        );
+
+        // The reading is kept across setting changes, the clock's own too.
+        settings.items.clock = false;
+        assert!(
+            engine
+                .apply(EngineInput::SettingsChanged(settings.clone()))
+                .changed
+        );
+        settings.items.clock = true;
+        engine.apply(EngineInput::SettingsChanged(settings));
+        assert_eq!(
+            engine.clock_format(),
+            &clock_format(Some("ko-KR"), Some(true))
+        );
+        assert_eq!(item(&engine.snapshot(), "fixed:clock"), Some(&clock));
     }
 
     #[test]

@@ -45,6 +45,7 @@ const snapshot = (revision: number, items: DockItem[] = []): DockState => ({
   foreground: null,
   docks: [],
   power: { hasBattery: false, percent: null, charging: false, onAc: false, saver: false },
+  clockFormat: { locale: null, hour12: null },
 });
 
 /** Scripted backend: a settings document, a call log, and manual control over latency. */

@@ -18,8 +18,8 @@ use std::time::Duration;
 
 use stem_core::settings::DockPosition;
 use stem_core::{
-    AppIdentity, IconKey, LaunchTarget, MonitorInfo, PlatformEvent, PowerStatus, RawWindow, Rect,
-    RecycleBinState, ShellAction, ThemeInfo, WindowAction, WindowId,
+    AppIdentity, ClockFormat, IconKey, LaunchTarget, MonitorInfo, PlatformEvent, PowerStatus,
+    RawWindow, Rect, RecycleBinState, ShellAction, ThemeInfo, WindowAction, WindowId,
 };
 
 pub mod mock;
@@ -240,6 +240,16 @@ pub trait Platform: Send + Sync + 'static {
     /// started, so callers need this only for a reading of their own.
     /// Optional; the default reports it unsupported.
     fn power_status(&self) -> PlatformResult<PowerStatus> {
+        Err(PlatformError::Unsupported("widget support"))
+    }
+
+    /// The user's regional format for the clock right now (on
+    /// Windows `GetUserDefaultLocaleName` and the short time format's hour
+    /// letter, which do not block). Changes also arrive as
+    /// `PlatformEvent::ClockFormatChanged` once the platform is started, so
+    /// callers need this only for a reading of their own. Optional; the
+    /// default reports it unsupported.
+    fn clock_format(&self) -> PlatformResult<ClockFormat> {
         Err(PlatformError::Unsupported("widget support"))
     }
 
@@ -497,6 +507,11 @@ mod tests {
         // The same for the power reading.
         assert!(matches!(
             Real.power_status(),
+            Err(PlatformError::Unsupported("widget support"))
+        ));
+        // And for the regional format.
+        assert!(matches!(
+            Real.clock_format(),
             Err(PlatformError::Unsupported("widget support"))
         ));
     }
