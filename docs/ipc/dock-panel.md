@@ -7,11 +7,11 @@ show and hide in a loop. So the UI reports the resting panel separately:
 
 - `set_dock_panel_rect({ rect, edge, viewport })`: the panel's bounding rect **at rest** (where
   it is when shown, without the auto-hide slide), as integers in CSS px relative to the calling
-  window's viewport, like the hit region's `panel`. The UI sends it whenever that rect changes:
-  at startup, when items are added or removed, for the icon size, separators, and the window
-  growing for a drag (the rect then follows the panel's place in the grown viewport). It sends it
-  whatever the auto-hide phase, never per magnification frame. Only dock windows may call it; a
-  negative size rejects.
+  window's viewport, like the hit region's `panel`. The UI sends it whenever that rect or its
+  `viewport` ([Report provenance](report-provenance.md)) changes: at startup, when items are
+  added or removed, for the icon size, separators, and the window growing for a drag (the rect
+  then follows the panel's place in the grown viewport). It sends it whatever the auto-hide
+  phase, never per magnification frame. Only dock windows may call it; a negative size rejects.
 - Rust converts it once per report into physical pixels of the virtual desktop, the space of
   `RawWindow.rect`. It re-anchors the rect to the window's current viewport
   ([Report provenance](report-provenance.md)), applies the window's scale factor (rounded
