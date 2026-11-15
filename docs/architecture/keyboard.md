@@ -12,7 +12,8 @@ first and last item. The focus skips separators and stops at the ends
 focus leaves the dock, the focus moves to its neighbour.
 
 Enter and Space are `primary_click`. Shift+F10 and the menu key are
-`show_item_menu` at the slot's horizontal centre and top edge. The key down and the menu
+`show_item_menu` at the middle of the slot's side away from the edge (its
+horizontal centre and top edge on `bottom`). The key down and the menu
 key's release are both handled (`preventDefault`), so Chromium's own
 keyboard `contextmenu` never opens the menu a second time. Escape cancels a
 drag; otherwise it releases the focus.

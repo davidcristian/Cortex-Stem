@@ -4,6 +4,9 @@
 </script>
 
 <script lang="ts">
+  import { untrack } from 'svelte';
+
+  import { awayTranslate, axisOf, menuAnchor, type DockEdge } from '$lib/dock/edge';
   import { itemTransition } from '$lib/dock/item-transition';
   import ShellIcon from '$lib/icons/ShellIcon.svelte';
   import { isShellIconKey } from '$lib/ipc/backend';
@@ -44,6 +47,12 @@
     /** Being dragged to a new place: raised, shadowed, no dots. */
     lifted: boolean;
     /**
+     * The screen edge the dock sits on: the launch bounce moves away
+     * from it, the attention wiggle along the dock, and the keyboard's menu
+     * opens on the item's side away from it. Default `bottom`.
+     */
+    edge?: DockEdge;
+    /**
      * The toolbar's one tab stop (a roving tabindex): `tabindex` 0
      * for this item, -1 for the others. The dock moves it with the focus.
      */
@@ -58,8 +67,9 @@
     onmiddle: (item: DockItem) => void;
     /**
      * Open the item's native menu at (`x`, `y`), CSS px of the viewport: the
-     * pointer for a right-click; the item's horizontal centre and top edge
-     * for Shift+F10 and the context menu key.
+     * pointer for a right-click; for Shift+F10 and the context menu key,
+     * the middle of the item's side away from the edge (`menuAnchor`:
+     * its horizontal centre and top edge on `bottom`).
      */
     oncontext: (item: DockItem, x: number, y: number) => void;
     onhover: (item: DockItem | null) => void;
@@ -79,6 +89,7 @@
     animate,
     enter,
     lifted,
+    edge = 'bottom',
     tabStop,
     dropTarget,
     onprimary,
@@ -147,21 +158,24 @@
 
   // Bounce through the Web Animations API: it restarts cleanly when a second
   // launch happens mid-flight and composes with the magnification, which
-  // sizes the same element rather than transforming it.
+  // sizes the same element rather than transforming it. Away from the edge;
+  // the edge is read untracked, so moving the dock does not replay
+  // the last bounce.
   $effect(() => {
     const el = bouncer;
     if (bounce === 0 || !animate || !el) {
       return;
     }
+    const away = (percent: number): string => untrack(() => awayTranslate(edge, percent));
     const animation = el.animate(
       [
-        { transform: 'translateY(0)', easing: 'ease-out', offset: 0 },
-        { transform: 'translateY(-42%)', easing: 'ease-in', offset: 0.17 },
-        { transform: 'translateY(0)', easing: 'ease-out', offset: 0.34 },
-        { transform: 'translateY(-22%)', easing: 'ease-in', offset: 0.5 },
-        { transform: 'translateY(0)', easing: 'ease-out', offset: 0.66 },
-        { transform: 'translateY(-9%)', easing: 'ease-in', offset: 0.82 },
-        { transform: 'translateY(0)', offset: 1 },
+        { transform: away(0), easing: 'ease-out', offset: 0 },
+        { transform: away(42), easing: 'ease-in', offset: 0.17 },
+        { transform: away(0), easing: 'ease-out', offset: 0.34 },
+        { transform: away(22), easing: 'ease-in', offset: 0.5 },
+        { transform: away(0), easing: 'ease-out', offset: 0.66 },
+        { transform: away(9), easing: 'ease-in', offset: 0.82 },
+        { transform: away(0), offset: 1 },
       ],
       { duration: BOUNCE_MS },
     );
@@ -195,16 +209,16 @@
       return;
     }
     // The keyboard's way to the menu: Shift+F10 or the context menu
-    // key, at the slot's horizontal centre and top edge (there is no pointer
-    // position), so a menu that has to open upwards near the bottom of the
-    // screen sits just above the icon instead of over it. `preventDefault`
-    // keeps Chromium from also sending its own `contextmenu` for Shift+F10
-    // (it does so for an unhandled key down).
+    // key, at the middle of the slot's side away from the edge (there is no
+    // pointer position; its top edge on `bottom`), so a menu that has
+    // to open away from the screen edge sits just beside the icon instead of
+    // over it. `preventDefault` keeps Chromium from also sending its own
+    // `contextmenu` for Shift+F10 (it does so for an unhandled key down).
     const shiftF10 = e.key === 'F10' && e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey;
     if (shiftF10 || e.key === 'ContextMenu') {
       e.preventDefault();
-      const rect = e.currentTarget.getBoundingClientRect();
-      oncontext(item, rect.left + rect.width / 2, rect.top);
+      const { x, y } = menuAnchor(edge, e.currentTarget.getBoundingClientRect());
+      oncontext(item, x, y);
     }
   }
 
@@ -254,7 +268,11 @@
     <div class="tooltip" role="tooltip">{item.title}</div>
   {/if}
   <div class="bouncer" bind:this={bouncer}>
-    <div class="wiggler" class:attention={attention && animate}>
+    <div
+      class="wiggler"
+      class:attention={attention && animate}
+      class:vertical={axisOf(edge) === 'vertical'}
+    >
       <div class="icon" class:dual>
         {#if shellName !== null}
           <ShellIcon name={shellName} />
@@ -409,6 +427,11 @@
     animation: wiggle 2s ease-in-out infinite;
   }
 
+  /* Along a vertical dock. */
+  .wiggler.attention.vertical {
+    animation-name: wiggle-vertical;
+  }
+
   @keyframes wiggle {
     0%,
     30%,
@@ -429,6 +452,29 @@
     }
     25% {
       transform: translateX(-1px);
+    }
+  }
+
+  @keyframes wiggle-vertical {
+    0%,
+    30%,
+    100% {
+      transform: translateY(0);
+    }
+    5% {
+      transform: translateY(-4px);
+    }
+    10% {
+      transform: translateY(4px);
+    }
+    15% {
+      transform: translateY(-3px);
+    }
+    20% {
+      transform: translateY(3px);
+    }
+    25% {
+      transform: translateY(-1px);
     }
   }
 
@@ -506,7 +552,8 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .wiggler.attention {
+    .wiggler.attention,
+    .wiggler.attention.vertical {
       animation: none;
     }
 

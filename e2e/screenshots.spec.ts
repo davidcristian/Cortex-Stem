@@ -4484,6 +4484,119 @@ test.describe('the dock on the left, right and top edges', () => {
     });
   }
 
+  // The item's own motion and its keyboard menu follow the edge (DockItem's
+  // `edge`): bottom is the reference the other three are measured against.
+  for (const edge of ['bottom', 'top', 'left', 'right'] as const) {
+    const vertical = isVertical(edge);
+    const nextKey = vertical ? 'ArrowDown' : 'ArrowRight';
+    const NOTEPAD = 'app:exe:c:/windows/notepad.exe';
+    const EXPLORER_WINDOW = 1;
+    /** The bounce's first and highest keyframe (DockItem.svelte): 42 % of the icon at offset 0.17. */
+    const PEAK = 0.42 * ICON;
+
+    test(`on ${edge}: a launch bounces away from the edge, attention wiggles along the dock, the keyboard menu opens on the side away from the edge`, async ({
+      page,
+    }) => {
+      await openOn(page, edge);
+      await expect.poll(() => lastPanelRect(page)).toBeDefined();
+      const slot = page.locator(`${PANEL} > .slot[data-key="${NOTEPAD}"]`);
+      await page.keyboard.press('Tab');
+      for (let i = 0; i < 12 && (await focusedKey(page)) !== NOTEPAD; i += 1) {
+        await page.keyboard.press(nextKey);
+      }
+      expect(await focusedKey(page)).toBe(NOTEPAD);
+
+      // Shift+F10: the middle of the slot's side away from the edge.
+      const s = await box(slot);
+      await page.keyboard.press('Shift+F10');
+      await expect.poll(() => callsOfType(page, 'showItemMenu')).toBe(1);
+      const menu = await page.evaluate(() =>
+        ((window as unknown as DemoWindow).__dockMock?.calls ?? [])
+          .filter((c) => c.type === 'showItemMenu')
+          .map((c) => ({ itemKey: c.itemKey as string, x: c.x as number, y: c.y as number }))
+          .at(-1),
+      );
+      expect(menu!.itemKey).toBe(NOTEPAD);
+      const anchor = {
+        bottom: { x: s.left + s.width / 2, y: s.top },
+        top: { x: s.left + s.width / 2, y: s.bottom },
+        left: { x: s.right, y: s.top + s.height / 2 },
+        right: { x: s.left, y: s.top + s.height / 2 },
+      }[edge];
+      expect(menu!.x).toBeCloseTo(anchor.x, 1);
+      expect(menu!.y).toBeCloseTo(anchor.y, 1);
+
+      // Enter launches it (pinned, not running): the bounce, paused at rest
+      // and at its first peak, moves the icon away from the edge only.
+      await page.keyboard.press('Enter');
+      await expect.poll(() => callsOfType(page, 'launch')).toBe(1);
+      const bouncer = slot.locator('.bouncer');
+      // Asserted, not annotated: TypeScript does not see the poll assign it.
+      let bounce = null as { dx: number; dy: number } | null;
+      await expect
+        .poll(async () => {
+          bounce = await bouncer.evaluate((el) => {
+            // The Web Animations bounce: neither a CSS transition (the lift) nor a CSS animation.
+            const a = el
+              .getAnimations()
+              .find((x) => !(x instanceof CSSTransition) && !(x instanceof CSSAnimation));
+            if (a === undefined) {
+              return null;
+            }
+            a.pause();
+            const duration = Number(a.effect?.getComputedTiming().duration ?? 0);
+            a.currentTime = 0;
+            const rest = el.getBoundingClientRect();
+            a.currentTime = 0.17 * duration;
+            const peak = el.getBoundingClientRect();
+            a.finish();
+            return { dx: peak.left - rest.left, dy: peak.top - rest.top };
+          });
+          return bounce !== null;
+        })
+        .toBe(true);
+      const { dx, dy } = bounce!;
+      const expected = {
+        bottom: { dx: 0, dy: -PEAK },
+        top: { dx: 0, dy: PEAK },
+        left: { dx: PEAK, dy: 0 },
+        right: { dx: -PEAK, dy: 0 },
+      }[edge];
+      expect(dx).toBeCloseTo(expected.dx, 1);
+      expect(dy).toBeCloseTo(expected.dy, 1);
+
+      // Attention: the wiggle's first swing (4 px back at 5 % of its 2 s)
+      // runs along the dock, never towards or away from the edge.
+      await flash(page, EXPLORER_WINDOW);
+      const wiggler = page.locator(
+        `${APP_SLOT}[data-key="app:exe:c:/windows/explorer.exe"] .wiggler`,
+      );
+      await expect(wiggler).toHaveClass(/attention/);
+      let swing = null as { dx: number; dy: number } | null;
+      await expect
+        .poll(async () => {
+          swing = await wiggler.evaluate((el) => {
+            const a = el.getAnimations().find((x) => x instanceof CSSAnimation);
+            if (a === undefined) {
+              return null;
+            }
+            a.pause();
+            a.currentTime = 0;
+            const rest = el.getBoundingClientRect();
+            a.currentTime = 100;
+            const first = el.getBoundingClientRect();
+            a.play();
+            return { dx: first.left - rest.left, dy: first.top - rest.top };
+          });
+          return swing !== null;
+        })
+        .toBe(true);
+      const sw = swing!;
+      expect(sw.dx).toBeCloseTo(vertical ? 0 : -4, 1);
+      expect(sw.dy).toBeCloseTo(vertical ? -4 : 0, 1);
+    });
+  }
+
   test('a position change at runtime lays the page out again without a reload', async ({
     page,
   }) => {

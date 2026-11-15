@@ -2047,6 +2047,7 @@
             animate={itemMotion}
             enter={introsEnabled && item.key !== landedKey}
             lifted={liftedKey === item.key}
+            {edge}
             tabStop={tabStop === item.key}
             {onprimary}
             {onmiddle}
