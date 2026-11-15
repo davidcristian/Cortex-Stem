@@ -121,7 +121,7 @@ right and top positions.
   Stem starts again: the next start puts it back, or keeps it hidden while
   the setting is on. Stem keeps the user's state in `taskbar.json` until then.
 - _Reserve screen space_ (`system.reserveScreenSpace`) registers each dock
-  window as an AppBar. It applies only while
+  window as an AppBar ([ADR-0010](adr/0010-appbar.md)). It applies only while
   auto-hide is off (`autoHide.mode` is `off`).
 
 **Planned.** The left, right and top positions.

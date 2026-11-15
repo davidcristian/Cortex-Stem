@@ -3,6 +3,11 @@
 This file lists every version of the [IPC contract](index.md), newest first. A section name links
 to the file that covers that section now.
 
+- **v1.17 (reserve screen space):** `Settings.system.reserveScreenSpace` takes effect
+  ([Settings the app shell applies](app-shell-settings.md)). With auto-hide off, each visible
+  dock window reserves a band of its panel's thickness plus margin at its edge, and the window's
+  edge side lies on the band's edge side instead of the work area's edge. Settings payload only;
+  no command or event changed its name, arguments or payload.
 - **v1.16 (screen edges):** `Settings.position` takes effect: `top`, `left` and `right` join
   `bottom`. The [Sizing protocol](sizing-protocol.md) is rewritten for an edge: the window spans
   its work area's length along the edge, its thickness comes from `set_dock_content_size`'s

@@ -31,6 +31,12 @@ worker:
   entry. It is compared with `is_enabled()` and written only when they
   differ, one sync at a time on Tauri's blocking pool. The mock platform
   leaves it alone.
+- `system.reserveScreenSpace` with `autoHide.mode` (`appbar.rs`,
+  ADR-0010): an AppBar per visible dock window while the setting is on and
+  auto-hide is off. Requests are queued from the main thread for the
+  platform's `stem-appbar` thread. The bands are released at
+  `RunEvent::Exit`, before the taskbar restore, bounded at 1 s
+  ([Reserve screen space](dock-placement.md#reserve-screen-space)).
 - `system.hideWindowsTaskbar` (`taskbar.rs`): Windows' own *Automatically
   hide the taskbar* setting, through
   `SHAppBarMessage(ABM_SETSTATE, ABS_AUTOHIDE)`. Stem never hides

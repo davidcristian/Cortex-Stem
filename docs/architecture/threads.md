@@ -11,6 +11,7 @@ which work may run on which thread.
 | `stem-service` worker | service | engine updates (it drains every queued input in one batch), calls the listeners (`State` coalesced to at most one per 16 ms) |
 | `dock-identity` | service | platform identity queries (`identify_window`, `identify_target`), one retry after 2 s, then a fallback identity; `IdentityUnavailable` when there was nothing to query; never blocks the event drain |
 | `stem-platform-hit-test` | platform | started by the first `set_dock_hit_region`: a message-only window, raw mouse input (`RIDEV_INPUTSINK`) plus a 4 Hz safety poll (a 30 Hz poll if raw input cannot be registered); `GetCursorPos` → `ScreenToClient` → `rules::hit_region` hysteresis per tracked dock window; posts pass-through transitions to the dock window, whose subclass applies them on the main thread; stopped with the platform |
+| `stem-appbar` | platform | started by the first `set_dock_app_bar` that requests a band; sends every `SHAppBarMessage` of the dock windows' AppBars (see *The AppBar thread* below); stopped with the platform |
 | `stem-taskbar` | platform | one per `SHAppBarMessage` for `system.hideWindowsTaskbar`; its caller waits at most 500 ms for the result ([Settings](settings.md)) |
 | `stem-recycle` | platform | one per `delete_to_recycle_bin`: a COM single-threaded apartment (STA) that runs `IFileOperation` with the shell's own dialogs (their message loops run here); returns the result to the waiting caller and ends |
 | `dock-empty-recycle-bin` | platform | one per `ShellAction::EmptyRecycleBin`: an STA that runs `SHEmptyRecycleBinW` with the shell's confirmation |
@@ -71,6 +72,19 @@ the foreground path still report the window. `HSHELL_WINDOWDESTROYED` and
 removals are idempotent. Every received event of either source is logged
 once at trace with its name, so a trace log can be counted per source. The
 full table is in `windows/events.rs`, section *Sources*.
+
+## The AppBar thread
+
+`stem-appbar` starts with the first `set_dock_app_bar` that requests a band
+([ADR-0010](../adr/0010-appbar.md); a band is the strip of screen the shell
+reserves for an AppBar). It sends every `SHAppBarMessage` of the dock
+windows' AppBars, in order: `ABM_NEW`; `ABM_QUERYPOS` and `ABM_SETPOS` once
+a window's requests have not changed for 250 ms; `ABM_REMOVE`;
+`ABM_ACTIVATE`; `ABM_WINDOWPOSCHANGED`. It handles the shell notifications
+that the dock windows' subclass queues for it, and reports each granted
+band through a sink. Nothing on the main thread waits for this thread,
+except the release at quit, which is bounded and keeps dispatching sent
+messages while it waits.
 
 ## The icon cache thread
 

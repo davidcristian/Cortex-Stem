@@ -18,6 +18,27 @@ log, not on IPC:
   not parse, breaks that rule or is registered by another app is kept in the settings as written
   but registers nothing (with a warning in the log). A change takes effect without a restart.
   The settings window applies the field on Enter or blur, not per keystroke.
+- `Settings.system.reserveScreenSpace` (default `false`, ADR-0010): while it is on **and**
+  `Settings.autoHide.mode` is `off`, every visible dock window registers as an AppBar (a desktop
+  toolbar registered with the shell, `SHAppBarMessage`) on its edge (`Settings.position`) of its
+  monitor. The shell then takes a band there out of the monitor's work area, and maximised
+  windows stop short of the dock.
+  - The band is the panel's resting thickness plus its margin to the edge, from the window's
+    latest `set_dock_panel_rect`: the distance from the panel's far side to the viewport's edge
+    side. The band does not include the magnification headroom. The shell moves the band past
+    the stock taskbar and other bars on that edge.
+  - The window keeps its thickness and puts its edge side on the band's edge side instead of on
+    the work area's edge ([Sizing protocol](sizing-protocol.md), step 1; with the taskbar visible
+    on that edge the two are the same place). So it reaches past the band into the work area,
+    transparent and click-through there.
+  - A dock that auto-hides reserves nothing, and a window hidden by the tray or the toggle
+    shortcut gives its band back until it is shown. Either setting, the position and the monitors
+    change the bands without a restart, and quitting gives them back.
+  - `MonitorInfo.workArea` (`dock://monitors`) shrinks by the band, so the fullscreen exception of
+    the [Hit region](hit-region.md) applies to such a dock: there is no reveal strip while a
+    fullscreen window is up.
+  - The settings window greys the switch out while auto-hide is on. Demo runs
+    (`STEM_PLATFORM=mock`) record the registrations and reserve nothing.
 
 The webview is not granted the plugins' own commands (`plugin:autostart|*`,
 `plugin:global-shortcut|*`).

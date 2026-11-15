@@ -1,15 +1,17 @@
 # Dock window placement
 
-This file describes where each dock window is placed: on which edge and monitor, and again
-after a DPI change. In this file, `windows::` names the module `src-tauri/src/windows.rs`.
+This file describes where each dock window is placed: on which edge and monitor, on a band
+of reserved screen space, and again after a DPI change. In this file, `windows::` names the
+module `src-tauri/src/windows.rs`.
 
 ## Position and size
 
 The dock window sits on the edge that `settings.position` names (`bottom`,
 the default, `top`, `left` or `right`) of the monitor's **work area**, so a
-visible or auto-hidden stock taskbar is respected. It is flush with that
-edge and as long as the work area along it: its full width on `bottom` and
-`top`, its full height on `left` and `right`.
+visible or auto-hidden stock taskbar is respected. With *Reserve screen
+space* it sits on the [band](threads.md#the-appbar-thread) the shell granted
+(below). It is flush with that edge and as long as the work area along it:
+its full width on `bottom` and `top`, its full height on `left` and `right`.
 
 The UI centres the panel along the window and reports its content size
 (`set_dock_content_size`, see
@@ -43,6 +45,41 @@ until its page reports one for the new edge, because the old rect would lie
 where no panel is. The hit region stays window-local, and the panel rect is
 offset by the window's own origin, so both are correct for a window whose
 origin is not the work area's (a right or bottom dock).
+
+## Reserve screen space
+
+While `system.reserveScreenSpace` is on and `autoHide.mode` is `off`, every
+visible dock window is an AppBar on its edge of its monitor
+([ADR-0010](../adr/0010-appbar.md)). The band is the panel's resting thickness
+plus its margin to the edge, taken from the page's latest
+`set_dock_panel_rect` in CSS px and scaled when requested. It never
+includes the magnification headroom. It is proposed on the edge of the
+monitor's **bounds**, because the work area shrinks once the band is
+reserved and proposing on it would loop. The shell moves the band past the
+taskbar and other bars.
+
+The window keeps its thickness and is placed with its edge side on the
+granted band's edge side (`stem_platform::rules::appbar::window_rect`, in
+`windows::layout`) instead of on the work area's edge. It reaches past the
+band into the work area, transparent and click-through there.
+
+The app layer (`src-tauri/src/appbar.rs`) decides on the main thread after
+every placement, show, hide and panel report. It only queues requests for
+the platform's `stem-appbar` thread, which sends every `SHAppBarMessage`.
+`ABM_SETPOS` and `ABM_REMOVE` can make Explorer send messages to the bar
+windows, which belong to the main thread. So the main thread never waits on
+that thread, except for the release at quit, which dispatches sent messages
+while it waits.
+
+The shell's notifications reach the dock window's subclass, which queues
+them for the thread. A moved band is requested again, at most 8 times
+within 2 s and then not for 10 s. `TaskbarCreated` registers the bar again
+after an Explorer restart.
+
+An auto-hiding or hidden dock, a closed window, a position change (until
+the page reports for the new edge) and the quit release the band. The
+window stays placed on a released band until the work area has grown over
+it, so the window does not move inwards and back.
 
 ## One window per monitor
 
