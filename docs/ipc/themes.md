@@ -5,16 +5,22 @@ This file describes the theme presets and the user's stylesheet, `dock.css`.
 - `Settings.appearance.theme: ThemePreset` is one of `standard` (the default look), `solid` (an
   opaque panel without translucency and with a stronger hairline border, for readability and for
   Windows' *Transparency effects* off) or `minimal` (no panel fill and no hairline: only the
-  icons, dots and separators). The dock page applies it as `data-theme` on its root element. The
-  settings page offers the preset as a select.
+  icons, dots and separators). The dock page applies it as `data-theme` on the dock's root
+  element, `.dock-stage`. `<html>` keeps its own `data-theme` (`light` or `dark`) for the colour
+  mode, and the two sets of values never overlap. The settings page offers the preset as a
+  select (*Theme*), and labels the light/dark row (`Settings.theme`) *Colour mode*.
 - **The user's stylesheet.** `dock.css` is in the settings file's folder
   (`%APPDATA%\dev.davidcristian.stem\dock.css` for an installed Stem). Rust reads it at start and
   on `reload_user_css`, never on its own (there is no file watching). The result is
   `UserCss { path: string, css: string | null }`. `css` is `null` when the file does not exist,
-  cannot be read, is not UTF-8 or is larger than 64 KiB, and a `warn` line in the log says which.
+  cannot be read, is not UTF-8 or is larger than 64 KiB. The log records which: a `warn` line for
+  the last three reasons, and one `info` line for a missing file, which is the normal case.
 
   `open_user_css` writes a commented template that lists the supported variables if the file
-  does not exist, then opens the file with the default app for `.css`.
+  does not exist, then opens the file with the default app for `.css`, or in Notepad when that
+  fails. It rejects when neither opens it. A run that saves no settings file (the mock platform,
+  or a profile that could not be used) has no `dock.css`: `path` is a note in parentheses, `css`
+  is `null`, and `open_user_css` rejects.
 - The dock page puts `css` in one `<style>` element after its own styles, so the file can
   override them, and replaces it on `dock://user-css`. `docs/THEMING.md` lists the supported
   variables and their defaults per preset. That list is stable; anything else in the file may

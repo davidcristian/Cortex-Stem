@@ -37,7 +37,7 @@ arguments are named and how a failed command rejects.
 | `release_dock_focus`    | none                                        | `void`             | the calling dock window gives the keyboard focus back (on Escape, or in response to `dock://release-focus`). Rust activates again the window that was in front when the focus shortcut was pressed, if it still exists; dock windows only (see [Keyboard entry](keyboard-entry.md), v1.19) |
 | `get_user_css`          | none                                        | `UserCss`          | the user's `dock.css` as read at start or by the last `reload_user_css` (see [Themes](themes.md), v1.20) |
 | `reload_user_css`       | none                                        | `UserCss`          | reads `dock.css` again; emits `dock://user-css` to every dock window (see [Themes](themes.md)) |
-| `open_user_css`         | none                                        | `void`             | creates `dock.css` from the template if it does not exist, then opens it with the default app (see [Themes](themes.md)); rejects when it cannot |
+| `open_user_css`         | none                                        | `void`             | creates `dock.css` from the template if it does not exist, then opens it with the default app, or with Notepad when that fails (see [Themes](themes.md)); rejects when neither opens it |
 
 One command is planned and not implemented in Rust: `set_dock_hover { hovering }`. It is listed
 so that the mock can stub it: `Backend.setDockHover` is optional, `MockBackend` records it,
