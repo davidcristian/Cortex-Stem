@@ -1127,7 +1127,6 @@ fn output_path() -> PathBuf {
 }
 
 fn first_difference(current: &str, generated: &str) -> String {
-    let clip = |s: &str| s.chars().take(100).collect::<String>();
     let mut current_lines = current.lines();
     let mut generated_lines = generated.lines();
     let mut number = 1;
@@ -1135,10 +1134,16 @@ fn first_difference(current: &str, generated: &str) -> String {
         match (current_lines.next(), generated_lines.next()) {
             (Some(a), Some(b)) if a == b => number += 1,
             (Some(a), Some(b)) => {
+                // An excerpt of each line around the first character that differs.
+                let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+                let column = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+                let start = column.saturating_sub(30);
+                let excerpt = |s: &[char]| s.iter().skip(start).take(80).collect::<String>();
                 return format!(
-                    "line {number}: the file has `{}`, the source gives `{}`",
-                    clip(a),
-                    clip(b)
+                    "line {number}, column {}: the file has `{}`, the source gives `{}`",
+                    column + 1,
+                    excerpt(&a),
+                    excerpt(&b)
                 );
             }
             (Some(_), None) => return format!("the file has extra lines from line {number}"),
