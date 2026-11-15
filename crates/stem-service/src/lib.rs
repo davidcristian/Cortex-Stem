@@ -138,6 +138,10 @@ pub enum ServiceError {
     NotLaunchable(AppId),
     #[error("app {0:?} is not pinned")]
     NotPinned(AppId),
+    #[error("app {0:?} is pinned; unpin it to hide it")]
+    Pinned(AppId),
+    #[error("unknown app: {0:?}")]
+    UnknownApp(AppId),
     #[error("could not start the {0} thread: {1}")]
     Thread(&'static str, #[source] std::io::Error),
 }
@@ -485,6 +489,58 @@ impl DockService {
         } else {
             Err(ServiceError::NotPinned(app_id.clone()))
         }
+    }
+
+    /// Stop showing an app on every dock (`docs/ipc/hidden-apps.md`
+    /// ): `{ id, name }` joins `Settings::hidden_apps`, saved like a pin,
+    /// and the engine drops its item when the new settings reach it. `name`
+    /// is what its item shows now (`DockEngine::app_name`: the resolved
+    /// display name, else its first window's title; the id's file name when
+    /// that is blank). Hiding a hidden app again changes nothing. Rejects a
+    /// pinned app (`Pinned`) and an app the engine knows nothing of, with
+    /// neither an identity nor a window (`UnknownApp`).
+    pub fn hide_app(&self, app_id: &AppId) -> ServiceResult<()> {
+        let mut outcome = Ok(());
+        let inner = &self.inner;
+        inner.mutate_settings(|settings| {
+            if settings.is_pinned(app_id) {
+                outcome = Err(ServiceError::Pinned(app_id.clone()));
+                return false;
+            }
+            if settings.is_hidden(app_id) {
+                return false;
+            }
+            // Settings, then engine: the lock order `Inner::settings` allows.
+            let Some(name) = inner.engine.lock().app_name(app_id) else {
+                outcome = Err(ServiceError::UnknownApp(app_id.clone()));
+                return false;
+            };
+            let name = if name.trim().is_empty() {
+                fallback_display_name(app_id)
+            } else {
+                name
+            };
+            log::info!("hiding {app_id:?} ({name:?}) from the dock");
+            settings.hide(stem_core::settings::HiddenApp {
+                id: app_id.clone(),
+                name,
+            })
+        })?;
+        outcome
+    }
+
+    /// Show a hidden app again: its entry leaves
+    /// `Settings::hidden_apps` and the settings are saved. An id that is not
+    /// listed is not an error and saves nothing.
+    pub fn unhide_app(&self, app_id: &AppId) -> ServiceResult<()> {
+        self.inner.mutate_settings(|settings| {
+            let shown = settings.unhide(app_id);
+            if !shown {
+                log::debug!("unhide_app: {app_id:?} is not hidden; nothing to do");
+            }
+            shown
+        })?;
+        Ok(())
     }
 
     pub fn reorder_pinned(&self, order: &[AppId]) -> ServiceResult<()> {
@@ -1554,6 +1610,147 @@ mod tests {
         assert_eq!(saved.icon_size, 72);
         assert!(saved.is_pinned(&spotify));
         assert_eq!(saved, service.settings());
+        service.shutdown();
+    }
+
+    // ----- hidden apps ----------------------------------------------------------
+
+    fn hidden_ids(settings: &Settings) -> Vec<&str> {
+        settings.hidden_apps.iter().map(|h| h.id.as_str()).collect()
+    }
+
+    #[test]
+    fn a_hidden_app_is_saved_like_a_pin_loses_its_item_and_stays_hidden_after_a_restart() {
+        let platform = Arc::new(MockPlatform::with_demo_scenario());
+        let store = SharedStore::default();
+        let document = Arc::clone(&store.0);
+        let service = DockService::start(platform.clone(), Box::new(store)).unwrap();
+        let rx = record(&service);
+        let state = wait_state(&rx, resolved);
+        let spotify = item_titled(&state, "Spotify").unwrap().clone();
+        let spotify_id = spotify.app_id.clone().unwrap();
+
+        service.hide_app(&spotify_id).unwrap();
+        // The authoritative copy and the file both have it, with its name.
+        let settings = service.settings();
+        assert_eq!(hidden_ids(&settings), vec![spotify_id.as_str()]);
+        assert_eq!(settings.hidden_apps[0].name, "Spotify");
+        let saved = Settings::from_json(&document.document().unwrap()).unwrap();
+        assert_eq!(saved, settings);
+        // The page hears of it as of any settings change, then of the state.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match rx.recv_deadline(deadline) {
+                Ok(ServiceEvent::Settings(s)) if s.is_hidden(&spotify_id) => break,
+                Ok(_) => {}
+                Err(e) => panic!("no settings event: {e}"),
+            }
+        }
+        let state = wait_state(&rx, |s| item_titled(s, "Spotify").is_none());
+        assert_eq!(app_items(&state).len(), 4);
+
+        // Its window is still tracked: a click on its old key does nothing,
+        // and the platform is not asked to do anything.
+        assert_eq!(
+            service.windows_on_dock(&spotify_id, DOCK),
+            vec![WindowId(6)]
+        );
+        platform.clear_calls();
+        assert!(matches!(
+            service.primary_click(&spotify.key, DOCK),
+            Err(ServiceError::UnknownItem(_))
+        ));
+        assert_eq!(platform.calls(), vec![]);
+        assert_eq!(service.dock_item(&spotify.key, DOCK), None);
+
+        // A second window of it brings no item either.
+        let mut second = platform.windows().unwrap()[5].clone();
+        assert_eq!(second.id, WindowId(6));
+        second.id = WindowId(60);
+        second.title = "Spotify mini player".into();
+        platform.push(PlatformEvent::WindowAdded(second));
+        wait_until("the second window", || {
+            service.windows_on_dock(&spotify_id, DOCK) == [WindowId(6), WindowId(60)]
+        });
+        assert!(item_titled(&service.state(), "Spotify").is_none());
+        assert_eq!(service.state().revision, state.revision, "nothing to show");
+
+        // Hiding it again saves nothing.
+        let before = document.document();
+        service.hide_app(&spotify_id).unwrap();
+        assert_eq!(document.document(), before);
+        assert_eq!(hidden_ids(&service.settings()), vec![spotify_id.as_str()]);
+        service.shutdown();
+
+        // A restart reads the list back: still no item.
+        let restarted = DockService::start(
+            Arc::new(MockPlatform::with_demo_scenario()),
+            Box::new(MemorySettingsStore::with_document(&before.unwrap())),
+        )
+        .unwrap();
+        let rx = record(&restarted);
+        assert!(restarted.settings().is_hidden(&spotify_id));
+        let state = wait_state(&rx, |s| {
+            app_items(s).len() == 4 && app_items(s).iter().all(|i| i.icon_key.is_some())
+        });
+        assert!(item_titled(&state, "Spotify").is_none());
+
+        // Shown again: the item comes back; showing it twice is no error.
+        restarted.unhide_app(&spotify_id).unwrap();
+        assert!(restarted.settings().hidden_apps.is_empty());
+        wait_state(&rx, |s| item_titled(s, "Spotify").is_some());
+        restarted.unhide_app(&spotify_id).unwrap();
+        restarted.shutdown();
+    }
+
+    #[test]
+    fn a_pinned_or_unknown_app_cannot_be_hidden_and_a_pin_shows_a_hidden_app() {
+        let platform = Arc::new(MockPlatform::with_demo_scenario());
+        let store = SharedStore::default();
+        let document = Arc::clone(&store.0);
+        let service = DockService::start(platform, Box::new(store)).unwrap();
+        let rx = record(&service);
+        let state = wait_state(&rx, resolved);
+        let code = item_titled(&state, "Code").unwrap().app_id.clone().unwrap();
+
+        // Pinned (in the authoritative copy, before the engine has it).
+        service.pin_app(&code).unwrap();
+        let before = document.document();
+        let err = service.hide_app(&code).unwrap_err();
+        assert!(matches!(&err, ServiceError::Pinned(id) if *id == code));
+        assert!(err.to_string().contains("is pinned"), "{err}");
+        assert_eq!(document.document(), before, "nothing saved");
+        assert!(service.settings().hidden_apps.is_empty());
+
+        // Unknown: no window, no identity.
+        let nobody = AppId::for_exe(Path::new(r"C:\Apps\nobody.exe"));
+        assert!(matches!(
+            service.hide_app(&nobody),
+            Err(ServiceError::UnknownApp(id)) if id == nobody
+        ));
+        assert_eq!(document.document(), before);
+        // Showing an app that is not hidden is no error and saves nothing.
+        service.unhide_app(&nobody).unwrap();
+        assert_eq!(document.document(), before);
+
+        // Pinning a hidden app drops it from the list (validation), so it
+        // is shown as a pin.
+        let terminal = item_titled(&state, "WindowsTerminal")
+            .unwrap()
+            .app_id
+            .clone()
+            .unwrap();
+        service.hide_app(&terminal).unwrap();
+        assert!(service.settings().is_hidden(&terminal));
+        service.pin_app(&terminal).unwrap();
+        let settings = service.settings();
+        assert!(settings.is_pinned(&terminal));
+        assert!(settings.hidden_apps.is_empty());
+        wait_state(&rx, |s| {
+            app_items(s)
+                .iter()
+                .any(|i| i.app_id.as_ref() == Some(&terminal) && i.pinned)
+        });
         service.shutdown();
     }
 

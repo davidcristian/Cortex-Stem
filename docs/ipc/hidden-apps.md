@@ -8,7 +8,7 @@ This file describes how a running app is hidden from every dock and shown again.
   is active for them. A pinned app is never hidden: `Settings::validate` drops a listed id that
   is also pinned, empty ids and duplicates.
 - `hide_app { appId }`: the service adds `{ id, name }` and saves the settings.
-  - `name` is the app's display name at that moment.
+  - `name` is the app's display name at that moment (the id's file name when that is blank).
 
   `hide_app` rejects an app that is pinned or that the engine has no record of.
   `unhide_app { appId }` removes the entry and saves; an id that is not listed is not an error.
