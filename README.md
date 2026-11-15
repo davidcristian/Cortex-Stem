@@ -69,9 +69,10 @@ desktop and the windows behind it.
 
 **Edges and monitors.** The dock sits on the bottom, left, right or top edge. While auto-hide is
 off, it can reserve its band of the screen, as the stock taskbar does, so maximised windows stop
-short of it. You can have one dock per monitor, following monitors as they are plugged in and out,
-with an option to list only each monitor's windows on its dock. A change of display scale applies
-without a restart. By default the dock lists only the windows on the current virtual desktop.
+short of it. With many items, it draws its icons smaller until it fits its edge. You can have one
+dock per monitor, following monitors as they are plugged in and out, with an option to list only
+each monitor's windows on its dock. A change of display scale applies without a restart. By
+default the dock lists only the windows on the current virtual desktop.
 
 **Taskbar, keyboard and tray.** Stem can hide the stock taskbar while it runs, and puts it back on
 quit. It can start when you sign in. By default, `Ctrl+Alt+D` shows or hides the dock from any app,

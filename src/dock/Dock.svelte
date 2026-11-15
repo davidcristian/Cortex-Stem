@@ -19,7 +19,14 @@
     type AutoHideState,
   } from '$lib/dock/autohide';
   import { watchDevicePixelRatio } from '$lib/dock/dpr';
-  import { along, axisOf, centreAlong, spanAlong, type DockEdge } from '$lib/dock/edge';
+  import {
+    along,
+    axisOf,
+    centreAlong,
+    spanAlong,
+    type DockAxis,
+    type DockEdge,
+  } from '$lib/dock/edge';
   import {
     dropIndex,
     dropTargetAt,
@@ -37,6 +44,7 @@
     type ItemSpan,
     type PinCandidate,
   } from '$lib/dock/filedrop';
+  import { fitIconSize, slotCounts, type PanelLayout } from '$lib/dock/fit';
   import {
     edgeShift,
     hitRegionFor,
@@ -108,6 +116,12 @@
   const DOTS_GAP = 2;
   const DOT_SIZE = 4;
   const SEPARATOR_MARGIN = 6;
+  /** The constants above as the fit (`fit.ts`) reads them: a separator is 1 px plus its margins. */
+  const PANEL_LAYOUT: PanelLayout = {
+    slotGap: SLOT_GAP,
+    panelPadding: PANEL_PADDING,
+    separatorLength: 1 + 2 * SEPARATOR_MARGIN,
+  };
   /** Between the panel and the window's edge side (docs/ipc/sizing-protocol.md). */
   const EDGE_MARGIN = 8;
   /** Room for the tooltip and the bounce beyond a magnified icon, on a dock on `bottom` or `top`. */
@@ -205,13 +219,62 @@
   const cornerRadius = $derived(settings?.appearance.cornerRadius ?? 22);
   /** The theme preset: the stage's `data-theme`, which the preset rules below key on. */
   const preset = $derived(settings?.appearance.theme ?? 'standard');
-  const iconSize = $derived(settings?.iconSize ?? 48);
-  const slotPx = $derived(iconSize + SLOT_GAP);
   const magnify = $derived<MagnifyParams>({
     maxScale:
       settings?.magnification.enabled && !reducedMotion ? settings.magnification.maxScale : 1,
     rangeIcons: settings?.magnification.rangeIcons ?? 3,
   });
+  // --- Fitting the edge (docs/ipc/sizing-protocol.md) --------------------
+  // `Settings.iconSize` is the user's size; the page draws at the fitted
+  // one (`fit.ts`): smaller, when the panel at rest plus magnification's
+  // growth would not fit the viewport's length along the edge. Everything
+  // below that scales with the icon (tiles, gaps, separators, dots, the
+  // magnification peak, the drag and file-drop gaps, the bitmaps, every
+  // geometry report) reads `iconSize`, the fitted size. It follows the
+  // viewport's length (`onwindowresize`), the items, the setting, the
+  // magnification and the edge, and never the panel's measured size, so
+  // drawing at it cannot change it; a drag holds it (`holdFit`).
+  const settingsIconSize = $derived(settings?.iconSize ?? 48);
+  /** The viewport's size (CSS px), followed on `resize`: its length along the edge is the fit's room. */
+  let viewportWidth = $state(window.innerWidth);
+  let viewportHeight = $state(window.innerHeight);
+  /**
+   * The axis the window is shaped for: the page's at the first settings and
+   * at every `resize`. After a change of `position` to the other axis the
+   * page lays itself out before Rust moves its window (docs/ipc/sizing-protocol.md,
+   * step 5); until then the window is still longer across the new axis
+   * than along it, and its length along the old axis stands in, so the
+   * first reports for the new edge are not made at a size fitted to the
+   * old window's thickness.
+   */
+  let shapedAxis = $state<DockAxis | null>(null);
+  $effect(() => {
+    if (settings !== null && shapedAxis === null) {
+      shapedAxis = untrack(() => axis);
+    }
+  });
+  const fitLength = $derived.by(() => {
+    const alongNow = vertical ? viewportHeight : viewportWidth;
+    const acrossNow = vertical ? viewportWidth : viewportHeight;
+    return shapedAxis !== null && shapedAxis !== axis && alongNow < acrossNow
+      ? acrossNow
+      : alongNow;
+  });
+  const fitSize = $derived(
+    fitIconSize({
+      iconSize: settingsIconSize,
+      counts: slotCounts(items),
+      layout: PANEL_LAYOUT,
+      magnify,
+      viewportLength: fitLength,
+    }),
+  );
+  /** The size a drag in progress keeps: the one it started with; `null` with no drag. */
+  let heldIconSize = $state<number | null>(null);
+  const iconSize = $derived(heldIconSize ?? fitSize);
+  /** Drawn smaller than the setting: the stage's `data-fitted`. */
+  const fitted = $derived(iconSize < settingsIconSize);
+  const slotPx = $derived(iconSize + SLOT_GAP);
   // Two bitmaps per app icon: exactly the rest size in device pixels,
   // drawn 1:1, and the ladder size that covers the true magnified box. One
   // request when they coincide (magnification off, reduced motion, the top
@@ -599,6 +662,24 @@
   /** The viewport's thickness across the edge when the drag began, before the window grew. */
   let acrossBeforeDrag = 0;
 
+  /**
+   * What holds the fitted size (docs/ipc/sizing-protocol.md §Fitting the
+   * edge): a drag-reorder from its start until its styles are cleared
+   * (its rest centres, bounds and gap shifts are measured at one size),
+   * and a file drag until it is over or, for a drop that pins, until it
+   * has landed.
+   */
+  const fitHolds = { reorder: false, file: false };
+
+  function holdFit(kind: keyof typeof fitHolds, on: boolean): void {
+    fitHolds[kind] = on;
+    if (!fitHolds.reorder && !fitHolds.file) {
+      heldIconSize = null;
+    } else if (heldIconSize === null) {
+      heldIconSize = untrack(() => iconSize);
+    }
+  }
+
   function pinnedSlots(): HTMLElement[] {
     return slots.filter((el) => el.dataset.kind === 'app' && el.dataset.pinned === 'true');
   }
@@ -655,6 +736,8 @@
     // positions measured below must be the unmagnified ones.
     leaveHoverState();
     clearDragStyles();
+    // The drag finishes at the size it starts with.
+    holdFit('reorder', true);
     try {
       d.el.setPointerCapture(d.pointerId);
     } catch {
@@ -750,6 +833,10 @@
    * stale `hovering` would stop every later measurement for good.
    */
   function onwindowresize(): void {
+    // The fit's room; a drag holds the size whatever it is.
+    viewportWidth = window.innerWidth;
+    viewportHeight = window.innerHeight;
+    shapedAxis = axis;
     const d = drag;
     if (d === null || !d.started) {
       leaveHoverState();
@@ -916,6 +1003,8 @@
       el.style.transform = '';
       el.style.transition = '';
     }
+    // No transform left from the drag: the fit may follow again.
+    holdFit('reorder', false);
     if (dragHitReported) {
       dragHitReported = false;
       // The window goes back to the size it had before the drag at once: a
@@ -1715,6 +1804,8 @@
     // A session whose leave never came must not linger.
     endFileDrag(false, false);
     fileDrag = { paths: [...paths], x: at.x, y: at.y, frame: 0 };
+    // The gap opens and the drop lands at the size the drag starts with.
+    holdFit('file', true);
     // Nothing magnified: the gap's place is found from where the slots are drawn.
     leaveHoverState();
     autoHideSend({ type: 'hold', hold: 'fileDrag', active: true });
@@ -1837,6 +1928,8 @@
     }
     if (!keepGap && frozenItems === null) {
       showGap(null);
+      // Nothing is landing: the fit may follow again (`finishLanding` otherwise).
+      holdFit('file', false);
     }
     dropTargetKey = null;
     autoHideSend({ type: 'pointer', inside: pointerOnDock });
@@ -1851,6 +1944,8 @@
   async function pinDropped(candidates: readonly PinCandidate[], index: number): Promise<void> {
     const before = pinnedIds(store.state?.items ?? []);
     frozenItems = items;
+    // Held until `finishLanding`, also after an earlier landing it cut short.
+    holdFit('file', true);
     const ids: AppId[] = [];
     for (const candidate of candidates) {
       try {
@@ -1918,6 +2013,9 @@
     landedKey = landed && l !== null ? l.key : null;
     frozenItems = null;
     showGap(null);
+    if (fileDrag === null) {
+      holdFit('file', false);
+    }
     scheduleMeasure();
     if (landedKey !== null) {
       // The intro and outro decisions are taken in this update; forget the key after it.
@@ -2214,6 +2312,7 @@
   class="dock-stage"
   data-edge={edge}
   data-theme={preset}
+  data-fitted={fitted ? '' : undefined}
   style:--accent={accent}
   style:--panel-opacity={opacity}
   style:--radius="{cornerRadius}px"

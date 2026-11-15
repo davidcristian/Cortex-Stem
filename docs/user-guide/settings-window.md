@@ -37,6 +37,11 @@ opacity_, _Corner radius_, _Backdrop_, _Tooltips_ and _Bounce on launch_ are
 the [`appearance`](../SETTINGS.md#appearance) keys. _Colour mode_ is `theme`.
 _Your styles (dock.css)_ is not a setting but a file of your own.
 
+- _Icon size_ is the largest size the dock draws its icons at. Sometimes the
+  dock, with room for _Magnification_, would be longer than its edge of the
+  screen (many items on a side edge, or a small monitor). The dock then
+  draws the icons smaller until it fits, down to 16 pixels. It goes back to
+  your size once there is room.
 - _Magnification_ makes icons grow as the pointer approaches them. The icon
   right under the pointer grows to _Maximum scale_, and _Range_ is the
   number of neighbouring icons on each side that grow too.

@@ -6217,6 +6217,315 @@ test.describe('the dock on the left, right and top edges', () => {
   }
 });
 
+test.describe('fitting the dock to its edge', () => {
+  type Edge = 'bottom' | 'top' | 'left' | 'right';
+  const STAGE = '.dock-stage';
+  const PANEL = '.dock-panel';
+  const SLOTS = '.dock-panel > .slot:not([data-leaving])';
+  const PINNED = '.slot[data-pinned="true"]';
+  const GAP = '.drop-gap';
+  /** Every fixed item on, as in the hands-on check that found the cut-off ends. */
+  const EVERY_ITEM = {
+    launcher: true,
+    taskView: true,
+    showDesktop: true,
+    quickSettings: true,
+    notificationCenter: true,
+    battery: true,
+    clock: true,
+    recycleBin: true,
+    separators: true,
+  };
+  /** The hands-on check's icon size. */
+  const SETTING = 40;
+  /** Dock.svelte's and fit.ts's constants; the demo's magnification. */
+  const EDGE_MARGIN = 8;
+  const FIT_END_MARGIN = 8;
+  const SIDE_HEADROOM = 240;
+  const HEADROOM = 48;
+  const SEPARATOR_LENGTH = 13;
+  const MAX_SCALE = 1.6;
+  const RANGE_ICONS = 3;
+  const MIN_FITTED = 16;
+
+  const isVertical = (edge: Edge): boolean => edge === 'left' || edge === 'right';
+  /** Short edges: the hands-on check's 800×600 for a side dock, a 560 px wide one for a row. */
+  const smallViewport = (edge: Edge): { width: number; height: number } =>
+    isVertical(edge) ? { width: 800, height: 600 } : { width: 560, height: 240 };
+  /** `maxGrowth` of magnify.ts at `icon`. */
+  const growth = (icon: number): number =>
+    (MAX_SCALE - 1) * (icon + SLOT_GAP) * (RANGE_ICONS + 0.5);
+
+  interface Box {
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+    width: number;
+    height: number;
+  }
+  const box = (locator: Locator): Promise<Box> =>
+    locator.first().evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      return {
+        left: r.left,
+        top: r.top,
+        right: r.right,
+        bottom: r.bottom,
+        width: r.width,
+        height: r.height,
+      };
+    });
+  const restRect = (b: Box): Rect => ({
+    x: Math.floor(b.left),
+    y: Math.floor(b.top),
+    width: Math.ceil(b.right) - Math.floor(b.left),
+    height: Math.ceil(b.bottom) - Math.floor(b.top),
+  });
+  const centreOf = (b: Box): { x: number; y: number } => ({
+    x: b.left + b.width / 2,
+    y: b.top + b.height / 2,
+  });
+  /** The size the page draws at: the stage's `--icon` (CSS px). */
+  const drawnSize = (page: Page): Promise<number> =>
+    page
+      .locator(STAGE)
+      .evaluate((el) => parseFloat(getComputedStyle(el).getPropertyValue('--icon')));
+  const lastPanelRect = async (page: Page): Promise<Rect | undefined> =>
+    (await panelRects(page)).at(-1)?.rect;
+  const lastSize = async (page: Page): Promise<{ width: number; height: number } | undefined> => {
+    const last = (await contentSizes(page)).at(-1);
+    return last === undefined ? undefined : { width: last.width, height: last.height };
+  };
+  const pinnedKeys = (page: Page): Promise<string[]> =>
+    page.$$eval(PINNED, (els) => els.map((el) => (el as HTMLElement).dataset.key ?? ''));
+  /** Every slot drawn now (items and separators), as boxes. */
+  const slotBoxes = (page: Page): Promise<Box[]> =>
+    page.$$eval(SLOTS, (els) =>
+      els.map((el) => {
+        const r = el.getBoundingClientRect();
+        return {
+          left: r.left,
+          top: r.top,
+          right: r.right,
+          bottom: r.bottom,
+          width: r.width,
+          height: r.height,
+        };
+      }),
+    );
+  const inside = (b: Box, viewport: { width: number; height: number }): boolean =>
+    b.left >= 0 && b.top >= 0 && b.right <= viewport.width && b.bottom <= viewport.height;
+  /** How many slots of each sort are drawn. */
+  const counts = async (page: Page): Promise<{ icons: number; separators: number }> => ({
+    icons: await page.locator(`${SLOTS}:not([data-kind="separator"])`).count(),
+    separators: await page.locator(`${SLOTS}[data-kind="separator"]`).count(),
+  });
+  /** The panel's length at rest at `icon`, as Dock.svelte lays it out. */
+  const restLength = (icon: number, c: { icons: number; separators: number }): number =>
+    2 * PANEL_PADDING + c.icons * (icon + SLOT_GAP) + c.separators * SEPARATOR_LENGTH;
+
+  /** Open the dock on `edge` in `viewport`, switch every fixed item on at `SETTING`, and wait until it is still and reported. */
+  async function openFitted(page: Page, edge: Edge, viewport = smallViewport(edge)): Promise<void> {
+    await page.setViewportSize(viewport);
+    await openDock(page, `mock=1&position=${edge}`);
+    await patchSettings(page, { iconSize: SETTING, items: EVERY_ITEM });
+    await expect(page.locator('.slot[data-kind="clock"]')).toHaveCount(1);
+    await expect(page.locator('.slot[data-kind="taskView"]')).toHaveCount(1);
+    await expect.poll(() => runningAnimations(page)).toBe(0);
+    await expect
+      .poll(async () => {
+        const reported = await lastPanelRect(page);
+        return reported === undefined ? null : reported;
+      })
+      .toEqual(restRect(await box(page.locator(PANEL))));
+  }
+
+  for (const edge of ['bottom', 'top', 'left', 'right'] as const) {
+    const vertical = isVertical(edge);
+    const along = (b: Box): number => (vertical ? b.height : b.width);
+    const across = (b: Box): number => (vertical ? b.width : b.height);
+
+    test(`on ${edge} in a short window with every item on: drawn smaller, every item inside, the reports at the fitted size`, async ({
+      page,
+    }) => {
+      await page.emulateMedia({ colorScheme: 'dark' });
+      await openFitted(page, edge);
+      const viewport = smallViewport(edge);
+      const length = vertical ? viewport.height : viewport.width;
+      await expect(page.locator(`${STAGE}[data-fitted]`)).toHaveCount(1);
+      // The setting keeps the user's value.
+      expect(
+        await page.evaluate(
+          async () => (await (window as unknown as DemoWindow).__dockMock!.getSettings()).iconSize,
+        ),
+      ).toBe(SETTING);
+
+      // A whole size below the setting, and the largest that fits: the
+      // panel at rest plus magnification's growth, 8 px free at each end.
+      const icon = await drawnSize(page);
+      expect(Number.isInteger(icon)).toBe(true);
+      expect(icon).toBeLessThan(SETTING);
+      expect(icon).toBeGreaterThanOrEqual(MIN_FITTED);
+      const c = await counts(page);
+      const room = length - 2 * FIT_END_MARGIN;
+      expect(restLength(icon, c) + growth(icon)).toBeLessThanOrEqual(room);
+      expect(restLength(icon + 1, c) + growth(icon + 1)).toBeGreaterThan(room);
+
+      // The panel is laid out at that size: its length and its thickness.
+      const p = await box(page.locator(PANEL));
+      expect(Math.abs(along(p) - restLength(icon, c))).toBeLessThanOrEqual(1);
+      expect(across(p)).toBe(icon + 2 * PANEL_PADDING);
+      // Every item inside the window, Start and the Recycle Bin included.
+      for (const slot of await slotBoxes(page)) {
+        expect(inside(slot, viewport), JSON.stringify(slot)).toBe(true);
+      }
+      expect(inside(await box(page.locator('.slot[data-kind="launcher"]')), viewport)).toBe(true);
+      expect(inside(await box(page.locator('.slot[data-kind="recycleBin"]')), viewport)).toBe(true);
+      // An app's icon box is the fitted size.
+      const appIcon = await box(page.locator(`${APP_SLOT} .icon`));
+      expect(appIcon.width).toBeCloseTo(icon, 1);
+      expect(appIcon.height).toBeCloseTo(icon, 1);
+
+      // The reports describe the panel as drawn, at the fitted size.
+      const rest = restRect(p);
+      expect(await lastPanelRect(page)).toEqual(rest);
+      expect((await hitRegions(page)).at(-1)?.panel).toEqual(rest);
+      const thickness = Math.ceil(
+        icon +
+          2 * PANEL_PADDING +
+          EDGE_MARGIN +
+          icon * (MAX_SCALE - 1) +
+          (vertical ? SIDE_HEADROOM : HEADROOM),
+      );
+      const reportedLength = Math.ceil(along(p) + 48 + growth(icon));
+      expect(await lastSize(page)).toEqual(
+        vertical
+          ? { width: thickness, height: reportedLength }
+          : { width: reportedLength, height: thickness },
+      );
+      if (edge === 'left') {
+        await page.screenshot({ path: `${OUT}/dock-fitted-left.png` });
+      }
+
+      // Magnified at the fitted size: the peak is the fitted icon × the
+      // maximum scale, nothing leaves the window, and the pill shows.
+      const slots = page.locator(APP_SLOT);
+      const middle = Math.floor((await slots.count()) / 2);
+      const at = centreOf(await box(slots.nth(middle)));
+      await page.mouse.move(at.x, at.y);
+      await expect.poll(() => scaleOf(page, middle)).toBeGreaterThan(1.55);
+      const peak = await box(slots.nth(middle).locator('.icon'));
+      expect(Math.abs(peak.width - icon * (await scaleOf(page, middle)))).toBeLessThanOrEqual(0.5);
+      for (const slot of await slotBoxes(page)) {
+        expect(inside(slot, viewport), JSON.stringify(slot)).toBe(true);
+      }
+      const tooltip = page.locator('.tooltip');
+      await expect(tooltip).toBeVisible();
+      expect(inside(await box(tooltip), viewport)).toBe(true);
+      if (edge === 'left') {
+        await page.screenshot({ path: `${OUT}/dock-fitted-left-magnified.png` });
+      }
+    });
+  }
+
+  test('in a window long enough the dock keeps its size: no data-fitted', async ({ page }) => {
+    await openDock(page);
+    await expect(page.locator(PANEL)).toBeVisible();
+    await expect(page.locator(`${STAGE}[data-fitted]`)).toHaveCount(0);
+    expect(await drawnSize(page)).toBe(ICON);
+    // Every item on at 40 still fits a 1280 px row.
+    await openFitted(page, 'bottom', { width: 1280, height: 240 });
+    await expect(page.locator(`${STAGE}[data-fitted]`)).toHaveCount(0);
+    expect(await drawnSize(page)).toBe(SETTING);
+  });
+
+  test('follows the window, the magnification and the items; the setting is untouched', async ({
+    page,
+  }) => {
+    await openFitted(page, 'left');
+    const fittedSize = await drawnSize(page);
+    expect(fittedSize).toBeLessThan(SETTING);
+    // Magnification off: no growth to make room for, a larger size.
+    await patchSettings(page, { magnification: { enabled: false } });
+    await expect.poll(() => drawnSize(page)).toBeGreaterThan(fittedSize);
+    await patchSettings(page, { magnification: { enabled: true } });
+    await expect.poll(() => drawnSize(page)).toBe(fittedSize);
+    // One more app: smaller still.
+    await page.evaluate((w) => {
+      (window as unknown as DemoWindow).__dockMock?.pushWindow(w);
+    }, PAINT_WINDOW);
+    await expect(page.locator(PAINT_SLOT)).toHaveCount(1);
+    await expect.poll(() => drawnSize(page)).toBeLessThan(fittedSize);
+    // A taller window: room for the setting, and the reports follow.
+    await page.setViewportSize({ width: 800, height: 1200 });
+    await expect.poll(() => drawnSize(page)).toBe(SETTING);
+    await expect(page.locator(`${STAGE}[data-fitted]`)).toHaveCount(0);
+    await expect.poll(() => runningAnimations(page)).toBe(0);
+    await expect
+      .poll(async () => (await lastPanelRect(page)) ?? null)
+      .toEqual(restRect(await box(page.locator(PANEL))));
+    expect((await lastPanelRect(page))!.width).toBe(SETTING + 2 * PANEL_PADDING);
+  });
+
+  test('a drag-reorder while fitted shifts by the fitted slot and keeps its size until it is over', async ({
+    page,
+  }) => {
+    await openFitted(page, 'left');
+    const icon = await drawnSize(page);
+    const before = await pinnedKeys(page);
+    const a = centreOf(await box(page.locator(PINNED).nth(0)));
+    const b = centreOf(await box(page.locator(PINNED).nth(2)));
+    await page.mouse.move(a.x, a.y);
+    await page.mouse.down();
+    await page.mouse.move(a.x + 12, b.y + 4, { steps: 12 });
+    await expect(page.locator(PINNED).nth(0)).toHaveAttribute('data-drag', 'lifted');
+    const transformOf = (index: number): Promise<string> =>
+      page
+        .locator(PINNED)
+        .nth(index)
+        .evaluate((el) => (el as HTMLElement).style.transform);
+    const shift = `translateY(-${icon + SLOT_GAP}px)`;
+    await expect.poll(() => transformOf(1)).toBe(shift);
+    await expect.poll(() => transformOf(2)).toBe(shift);
+    // A new app mid-drag would fit smaller; the drag keeps the size it started with.
+    await page.evaluate((w) => {
+      (window as unknown as DemoWindow).__dockMock?.pushWindow(w);
+    }, PAINT_WINDOW);
+    await expect(page.locator(PAINT_SLOT)).toHaveCount(1);
+    await expect.poll(() => runningAnimations(page)).toBe(0);
+    expect(await drawnSize(page)).toBe(icon);
+    expect(await transformOf(1)).toBe(shift);
+
+    await page.mouse.up();
+    await expect
+      .poll(() => pinnedKeys(page))
+      .toEqual([before[1], before[2], before[0], ...before.slice(3)]);
+    await expect(page.locator('[data-drag]')).toHaveCount(0);
+    // Over: the fit follows the new item.
+    await expect.poll(() => drawnSize(page)).toBeLessThan(icon);
+    await expect.poll(() => transformOf(2)).toBe('');
+  });
+
+  test('a file dragged over a fitted dock opens a gap one fitted slot long', async ({ page }) => {
+    await openFitted(page, 'left');
+    const icon = await drawnSize(page);
+    const a = centreOf(await box(page.locator(PINNED).nth(1)));
+    const b = centreOf(await box(page.locator(PINNED).nth(2)));
+    const between = { x: a.x, y: (a.y + b.y) / 2 };
+    const EXE_PATH = 'C:\\Tools\\PuTTY\\putty.exe';
+    await fileDrag(page, { type: 'enter', paths: [EXE_PATH], position: between });
+    const gap = page.locator(GAP);
+    await expect(gap).toHaveCount(1);
+    await expect.poll(async () => Math.round((await box(gap)).height)).toBe(icon + SLOT_GAP);
+    expect(Math.round((await box(gap)).width)).toBe(icon);
+    // The drag holds the size while the gap is open.
+    expect(await drawnSize(page)).toBe(icon);
+    await fileDrag(page, { type: 'leave' });
+    await expect(gap).toHaveCount(0);
+  });
+});
+
 test.describe('theme presets and the user dock.css', () => {
   const PANEL = '.dock-panel';
   const STAGE = '.dock-stage';
