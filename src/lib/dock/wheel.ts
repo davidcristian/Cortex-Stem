@@ -7,10 +7,10 @@
  *
  * Vertical travel is added up in CSS pixels: `deltaY` as it is for
  * `deltaMode` 0 (pixels), times 40 for 1 (lines) and times the viewport's
- * height for 2 (pages). Every 100 px is one notch, `next` for travel towards
- * the user (a positive `deltaY`: the wheel turned down, two fingers drawn
- * towards you on a touchpad), `previous` away; the rest is kept for the
- * next event, so a touchpad's small steps add up to notches too. The rest
+ * height for 2 (pages). Every 100 px is one notch, `next` for a positive
+ * `deltaY` (the wheel turned towards the user, a touchpad scroll that would
+ * move a page down), `previous` for a negative one; the rest is kept for
+ * the next event, so a touchpad's small steps add up to notches too. The rest
  * belongs to one item: over another item, or over none, the count starts
  * again. An event that goes more sideways than up or down (a tilt wheel,
  * Shift and the wheel, a sideways swipe) is not a vertical scroll and
