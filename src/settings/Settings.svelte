@@ -624,6 +624,34 @@
                 })}
             />
           </SettingRow>
+          <SettingRow
+            id="item-quick-settings"
+            label="Quick Settings"
+            description="Opens Windows' quick settings: network, volume, battery"
+          >
+            <Toggle
+              id="item-quick-settings"
+              checked={settings.items.quickSettings}
+              onchange={(v) =>
+                edit((s) => {
+                  s.items.quickSettings = v;
+                })}
+            />
+          </SettingRow>
+          <SettingRow
+            id="item-notification-center"
+            label="Notification Center"
+            description="Opens your notifications and the calendar"
+          >
+            <Toggle
+              id="item-notification-center"
+              checked={settings.items.notificationCenter}
+              onchange={(v) =>
+                edit((s) => {
+                  s.items.notificationCenter = v;
+                })}
+            />
+          </SettingRow>
           <SettingRow id="item-recycle-bin" label="Recycle Bin">
             <Toggle
               id="item-recycle-bin"

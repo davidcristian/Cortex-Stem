@@ -1448,6 +1448,168 @@ test.describe('Start, Task View and Show Desktop', () => {
   });
 });
 
+test.describe('Quick Settings and Notification Center', () => {
+  const KINDS = [
+    {
+      kind: 'quickSettings',
+      key: 'fixed:quick-settings',
+      title: 'Quick Settings',
+      action: 'openQuickSettings',
+    },
+    {
+      kind: 'notificationCenter',
+      key: 'fixed:notification-center',
+      title: 'Notification Center',
+      action: 'openNotificationCenter',
+    },
+  ] as const;
+  const BOTH = KINDS.map(({ kind }) => `.slot[data-kind="${kind}"]`).join(', ');
+  /** The dock's last slots with both on: one separator, the two, the bin. */
+  const TRAILING = ['sep:3', ...KINDS.map(({ key }) => key), 'fixed:recycle-bin'];
+
+  /** The keys of the rendered slots (items and separators), in dock order. */
+  function keys(page: Page): Promise<string[]> {
+    return page
+      .locator('.dock-panel > .slot:not([data-leaving])')
+      .evaluateAll((els) => els.map((el) => (el as HTMLElement).dataset.key ?? ''));
+  }
+
+  /** What the mock recorded for one call type, oldest first. */
+  function recorded(page: Page, type: string, field: string): Promise<unknown[]> {
+    return page.evaluate(
+      ([t, f]) =>
+        ((window as unknown as DemoWindow).__dockMock?.calls ?? [])
+          .filter((c) => c.type === t)
+          .map((c) => c[f]),
+      [type, field] as const,
+    );
+  }
+
+  /** The focused item's key, or `null` when the focus is not on an item. */
+  function focusedKey(page: Page): Promise<string | null> {
+    return page.evaluate(() => (document.activeElement as HTMLElement | null)?.dataset.key ?? null);
+  }
+
+  /** Both on, as the settings window would; wait until they are drawn and still. */
+  async function switchOn(page: Page): Promise<void> {
+    await patchSettings(page, { items: { quickSettings: true, notificationCenter: true } });
+    await expect.poll(async () => (await keys(page)).slice(-4)).toEqual(TRAILING);
+    await expect.poll(() => runningAnimations(page)).toBe(0);
+  }
+
+  test('are off by default; switched on they sit before the Recycle Bin with their icons, clicks, Enter and menus', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openDock(page);
+    await expect(page.locator(BOTH)).toHaveCount(0);
+    expect((await keys(page)).slice(-2)).toEqual(['sep:3', 'fixed:recycle-bin']);
+
+    await switchOn(page);
+    for (const { kind, title } of KINDS) {
+      const slot = page.locator(`.slot[data-kind="${kind}"]`);
+      await expect(slot).toHaveAttribute('aria-label', title);
+      await expect(slot).toHaveAttribute('data-icon', 'shell');
+      // Start stays the toolbar's one tab stop; these are reached by arrow.
+      await expect(slot).toHaveAttribute('tabindex', '-1');
+      // The page's own vector art, filling the icon box.
+      await expect.poll(async () => (await slot.locator('svg').boundingBox())?.width).toBe(ICON);
+      await expect(slot.locator('svg path, svg rect, svg circle').first()).toBeAttached();
+    }
+    // The two are drawn differently from each other and from the fallback tile.
+    const art = await page
+      .locator(BOTH)
+      .evaluateAll((els) => els.map((el) => el.querySelector('svg')!.innerHTML));
+    expect(art[0]).not.toBe(art[1]);
+    await page.screenshot({ path: `${OUT}/dock-quick-settings-dark.png` });
+
+    // A click on each asks for its primary action; the engine maps the item
+    // to its shell action. One at a time (the mock's latency is random).
+    for (const [i, { kind }] of KINDS.entries()) {
+      await page.locator(`.slot[data-kind="${kind}"]`).click();
+      await expect
+        .poll(() => recorded(page, 'shell', 'action'))
+        .toEqual(KINDS.slice(0, i + 1).map(({ action }) => action));
+    }
+
+    // Enter on each from the keyboard does the same: End is the bin, the
+    // arrow before it Notification Center, then Quick Settings.
+    await page.mouse.move(640, 10);
+    await page.keyboard.press('Tab');
+    await page.keyboard.press('End');
+    expect(await focusedKey(page)).toBe('fixed:recycle-bin');
+    await page.keyboard.press('ArrowLeft');
+    expect(await focusedKey(page)).toBe('fixed:notification-center');
+    await page.keyboard.press('Enter');
+    await expect
+      .poll(async () => (await recorded(page, 'shell', 'action')).slice(2))
+      .toEqual(['openNotificationCenter']);
+    await page.keyboard.press('ArrowLeft');
+    expect(await focusedKey(page)).toBe('fixed:quick-settings');
+    await page.keyboard.press('Enter');
+    await expect
+      .poll(async () => (await recorded(page, 'shell', 'action')).slice(2))
+      .toEqual(['openNotificationCenter', 'openQuickSettings']);
+    await page.keyboard.press('Tab');
+
+    // A right-click on each asks for its native menu (built by Rust).
+    for (const [i, { kind }] of KINDS.entries()) {
+      await page.locator(`.slot[data-kind="${kind}"]`).click({ button: 'right' });
+      await expect
+        .poll(() => recorded(page, 'showItemMenu', 'itemKey'))
+        .toEqual(KINDS.slice(0, i + 1).map(({ key }) => key));
+    }
+
+    // Both off, live: they go, and the separator before the bin stays.
+    await page.mouse.move(640, 10);
+    await patchSettings(page, { items: { quickSettings: false, notificationCenter: false } });
+    await expect(page.locator(BOTH)).toHaveCount(0);
+    await expect
+      .poll(async () => (await keys(page)).slice(-2))
+      .toEqual(['sep:3', 'fixed:recycle-bin']);
+  });
+
+  test('in the light theme', async ({ page }) => {
+    await page.emulateMedia({ colorScheme: 'light' });
+    await openDock(page);
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+    await switchOn(page);
+    await page.screenshot({ path: `${OUT}/dock-quick-settings-light.png` });
+  });
+
+  test('on a left dock: in the column just above the Recycle Bin', async ({ page }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await page.setViewportSize({ width: 360, height: 900 });
+    await openDock(page, 'mock=1&position=left');
+    await switchOn(page);
+    const order = await page.$$eval('.dock-panel > .slot:not([data-leaving])', (els) =>
+      els.map((el) => {
+        const r = el.getBoundingClientRect();
+        return {
+          key: (el as HTMLElement).dataset.key ?? '',
+          x: r.left,
+          y: r.top,
+          bottom: r.bottom,
+        };
+      }),
+    );
+    const tail = order.slice(-4);
+    expect(tail.map((s) => s.key)).toEqual(TRAILING);
+    // One column, top to bottom, every slot inside the window.
+    for (let i = 1; i < order.length; i += 1) {
+      expect(order[i]!.y).toBeGreaterThan(order[i - 1]!.y);
+    }
+    expect(order.at(-1)!.bottom).toBeLessThanOrEqual(900);
+    const xs = new Set(
+      await page
+        .locator(BOTH)
+        .evaluateAll((els) => els.map((el) => Math.round(el.getBoundingClientRect().left))),
+    );
+    expect(xs.size).toBe(1);
+    await page.screenshot({ path: `${OUT}/dock-quick-settings-left.png` });
+  });
+});
+
 test.describe('attention', () => {
   const EXPLORER = `${APP_SLOT}[data-key="app:exe:c:/windows/explorer.exe"]`;
   const EXPLORER_WINDOW = 1;
@@ -3284,6 +3446,42 @@ test.describe('settings window', () => {
     await expect(showDesktop).toBeChecked();
     await page.locator('#h-items').scrollIntoViewIfNeeded();
     await page.screenshot({ path: `${OUT}/settings-items.png` });
+  });
+
+  test('Quick Settings and Notification Center have switches, off by default, that apply at once', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openSettings(page);
+    const saved = async (): Promise<Settings['items'] | undefined> =>
+      (await page.evaluate(SETTINGS_MOCK))?.items;
+    const quickSettings = page.locator('#item-quick-settings');
+    const notificationCenter = page.locator('#item-notification-center');
+    await expect(quickSettings).not.toBeChecked();
+    await expect(notificationCenter).not.toBeChecked();
+    await expect(quickSettings).toHaveAccessibleName('Quick Settings');
+    await expect(notificationCenter).toHaveAccessibleName('Notification Center');
+    await expect(page.locator('#item-quick-settings-description')).toHaveText(/volume/);
+    await expect(page.locator('#item-notification-center-description')).toHaveText(/notifications/);
+    // In the dock's order: after Show Desktop, before the Recycle Bin.
+    const rows = await page
+      .locator('section[aria-labelledby="h-items"] [role="switch"]')
+      .evaluateAll((els) => els.map((el) => el.id));
+    expect(rows.indexOf('item-quick-settings')).toBe(rows.indexOf('item-show-desktop') + 1);
+    expect(rows.indexOf('item-notification-center')).toBe(rows.indexOf('item-quick-settings') + 1);
+    expect(rows.indexOf('item-recycle-bin')).toBe(rows.indexOf('item-notification-center') + 1);
+
+    await quickSettings.click();
+    await expect.poll(async () => (await saved())?.quickSettings).toBe(true);
+    await notificationCenter.click();
+    await expect.poll(async () => (await saved())?.notificationCenter).toBe(true);
+    await expect(page.locator('.status')).toHaveText('Saved');
+    await expect(quickSettings).toBeChecked();
+    await expect(notificationCenter).toBeChecked();
+    await notificationCenter.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: `${OUT}/settings-items-quick-settings.png` });
+    await quickSettings.click();
+    await expect.poll(async () => (await saved())?.quickSettings).toBe(false);
   });
 
   test('follows a contrast theme and the accent of Windows; forced colours keep switches and sliders readable', async ({

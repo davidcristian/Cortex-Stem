@@ -59,6 +59,39 @@
     />
     <path d="M26 48h12M32 42v6" stroke="currentColor" stroke-width="3" stroke-linecap="round" />
     <rect x="36" y="30" width="10" height="8" rx="1.5" fill="currentColor" opacity="0.8" />
+  {:else if name === 'quickSettings'}
+    <!-- Two toggle switches, one on and one off: Windows' quick settings. -->
+    <rect x="2" y="2" width="60" height="60" rx="14" fill="var(--tile-neutral)" />
+    <rect x="12" y="15" width="40" height="15" rx="7.5" fill="currentColor" />
+    <circle cx="44.5" cy="22.5" r="4.5" fill="rgb(var(--panel-tint))" />
+    <rect
+      x="13.5"
+      y="35.5"
+      width="37"
+      height="12"
+      rx="6"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="3"
+    />
+    <circle cx="21.5" cy="41.5" r="3.5" fill="currentColor" />
+  {:else if name === 'notificationCenter'}
+    <!-- A bell: Windows' notification center. -->
+    <rect x="2" y="2" width="60" height="60" rx="14" fill="var(--tile-neutral)" />
+    <path
+      d="M20 39V28a12 12 0 0 1 24 0v11l3.5 4.5h-31Z"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="3"
+      stroke-linejoin="round"
+    />
+    <path
+      d="M27.5 47.5a4.5 4.5 0 0 0 9 0M32 12.5v3.5"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="3"
+      stroke-linecap="round"
+    />
   {:else if name === 'recycle-bin-empty' || name === 'recycle-bin-full'}
     <!-- A free-standing silver bin, like the macOS Trash: fluted body with a
          horizontal "cylinder" gradient, a flared rim, and a lid that sits flat

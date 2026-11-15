@@ -44,7 +44,8 @@ items, attention flashing, an Acrylic or Mica backdrop option, and a keyboard
 shortcut that shows or hides the dock.
 
 **Status.** Done, except the backdrop option. Theme sync also follows
-Windows' _Transparency effects_.
+Windows' _Transparency effects_, and Quick Settings and Notification Center
+items exist besides the ones above.
 
 The backdrop option is an experimental prototype. The settings file accepts
 `acrylic` and `mica` for `appearance.backdrop`, and the settings page does not
