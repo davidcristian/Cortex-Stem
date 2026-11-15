@@ -5575,14 +5575,15 @@ test.describe('theme presets and the user dock.css', () => {
       await row.scrollIntoViewIfNeeded();
       await page.screenshot({ path: `${OUT}/settings-user-css.png` });
 
-      // A refusal from Rust is the row's own notice.
+      // A refusal from Rust is the row's own notice: here the one it gives
+      // when neither the default app for `.css` nor Notepad opens the file.
+      const refusal =
+        'could not open dock.css with its default app (no application is associated) or with Notepad (the system cannot find the file specified)';
       await page.evaluate((message) => {
         (window as unknown as DemoWindow).__dockMock?.failNextCommand(message);
-      }, 'could not open dock.css with its default app: no application is associated');
+      }, refusal);
       await page.getByRole('button', { name: 'Edit dock.css' }).click();
-      await expect(page.locator('.file-error')).toHaveText(
-        "Couldn't open dock.css: could not open dock.css with its default app: no application is associated",
-      );
+      await expect(page.locator('.file-error')).toHaveText(`Couldn't open dock.css: ${refusal}`);
       await expect(page.locator('.status')).toHaveText('Saved');
       // The next attempt clears it.
       await page.getByRole('button', { name: 'Reload dock.css' }).click();
