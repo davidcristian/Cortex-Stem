@@ -8,7 +8,10 @@
   interface Props {
     /** The key without its `shell:` prefix, e.g. `start`, `recycle-bin-full`. */
     name: string;
-    /** The clock face's text (`shell:clock`); `null` draws the bare tile. */
+    /**
+     * The clock face's text (`shell:clock`), already in the user's
+     * regional format (`clockText`); `null` draws the bare tile.
+     */
     clock?: ClockText | null;
     /** `DockState.power`, for the battery face (`shell:battery`). */
     power?: PowerStatus | null;
@@ -111,8 +114,9 @@
       stroke-linecap="round"
     />
   {:else if name === 'clock'}
-    <!-- The time over the short weekday and day, in the page's
-         locale; the day period of a 12-hour clock at half size. -->
+    <!-- The time over the short weekday and day, in the user's
+         regional format (DockState.clockFormat); the day period of a
+         12-hour clock at half size, a 24-hour time larger without one. -->
     <rect x="2" y="2" width="60" height="60" rx="14" fill="var(--tile-neutral)" />
     {#if clock !== null}
       <text class="face time" x="32" y="31" font-size={timeSize} text-anchor="middle"

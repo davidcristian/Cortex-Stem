@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import type { ClockFormat } from '$lib/ipc/generated/ClockFormat';
 import type { PowerStatus } from '$lib/ipc/generated/PowerStatus';
 
 import { batteryFace, clockText, msUntilNextMinute, timeFontSize } from './faces';
@@ -7,6 +8,13 @@ import { batteryFace, clockText, msUntilNextMinute, timeFontSize } from './faces
 /** Sunday 15 November 2026, 10:42:30.250 local time. */
 const SUNDAY_MORNING = new Date(2026, 10, 15, 10, 42, 30, 250);
 const EVENING = new Date(2026, 10, 15, 22, 7, 0, 0);
+const AFTERNOON = new Date(2026, 10, 15, 14, 42, 0, 0);
+const AFTER_MIDNIGHT = new Date(2026, 10, 16, 0, 7, 0, 0);
+
+/** `DockState.clockFormat`: a locale, and by default the locale's own hour cycle. */
+function fmt(locale: string | null, hour12: boolean | null = null): ClockFormat {
+  return { locale, hour12 };
+}
 
 function power(patch: Partial<PowerStatus>): PowerStatus {
   return { hasBattery: true, percent: 76, charging: false, onAc: false, saver: false, ...patch };
@@ -22,18 +30,18 @@ function plain(s: string): string {
 
 describe('clockText', () => {
   it('splits a 12-hour time into the time and its day period', () => {
-    const text = clockText(SUNDAY_MORNING, 'en-US');
+    const text = clockText(SUNDAY_MORNING, fmt('en-US'));
     expect(text.time).toBe('10:42');
     expect(text.dayPeriod).toBe('AM');
     expect(text.periodFirst).toBe(false);
     expect(text.weekday).toBe('Sun');
     expect(text.day).toBe('15');
     expect(plain(text.full)).toBe('Sunday, November 15, 2026 at 10:42 AM');
-    expect(clockText(EVENING, 'en-US')).toMatchObject({ time: '10:07', dayPeriod: 'PM' });
+    expect(clockText(EVENING, fmt('en-US'))).toMatchObject({ time: '10:07', dayPeriod: 'PM' });
   });
 
   it('keeps a 24-hour time whole, with no day period', () => {
-    const text = clockText(EVENING, 'de-DE');
+    const text = clockText(EVENING, fmt('de-DE'));
     expect(text.time).toBe('22:07');
     expect(text.dayPeriod).toBe('');
     expect(text.periodFirst).toBe(false);
@@ -42,18 +50,68 @@ describe('clockText', () => {
     expect(text.day).toBe('15');
     expect(text.full).toContain('Sonntag');
     expect(text.full).toContain('22:07');
-    expect(clockText(SUNDAY_MORNING, 'en-GB').time).toBe('10:42');
+    expect(clockText(SUNDAY_MORNING, fmt('en-GB')).time).toBe('10:42');
   });
 
   it('notes a day period written before the time', () => {
-    const text = clockText(EVENING, 'ko-KR');
+    const text = clockText(EVENING, fmt('ko-KR'));
     expect(text.dayPeriod).toBe('오후');
     expect(text.periodFirst).toBe(true);
     expect(text.time).toBe('10:07');
   });
 
-  it('follows the default locale when none is given', () => {
-    expect(clockText(SUNDAY_MORNING)).toEqual(clockText(SUNDAY_MORNING, undefined));
+  it('follows the page when no format is known', () => {
+    expect(clockText(SUNDAY_MORNING)).toEqual(clockText(SUNDAY_MORNING, null));
+    expect(clockText(SUNDAY_MORNING, fmt(null))).toEqual(clockText(SUNDAY_MORNING));
+    expect(clockText(AFTERNOON, fmt(null))).toEqual(clockText(AFTERNOON));
+  });
+});
+
+describe("clockText in the user's regional format (v1.25)", () => {
+  it("takes the region's own hour cycle when Windows names none", () => {
+    expect(clockText(AFTERNOON, fmt('en-GB'))).toMatchObject({ time: '14:42', dayPeriod: '' });
+    expect(clockText(AFTERNOON, fmt('en-US'))).toMatchObject({ time: '2:42', dayPeriod: 'PM' });
+  });
+
+  it('writes a 24-hour time in a 12-hour region (a custom short time with H)', () => {
+    const text = clockText(AFTERNOON, fmt('en-US', false));
+    expect(text).toMatchObject({ time: '14:42', dayPeriod: '', periodFirst: false });
+    expect(text.weekday).toBe('Sun');
+    expect(plain(text.full)).toBe('Sunday, November 15, 2026 at 14:42');
+    // 0 to 23 (Windows' H), never 24.
+    expect(clockText(AFTER_MIDNIGHT, fmt('en-US', false)).time).toMatch(/^0?0:07$/);
+  });
+
+  it('writes a 12-hour time in a 24-hour region (a custom short time with h)', () => {
+    const text = clockText(AFTERNOON, fmt('en-GB', true));
+    expect(text.time).toBe('2:42');
+    expect(text.dayPeriod.toLowerCase()).toBe('pm');
+    expect(plain(text.full)).toContain('15 November 2026');
+    expect(plain(text.full)).toMatch(/2:42 pm$/i);
+    // 1 to 12 (Windows' h), never 0, in a locale whose own 12-hour clock
+    // starts at 0.
+    const japanese = clockText(AFTER_MIDNIGHT, fmt('ja-JP', true));
+    expect(japanese.time).toBe('12:07');
+    expect(japanese.periodFirst).toBe(true);
+    expect(japanese.dayPeriod).not.toBe('');
+  });
+
+  it("writes the date in the region's language and order", () => {
+    const text = clockText(AFTERNOON, fmt('en-GB', false));
+    expect(text).toMatchObject({ time: '14:42', weekday: 'Sun', day: '15' });
+    expect(plain(text.full)).toContain('15 November 2026');
+    expect(plain(text.full)).toContain('14:42');
+    const german = clockText(AFTERNOON, fmt('de-DE', false));
+    expect(german.full).toContain('Sonntag');
+    expect(german.full).toContain('14:42');
+  });
+
+  it("falls back to the page's own locale for a name Intl rejects, keeping the hour cycle", () => {
+    for (const bad of ['de-DE_phoneb', 'not a locale', '']) {
+      expect(clockText(AFTERNOON, fmt(bad, false))).toEqual(clockText(AFTERNOON, fmt(null, false)));
+      expect(clockText(AFTERNOON, fmt(bad))).toEqual(clockText(AFTERNOON));
+    }
+    expect(clockText(AFTERNOON, fmt('not a locale', false)).time).toMatch(/^14[:.]42$/);
   });
 });
 

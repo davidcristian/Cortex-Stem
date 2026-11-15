@@ -11,6 +11,7 @@
   import { clockText, msUntilNextMinute } from '$lib/icons/faces';
   import ShellIcon from '$lib/icons/ShellIcon.svelte';
   import { isShellIconKey } from '$lib/ipc/backend';
+  import type { ClockFormat } from '$lib/ipc/generated/ClockFormat';
   import type { DockItem } from '$lib/ipc/generated/DockItem';
   import type { PowerStatus } from '$lib/ipc/generated/PowerStatus';
 
@@ -70,6 +71,12 @@
      * `null` (the default) before the page has a state.
      */
     power?: PowerStatus | null;
+    /**
+     * `DockState.clockFormat`: the clock item formats its face, its
+     * title pill and its accessible name in it. `null` (the default) before
+     * the page has a state: the page's own locale.
+     */
+    clockFormat?: ClockFormat | null;
     onprimary: (item: DockItem) => void;
     onmiddle: (item: DockItem) => void;
     /**
@@ -100,6 +107,7 @@
     tabStop,
     dropTarget,
     power = null,
+    clockFormat = null,
     onprimary,
     onmiddle,
     oncontext,
@@ -127,10 +135,12 @@
   const windowCount = $derived(item.windows.length);
 
   /**
-   * The clock item reads the page's own clock: `now` is set when the
-   * item mounts, at each minute boundary by one `setTimeout`, and when the
-   * page becomes visible again (after a sleep the timer may be late). Only a
-   * clock item runs the timer, and only while it is mounted.
+   * The clock item reads the page's own clock and writes it in the
+   * user's regional format (`clockFormat`; a new one is applied at once,
+   * without waiting for the minute): `now` is set when the item mounts, at
+   * each minute boundary by one `setTimeout`, and when the page becomes
+   * visible again (after a sleep the timer may be late). Only a clock item
+   * runs the timer, and only while it is mounted.
    */
   const isClock = $derived(item.kind === 'clock');
   let now = $state<Date | null>(null);
@@ -158,7 +168,7 @@
       now = null;
     };
   });
-  const clock = $derived(isClock && now !== null ? clockText(now) : null);
+  const clock = $derived(isClock && now !== null ? clockText(now, clockFormat) : null);
   /** The title pill's text and the accessible name's start: the clock's is the full date and time. */
   const title = $derived(clock?.full ?? item.title);
   /**

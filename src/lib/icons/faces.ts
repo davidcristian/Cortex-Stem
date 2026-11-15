@@ -4,9 +4,10 @@
  * `DockItem.svelte` runs the clock's minute timer.
  */
 
+import type { ClockFormat } from '$lib/ipc/generated/ClockFormat';
 import type { PowerStatus } from '$lib/ipc/generated/PowerStatus';
 
-/** What the clock face shows, in the page's locale. */
+/** What the clock face shows, in the user's regional format. */
 export interface ClockText {
   /** The time without its day period: `10:42` (`hour: 'numeric', minute: '2-digit'`). */
   time: string;
@@ -23,11 +24,14 @@ export interface ClockText {
 }
 
 /**
- * The clock's text for `now`. `locale` is for tests; the page passes
- * nothing, which is the page's own locale.
+ * The clock's text for `now` in `format` (`DockState.clockFormat`,
+ * docs/ipc/widget-items.md "The clock's regional format"): its `locale`, or
+ * the page's own while that is `null`, and its hour cycle, or the locale's own
+ * while `hour12` is `null`. `null` (the default) is the page's own locale and
+ * hour cycle.
  */
-export function clockText(now: Date, locale?: string): ClockText {
-  const parts = new Intl.DateTimeFormat(locale, {
+export function clockText(now: Date, format: ClockFormat | null = null): ClockText {
+  const parts = clockFormatter(format, {
     hour: 'numeric',
     minute: '2-digit',
   }).formatToParts(now);
@@ -41,10 +45,37 @@ export function clockText(now: Date, locale?: string): ClockText {
       .trim(),
     dayPeriod: periodAt === -1 ? '' : parts[periodAt]!.value,
     periodFirst: periodAt !== -1 && periodAt < hourAt,
-    weekday: new Intl.DateTimeFormat(locale, { weekday: 'short' }).format(now),
-    day: new Intl.DateTimeFormat(locale, { day: 'numeric' }).format(now),
-    full: new Intl.DateTimeFormat(locale, { dateStyle: 'full', timeStyle: 'short' }).format(now),
+    weekday: clockFormatter(format, { weekday: 'short' }).format(now),
+    day: clockFormatter(format, { day: 'numeric' }).format(now),
+    full: clockFormatter(format, { dateStyle: 'full', timeStyle: 'short' }).format(now),
   };
+}
+
+/**
+ * An `Intl.DateTimeFormat` with `options` in `format`'s locale and hour
+ * cycle. Windows' `h` is an hour from 1 to 12 and `H` one from 0 to 23,
+ * which are Intl's hour cycles `h12` and `h23`; `hour12: true` would be
+ * 0 to 11 in some locales (ja-JP). A locale name Intl rejects (a
+ * `RangeError`) falls back to the page's own, keeping the hour cycle.
+ */
+function clockFormatter(
+  format: ClockFormat | null,
+  options: Intl.DateTimeFormatOptions,
+): Intl.DateTimeFormat {
+  const withCycle: Intl.DateTimeFormatOptions =
+    format === null || format.hour12 === null
+      ? options
+      : { ...options, hourCycle: format.hour12 ? 'h12' : 'h23' };
+  if (format !== null && format.locale !== null) {
+    try {
+      return new Intl.DateTimeFormat(format.locale, withCycle);
+    } catch (error) {
+      if (!(error instanceof RangeError)) {
+        throw error;
+      }
+    }
+  }
+  return new Intl.DateTimeFormat(undefined, withCycle);
 }
 
 /**

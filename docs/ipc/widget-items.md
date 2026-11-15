@@ -31,7 +31,8 @@ Two optional fixed items that are widgets, items that draw live data:
   snapshot, and after that only when the status differs from the last one sent. It unregisters
   the notifications at stop.
 - The page draws the faces. The clock shows the time (`Intl.DateTimeFormat` with
-  `hour: 'numeric', minute: '2-digit'`, in the page's locale) over the short
+  `hour: 'numeric', minute: '2-digit'`, in the page's locale or in the regional format from Rust,
+  see [The clock's regional format](#the-clocks-regional-format-v125) below) over the short
   weekday and the day. Its title pill and accessible name are the full date and time. It updates
   at each minute boundary with one
   `setTimeout` (none while no clock item is shown), and again on `visibilitychange`. The battery

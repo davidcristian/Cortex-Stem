@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { expect, test, type Locator, type Page } from '@playwright/test';
 
 import type { AppInfo } from '../src/lib/ipc/generated/AppInfo';
+import type { ClockFormat } from '../src/lib/ipc/generated/ClockFormat';
 import type { DockState } from '../src/lib/ipc/generated/DockState';
 import type { MonitorInfo } from '../src/lib/ipc/generated/MonitorInfo';
 import type { PowerStatus } from '../src/lib/ipc/generated/PowerStatus';
@@ -75,6 +76,8 @@ interface DemoWindow {
     userCssOnDisk: () => string | null;
     /** `PowerChanged` as the events thread reports it: only a different reading counts. */
     setPower: (status: PowerStatus) => void;
+    /** `ClockFormatChanged` after a `WM_SETTINGCHANGE` for `intl` (v1.25). */
+    setClockFormat: (format: ClockFormat) => void;
     /** `hide_app`: what *Hide from Stem* in an app's native menu runs. */
     hideApp: (appId: string) => Promise<void>;
     /** `unhide_app`. */
@@ -2097,6 +2100,101 @@ test.describe('clock and battery', () => {
     // And from there it keeps to the minute.
     await page.clock.runFor(40_000);
     await expect(clock.locator('text.time')).toHaveText(/^1:08\sPM$/);
+  });
+
+  test.describe("in the user's regional format (v1.25)", () => {
+    // An afternoon, so a 24-hour time and a 12-hour one differ at a glance.
+    const AFTERNOON = '2026-11-15T14:42:00+01:00';
+    /** en-GB writes the full date day first; the comma after the weekday depends on ICU. */
+    const BRITISH_FULL = /^Sunday,? 15 November 2026 at 14:42$/;
+    const AMERICAN_FULL = /^Sunday, November 15, 2026 at 2:42\sPM$/;
+
+    /** A new regional format, as the events thread reports it after an `intl` broadcast. */
+    async function setClockFormat(page: Page, format: ClockFormat): Promise<void> {
+      await page.evaluate(
+        (f) => (window as unknown as DemoWindow).__dockMock!.setClockFormat(f),
+        format,
+      );
+    }
+
+    /** The page with only the clock on, at the fixed afternoon, on `position`. */
+    async function openClock(page: Page, position: 'bottom' | 'left'): Promise<Locator> {
+      await page.clock.setFixedTime(AFTERNOON);
+      await page.emulateMedia({ colorScheme: 'dark' });
+      if (position === 'left') {
+        await page.setViewportSize({ width: 360, height: 900 });
+      }
+      await openDock(page, position === 'left' ? 'mock=1&position=left' : 'mock=1');
+      await patchSettings(page, { items: { clock: true } });
+      const clock = page.locator(CLOCK);
+      await expect(clock).toBeVisible();
+      await expect.poll(() => runningAnimations(page)).toBe(0);
+      return clock;
+    }
+
+    for (const position of ['bottom', 'left'] as const) {
+      test(`a 24-hour en-GB and a 12-hour en-US clock on a ${position} dock`, async ({ page }) => {
+        const clock = await openClock(page, position);
+        // Nothing known from Rust yet: the page's own locale (en-US here).
+        await expect(clock.locator('text.time')).toHaveText(/^2:42\sPM$/);
+        await expect(clock).toHaveAttribute('aria-label', AMERICAN_FULL);
+
+        // A British regional format: 24 hours, the day first, at once
+        // (the fixed clock does not tick, so no minute timer redraws it).
+        await setClockFormat(page, { locale: 'en-GB', hour12: false });
+        await expect(clock.locator('text.time')).toHaveText('14:42');
+        await expect(clock.locator('tspan.period')).toHaveText(['', '']);
+        await expect(clock.locator('text.date')).toHaveText('Sun 15');
+        await expect(clock).toHaveAttribute('aria-label', BRITISH_FULL);
+        await expect(clock).toHaveAttribute('data-kind', 'clock');
+        await expect.poll(() => runningAnimations(page)).toBe(0);
+        await page.screenshot({ path: `${OUT}/dock-clock-24h-en-GB-${position}.png` });
+        // The title pill says the same.
+        await clock.hover();
+        await expect(page.locator('.tooltip')).toHaveText(BRITISH_FULL);
+        await page.mouse.move(position === 'left' ? 340 : 640, 10);
+        await expect(page.locator('.tooltip')).toHaveCount(0);
+
+        // Back to a US regional format: 12 hours with the day period.
+        await setClockFormat(page, { locale: 'en-US', hour12: true });
+        await expect(clock.locator('text.time')).toHaveText(/^2:42\sPM$/);
+        await expect(clock.locator('text.date')).toHaveText('Sun 15');
+        await expect(clock).toHaveAttribute('aria-label', AMERICAN_FULL);
+        await expect.poll(() => runningAnimations(page)).toBe(0);
+        await page.screenshot({ path: `${OUT}/dock-clock-12h-en-US-${position}.png` });
+      });
+    }
+
+    test('a custom short time overrides the region; a name Intl rejects falls back to the page', async ({
+      page,
+    }) => {
+      const errors: string[] = [];
+      page.on('pageerror', (error) => errors.push(error.message));
+      const clock = await openClock(page, 'bottom');
+
+      // A US region with a custom 24-hour short time (`HH:mm`).
+      await setClockFormat(page, { locale: 'en-US', hour12: false });
+      await expect(clock.locator('text.time')).toHaveText('14:42');
+      await expect(clock).toHaveAttribute('aria-label', /^Sunday, November 15, 2026 at 14:42$/);
+      // A British region with a custom 12-hour one (`h:mm tt`).
+      await setClockFormat(page, { locale: 'en-GB', hour12: true });
+      await expect(clock.locator('text.time')).toHaveText(/^2:42\spm$/);
+      // (Intl writes this hour with two digits in the full form: `02:42 pm`.)
+      await expect(clock).toHaveAttribute('aria-label', /15 November 2026 at 0?2:42\spm$/);
+      // The region alone: its own hour cycle.
+      await setClockFormat(page, { locale: 'en-GB', hour12: null });
+      await expect(clock.locator('text.time')).toHaveText('14:42');
+
+      // A name Intl rejects: the page's own locale, still 24 hours.
+      await setClockFormat(page, { locale: 'not a locale', hour12: false });
+      await expect(clock.locator('text.time')).toHaveText('14:42');
+      await expect(clock).toHaveAttribute('aria-label', /^Sunday, November 15, 2026 at 14:42$/);
+      // Nothing known again: the page's own locale and hour cycle.
+      await setClockFormat(page, { locale: null, hour12: null });
+      await expect(clock.locator('text.time')).toHaveText(/^2:42\sPM$/);
+      await expect(clock).toHaveAttribute('aria-label', AMERICAN_FULL);
+      expect(errors).toEqual([]);
+    });
   });
 });
 
