@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { panelRectReport } from '$lib/dock/geometry';
 import type { DockState } from '$lib/ipc/generated/DockState';
 import type { Settings } from '$lib/ipc/generated/Settings';
 
@@ -1148,6 +1149,56 @@ describe('report provenance (mirror of src-tauri/src/windows.rs)', () => {
     const top = fast({ position: 'top', viewportHeight: 300, viewportWidth: 1280 });
     await top.setDockPanelRect({ ...rect, y: 8 }, 'top', { width: 1280, height: 240 });
     expect(top.dockPanel()).toEqual({ x: 360, y: 8, width: 561, height: 64 });
+  });
+
+  it('a panel measured before a length change it has not measured yet converts to its real place', async () => {
+    // The page measured its panel centred in a window 1280 px long; the
+    // window is now 1000 px long (another work area) and the page has not
+    // measured again when something else makes it report (an auto-hide
+    // phase, a file drag). The panel is centred in the shorter window, 140
+    // px further towards the start; the report says which length its rect
+    // describes (`panelRectReport`), and the conversion moves it there.
+    const workArea = { x: 0, y: 0, ...SCREEN };
+    const cases = [
+      {
+        edge: 'bottom',
+        measured: { width: 1280, height: 240 },
+        now: { width: 1000, height: 240 },
+        rest: { x: 360, y: 168, width: 560, height: 64 },
+        real: { x: 220, y: 168, width: 560, height: 64 },
+      },
+      {
+        edge: 'top',
+        measured: { width: 1280, height: 240 },
+        now: { width: 1000, height: 300 },
+        rest: { x: 360, y: 8, width: 560, height: 64 },
+        real: { x: 220, y: 8, width: 560, height: 64 },
+      },
+      {
+        edge: 'left',
+        measured: { width: 240, height: 1280 },
+        now: { width: 240, height: 1000 },
+        rest: { x: 8, y: 360, width: 64, height: 560 },
+        real: { x: 8, y: 220, width: 64, height: 560 },
+      },
+      {
+        edge: 'right',
+        measured: { width: 240, height: 1280 },
+        now: { width: 300, height: 1000 },
+        rest: { x: 168, y: 360, width: 64, height: 560 },
+        real: { x: 228, y: 220, width: 64, height: 560 },
+      },
+    ] as const;
+    for (const { edge, measured, now, rest, real } of cases) {
+      const b = fast({ position: edge, viewportWidth: now.width, viewportHeight: now.height });
+      const report = panelRectReport(edge, rest, measured, now);
+      await b.setDockPanelRect(report.rect, edge, report.viewport);
+      expect(b.dockPanel(), edge).toEqual(panelOnScreen(real, workArea, now, edge));
+      // Sent with the viewport of the moment, the rect would be read as
+      // describing the shorter window and stay 140 px off.
+      await b.setDockPanelRect(report.rect, edge, now);
+      expect(b.dockPanel(), edge).not.toEqual(panelOnScreen(real, workArea, now, edge));
+    }
   });
 
   it('a report measured for another edge than the window’s is recorded and dropped', async () => {

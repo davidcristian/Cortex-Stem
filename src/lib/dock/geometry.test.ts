@@ -7,6 +7,7 @@ import {
   integerRect,
   LAYOUT_UNIT,
   magnifiedRise,
+  panelRectReport,
   rectContains,
   rectContainsPoint,
   sameHitRegion,
@@ -146,6 +147,81 @@ describe('edgeShift', () => {
     expect(edgeShift('bottom', { width: 2560, height: 1392 }, before)).toEqual({
       dx: 0,
       dy: -1242,
+    });
+  });
+});
+
+describe('panelRectReport', () => {
+  const wide = { width: 1280, height: 240 };
+  const tall = { width: 240, height: 1280 };
+  // Rest boxes centred along the edge, 8 px from its side, fractional as measured.
+  const row = { x: 360.25, y: 168, width: 559.5, height: 64 };
+  const topRow = { ...row, y: 8 };
+  const column = { x: 8, y: 360.25, width: 64, height: 559.5 };
+  const rightColumn = { ...column, x: 168 };
+
+  it('is the measurement rounded outwards in the viewport it was taken in when nothing changed', () => {
+    expect(panelRectReport('bottom', row, wide, wide)).toEqual({
+      rect: { x: 360, y: 168, width: 560, height: 64 },
+      viewport: wide,
+    });
+    expect(panelRectReport('top', topRow, wide, wide)).toEqual({
+      rect: { x: 360, y: 8, width: 560, height: 64 },
+      viewport: wide,
+    });
+    expect(panelRectReport('left', column, tall, tall)).toEqual({
+      rect: { x: 8, y: 360, width: 64, height: 560 },
+      viewport: tall,
+    });
+    expect(panelRectReport('right', rightColumn, tall, tall)).toEqual({
+      rect: { x: 168, y: 360, width: 64, height: 560 },
+      viewport: tall,
+    });
+  });
+
+  it('follows the panel into a window grown across the edge, in that viewport (a drag)', () => {
+    const grown = { width: 1280, height: 1392 };
+    expect(panelRectReport('bottom', row, wide, grown)).toEqual({
+      rect: { x: 360, y: 168 + 1152, width: 560, height: 64 },
+      viewport: grown,
+    });
+    expect(panelRectReport('top', topRow, wide, grown)).toEqual({
+      rect: { x: 360, y: 8, width: 560, height: 64 },
+      viewport: grown,
+    });
+    const wider = { width: 2560, height: 1280 };
+    expect(panelRectReport('right', rightColumn, tall, wider)).toEqual({
+      rect: { x: 168 + 2320, y: 360, width: 64, height: 560 },
+      viewport: wider,
+    });
+    expect(panelRectReport('left', column, tall, wider)).toEqual({
+      rect: { x: 8, y: 360, width: 64, height: 560 },
+      viewport: wider,
+    });
+  });
+
+  it('keeps the measured length after a length change not measured yet: the rect still describes it', () => {
+    // Another work area, 280 px shorter along the edge, before the next
+    // measurement: nothing moved the rect along the edge, so the viewport
+    // says the old length there (and the current thickness across).
+    const shorter = { width: 1000, height: 240 };
+    expect(panelRectReport('bottom', row, wide, shorter)).toEqual({
+      rect: { x: 360, y: 168, width: 560, height: 64 },
+      viewport: wide,
+    });
+    expect(panelRectReport('top', topRow, wide, shorter).viewport).toEqual(wide);
+    const lower = { width: 240, height: 1000 };
+    expect(panelRectReport('left', column, tall, lower).viewport).toEqual(tall);
+    expect(panelRectReport('right', rightColumn, tall, lower).viewport).toEqual(tall);
+    // Both at once on `bottom`: the thickness is the current one, the length the measured one.
+    const both = { width: 1000, height: 300 };
+    expect(panelRectReport('bottom', row, wide, both)).toEqual({
+      rect: { x: 360, y: 228, width: 560, height: 64 },
+      viewport: { width: 1280, height: 300 },
+    });
+    expect(panelRectReport('right', rightColumn, tall, { width: 300, height: 1000 })).toEqual({
+      rect: { x: 228, y: 360, width: 64, height: 560 },
+      viewport: { width: 300, height: 1280 },
     });
   });
 });

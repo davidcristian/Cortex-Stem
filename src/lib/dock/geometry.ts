@@ -116,6 +116,49 @@ export function edgeShift(
   }
 }
 
+/**
+ * What `set_dock_panel_rect` carries besides the edge (docs/ipc/dock-panel.md,
+ * docs/ipc/report-provenance.md).
+ */
+export interface PanelRectReport {
+  /** The panel at rest, whole CSS px relative to `viewport`. */
+  rect: Rect;
+  /** The viewport `rect` is relative to, on each axis. */
+  viewport: Viewport;
+}
+
+/**
+ * The `set_dock_panel_rect` report for the panel at rest
+ * `rest` (fractional CSS px are fine), measured in the viewport
+ * `measuredIn` on `edge`, sent while the viewport is `now`.
+ *
+ * Across the edge the rect follows the panel into `now` (`edgeShift`: the
+ * window grows and shrinks across its edge with its edge side fixed, a
+ * drag's growth), so the viewport's side across the edge is `now`'s.
+ * Nothing moves the rect along the edge, so the viewport's side along the
+ * edge stays `measuredIn`'s: after a length change the page has not
+ * measured yet (another work area or monitor; a report from an auto-hide
+ * phase, a file drag or the work area reaching the screen edge in
+ * between), the rect still describes the old length, and saying so lets
+ * Rust's re-anchoring (centred along the edge) put it where the panel is
+ * now. When nothing changed since the measurement, the viewport is `now`.
+ * Pure.
+ */
+export function panelRectReport(
+  edge: DockEdge,
+  rest: Rect,
+  measuredIn: Viewport,
+  now: Viewport,
+): PanelRectReport {
+  const { dx, dy } = edgeShift(edge, measuredIn, now);
+  const rect = integerRect({ ...rest, x: rest.x + dx, y: rest.y + dy });
+  const viewport =
+    axisOf(edge) === 'horizontal'
+      ? { width: measuredIn.width, height: now.height }
+      : { width: now.width, height: measuredIn.height };
+  return { rect, viewport };
+}
+
 /** How far a magnified icon of `iconSize` px sticks out beyond the panel (away from the edge), with `slack` px to spare. */
 export function magnifiedRise(iconSize: number, maxScale: number, slack: number): number {
   return iconSize * Math.max(0, maxScale - 1) + slack;

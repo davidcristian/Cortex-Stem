@@ -42,6 +42,7 @@
     hitRegionFor,
     integerRect,
     magnifiedRise,
+    panelRectReport,
     rectContainsPoint,
     sameHitRegion,
     sameRect,
@@ -49,6 +50,7 @@
     snapMarginProperties,
     snapOffsets,
     type HitRegion,
+    type PanelRectReport,
     type SnapMargins,
     type Viewport,
   } from '$lib/dock/geometry';
@@ -967,7 +969,7 @@
   let reported = { width: 0, height: 0 };
   let reportedHit: HitRegion | null = null;
   /** The resting panel of the latest `set_dock_panel_rect`, with the viewport it is relative to. */
-  let reportedPanel: { rect: Rect; viewport: Viewport } | null = null;
+  let reportedPanel: PanelRectReport | null = null;
   let measureFrame = 0;
 
   /** Measure on the next frame, at most once per frame. */
@@ -1160,29 +1162,29 @@
    * drag with its edge side fixed, so on `bottom` and `right` the panel
    * shifts by the growth (`edgeShift`), like the hit region's. It
    * goes with its provenance (docs/ipc/report-provenance.md): the
-   * edge the page is laid out for and the viewport the rect is relative to,
-   * which lets Rust re-anchor it to a window it resized meanwhile. Sent only
-   * when the rect or that viewport changed.
+   * edge the page is laid out for and the viewport the rect is relative to
+   * on each axis (`panelRectReport`: the current one across the edge, the
+   * measured one along it, where nothing moved the rect), which lets Rust
+   * re-anchor it to a window it resized meanwhile. Sent only when the rect
+   * or that viewport changed.
    */
   function reportDockPanel(): void {
     const rest = restingPanel();
     if (rest === null) {
       return;
     }
-    const viewport = viewportNow();
-    const { dx, dy } = edgeShift(edge, measuredViewport, viewport);
-    const panel = integerRect({ ...rest, x: rest.x + dx, y: rest.y + dy });
+    const next = panelRectReport(edge, rest, measuredViewport, viewportNow());
     if (
       reportedPanel !== null &&
-      sameRect(reportedPanel.rect, panel) &&
-      reportedPanel.viewport.width === viewport.width &&
-      reportedPanel.viewport.height === viewport.height
+      sameRect(reportedPanel.rect, next.rect) &&
+      reportedPanel.viewport.width === next.viewport.width &&
+      reportedPanel.viewport.height === next.viewport.height
     ) {
       return;
     }
-    reportedPanel = { rect: panel, viewport };
+    reportedPanel = next;
     void backend
-      .setDockPanelRect(panel, edge, viewport)
+      .setDockPanelRect(next.rect, edge, next.viewport)
       .catch(report('set_dock_panel_rect', false));
   }
 
