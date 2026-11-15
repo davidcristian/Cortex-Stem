@@ -216,6 +216,13 @@
 
   let bouncer = $state<HTMLDivElement>();
 
+  // The bounce value this item has played or was mounted with. A bounce is
+  // an event, not a state: only a value that changes plays, so an item that
+  // mounts later under the key of the last bounce (an app opened again, a
+  // window moved to another monitor's dock) or *Bounce on launch* turned
+  // off and on again does not replay it.
+  let seenBounce = untrack(() => bounce);
+
   // Bounce through the Web Animations API: it restarts cleanly when a second
   // launch happens mid-flight and composes with the magnification, which
   // sizes the same element rather than transforming it. Away from the edge;
@@ -223,7 +230,12 @@
   // the last bounce.
   $effect(() => {
     const el = bouncer;
-    if (bounce === 0 || !animate || !el) {
+    const serial = bounce;
+    if (serial === 0 || serial === seenBounce) {
+      return;
+    }
+    seenBounce = serial;
+    if (!animate || !el) {
       return;
     }
     const away = (percent: number): string => untrack(() => awayTranslate(edge, percent));

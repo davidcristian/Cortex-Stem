@@ -448,6 +448,16 @@ function setHidden(page: Page, appIds: string[], show = false): Promise<void> {
   );
 }
 
+/** A new Code window, after its only one closed: the item comes back under `CODE_KEY`. */
+const CODE_AGAIN: RawWindow = {
+  ...PAINT_WINDOW,
+  id: 98,
+  title: 'Welcome - Visual Studio Code',
+  className: 'Chrome_WidgetWin_1',
+  processId: 1098,
+  exePath: 'C:\\Users\\me\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe',
+};
+
 test.beforeAll(() => {
   mkdirSync(OUT, { recursive: true });
 });
@@ -1229,6 +1239,46 @@ test.describe('dock in mock mode', () => {
       }
       expect(await pinnedKeys(page)).toEqual(before);
     });
+  });
+
+  test('a launch bounce plays once: the item mounted again under its key does not replay it', async ({
+    page,
+  }) => {
+    await openDock(page);
+    const code = page.locator(`${APP_SLOT}[data-key="${CODE_KEY}"]`);
+    // The Web Animations bounce: neither a CSS transition (the lift) nor a CSS animation.
+    const bounces = (): Promise<number> =>
+      code
+        .locator('.bouncer')
+        .evaluate(
+          (el) =>
+            el
+              .getAnimations()
+              .filter((a) => !(a instanceof CSSTransition) && !(a instanceof CSSAnimation)).length,
+        );
+    // A middle click on Code (running, not pinned) launches it again: it bounces.
+    const box = (await code.boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down({ button: 'middle' });
+    await page.mouse.up({ button: 'middle' });
+    await expect.poll(() => callsOfType(page, 'launch')).toBe(1);
+    await expect.poll(bounces).toBe(1);
+    await page.mouse.move(640, 10);
+
+    // Its only window closes, so the unpinned item goes; Code opens again
+    // from elsewhere, within the bounce's 1.2 s: the new item stays still.
+    await page.evaluate((id) => {
+      (window as unknown as DemoWindow).__dockMock?.pushWindowRemoved(id);
+    }, CODE_WINDOW_ID);
+    await expect(code).toHaveCount(0);
+    await page.evaluate((raw) => {
+      (window as unknown as DemoWindow).__dockMock?.pushWindow(raw as RawWindow);
+    }, CODE_AGAIN);
+    await expect(code).toHaveCount(1);
+    await page.evaluate(
+      () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+    );
+    expect(await bounces()).toBe(0);
   });
 
   test('the running indicator dots reflect the window count', async ({ page }) => {
