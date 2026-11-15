@@ -2326,10 +2326,9 @@ pub fn reveal_all(app: &AppHandle) {
 /// ([`DockFocus::end`]). A click on a dock forgets only the window
 /// ([`DockFocus::supersede`]): the dock may still have the keyboard, and
 /// then a second press still lets go ([`DockFocus::holder`]). Kept in
-/// Tauri's managed state. The rules are its
-/// methods, which touch nothing but the lock, so they are tested without
-/// an app; the functions below that take an `AppHandle` only gather their
-/// inputs and log.
+/// Tauri's managed state. The rules are its methods, which touch nothing
+/// but the lock, so they are tested without an app; the functions below
+/// that take an `AppHandle` only gather their inputs and log.
 #[derive(Debug, Default)]
 pub struct DockFocus(Mutex<Option<FocusSession>>);
 
