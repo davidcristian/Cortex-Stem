@@ -2429,31 +2429,38 @@ fn show_dock_window(window: &WebviewWindow) -> tauri::Result<()> {
     })
 }
 
-/// Show and focus every window we have (the dock windows, and the settings
-/// window when it is open). Used when a second instance is started. A dock
-/// window that is on screen with its panel slid out by auto-hide is asked
-/// to bring the panel back instead (`dock://show`, as [`toggle_dock`] does).
+/// Show every dock window and bring the settings window to the front when
+/// it is open. Used when a second instance is started. A dock window that
+/// is on screen with its panel slid out by auto-hide is asked to bring the
+/// panel back instead (`dock://show`, as [`toggle_dock`] does). No
+/// dock window is focused: the docks never take the foreground on their
+/// own, and a dock given the keyboard outside a focus-shortcut
+/// session would have nothing to give it back to; the settings
+/// window is the only one that takes the foreground, whatever the order of
+/// Tauri's window map. Without it the app the user was in keeps the
+/// keyboard.
 pub fn reveal_all(app: &AppHandle) {
-    for (label, window) in app.webview_windows() {
-        if label.starts_with(DOCK_LABEL) && live_dock_window(app, &label).is_none() {
-            log::debug!("dock window {label:?} is closing; not revealed");
-            continue;
-        }
-        if label.starts_with(DOCK_LABEL)
-            && window.is_visible().unwrap_or(false)
-            && is_auto_hidden(app, &label)
-        {
+    for window in dock_windows(app) {
+        let label = window.label();
+        if window.is_visible().unwrap_or(false) && is_auto_hidden(app, label) {
             log::debug!("dock reveal requested by a second instance for {label:?}");
-            if let Err(e) = app.emit_to(&label, crate::events::SHOW, ()) {
+            if let Err(e) = app.emit_to(label, crate::events::SHOW, ()) {
                 log::warn!("reveal {label}: {e}");
             }
             continue;
         }
-        if let Err(e) = window.show().and_then(|()| window.set_focus()) {
+        if let Err(e) = show_dock_window(&window) {
             log::warn!("reveal {label}: {e}");
-        } else if label.starts_with(DOCK_LABEL) {
-            sync_dock_panel(&window, None);
-            crate::appbar::sync(app, &window);
+        }
+    }
+    if let Some(settings) = app.get_webview_window(SETTINGS_LABEL) {
+        let shown = settings
+            .unminimize()
+            .and_then(|()| settings.show())
+            .and_then(|()| settings.set_focus());
+        match shown {
+            Ok(()) => log::debug!("settings window brought to the front by a second instance"),
+            Err(e) => log::warn!("reveal {SETTINGS_LABEL}: {e}"),
         }
     }
 }
