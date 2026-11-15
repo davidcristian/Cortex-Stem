@@ -1,14 +1,69 @@
 # Performance budgets
 
-This file lists Stem's performance targets and times measured on one test PC.
+This file lists Stem's performance targets, how the dock page's idle work is checked, and
+times measured on one test PC.
 
 | Metric                                  | Target |
 |-----------------------------------------|--------|
-| Idle CPU (no window changes)            | ≈ 0 % (nothing polls except the Recycle Bin query every 5 s on `dock-recycle-bin` and the hit-test thread's 4 Hz `GetCursorPos` safety poll) |
+| Idle CPU (no window changes)            | ≈ 0 % (nothing polls except the Recycle Bin query every 5 s on `dock-recycle-bin` and the hit-test thread's 4 Hz `GetCursorPos` safety poll; the dock page, in the dev build, does no work once settled, which `e2e/idle.spec.ts` checks, see "The dock page at idle") |
 | Event → UI update                       | < 50 ms |
 | Startup to dock visible                 | < 1 s |
 | Memory (Rust side)                      | < 30 MB; WebView2 uses far more |
 | Icon extraction per app                 | off the UI thread, bounded (timeouts of at most 200 ms); from the disk cache after the first start |
+
+## The dock page at idle
+
+`e2e/idle.spec.ts`, part of `pnpm e2e:screenshots`, opens the dock page in
+mock mode in headless Chromium, one browser context per scenario. It runs
+against the dev build (`pnpm dev`). It checks that once the page has
+settled it does no work over a 3 s window:
+
+- CDP `Performance.getMetrics` shows no layout and no style recalculation,
+  at most 3 ms of script and at most 25 ms of main-thread tasks. On one PC
+  a settled page measured 0 ms of script and 0.7 to 2.2 ms of tasks, and up
+  to 3.8 ms of tasks while that PC was busy with other work;
+- no frame, timer or idle callback runs and no timer is set, and at the
+  end nothing repeats faster than once a minute;
+- `document.getAnimations()` has nothing running.
+
+Settled means: fonts and images are loaded, and for 250 ms in a row there
+is no running animation, no pending frame or idle callback, no timer due
+before the window would end (plus a 1 s margin), and nothing that repeats
+faster than once a minute. How often a timer repeats:
+
+- an interval: at its delay;
+- a timeout due on a minute of the wall clock: at most once a minute (the
+  clock item's tick);
+- any other timeout: the time from the due time of the last timeout from
+  the same call site that has run to this one's due time; while none from
+  that call site has run, its delay.
+
+Work once a minute is allowed, and the settle places the window between two
+runs.
+
+Scenarios:
+
+- at rest on every edge, with each theme preset, in light mode, with a
+  contrast theme and with transparency off;
+- after a hover ends (bottom and left edges);
+- after a launch bounce, a toast, a drag-reorder and an attention wiggle
+  end;
+- the clock item on, and a timeout set again each minute;
+- auto-hide shown under a resting pointer, slid out, and brought back from
+  the strip.
+
+Control scenarios show that the checks detect busy work: a frame loop with
+an interval (it exceeds both time budgets), a 10 s polling chain and an
+idle-callback loop. The attention wiggle is busy by design until the
+window is activated, so it is checked against its own limits: no layout,
+no frame, timer or idle callback, script and tasks within the budgets, at
+most 2 style recalculations per window, and nothing running but the
+wiggle. Vite's dev client (a 30 s WebSocket ping) is not counted. The
+bundle (`dist/`) can be measured with the same spec through `pnpm preview`
+(see the spec's header comment); this is not part of the verification
+ladder in `AGENTS.md`. Headless Chromium is not WebView2. The idle CPU of
+the real processes can only be measured on Windows, in the same states:
+after a hover, a drag and an auto-hide slide, and during a wiggle.
 
 ## Measured
 

@@ -32,7 +32,8 @@ the records in `docs/adr/` give the reasons for the main decisions.
   ones that belong to it.
 - [error-handling.md](error-handling.md): the error type of each layer and how a crash is
   reported.
-- [performance.md](performance.md): the performance budgets and measured times.
+- [performance.md](performance.md): the performance budgets, the idle check of the dock
+  page and measured times.
 - [security.md](security.md): what the webview and Stem's commands may do.
 - [development-hosts.md](development-hosts.md): how the Windows-only product is developed
   and checked.
