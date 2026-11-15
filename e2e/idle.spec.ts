@@ -15,22 +15,35 @@
  *   stay under small budgets (the probe's own calls fit in them, a loop
  *   does not);
  * - an init script wraps `requestAnimationFrame`, `setTimeout`,
- *   `setInterval` and `requestIdleCallback` before any page code runs: no
- *   frame callback may run, no timer under a minute may be set or fire, no
- *   interval under a minute may be live;
+ *   `setInterval` and `requestIdleCallback` before any page code runs: in
+ *   the window no frame or timer callback of page code may run and no
+ *   timer may be set, and at its end nothing may repeat faster than once a
+ *   minute;
  * - `document.getAnimations()`: nothing may be running (an infinite CSS
  *   animation is busy work, even when the compositor plays it).
  *
  * Settled means: fonts and images loaded, and for `QUIET_FOR_MS` straight no
- * running animation, no pending frame callback and no pending timer or live
- * interval under a minute. A page that never gets there is measured anyway
- * after `SETTLE_TIMEOUT_MS`, and the report says what was still pending.
+ * running animation, no pending frame callback, no timer due before the
+ * window would end, and nothing that repeats faster than once a minute.
+ * Work that recurs once a minute (the clock item's tick) is allowed:
+ * the settle waits until its next run is past the window. A page that never
+ * gets there is measured anyway after `SETTLE_TIMEOUT_MS`, and the report
+ * says what was still pending.
+ *
+ * How often a timer repeats: an interval, at its delay. A timeout due on a
+ * minute of the wall clock (how a minute clock aims its tick), at most once
+ * a minute. Any other timeout, from the time the last timeout set at the
+ * same call site fell due to the time this one does (a chain that re-arms
+ * for a fixed deadline gets a delay just under its period; measuring due
+ * time to due time leaves out how late each run was); while nothing from
+ * that call site has fired yet, at its delay (conservative: a one-shot
+ * under a minute counts as repeating until it has run).
  *
  * Scenarios run concurrently (one context each), so the whole file takes a
- * few windows' time, not one per scenario. Two controls show that the
- * probe sees busy work: a synthetic frame loop with an interval, and the
- * attention wiggle, which runs until the window is activated by
- * design.
+ * few windows' time, not one per scenario. Controls show that the probe
+ * sees busy work: a synthetic frame loop with an interval, a 10 s polling
+ * chain that never fires in the window, and the attention wiggle,
+ * which runs until the window is activated by design.
  *
  * Vite's dev client (`/@vite/client`, a 30 s WebSocket ping interval) is
  * served only by the dev server these tests run against, not with the
@@ -45,8 +58,25 @@ import type { ThemePreset } from '../src/lib/ipc/generated/ThemePreset';
 
 /** How long a settled page is watched. */
 const WINDOW_MS = 3_000;
+/**
+ * Added to the window when the settle looks ahead for timers falling due:
+ * the probe's calls between the settle and the window's start, and its end.
+ */
+const WINDOW_MARGIN_MS = 1_000;
 /** A timer that repeats less often than this is not busy work. */
 const MINUTE_MS = 60_000;
+/**
+ * A timeout due this close to a minute of the wall clock is a minute
+ * clock's tick, which computes its delay from `new Date()` just before it
+ * sets the timer.
+ */
+const MINUTE_ALIGN_MS = 50;
+/**
+ * A chain measured from due time to due time may come out this much under
+ * its period: its code may aim at the wall clock, which can drift from the
+ * page's monotonic clock by a few ms over a minute.
+ */
+const PERIOD_SLACK_MS = 100;
 /** How long the settled condition must hold before the window opens. */
 const QUIET_FOR_MS = 250;
 /** The most a scenario may take to settle; past it the page is measured as it is. */
@@ -93,7 +123,7 @@ interface DemoWindow {
 interface ProbeDelta {
   /** Frame callbacks of page code that ran, counted by the code that asked for them. */
   frames: Record<string, number>;
-  /** Timers under a minute that page code set: "timeout 160 ms from <source>". */
+  /** Timers that page code set, whatever their delay: "timeout 160 ms from <source>". */
   timers: string[];
   /** Timer callbacks of page code that ran. */
   timerCallbacks: string[];
@@ -106,20 +136,30 @@ interface IdleProbe {
   /** A mark in the log, for `since`. */
   mark(): number;
   since(mark: number): ProbeDelta;
-  /** What keeps the page from being settled right now; empty once it is. */
-  pending(): string[];
   /**
-   * `[]` once `pending()` has been empty for `quietMs` straight, else the
-   * last non-empty `pending()` after `timeoutMs`. Polls with the native
-   * timers, which the probe does not count.
+   * What keeps the page from being settled right now, for a window that
+   * would end `horizonMs` from now; empty once it is.
    */
-  settled(quietMs: number, timeoutMs: number): Promise<string[]>;
+  pending(horizonMs: number): string[];
+  /**
+   * `[]` once `pending(horizonMs)` has been empty for `quietMs` straight,
+   * else the last non-empty `pending` after `timeoutMs`. Polls with the
+   * native timers, which the probe does not count.
+   */
+  settled(quietMs: number, timeoutMs: number, horizonMs: number): Promise<string[]>;
   /** Running animations, described. */
   running(): string[];
-  /** Live intervals of page code under a minute, described. */
-  intervals(): string[];
+  /** Live intervals and pending timeouts of page code that repeat faster than once a minute. */
+  repeaters(): string[];
   /** Timers Vite's dev client set so far (not counted against the page). */
   devTimers(): number;
+}
+
+/** The rule's numbers, handed to the init script. */
+interface ProbeRule {
+  minuteMs: number;
+  alignMs: number;
+  slackMs: number;
 }
 
 interface ProbeWindow {
@@ -131,17 +171,31 @@ interface ProbeWindow {
  * runs (Svelte's scheduler and the app capture them at module load).
  */
 async function installIdleProbe(page: Page): Promise<void> {
-  await page.addInitScript((minuteMs: number) => {
+  const rule: ProbeRule = {
+    minuteMs: MINUTE_MS,
+    alignMs: MINUTE_ALIGN_MS,
+    slackMs: PERIOD_SLACK_MS,
+  };
+  await page.addInitScript(({ minuteMs, alignMs, slackMs }: ProbeRule) => {
+    type Kind = 'timeout' | 'interval';
     type ProbeEvent =
       | { type: 'frame'; source: string }
-      | { type: 'timer'; kind: 'timeout' | 'interval'; delay: number; source: string }
-      | { type: 'fired'; kind: 'timeout' | 'interval'; delay: number; source: string }
+      | { type: 'timer'; text: string }
+      | { type: 'fired'; text: string }
       | { type: 'idle' };
     interface Timer {
-      kind: 'timeout' | 'interval';
+      kind: Kind;
       delay: number;
+      /** The two frames that set it, for reports. */
       source: string;
-      dev: boolean;
+      /** The frame that called the timer API: a chain's key. */
+      site: string;
+      /** `performance.now()` when it falls due (its next run, for an interval). */
+      due: number;
+      /** How often it repeats, as far as the probe can tell. */
+      period: number;
+      /** How `period` was found. */
+      basis: string;
     }
     type Callback = (...args: unknown[]) => void;
 
@@ -157,13 +211,18 @@ async function installIdleProbe(page: Page): Promise<void> {
     const pendingFrames = new Map<number, string>();
     const pendingTimeouts = new Map<number, Timer>();
     const liveIntervals = new Map<number, Timer>();
+    /** When the last timeout set at each call site that has fired fell due. */
+    const lastFiredDue = new Map<string, number>();
     let devTimers = 0;
 
-    /** The code that called the wrapper (two frames, origin and query strings dropped). */
-    function caller(): { source: string; dev: boolean } {
+    /**
+     * The code that called the wrapper: two frames for reports, the first
+     * for a chain's key (origin and query strings dropped).
+     */
+    function caller(): { source: string; site: string; dev: boolean } {
       const stack = new Error().stack ?? '';
       // "Error", this function, the wrapper, then the caller.
-      const source = stack
+      const frames = stack
         .split('\n')
         .slice(3, 5)
         .map((line) =>
@@ -172,12 +231,38 @@ async function installIdleProbe(page: Page): Promise<void> {
             .replace(/^at /, '')
             .replaceAll(window.location.origin, '')
             .replace(/\?[^:)]*/g, ''),
-        )
-        .join(' < ');
-      return { source: source || 'unknown', dev: stack.includes('/@vite/client') };
+        );
+      const source = frames.join(' < ');
+      return {
+        source: source || 'unknown',
+        site: frames[0] ?? 'unknown',
+        dev: stack.includes('/@vite/client'),
+      };
     }
 
-    const describe = (t: Timer): string => `${t.kind} ${t.delay} ms from ${t.source}`;
+    /** A new timer, with how often it repeats (the rule in the file's header). */
+    function timerOf(kind: Kind, delay: number, source: string, site: string): Timer {
+      const due = performance.now() + delay;
+      const timer = { kind, delay, source, site, due };
+      if (kind === 'interval') {
+        return { ...timer, period: delay, basis: 'an interval' };
+      }
+      const offMinute = (Date.now() + delay) % minuteMs;
+      if (Math.min(offMinute, minuteMs - offMinute) <= alignMs) {
+        return { ...timer, period: minuteMs, basis: 'due on a minute of the wall clock' };
+      }
+      const last = lastFiredDue.get(site);
+      if (last !== undefined) {
+        return { ...timer, period: due - last, basis: 'from the last one set there falling due' };
+      }
+      return { ...timer, period: delay, basis: 'its delay: nothing set there has run yet' };
+    }
+
+    const describe = (t: Timer): string => `${t.kind} ${Math.round(t.delay)} ms from ${t.source}`;
+    const fast = (t: Timer): boolean => t.period < minuteMs - slackMs;
+    const repeating = (t: Timer): string =>
+      `${describe(t)}, every ${Math.round(t.period)} ms (${t.basis})`;
+    const timers = (): Timer[] => [...pendingTimeouts.values(), ...liveIntervals.values()];
 
     window.requestAnimationFrame = (callback: FrameRequestCallback): number => {
       const { source } = caller();
@@ -194,16 +279,17 @@ async function installIdleProbe(page: Page): Promise<void> {
       nativeCancelRaf(id);
     };
 
-    function wrapTimer(kind: 'timeout' | 'interval'): typeof window.setTimeout {
+    function wrapTimer(kind: Kind): typeof window.setTimeout {
       const native = kind === 'timeout' ? nativeSetTimeout : nativeSetInterval;
       return ((handler: TimerHandler, timeout?: number, ...args: unknown[]): number => {
-        const { source, dev } = caller();
-        const timer: Timer = { kind, delay: Math.max(0, Number(timeout) || 0), source, dev };
+        const { source, site, dev } = caller();
         if (dev) {
           devTimers += 1;
           return native(handler, timeout, ...args);
         }
-        log.push({ type: 'timer', kind, delay: timer.delay, source });
+        const delay = Math.max(0, Number(timeout) || 0);
+        const timer = timerOf(kind, delay, source, site);
+        log.push({ type: 'timer', text: describe(timer) });
         if (typeof handler !== 'function') {
           // A string handler: counted, not followed (the page has none).
           return native(handler, timeout, ...args);
@@ -211,8 +297,11 @@ async function installIdleProbe(page: Page): Promise<void> {
         const id = native(() => {
           if (kind === 'timeout') {
             pendingTimeouts.delete(id);
+            lastFiredDue.set(site, timer.due);
+          } else {
+            timer.due = performance.now() + delay;
           }
-          log.push({ type: 'fired', kind, delay: timer.delay, source });
+          log.push({ type: 'fired', text: describe(timer) });
           (handler as Callback)(...args);
         }, timeout);
         (kind === 'timeout' ? pendingTimeouts : liveIntervals).set(id, timer);
@@ -263,17 +352,19 @@ async function installIdleProbe(page: Page): Promise<void> {
         });
     }
 
-    const underAMinute = (timers: Iterable<Timer>): string[] =>
-      Array.from(timers)
-        .filter((t) => t.delay < minuteMs)
-        .map(describe);
-
-    function pending(): string[] {
+    function pending(horizonMs: number): string[] {
       const out = running();
       for (const source of pendingFrames.values()) {
         out.push(`frame callback from ${source}`);
       }
-      out.push(...underAMinute(pendingTimeouts.values()), ...underAMinute(liveIntervals.values()));
+      const now = performance.now();
+      for (const t of timers()) {
+        if (t.due - now < horizonMs) {
+          out.push(`${describe(t)}, due in ${Math.max(0, Math.round(t.due - now))} ms`);
+        } else if (fast(t)) {
+          out.push(repeating(t));
+        }
+      }
       if (document.fonts.status !== 'loaded') {
         out.push('fonts loading');
       }
@@ -293,12 +384,10 @@ async function installIdleProbe(page: Page): Promise<void> {
               delta.frames[event.source] = (delta.frames[event.source] ?? 0) + 1;
               break;
             case 'timer':
-              if (event.delay < minuteMs) {
-                delta.timers.push(`${event.kind} ${event.delay} ms from ${event.source}`);
-              }
+              delta.timers.push(event.text);
               break;
             case 'fired':
-              delta.timerCallbacks.push(`${event.kind} ${event.delay} ms from ${event.source}`);
+              delta.timerCallbacks.push(event.text);
               break;
             case 'idle':
               delta.idleCallbacks += 1;
@@ -308,13 +397,13 @@ async function installIdleProbe(page: Page): Promise<void> {
         return delta;
       },
       pending,
-      settled(quietMs, timeoutMs) {
+      settled(quietMs, timeoutMs, horizonMs) {
         const start = performance.now();
         let quietSince: number | null = null;
         return new Promise((resolve) => {
           const poll = (): void => {
             const now = performance.now();
-            const busy = pending();
+            const busy = pending(horizonMs);
             if (busy.length > 0) {
               quietSince = null;
             } else {
@@ -334,11 +423,11 @@ async function installIdleProbe(page: Page): Promise<void> {
         });
       },
       running,
-      intervals: () => underAMinute(liveIntervals.values()),
+      repeaters: () => timers().filter(fast).map(repeating),
       devTimers: () => devTimers,
     };
     (window as unknown as ProbeWindow).__idleProbe = probe;
-  }, MINUTE_MS);
+  }, rule);
 }
 
 /** What one watch of a page saw. */
@@ -351,7 +440,8 @@ interface Measured {
   taskMs: number;
   delta: ProbeDelta;
   running: string[];
-  intervals: string[];
+  /** Still live at the window's end and repeating faster than once a minute. */
+  repeaters: string[];
   /** What was still pending when the page was given up on settling; `[]` when it settled. */
   unsettled: string[];
   /** From the end of the setup to the settled condition, the quiet hold included. */
@@ -364,11 +454,19 @@ async function metrics(cdp: CDPSession): Promise<Map<string, number>> {
   return new Map(list.map((m) => [m.name, m.value]));
 }
 
-/** Wait for the settled condition: `[]`, or what was still pending after `timeoutMs`. */
-function settle(page: Page, timeoutMs = SETTLE_TIMEOUT_MS): Promise<string[]> {
+/**
+ * Wait for the settled condition before a window of `windowMs`: `[]`, or
+ * what was still pending after `timeoutMs`.
+ */
+function settle(
+  page: Page,
+  timeoutMs = SETTLE_TIMEOUT_MS,
+  windowMs = WINDOW_MS,
+): Promise<string[]> {
   return page.evaluate(
-    ([quiet, timeout]) => (window as unknown as ProbeWindow).__idleProbe.settled(quiet, timeout),
-    [QUIET_FOR_MS, timeoutMs] as const,
+    ([quiet, timeout, horizon]) =>
+      (window as unknown as ProbeWindow).__idleProbe.settled(quiet, timeout, horizon),
+    [QUIET_FOR_MS, timeoutMs, windowMs + WINDOW_MARGIN_MS] as const,
   );
 }
 
@@ -397,7 +495,7 @@ async function measure(
   { settleTimeoutMs, windowMs }: Watch = FULL_WATCH,
 ): Promise<Measured> {
   const settling = Date.now();
-  const unsettled = await settle(page, settleTimeoutMs);
+  const unsettled = await settle(page, settleTimeoutMs, windowMs);
   const settleMs = Date.now() - settling;
   const before = await metrics(cdp);
   const mark = await probeMark(page);
@@ -406,9 +504,9 @@ async function measure(
   const delta = await probeSince(page, mark);
   const after = await metrics(cdp);
   // After the second metrics read: `getAnimations` may flush style itself.
-  const { running, intervals, devTimers } = await page.evaluate(() => {
+  const { running, repeaters, devTimers } = await page.evaluate(() => {
     const probe = (window as unknown as ProbeWindow).__idleProbe;
-    return { running: probe.running(), intervals: probe.intervals(), devTimers: probe.devTimers() };
+    return { running: probe.running(), repeaters: probe.repeaters(), devTimers: probe.devTimers() };
   });
   const change = (name: string): number => (after.get(name) ?? 0) - (before.get(name) ?? 0);
   return {
@@ -419,7 +517,7 @@ async function measure(
     taskMs: change('TaskDuration') * 1000,
     delta,
     running,
-    intervals,
+    repeaters,
     unsettled,
     settleMs,
     devTimers,
@@ -448,8 +546,8 @@ function busyWork(m: Measured): string[] {
   if (m.delta.timerCallbacks.length > 0) {
     out.push(`timers fired: ${m.delta.timerCallbacks.join('; ')}`);
   }
-  if (m.intervals.length > 0) {
-    out.push(`intervals under a minute: ${m.intervals.join('; ')}`);
+  if (m.repeaters.length > 0) {
+    out.push(`repeating faster than once a minute: ${m.repeaters.join('; ')}`);
   }
   if (m.delta.idleCallbacks > 0) {
     out.push(`${m.delta.idleCallbacks} idle callbacks`);
@@ -743,7 +841,9 @@ test.describe('the dock page goes quiet once it has settled', () => {
           expect.soft(m.styleRecalcs, 'the loop recalculates style').toBeGreaterThan(0);
           expect.soft(m.scriptMs, 'the loop runs script').toBeGreaterThan(0);
           expect.soft(busy, 'the frame callbacks').toMatch(/frame callbacks: \d+×/);
-          expect.soft(busy, 'the interval').toMatch(/intervals under a minute: interval 1000 ms/);
+          expect
+            .soft(busy, 'the interval')
+            .toMatch(/repeating faster than once a minute: interval 1000 ms/);
           expect.soft(busy, 'its callback').toMatch(/timers fired: interval 1000 ms/);
         },
       },
@@ -767,6 +867,83 @@ test.describe('the dock page goes quiet once it has settled', () => {
             (window as unknown as DemoWindow).__dockMock?.pushForeground(id);
           }, EXPLORER_WINDOW);
           await expect(page.locator(EXPLORER)).not.toHaveAttribute('data-attention');
+        },
+      },
+    ]);
+  });
+
+  test('timers: work once a minute is quiet, a 10 s polling chain is not', async ({ browser }) => {
+    await expectQuiet(browser, [
+      {
+        name: 'a minute clock (a stand-in for the clock item)',
+        setup: async (page) => {
+          // As the clock item ticks: `setTimeout(tick, msUntilNextMinute(now))`,
+          // whose delay is under a minute every time.
+          await page.evaluate(() => {
+            const face = document.body.appendChild(document.createElement('time'));
+            const tick = (): void => {
+              const current = new Date();
+              face.textContent = current.toTimeString().slice(0, 5);
+              const into = current.getSeconds() * 1000 + current.getMilliseconds();
+              setTimeout(tick, Math.max(1, 60_000 - into));
+            };
+            tick();
+          });
+        },
+      },
+      {
+        name: 'a timeout re-armed for a deadline a minute on, with a delay under a minute',
+        setup: async (page) => {
+          const mark = await probeMark(page);
+          await page.evaluate(() => {
+            const out = document.body.appendChild(document.createElement('output'));
+            let deadline = performance.now() + 100;
+            const arm = (): void => {
+              setTimeout(run, deadline - performance.now());
+            };
+            const run = (): void => {
+              // 200 ms of work before the re-arm, as on a busy main thread:
+              // its delay is then under a minute by more than the slack,
+              // while its period stays a minute.
+              const until = performance.now() + 200;
+              while (performance.now() < until) {
+                // Spin.
+              }
+              out.textContent = String(deadline);
+              deadline += 60_000;
+              arm();
+            };
+            arm();
+          });
+          expect(await settle(page)).toEqual([]);
+          // It did run once and re-arm with a delay of 59.0–59.9 s.
+          const seen = await probeSince(page, mark);
+          expect(seen.timerCallbacks.join('\n')).toMatch(/timeout \d+ ms from arm/);
+          expect(seen.timers.join('\n')).toMatch(/timeout 59[0-8]\d{2} ms from arm/);
+        },
+      },
+      {
+        name: 'control: a 10 s polling chain is seen, though it never runs in the window',
+        setup: async (page) => {
+          await page.evaluate(() => {
+            const poll = (delay: number): void => {
+              setTimeout(() => poll(10_000), delay);
+            };
+            poll(100);
+          });
+        },
+        watch: CONTROL_WATCH,
+        check: (m) => {
+          const busy = busyWork(m).join('\n');
+          expect
+            .soft(busy, 'it keeps the page from settling')
+            .toMatch(
+              /never settled: timeout 10000 ms from poll .*every 10\d{3} ms \(from the last/,
+            );
+          expect
+            .soft(busy, 'it is still live at the end')
+            .toMatch(/repeating faster than once a minute: timeout 10000 ms from poll/);
+          expect.soft(m.delta.timerCallbacks, 'it did not run in the window').toEqual([]);
         },
       },
     ]);
