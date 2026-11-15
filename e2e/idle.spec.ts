@@ -121,6 +121,8 @@ const AWAY = { x: 640, y: 10 };
 /** The demo's Explorer window (src/lib/ipc/mock.ts). */
 const EXPLORER_WINDOW = 1;
 const EXPLORER = `${APP_SLOT}[data-key="app:exe:c:/windows/explorer.exe"]`;
+/** The clock item, shown with `items.clock`. */
+const CLOCK = '.slot[data-kind="clock"]';
 
 /** What the pages expose in mock mode (`src/lib/ipc/demo.ts`; structural, for `page.evaluate`). */
 interface DemoWindow {
@@ -169,6 +171,8 @@ interface IdleProbe {
   running(): string[];
   /** Live intervals and pending timeouts of page code that repeat faster than once a minute. */
   repeaters(): string[];
+  /** Every live interval and pending timeout of page code, with how often it repeats and why. */
+  live(): string[];
   /** Timers Vite's dev client set so far (not counted against the page). */
   devTimers(): number;
 }
@@ -457,6 +461,7 @@ async function installIdleProbe(page: Page): Promise<void> {
       },
       running,
       repeaters: () => timers().filter(fast).map(repeating),
+      live: () => timers().map(repeating),
       devTimers: () => devTimers,
     };
     (window as unknown as ProbeWindow).__idleProbe = probe;
@@ -509,6 +514,15 @@ function probeMark(page: Page): Promise<number> {
 
 function probeSince(page: Page, mark: number): Promise<ProbeDelta> {
   return page.evaluate((m) => (window as unknown as ProbeWindow).__idleProbe.since(m), mark);
+}
+
+function liveTimers(page: Page): Promise<string[]> {
+  return page.evaluate(() => (window as unknown as ProbeWindow).__idleProbe.live());
+}
+
+/** Whether the page is the dev build, whose code keeps its names (the bundle's are minified). */
+function isDevBuild(page: Page): Promise<boolean> {
+  return page.evaluate(() => document.querySelector('script[src="/@vite/client"]') !== null);
 }
 
 /** One watch of a page: how long it may take to settle, then how long it is watched. */
@@ -807,10 +821,7 @@ function hoverScenario(edge: 'bottom' | 'left'): Scenario {
       expect(frames).not.toBe('');
       expect(timers).toMatch(/timeout 160 ms from /);
       // Only the dev build names the code; the bundle's names are minified.
-      const devBuild = await page.evaluate(
-        () => document.querySelector('script[src="/@vite/client"]') !== null,
-      );
-      if (devBuild) {
+      if (await isDevBuild(page)) {
         expect(frames).toMatch(/scheduleFrame .*Dock\.svelte/);
         expect(timers).toMatch(/timeout 160 ms from .*Dock\.svelte/);
       }
@@ -1004,20 +1015,24 @@ test.describe('the dock page goes quiet once it has settled', () => {
   }) => {
     await expectQuiet(browser, [
       {
-        name: 'a minute clock (a stand-in for the clock item)',
+        name: 'the clock item on: its tick once a minute',
         setup: async (page) => {
-          // As the clock item ticks: `setTimeout(tick, msUntilNextMinute(now))`,
-          // whose delay is under a minute every time.
-          await page.evaluate(() => {
-            const face = document.body.appendChild(document.createElement('time'));
-            const tick = (): void => {
-              const current = new Date();
-              face.textContent = current.toTimeString().slice(0, 5);
-              const into = current.getSeconds() * 1000 + current.getMilliseconds();
-              setTimeout(tick, Math.max(1, 60_000 - into));
-            };
-            tick();
-          });
+          await patchSettings(page, { items: { clock: true } });
+          const clock = page.locator(CLOCK);
+          await expect(clock).toBeVisible();
+          await expect(clock.locator('text.time')).toHaveText(/\d/);
+          expect(await settle(page)).toEqual([]);
+          // The clock aims its tick at the next minute of the wall clock
+          // (`setTimeout(tick, msUntilNextMinute(now))`, a delay under a
+          // minute every time): the timer is live, and the rule takes it as
+          // once a minute, so the window below must be quiet with it.
+          const live = (await liveTimers(page)).join('\n');
+          expect(live).toMatch(
+            /^timeout \d+ ms from .*, every 60000 ms \(due on a minute of the wall clock\)$/m,
+          );
+          if (await isDevBuild(page)) {
+            expect(live).toMatch(/from .*DockItem\.svelte.*\(due on a minute of the wall clock\)/);
+          }
         },
       },
       {
