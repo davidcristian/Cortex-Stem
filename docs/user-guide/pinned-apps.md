@@ -58,8 +58,9 @@ the same id as an earlier entry.
 
 To rearrange the pinned apps:
 
-- Press a pinned icon and hold it for a moment, or move it a few pixels, to
-  lift it. The other icons make room as you move the icon.
+- Press a pinned icon and move it a few pixels to lift it. A press that does
+  not move is a click, however long you hold it. The other icons make room
+  as you move the icon.
 - Release it among the pinned apps to drop it there, or near them: up to
   about three icon sizes towards or away from the screen edge, or about one
   icon beyond the first or the last pinned app. The new order is saved.

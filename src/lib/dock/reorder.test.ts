@@ -24,8 +24,8 @@ describe('exceedsMoveThreshold', () => {
     expect(exceedsMoveThreshold(3, 3, 6)).toBe(false);
   });
 
-  it('starts after 150 ms or 6 px by default', () => {
-    expect(DRAG_START).toEqual({ holdMs: 150, movePx: 6 });
+  it('starts after 6 px of travel by default, never by holding still', () => {
+    expect(DRAG_START).toEqual({ movePx: 6 });
   });
 });
 

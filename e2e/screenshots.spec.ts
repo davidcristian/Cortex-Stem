@@ -1132,9 +1132,14 @@ test.describe('dock in mock mode', () => {
           panel: shifted(atRest.panel),
           envelope: shifted(atRest.envelope),
         });
-      // The pointer is still over the panel and moves a little: hovering.
+      // The pointer is still over the panel and moves a little. The window
+      // is still the drag's size, so it does not hover yet: a hover would
+      // hold off the measurement that the shrink needs.
       await page.mouse.move(pointer.x + 2, pointer.y + GROWTH);
-      await expect.poll(() => scaleOf(page, 2)).toBeGreaterThan(1);
+      await page.evaluate(
+        () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+      );
+      expect(await scaleOf(page, 2)).toBe(1);
 
       // The window shrinks back. No pointerleave ever comes (a window that
       // turned click-through gets no mouse messages), so the resize itself
@@ -1157,6 +1162,55 @@ test.describe('dock in mock mode', () => {
       const widened = (await hitRegions(page)).at(-1)!;
       expect(widened.panel.width).toBe(atRest.panel.width + ICON + SLOT_GAP);
       expect(widened.panel.y).toBe(atRest.panel.y);
+
+      // Measured at rest since: the pointer hovers again.
+      await page.mouse.move(pointer.x + 3, pointer.y);
+      await expect.poll(() => scaleOf(page, 2)).toBeGreaterThan(1);
+    });
+
+    test('after a drop the window shrinks back at once, the pointer still moving over the panel', async ({
+      page,
+    }) => {
+      await openDock(page);
+      const restSize = (await contentSizes(page))[0]!;
+      const atRest = (await hitRegions(page))[0]!;
+      const pointer = await dragPinned(page, 0, 2);
+      await expect.poll(async () => (await contentSizes(page)).at(-1)?.height).toBe(4096);
+      await page.mouse.up();
+      // The pointer goes on moving over the panel right after the release:
+      // that must not hold the window at the drag's size.
+      for (let i = 1; i <= 6; i += 1) {
+        await page.mouse.move(pointer.x + i * 3, pointer.y);
+      }
+      await expect.poll(async () => (await contentSizes(page)).at(-1)).toEqual(restSize);
+      await expect
+        .poll(async () => (await hitRegions(page)).at(-1)?.envelope)
+        .toEqual(atRest.envelope);
+      // Measured at rest: the pointer magnifies again.
+      await page.mouse.move(pointer.x + 1, pointer.y);
+      await expect.poll(() => scaleOf(page, 2)).toBeGreaterThan(1);
+    });
+
+    test('a still press held longer than a quick click is a click, not a drag', async ({
+      page,
+    }) => {
+      await openDock(page);
+      const before = await pinnedKeys(page);
+      const sizes = (await contentSizes(page)).length;
+      // Notepad: pinned, not running, so its click launches.
+      const box = (await page
+        .locator(`${PINNED}[data-key="app:exe:c:/windows/notepad.exe"]`)
+        .boundingBox())!;
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await page.mouse.down();
+      // Longer than many mouse clicks, and than the 150 ms that used to lift the icon.
+      await page.waitForTimeout(300);
+      await expect(page.locator('[data-drag]')).toHaveCount(0);
+      await page.mouse.up();
+      await expect.poll(() => callsOfType(page, 'launch')).toBe(1);
+      expect(await pinnedKeys(page)).toEqual(before);
+      // The window never grew for a drag.
+      expect((await contentSizes(page)).slice(sizes).some((s) => s.height === 4096)).toBe(false);
     });
 
     test('running, unpinned apps and fixed items cannot be dragged', async ({ page }) => {

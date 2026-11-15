@@ -10,13 +10,16 @@
 
 import type { DockAxis } from './edge';
 
-/** A press becomes a drag after `holdMs` without release, or `movePx` of travel. */
+/**
+ * A press becomes a drag after `movePx` of travel, never by holding still:
+ * a still press of any length is a click (a mouse click often lasts 100 to
+ * 200 ms, a touchpad's longer).
+ */
 export interface DragStartRule {
-  holdMs: number;
   movePx: number;
 }
 
-export const DRAG_START: DragStartRule = { holdMs: 150, movePx: 6 };
+export const DRAG_START: DragStartRule = { movePx: 6 };
 
 export function exceedsMoveThreshold(dx: number, dy: number, movePx: number): boolean {
   return dx * dx + dy * dy >= movePx * movePx;

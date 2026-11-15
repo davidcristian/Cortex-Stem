@@ -453,7 +453,9 @@
       // `pointerenter` came (after a drag or a native menu).
       autoHideSend({ type: 'pointer', inside: true });
     }
-    if (magnify.maxScale <= 1 || drag?.started) {
+    // No hover until the window is measured at rest after a drag: the
+    // hover would hold off that measurement (`restoringAfterDrag`).
+    if (magnify.maxScale <= 1 || drag?.started || restoringAfterDrag) {
       return;
     }
     pointerX = e.clientX;
@@ -477,6 +479,8 @@
   function onpanelpointerleave(): void {
     hovering = false;
     wheelNotches.reset();
+    // The settle below measures; the next visit may hover again.
+    restoringAfterDrag = false;
     clearTooltip();
     // Ease back over 120 ms, then go idle (no timers, no transitions).
     settling = !reducedMotion && magnify.maxScale > 1;
@@ -540,7 +544,6 @@
     lastX: number;
     lastY: number;
     started: boolean;
-    holdTimer: ReturnType<typeof setTimeout> | null;
     frame: number;
     /**
      * Pinned app slots in dock order, with their keys and rest centres along
@@ -564,6 +567,21 @@
   let pendingTimer: ReturnType<typeof setTimeout> | null = null;
   /** The hit region reported for this drag is the whole viewport; restore it when the drag is over. */
   let dragHitReported = false;
+  /**
+   * The content size the window had before it grew for the drag, sent back
+   * as soon as the drag is over (`clearDragStyles`) rather than after the
+   * next measurement, which a pointer still over the panel would hold off.
+   */
+  let sizeBeforeDrag: { width: number; height: number } | null = null;
+  /**
+   * The drag is over and the window has not been measured at its rest size
+   * since (`measurePanel`): until then a pointer over the panel does not
+   * hover (no magnification), so nothing holds off that measurement, which
+   * brings the real hit region back for the shrunk window.
+   */
+  let restoringAfterDrag = false;
+  /** The viewport's thickness across the edge when the drag began, before the window grew. */
+  let acrossBeforeDrag = 0;
 
   function pinnedSlots(): HTMLElement[] {
     return slots.filter((el) => el.dataset.kind === 'app' && el.dataset.pinned === 'true');
@@ -573,6 +591,12 @@
     return a.length === b.length && a.every((key, i) => key === b[i]);
   }
 
+  /**
+   * A left press on a pinned app may become a drag: only once the pointer
+   * has travelled `DRAG_START.movePx` (`onwindowpointermove`), never by
+   * holding still, so a still press of any length is a click (handled by
+   * the item on release).
+   */
   function onpress(item: DockItemModel, e: PointerEvent): void {
     if (e.button !== 0 || item.kind !== 'app' || !item.pinned) {
       return;
@@ -592,7 +616,6 @@
       lastX: e.clientX,
       lastY: e.clientY,
       started: false,
-      holdTimer: setTimeout(startDrag, DRAG_START.holdMs),
       frame: 0,
       pinned: [],
       keys: [],
@@ -609,11 +632,8 @@
     if (d === null || d.started) {
       return;
     }
-    if (d.holdTimer !== null) {
-      clearTimeout(d.holdTimer);
-      d.holdTimer = null;
-    }
     d.started = true;
+    restoringAfterDrag = false;
     autoHideSend({ type: 'hold', hold: 'drag', active: true });
     // No magnification, tooltip or settle transition while dragging; the rest
     // positions measured below must be the unmagnified ones.
@@ -656,6 +676,7 @@
     // panel stays on the edge; `onwindowresize` shifts the drag's origin by
     // the growth on `bottom` and `right`) and all of it accepts clicks.
     d.viewport = viewportNow();
+    acrossBeforeDrag = vertical ? d.viewport.width : d.viewport.height;
     growWindowForDrag();
     dragHitReported = true;
     reportHitRegion();
@@ -667,6 +688,7 @@
     if (reported.width === 0) {
       return;
     }
+    sizeBeforeDrag = reported;
     reported = vertical
       ? { width: DRAG_WINDOW_THICKNESS, height: reported.height }
       : { width: reported.width, height: DRAG_WINDOW_THICKNESS };
@@ -821,6 +843,7 @@
     drag = null;
     // The window shrinks back now; the pointer may never "leave".
     hovering = false;
+    restoringAfterDrag = true;
     endDragHold(d);
     pendingOrder = order;
     pendingTimer = setTimeout(clearDragStyles, 600);
@@ -838,9 +861,6 @@
       return;
     }
     drag = null;
-    if (d.holdTimer !== null) {
-      clearTimeout(d.holdTimer);
-    }
     if (d.frame !== 0) {
       cancelAnimationFrame(d.frame);
     }
@@ -848,6 +868,7 @@
       return;
     }
     hovering = false;
+    restoringAfterDrag = true;
     endDragHold(d);
     try {
       d.el.releasePointerCapture(d.pointerId);
@@ -880,8 +901,20 @@
       el.style.transition = '';
     }
     if (dragHitReported) {
-      // Back to the real hit region once the DOM has settled (next frame).
       dragHitReported = false;
+      // The window goes back to the size it had before the drag at once: a
+      // pointer that stays over the panel would otherwise hold off the
+      // measurement that shrinks it, and the tall window would take clicks
+      // above the dock until the pointer left.
+      const rest = sizeBeforeDrag;
+      sizeBeforeDrag = null;
+      if (rest !== null && (rest.width !== reported.width || rest.height !== reported.height)) {
+        reported = rest;
+        void backend
+          .setDockContentSize(rest.width, rest.height, edge)
+          .catch(report('set_dock_content_size', false));
+      }
+      // Back to the real hit region once the DOM has settled (next frame).
       scheduleMeasure();
     }
   }
@@ -1123,6 +1156,12 @@
       stripBox = { start: resting.start, length, gap };
     }
     reportSize();
+    // Measured in a window that is back to the thickness it had before the
+    // drag grew it: the pointer may hover again.
+    const across = vertical ? window.innerWidth : window.innerHeight;
+    if (restoringAfterDrag && across <= acrossBeforeDrag + 1) {
+      restoringAfterDrag = false;
+    }
   }
 
   /**
