@@ -18,7 +18,8 @@ to the file that covers that section now.
   [Hit region](hit-region.md): the reveal strip lies along the window's edge side, and the
   fullscreen exception compares the work area with the bounds on the dock's own edge.
   [File drags](file-drags.md): the envelope and the gap work along the main axis. Toasts rest on
-  the edge side. `MockBackend` converts the panel rect for the configured edge and takes
+  the side away from the edge and, while the panel is slid out, just inside the edge side.
+  `MockBackend` converts the panel rect for the configured edge and takes
   `MockOptions.viewportWidth`. No command or event changed its name, arguments or payload.
 - **v1.15 (clicks per dock):** `primary_click` and `show_item_menu` act on the calling dock's own
   view of the windows. With `Settings.monitors = all` and

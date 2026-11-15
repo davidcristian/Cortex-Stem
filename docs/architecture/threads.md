@@ -16,6 +16,7 @@ which work may run on which thread.
 | `stem-recycle` | platform | one per `delete_to_recycle_bin`: a COM single-threaded apartment (STA) that runs `IFileOperation` with the shell's own dialogs (their message loops run here); returns the result to the waiting caller and ends |
 | `dock-empty-recycle-bin` | platform | one per `ShellAction::EmptyRecycleBin`: an STA that runs `SHEmptyRecycleBinW` with the shell's confirmation |
 | `stem-recycle-bin-refresh` | service | one per `delete_to_recycle_bin`, after the platform call: one `recycle_bin()` query, queued for the worker as `RecycleBinChanged`, so the bin's icon updates at once instead of at the next 5 s poll |
+| `stem-platform-backdrop` | platform | the windows of the experimental Acrylic and Mica backdrops (`appearance.backdrop`, `windows::backdrop`): started by the first `set_dock_backdrop` with a backdrop; creates each backdrop window and runs their message loop; only posted messages reach it (placement, shape, material, show and hide), and the dock window's subclass posts a restack after every z-order change of the dock; stopped with the platform |
 | `stem-icon-cache` | service | with a cache directory: writes and evicts the disk icon cache's entries from a bounded queue (see *The icon cache thread* below) |
 | WebView2 threads | WebView2 | rendering |
 

@@ -43,6 +43,7 @@ so that the app layer and the page use the same positions.
   menu are on the side away from the edge: above the icon on `bottom`, below it on `top`, right
   of it on `left`, left of it on `right`.
 - Drag-to-reorder and the file-drag gap work along the main axis. Keyboard navigation uses the
-  arrow keys of that axis (the toolbar's `aria-orientation` names it).
+  arrow keys of that axis (the toolbar's `aria-orientation` names it); the arrows across the axis
+  move nothing.
 - Auto-hide slides the panel towards its edge; the reveal strip lies along the window's edge side
   ([Hit region](hit-region.md)).

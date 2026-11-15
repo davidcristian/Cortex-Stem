@@ -1,6 +1,6 @@
 # ADR-0010: Reserve screen space with one AppBar per dock window, driven from its own thread
 
-Date: 2026-11-15 · Status: proposed
+Date: 2026-11-15 · Status: accepted
 
 ## Context
 

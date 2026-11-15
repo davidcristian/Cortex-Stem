@@ -23,6 +23,11 @@ show and hide in a loop. So the UI reports the resting panel separately:
   - It tells the engine there is no rect while the tray or the toggle shortcut hides the window,
     and passes neither monitor nor rect once the window is closed (a monitor unplugged, the
     setting back to the primary), which makes the engine drop the label.
+  - On a change of `Settings.position`, Rust tells the engine that the dock has no panel rect
+    until the page reports one laid out for the new edge. It emits `dock://settings` to the pages
+    before it moves their windows, so a page usually lays itself out for the new edge before its
+    window moves. A report that the page measured for the old edge and that arrives after the
+    move is still read for the new edge, for at most one frame, until the page's next reports.
 
   The engine stores the panels by label (`DockEngine::dock_panel(label)`), computes each dock's
   `overlapped` again from its rect and the window frames, and publishes one `docks` entry per
@@ -38,7 +43,11 @@ show and hide in a loop. So the UI reports the resting panel separately:
   is no `window`. One mock serves one page, so it registers the panel under that page's dock
   window (`MockOptions.monitor`, the page's `?monitor=`; `pageLabel`).
 
-  The mock's demo windows have frames on their monitor, none within the bottom 250 px of the
-  work area, where the panel rests. `moveWindow(id, rect)` moves one window (a rect-only
+  `MockOptions.position` sets the initial `Settings.position`, and `setPosition(edge)` changes it
+  as a settings change would. In mock mode the dock page takes `?position=bottom|top|left|right`
+  for it (`src/lib/ipc/demo.ts`). The mock's demo windows have frames on their monitor, none
+  within the 250 px along the bottom, left or right edge of the work area, where a panel rests on
+  those edges. The top band is not kept clear, so a `top` dock with *When a window overlaps*
+  hides at once in the demo. `moveWindow(id, rect)` moves one window (a rect-only
   `WindowUpdated`), and `dockPanel(label?)` returns the engine's panel rect for that dock (this
   page's by default).
