@@ -74,7 +74,7 @@ a performance pass (event coalescing, a disk icon cache, a measurement of
 idle CPU), and handling of elevated windows (apps run as administrator)
 without failures.
 
-**Status.**
+**Status.** Done, except window thumbnails:
 
 - With `monitors` set to `all`, every monitor has its own dock, and the docks
   follow monitors as they are plugged in and out. A change of display scale
@@ -89,8 +89,9 @@ without failures.
   `aria-label`.
 - Bursts of window events are coalesced: title and location changes per
   window, and the service sends at most one state update per 16 ms. Icons
-  are cached on disk across sessions (`crates/stem-service/src/icon_cache.rs`).
-  The budgets and the measured times are in
+  are cached on disk across sessions (`crates/stem-service/src/icon_cache.rs`),
+  and `e2e/idle.spec.ts` checks that the dock page does no work at rest. The
+  budgets and the measured times are in
   [architecture/performance.md](architecture/performance.md).
 - Elevated windows appear with their name and icon. When Windows blocks an
   action on one (minimise, restore, close), the dock shows a notice.
@@ -102,8 +103,7 @@ the dock window. A probe (`crates/stem-platform/examples/thumbnail-probe.rs`,
 [how to run it](research/thumbnail-probe/running.md)) tests the open assumptions of
 that ADR with one run on Windows.
 
-**Planned.** A measurement of idle CPU, and window previews on hover, drawn
-with DWM thumbnails.
+**Planned.** Window previews on hover, drawn with DWM thumbnails.
 
 **Exit criterion.** Everything above works on a setup with two monitors at
 different DPI.

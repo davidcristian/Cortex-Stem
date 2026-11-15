@@ -12,7 +12,8 @@ These rules apply to the Svelte 5 and TypeScript frontend in `src/`
 - Types that cross IPC are imported from `src/lib/ipc/generated/` (exported by `stem-core` through
   ts-rs). Never edit generated files by hand.
 - Animations are CSS first and change only `transform` and `opacity`. Avoid forced layout (reading
-  layout right after a style change): the dock runs all the time and must idle at about 0 % CPU.
+  layout right after a style change): the dock runs all the time and must idle at about 0 % CPU,
+  which `e2e/idle.spec.ts` checks.
 - Dock items are keyboard-reachable and have `role` and `aria-label`.
 - The dev server port is **1420** (Tauri's `devUrl`); the build output is `dist/`. The package
   manager is **pnpm**. The script names `dev`, `build`, `check`, `lint`, `format`, `test` and

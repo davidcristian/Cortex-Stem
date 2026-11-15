@@ -16,7 +16,7 @@ The rules for running it, and which rungs a task needs, are in
 | 4 | `cargo clippy --workspace --all-targets --target x86_64-pc-windows-msvc -- -D warnings`, plus `cargo clippy -p stem-platform --all-targets --features probes --target x86_64-pc-windows-msvc -- -D warnings` for the diagnostic probes (and, on a Windows host, `cargo test -p stem-platform --features probes --lib windows::probe::`) | the **real** Windows code, the Tauri crate and the probes included, type-checks and lints |
 | 5 | `pnpm install --frozen-lockfile && pnpm check && pnpm lint && pnpm test` | frontend types; lint (ESLint, Prettier, `scripts/prosecheck.mjs` and `scripts/linecap.mjs`); unit tests |
 | 6 | `pnpm build` | the production frontend bundle builds |
-| 7 | `pnpm e2e:screenshots` | the pages render in mock mode (screenshots in `e2e/output/`) |
+| 7 | `pnpm e2e:screenshots` | the pages render in mock mode (screenshots in `e2e/output/`) and the dock idles |
 | 8 | GitHub Actions `windows` job | `pnpm tauri build` links and bundles on Windows; the probe unit tests pass |
 | 9 | A person on Windows runs the manual tests ([AGENTS.md §11](../../AGENTS.md#11-manual-tests-on-windows)) | the behaviour works |
 

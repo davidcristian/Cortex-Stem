@@ -21,7 +21,7 @@ Cortex-Stem/
 ├── src/                    Svelte 5 and TypeScript frontend (Vite): dock/ and settings/
 │                           windows, lib/ipc/ (the `Backend` interface, Tauri and mock
 │                           implementations), lib/ipc/generated/ (ts-rs output; never edit).
-├── e2e/                    Playwright specs: mock-mode screenshots.
+├── e2e/                    Playwright specs: mock-mode screenshots and the idle check.
 ├── scripts/                check-all.sh and check-all.ps1 (the ladder), prosecheck.mjs and
 │                           linecap.mjs (run by `pnpm lint`).
 ├── docs/                   architecture/ (read before writing code), ipc/ (the IPC contract,
