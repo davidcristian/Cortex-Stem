@@ -2288,7 +2288,7 @@ test.describe('auto-hide', () => {
 
     // The window is moved away: the dock comes back at once and stays, with
     // the plain region and no strip.
-    await moveWindow(page, CODE_WINDOW_ID, { x: 200, y: 40, width: 1600, height: 1000 });
+    await moveWindow(page, CODE_WINDOW_ID, { x: 260, y: 40, width: 1600, height: 1000 });
     await expect(panel).not.toHaveAttribute('data-autohide');
     await expect(panel).toBeVisible();
     await expect(page.locator(STRIP)).toHaveCount(0);
@@ -2307,7 +2307,7 @@ test.describe('auto-hide', () => {
     // Over it again, then a window passing by during the countdown: it stays.
     await moveWindow(page, CODE_WINDOW_ID, over);
     await expect(panel).toHaveAttribute('data-autohide', 'pending');
-    await moveWindow(page, CODE_WINDOW_ID, { x: 200, y: 40, width: 1600, height: 1000 });
+    await moveWindow(page, CODE_WINDOW_ID, { x: 260, y: 40, width: 1600, height: 1000 });
     await expect(panel).not.toHaveAttribute('data-autohide');
     await page.waitForTimeout(DELAY + SLIDE_MS);
     await expect(panel).toBeVisible();
@@ -2759,8 +2759,8 @@ test.describe('settings window', () => {
     expect((await page.evaluate(SETTINGS_MOCK))?.system.hideWindowsTaskbar).toBe(true);
 
     // Disabled, not-yet-available options stay disabled; "when a window
-    // overlaps" is available.
-    await expect(page.locator('#position option[value="left"]')).toBeDisabled();
+    // overlaps" is available, and so is every position.
+    await expect(page.locator('#position option[value="left"]')).toBeEnabled();
     await expect(page.locator('#auto-hide option[value="whenOverlapped"]')).toBeEnabled();
 
     // Reserve screen space is live (the switch, no M4 tag) while
@@ -2826,6 +2826,22 @@ test.describe('settings window', () => {
     await patchSettings(page, { appearance: { backdrop: 'acrylic' } });
     await expect(backdrop).toHaveValue('acrylic');
     expect((await page.evaluate(SETTINGS_MOCK))?.appearance.backdrop).toBe('acrylic');
+  });
+
+  test('the position offers every edge, and a choice is saved', async ({ page }) => {
+    await openSettings(page);
+    const position = page.locator('#position');
+    await expect(position).toHaveValue('bottom');
+    const options = position.locator('option');
+    await expect(options).toHaveText(['Bottom', 'Left', 'Right', 'Top']);
+    for (let i = 0; i < 4; i += 1) {
+      await expect(options.nth(i)).toBeEnabled();
+    }
+    for (const edge of ['left', 'right', 'top', 'bottom'] as const) {
+      await position.selectOption(edge);
+      await expect(page.locator('.status')).toHaveText('Saved');
+      expect((await page.evaluate(SETTINGS_MOCK))?.position).toBe(edge);
+    }
   });
 
   test('auto-hide offers always and "when a window overlaps", and the notes say what each does', async ({
@@ -3204,7 +3220,7 @@ test.describe('one dock per monitor', () => {
   const CODE_SLOT = `${APP_SLOT}[data-key="${CODE_KEY}"]`;
   /** Paint's window in the scenario, on the second monitor. */
   const PAINT_WINDOW_ID = 8;
-  const PAINT_FRAME: Rect = { x: 3200, y: 60, width: 1100, height: 700 };
+  const PAINT_FRAME: Rect = { x: 3100, y: 60, width: 1100, height: 700 };
 
   const appKeys = (page: Page): Promise<string[]> =>
     page.$$eval(APP_SLOT, (els) => els.map((el) => (el as HTMLElement).dataset.key ?? ''));
@@ -3610,9 +3626,10 @@ test.describe('keyboard navigation', () => {
       left.push(await focused(page));
     }
     expect(left).toEqual([...keys.slice(0, -1).reverse(), first]);
-    // ArrowDown and ArrowUp do the same (for a dock on a side edge later).
+    // ArrowDown and ArrowUp move nothing on a horizontal dock: only the
+    // arrows of its axis do (a dock on a side edge uses them).
     await page.keyboard.press('ArrowDown');
-    expect(await focused(page)).toBe(keys[1]);
+    expect(await focused(page)).toBe(first);
     await page.keyboard.press('ArrowUp');
     expect(await focused(page)).toBe(first);
     // End and Home.
@@ -3830,5 +3847,690 @@ test.describe('keyboard navigation', () => {
     await page.mouse.move(640, 10);
     await expect(page.locator('.tooltip')).toHaveCount(0);
     await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+  });
+});
+
+test.describe('the dock on the left, right and top edges', () => {
+  type Edge = 'bottom' | 'top' | 'left' | 'right';
+  const PANEL = '.dock-panel';
+  const STRIP = '.reveal-strip';
+  const PINNED = '.slot[data-pinned="true"]';
+  const GAP = '.drop-gap';
+  /** A window on a side edge: as thick as the page asks for (341 CSS px), shown a little wider. */
+  const SIDE_VIEWPORT = { width: 360, height: 800 };
+  const TOP_VIEWPORT = { width: 1280, height: 240 };
+  /** `EDGE_MARGIN`, `SIDE_HEADROOM` and `HEADROOM` of Dock.svelte; the demo's magnification. */
+  const EDGE_MARGIN = 8;
+  const SIDE_HEADROOM = 240;
+  const HEADROOM = 48;
+  const MAX_SCALE = 1.6;
+  const RANGE_ICONS = 3;
+  const SLOT = ICON + SLOT_GAP;
+  const DELAY = 600;
+  const SLIDE_MS = 200;
+
+  const isVertical = (edge: Edge): boolean => edge === 'left' || edge === 'right';
+  const viewportFor = (edge: Edge): { width: number; height: number } =>
+    isVertical(edge) ? SIDE_VIEWPORT : TOP_VIEWPORT;
+
+  async function openOn(page: Page, edge: Edge): Promise<void> {
+    await page.setViewportSize(viewportFor(edge));
+    await openDock(page, `mock=1&position=${edge}`);
+  }
+
+  interface Box {
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+    width: number;
+    height: number;
+  }
+
+  const box = (locator: Locator): Promise<Box> =>
+    locator.first().evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      return {
+        left: r.left,
+        top: r.top,
+        right: r.right,
+        bottom: r.bottom,
+        width: r.width,
+        height: r.height,
+      };
+    });
+  const centreOf = (b: Box): { x: number; y: number } => ({
+    x: b.left + b.width / 2,
+    y: b.top + b.height / 2,
+  });
+  const lastRegion = async (page: Page): Promise<HitRegionCall | undefined> =>
+    (await hitRegions(page)).at(-1);
+  const lastSize = async (page: Page): Promise<{ width: number; height: number } | undefined> => {
+    const last = (await contentSizes(page)).at(-1);
+    return last === undefined ? undefined : { width: last.width, height: last.height };
+  };
+  const lastPanelRect = (page: Page): Promise<Rect | undefined> =>
+    page.evaluate(() =>
+      ((window as unknown as DemoWindow).__dockMock?.calls ?? [])
+        .filter((c) => c.type === 'setDockPanelRect')
+        .map((c) => c.rect as Rect)
+        .at(-1),
+    );
+  const pinnedKeys = (page: Page): Promise<string[]> =>
+    page.$$eval(PINNED, (els) => els.map((el) => (el as HTMLElement).dataset.key ?? ''));
+  const focusedKey = (page: Page): Promise<string | null> =>
+    page.evaluate(() => (document.activeElement as HTMLElement | null)?.dataset.key ?? null);
+  const fileDrag = (page: Page, event: FileDrag): Promise<void> =>
+    page.evaluate((e) => {
+      (window as unknown as DemoWindow).__dockMock?.simulateFileDrag(e);
+    }, event);
+
+  /** Somewhere in the window well away from the panel (the transparent part). */
+  function awayFrom(edge: Edge): { x: number; y: number } {
+    switch (edge) {
+      case 'bottom':
+        return { x: 640, y: 10 };
+      case 'top':
+        return { x: 640, y: 230 };
+      case 'left':
+        return { x: 350, y: 10 };
+      case 'right':
+        return { x: 10, y: 10 };
+    }
+  }
+
+  /** The reveal strip for a panel resting at `panel`: 2 px of the window's edge side, as long as the panel. */
+  function stripFor(edge: Edge, panel: Rect): Rect {
+    const { width, height } = viewportFor(edge);
+    switch (edge) {
+      case 'bottom':
+        return { x: panel.x, y: height - 2, width: panel.width, height: 2 };
+      case 'top':
+        return { x: panel.x, y: 0, width: panel.width, height: 2 };
+      case 'left':
+        return { x: 0, y: panel.y, width: 2, height: panel.height };
+      case 'right':
+        return { x: width - 2, y: panel.y, width: 2, height: panel.height };
+    }
+  }
+
+  /**
+   * The stock taskbar (or another app bar) on `side` of the mock monitor:
+   * `get_monitors` then reports a work area 48 px short of the bounds there
+   * (and none at the bottom), the way Windows does. Installed before the
+   * page loads, like `withTaskbarAutoHidden`.
+   */
+  async function withTaskbarOn(page: Page, side: Edge): Promise<void> {
+    await page.addInitScript((s) => {
+      interface Monitors {
+        getMonitors: () => Promise<MonitorInfo[]>;
+      }
+      let mock: Monitors | undefined;
+      Object.defineProperty(window, '__dockMock', {
+        configurable: true,
+        get: () => mock,
+        set: (value: Monitors) => {
+          const original = value.getMonitors.bind(value);
+          value.getMonitors = async () =>
+            (await original()).map((m) => {
+              const b = m.bounds;
+              const bar = 48;
+              const workArea =
+                s === 'left'
+                  ? { x: b.x + bar, y: b.y, width: b.width - bar, height: b.height }
+                  : s === 'right'
+                    ? { x: b.x, y: b.y, width: b.width - bar, height: b.height }
+                    : s === 'top'
+                      ? { x: b.x, y: b.y + bar, width: b.width, height: b.height - bar }
+                      : { x: b.x, y: b.y, width: b.width, height: b.height - bar };
+              return { ...m, workArea };
+            });
+          mock = value;
+        },
+      });
+    }, side);
+  }
+
+  for (const edge of ['left', 'right', 'top'] as const) {
+    const vertical = isVertical(edge);
+    /** The arrow keys of the toolbar's axis: to the next item and back. */
+    const [nextKey, previousKey] = vertical
+      ? ['ArrowDown', 'ArrowUp']
+      : ['ArrowRight', 'ArrowLeft'];
+    const [crossKey] = vertical ? ['ArrowRight'] : ['ArrowDown'];
+    /** The coordinate along the dock. */
+    const along = (p: { x: number; y: number }): number => (vertical ? p.y : p.x);
+
+    test.describe(`on ${edge}`, () => {
+      test('at rest: on its edge side, centred along it, items in order with the dots towards the edge; the reports for that edge', async ({
+        page,
+      }) => {
+        await page.emulateMedia({ colorScheme: 'dark' });
+        await openOn(page, edge);
+        const viewport = viewportFor(edge);
+        const panel = page.locator(PANEL);
+        await expect(panel).toHaveAttribute(
+          'aria-orientation',
+          vertical ? 'vertical' : 'horizontal',
+        );
+        await expect(page.locator('.separator').first()).toHaveAttribute(
+          'aria-orientation',
+          vertical ? 'horizontal' : 'vertical',
+        );
+        await expect.poll(() => lastPanelRect(page)).toBeDefined();
+        const p = await box(panel);
+
+        // Anchored to the window's edge side, EDGE_MARGIN px from it, and
+        // centred along it (both within the half CSS px a snap may move it).
+        const gapToEdge = {
+          left: p.left,
+          right: viewport.width - p.right,
+          top: p.top,
+          bottom: viewport.height - p.bottom,
+        }[edge];
+        expect(Math.abs(gapToEdge - EDGE_MARGIN)).toBeLessThanOrEqual(0.5);
+        const length = vertical ? viewport.height : viewport.width;
+        expect(Math.abs(along(centreOf(p)) - length / 2)).toBeLessThanOrEqual(1);
+        // A row on top, a column on a side edge: one icon plus padding thick.
+        expect(vertical ? p.width : p.height).toBe(ICON + 2 * PANEL_PADDING);
+
+        // Items keep their order along the main axis: Start first, the bin last.
+        const order = await page.$$eval(
+          `${PANEL} > .slot`,
+          (els, v) =>
+            els.map((el) => {
+              const r = el.getBoundingClientRect();
+              return {
+                kind: (el as HTMLElement).dataset.kind ?? '',
+                at: v ? r.top + r.height / 2 : r.left + r.width / 2,
+              };
+            }),
+          vertical,
+        );
+        expect(order[0]!.kind).toBe('launcher');
+        expect(order.at(-1)!.kind).toBe('recycleBin');
+        for (let i = 1; i < order.length; i += 1) {
+          expect(order[i]!.at).toBeGreaterThan(order[i - 1]!.at);
+        }
+
+        // The running dots sit between the icon and the edge, inside the panel.
+        const running = page
+          .locator(APP_SLOT)
+          .filter({ has: page.locator('.dots i') })
+          .first();
+        const icon = await box(running.locator('.icon'));
+        const dot = await box(running.locator('.dots i'));
+        switch (edge) {
+          case 'left':
+            expect(dot.right).toBeLessThanOrEqual(icon.left);
+            expect(dot.left).toBeGreaterThanOrEqual(p.left);
+            break;
+          case 'right':
+            expect(dot.left).toBeGreaterThanOrEqual(icon.right);
+            expect(dot.right).toBeLessThanOrEqual(p.right);
+            break;
+          case 'top':
+            expect(dot.bottom).toBeLessThanOrEqual(icon.top);
+            expect(dot.top).toBeGreaterThanOrEqual(p.top);
+            break;
+        }
+        expect(Math.abs(along(centreOf(dot)) - along(centreOf(icon)))).toBeLessThanOrEqual(1);
+
+        // set_dock_content_size: the thickness across the edge (the height on
+        // top, the width on a side edge), the length along it informational.
+        const growth = (MAX_SCALE - 1) * SLOT * (RANGE_ICONS + 0.5);
+        const thickness = Math.ceil(
+          ICON +
+            2 * PANEL_PADDING +
+            EDGE_MARGIN +
+            ICON * (MAX_SCALE - 1) +
+            (vertical ? SIDE_HEADROOM : HEADROOM),
+        );
+        const size = (await lastSize(page))!;
+        if (vertical) {
+          expect(size).toEqual({ width: thickness, height: Math.ceil(p.height + 48 + growth) });
+        } else {
+          expect(size).toEqual({ width: Math.ceil(p.width + 48 + growth), height: thickness });
+        }
+
+        // The hit region: the panel, and an envelope lengthened along the
+        // dock and grown away from the edge only.
+        const region = (await lastRegion(page))!;
+        const rest = {
+          x: Math.floor(p.left),
+          y: Math.floor(p.top),
+          width: Math.ceil(p.right) - Math.floor(p.left),
+          height: Math.ceil(p.bottom) - Math.floor(p.top),
+        };
+        expect(region.panel).toEqual(rest);
+        expect(contains(region.envelope, region.panel)).toBe(true);
+        const e = region.envelope;
+        const r = region.panel;
+        switch (edge) {
+          case 'left':
+            expect(e.x).toBe(r.x);
+            expect(e.x + e.width).toBeGreaterThan(r.x + r.width);
+            break;
+          case 'right':
+            expect(e.x + e.width).toBe(r.x + r.width);
+            expect(e.x).toBeLessThan(r.x);
+            break;
+          case 'top':
+            expect(e.y).toBe(r.y);
+            expect(e.y + e.height).toBeGreaterThan(r.y + r.height);
+            break;
+        }
+        if (vertical) {
+          expect(e.y).toBeLessThan(r.y);
+          expect(e.y + e.height).toBeGreaterThan(r.y + r.height);
+        } else {
+          expect(e.x).toBeLessThan(r.x);
+          expect(e.x + e.width).toBeGreaterThan(r.x + r.width);
+        }
+
+        // The resting panel, and where the app layer (the mock's conversion)
+        // puts it on the monitor: the window flush with its edge of the work
+        // area, which on the right starts 360 px from the work area's right.
+        expect(await lastPanelRect(page)).toEqual(rest);
+        const onScreen =
+          edge === 'right' ? { ...rest, x: WORK_AREA.width - viewport.width + rest.x } : rest;
+        await expect.poll(() => dockPanel(page)).toEqual(onScreen);
+
+        await page.screenshot({ path: `${OUT}/dock-edge-${edge}-rest.png` });
+      });
+
+      test('magnifies along the dock, the icons growing away from the edge, with the title pill on the far side', async ({
+        page,
+      }) => {
+        await page.emulateMedia({ colorScheme: 'dark' });
+        await openOn(page, edge);
+        const viewport = viewportFor(edge);
+        const panel = page.locator(PANEL);
+        await expect.poll(() => lastPanelRect(page)).toBeDefined();
+        const rest = await box(panel);
+        const slot = page.locator(APP_SLOT).nth(3);
+        const at = centreOf(await box(slot));
+        // Off the icon's centre across the dock: only the position along it counts.
+        await page.mouse.move(vertical ? at.x + 10 : at.x, vertical ? at.y : at.y + 10);
+        await expect.poll(() => scaleOf(page, 3)).toBeGreaterThan(1.55);
+        // Its neighbours are scaled the same on either side.
+        expect(Math.abs((await scaleOf(page, 2)) - (await scaleOf(page, 4)))).toBeLessThan(0.1);
+        expect(await scaleOf(page, 2)).toBeGreaterThan(1);
+
+        // The icon keeps its side towards the edge and grows away from it.
+        const icon = await box(slot.locator('.icon'));
+        expect(icon.width).toBeGreaterThan(ICON * 1.5);
+        switch (edge) {
+          case 'left':
+            expect(Math.abs(icon.left - (rest.left + PANEL_PADDING))).toBeLessThanOrEqual(0.5);
+            expect(icon.right).toBeGreaterThan(rest.right);
+            break;
+          case 'right':
+            expect(Math.abs(icon.right - (rest.right - PANEL_PADDING))).toBeLessThanOrEqual(0.5);
+            expect(icon.left).toBeLessThan(rest.left);
+            break;
+          case 'top':
+            expect(Math.abs(icon.top - (rest.top + PANEL_PADDING))).toBeLessThanOrEqual(0.5);
+            expect(icon.bottom).toBeGreaterThan(rest.bottom);
+            break;
+        }
+        // The panel lengthens along the dock only.
+        const grown = await box(panel);
+        if (vertical) {
+          expect(grown.height).toBeGreaterThan(rest.height + SLOT);
+          expect(grown.width).toBeCloseTo(rest.width, 1);
+        } else {
+          expect(grown.width).toBeGreaterThan(rest.width + SLOT);
+          expect(grown.height).toBeCloseTo(rest.height, 1);
+        }
+
+        // The title pill: beyond the magnified icon on the side away from
+        // the edge, centred on it, and inside the window.
+        const tooltip = page.locator('.tooltip');
+        await expect(tooltip).toBeVisible();
+        const t = await box(tooltip);
+        switch (edge) {
+          case 'left':
+            expect(t.left).toBeGreaterThan(icon.right);
+            break;
+          case 'right':
+            expect(t.right).toBeLessThan(icon.left);
+            break;
+          case 'top':
+            expect(t.top).toBeGreaterThan(icon.bottom);
+            break;
+        }
+        expect(Math.abs(along(centreOf(t)) - along(centreOf(icon)))).toBeLessThanOrEqual(1);
+        expect(t.left).toBeGreaterThanOrEqual(0);
+        expect(t.top).toBeGreaterThanOrEqual(0);
+        expect(t.right).toBeLessThanOrEqual(viewport.width);
+        expect(t.bottom).toBeLessThanOrEqual(viewport.height);
+        // Nothing was measured or reported mid-magnification.
+        const reported = (await contentSizes(page)).length;
+        await page.screenshot({ path: `${OUT}/dock-edge-${edge}-magnified.png` });
+
+        // Away: back to rest, and the reports are the resting ones.
+        await page.mouse.move(awayFrom(edge).x, awayFrom(edge).y);
+        await expect.poll(() => scaleOf(page, 3)).toBe(1);
+        await expect(tooltip).toHaveCount(0);
+        expect((await contentSizes(page)).length).toBe(reported);
+      });
+
+      test('the keyboard moves along the dock with its own arrows; the focused item shows its pill on the far side', async ({
+        page,
+      }) => {
+        await page.emulateMedia({ colorScheme: 'dark' });
+        await openOn(page, edge);
+        const keys = await page.$$eval(`${PANEL} > .slot:not([data-kind="separator"])`, (els) =>
+          els.map((el) => (el as HTMLElement).dataset.key ?? ''),
+        );
+        await page.keyboard.press('Tab');
+        expect(await focusedKey(page)).toBe(keys[0]);
+        await page.keyboard.press(nextKey);
+        expect(await focusedKey(page)).toBe(keys[1]);
+        await page.keyboard.press(nextKey);
+        await page.keyboard.press(nextKey);
+        expect(await focusedKey(page)).toBe(keys[3]);
+        // The arrows across the dock move nothing.
+        await page.keyboard.press(crossKey);
+        expect(await focusedKey(page)).toBe(keys[3]);
+        await page.keyboard.press(previousKey);
+        expect(await focusedKey(page)).toBe(keys[2]);
+        await page.keyboard.press('End');
+        expect(await focusedKey(page)).toBe(keys.at(-1));
+        await page.keyboard.press('Home');
+        await page.keyboard.press(nextKey);
+        await page.keyboard.press(nextKey);
+
+        // The focused item's pill, without magnification, away from the edge.
+        const slot = page.locator(`${PANEL} > .slot[data-key="${keys[2]}"]`);
+        const tooltip = page.locator('.tooltip');
+        await expect(tooltip).toBeVisible();
+        expect(await slot.evaluate((el) => el.style.getPropertyValue('--scale') || '1')).toBe('1');
+        const icon = await box(slot.locator('.icon'));
+        const t = await box(tooltip);
+        switch (edge) {
+          case 'left':
+            expect(t.left).toBeGreaterThan(icon.right);
+            break;
+          case 'right':
+            expect(t.right).toBeLessThan(icon.left);
+            break;
+          case 'top':
+            expect(t.top).toBeGreaterThan(icon.bottom);
+            break;
+        }
+        await page.screenshot({ path: `${OUT}/dock-edge-${edge}-pill.png` });
+      });
+
+      test('auto-hide slides it out towards its edge; the strip along the edge side brings it back; a toast waits at the edge', async ({
+        page,
+      }) => {
+        await page.emulateMedia({ colorScheme: 'dark' });
+        await openOn(page, edge);
+        const viewport = viewportFor(edge);
+        const panel = page.locator(PANEL);
+        await expect.poll(() => lastRegion(page)).toBeDefined();
+        const atRest = (await lastRegion(page))!;
+        const away = awayFrom(edge);
+        await page.mouse.move(away.x, away.y);
+        await patchSettings(page, { autoHide: { mode: 'always', delayMs: DELAY } });
+        await expect(panel).toHaveAttribute('data-autohide', 'pending');
+        await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+        await expect(panel).toBeHidden();
+        await page.waitForTimeout(SLIDE_MS + 100);
+
+        // Out past the window's edge side.
+        const out = await box(panel);
+        switch (edge) {
+          case 'left':
+            expect(out.right).toBeLessThanOrEqual(0);
+            break;
+          case 'right':
+            expect(out.left).toBeGreaterThanOrEqual(viewport.width);
+            break;
+          case 'top':
+            expect(out.bottom).toBeLessThanOrEqual(0);
+            break;
+        }
+        // Only the 2 px strip along the edge side, as long as the resting panel, takes the pointer.
+        const strip = stripFor(edge, atRest.panel);
+        await expect.poll(() => lastRegion(page)).toEqual({ panel: strip, envelope: strip });
+        expect(await page.locator(STRIP).boundingBox()).toEqual(strip);
+        // The resting panel is still what the app layer knows.
+        expect(await lastPanelRect(page)).toEqual(atRest.panel);
+
+        // A command that fails meanwhile: its toast sits just inside the edge side.
+        await page.evaluate(
+          ([selector, message]) => {
+            const mock = (window as unknown as DemoWindow).__dockMock!;
+            mock.failNextCommand(message);
+            document
+              .querySelector(selector)!
+              .dispatchEvent(new PointerEvent('pointerup', { button: 0, bubbles: true }));
+          },
+          [`${APP_SLOT}[data-key="${CODE_KEY}"]`, 'window not found: 4'] as const,
+        );
+        const toast = page.getByRole('status');
+        await expect(toast).toHaveText('Code failed: window not found: 4');
+        const toastGap = async (): Promise<number> => {
+          const t = await box(toast);
+          return { left: t.left, right: viewport.width - t.right, top: t.top }[edge];
+        };
+        await expect.poll(toastGap).toBeLessThanOrEqual(12);
+        expect(await toastGap()).toBeGreaterThan(0);
+        await page.screenshot({ path: `${OUT}/dock-edge-${edge}-hidden.png` });
+
+        // The pointer on the strip: back in, the envelope out to the edge side.
+        const c = { x: strip.x + strip.width / 2, y: strip.y + strip.height / 2 };
+        await page.mouse.move(c.x, c.y);
+        await expect(panel).toHaveAttribute('data-autohide', 'shown');
+        await expect(panel).toBeVisible();
+        await expect
+          .poll(async () => await panel.evaluate((el) => getComputedStyle(el).transform))
+          .toBe('none');
+        const shown = (await lastRegion(page))!;
+        expect(shown.panel).toEqual(atRest.panel);
+        expect(contains(shown.envelope, atRest.envelope)).toBe(true);
+        expect(contains(shown.envelope, strip)).toBe(true);
+        // The toast rode back out with the panel, beyond its far side.
+        const p = await box(panel);
+        await expect
+          .poll(async () => {
+            const t = await box(toast);
+            return { left: t.left >= p.right, right: t.right <= p.left, top: t.top >= p.bottom }[
+              edge
+            ];
+          })
+          .toBe(true);
+        await page.mouse.move(away.x, away.y);
+        await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+      });
+
+      test('a fullscreen app leaves the strip on this edge unless a taskbar holds that side', async ({
+        page,
+      }) => {
+        // The mock's monitor has its taskbar at the bottom: this edge reaches the screen.
+        await openOn(page, edge);
+        const panel = page.locator(PANEL);
+        await expect.poll(() => lastRegion(page)).toBeDefined();
+        const atRest = (await lastRegion(page))!;
+        const away = awayFrom(edge);
+        await page.mouse.move(away.x, away.y);
+        await fullscreen(page, true);
+        await expect(panel).toHaveAttribute('data-autohide', 'hidden');
+        const strip = stripFor(edge, atRest.panel);
+        await expect.poll(() => lastRegion(page)).toEqual({ panel: strip, envelope: strip });
+        await expect(page.locator(STRIP)).toHaveCount(1);
+        await fullscreen(page, false);
+        await expect(panel).not.toHaveAttribute('data-autohide');
+        await expect.poll(() => lastRegion(page)).toEqual(atRest);
+
+        // The taskbar on this edge: in fullscreen alone, no strip and no region.
+        await withTaskbarOn(page, edge);
+        await openOn(page, edge);
+        await expect.poll(() => lastRegion(page)).toBeDefined();
+        await page.mouse.move(away.x, away.y);
+        await fullscreen(page, true);
+        await expect(page.locator(PANEL)).toHaveAttribute('data-autohide', 'hidden');
+        const none = { x: 0, y: 0, width: 0, height: 0 };
+        await expect.poll(() => lastRegion(page)).toEqual({ panel: none, envelope: none });
+        await expect(page.locator(STRIP)).toHaveCount(0);
+        // The tray or the shortcut still brings it back.
+        await page.evaluate(() => {
+          (window as unknown as DemoWindow).__dockMock?.requestShow();
+        });
+        await expect(page.locator(PANEL)).toHaveAttribute('data-autohide', 'shown');
+      });
+
+      test('drag to reorder works along the dock', async ({ page }) => {
+        await page.emulateMedia({ colorScheme: 'dark' });
+        await openOn(page, edge);
+        await expect.poll(() => lastSize(page)).toBeDefined();
+        const restSize = (await lastSize(page))!;
+        const before = await pinnedKeys(page);
+        expect(before).toHaveLength(5);
+        const a = centreOf(await box(page.locator(PINNED).nth(0)));
+        const b = centreOf(await box(page.locator(PINNED).nth(2)));
+        await page.mouse.move(a.x, a.y);
+        await page.mouse.down();
+        // Past the third pinned item along the dock, a little off the row across it.
+        const away = { left: 12, right: -12, top: 12 }[edge];
+        const to = vertical ? { x: a.x + away, y: b.y + 6 } : { x: b.x + 6, y: a.y + away };
+        await page.mouse.move(to.x, to.y, { steps: 12 });
+        const transformOf = (index: number): Promise<string> =>
+          page
+            .locator(PINNED)
+            .nth(index)
+            .evaluate((el) => (el as HTMLElement).style.transform);
+        await expect(page.locator(PINNED).nth(0)).toHaveAttribute('data-drag', 'lifted');
+        // The two items between the origin and the gap shifted one slot back along the dock.
+        const shift = vertical ? 'translateY(-56px)' : 'translateX(-56px)';
+        await expect.poll(() => transformOf(1)).toBe(shift);
+        await expect.poll(() => transformOf(2)).toBe(shift);
+        expect(await transformOf(3)).toBe('');
+        // The window is asked to grow across the edge for the drag; the
+        // length along it is unchanged, and the whole window takes clicks.
+        await expect
+          .poll(() => lastSize(page))
+          .toEqual(
+            vertical
+              ? { width: 4096, height: restSize.height }
+              : { width: restSize.width, height: 4096 },
+          );
+        const viewport = viewportFor(edge);
+        await expect
+          .poll(async () => (await lastRegion(page))?.envelope)
+          .toEqual({ x: 0, y: 0, ...viewport });
+        // The neighbours' 160 ms shift has ended: the gap is open in the picture.
+        await page.waitForTimeout(250);
+        await page.screenshot({ path: `${OUT}/dock-edge-${edge}-drag.png` });
+
+        await page.mouse.up();
+        await expect
+          .poll(() => pinnedKeys(page))
+          .toEqual([before[1], before[2], before[0], before[3], before[4]]);
+        await expect.poll(() => transformOf(2)).toBe('');
+        await expect(page.locator('[data-drag]')).toHaveCount(0);
+        expect(await callsOfType(page, 'launch')).toBe(0);
+        await expect.poll(() => lastSize(page)).toEqual(restSize);
+      });
+
+      test('a program dragged from Explorer opens the gap along the dock and is pinned there', async ({
+        page,
+      }) => {
+        await openOn(page, edge);
+        await expect.poll(() => lastRegion(page)).toBeDefined();
+        const atRest = (await lastRegion(page))!;
+        const keys = await pinnedKeys(page);
+        const a = await box(page.locator(PINNED).nth(1));
+        const b = await box(page.locator(PINNED).nth(2));
+        const between = vertical
+          ? { x: centreOf(a).x, y: (centreOf(a).y + centreOf(b).y) / 2 }
+          : { x: (centreOf(a).x + centreOf(b).x) / 2, y: centreOf(a).y };
+        const EXE_PATH = 'C:\\Tools\\PuTTY\\putty.exe';
+        await fileDrag(page, { type: 'enter', paths: [EXE_PATH], position: between });
+        const gap = page.locator(GAP);
+        await expect(gap).toHaveCount(1);
+        // One slot long along the dock, one icon thick, after the second pinned item.
+        await expect
+          .poll(async () => {
+            const g = await box(gap);
+            return Math.round(vertical ? g.height : g.width);
+          })
+          .toBe(SLOT);
+        const g = await box(gap);
+        expect(Math.round(vertical ? g.width : g.height)).toBe(ICON);
+        expect(
+          await gap.evaluate(
+            (el) => (el.previousElementSibling as HTMLElement | null)?.dataset.key,
+          ),
+        ).toBe(keys[1]);
+        // The envelope is one slot longer along the dock, half a slot at each end.
+        const during = (await lastRegion(page))!;
+        const longer = vertical
+          ? during.envelope.height - atRest.envelope.height
+          : during.envelope.width - atRest.envelope.width;
+        expect(Math.abs(longer - SLOT)).toBeLessThanOrEqual(1);
+        expect(during.panel).toEqual(atRest.panel);
+
+        await fileDrag(page, { type: 'drop', paths: [EXE_PATH], position: between });
+        const id = `exe:${EXE_PATH.replace(/\\/g, '/').toLowerCase()}`;
+        await expect
+          .poll(() => pinnedKeys(page))
+          .toEqual([keys[0], keys[1], `app:${id}`, keys[2], keys[3], keys[4]]);
+        await expect(gap).toHaveCount(0);
+      });
+    });
+  }
+
+  test('a position change at runtime lays the page out again without a reload', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openDock(page);
+    await expect.poll(() => lastPanelRect(page)).toBeDefined();
+    const bottom = {
+      size: await lastSize(page),
+      region: await lastRegion(page),
+      panel: await lastPanelRect(page),
+    };
+    await page.evaluate(() => {
+      (window as unknown as { __marker?: number }).__marker = 402;
+    });
+    const panel = page.locator(PANEL);
+
+    // To the left: Rust moves the window to the left edge (here: the viewport
+    // turns into a side window); the page lays out vertically for it.
+    await patchSettings(page, { position: 'left' });
+    await page.setViewportSize(SIDE_VIEWPORT);
+    await expect(panel).toHaveAttribute('aria-orientation', 'vertical');
+    await expect
+      .poll(async () => (await lastSize(page))?.width)
+      .toBe(
+        Math.ceil(ICON + 2 * PANEL_PADDING + EDGE_MARGIN + ICON * (MAX_SCALE - 1) + SIDE_HEADROOM),
+      );
+    await expect
+      .poll(async () => Math.abs((await box(panel)).left - EDGE_MARGIN))
+      .toBeLessThanOrEqual(0.5);
+    await expect.poll(async () => (await lastRegion(page))?.panel.x).toBe(EDGE_MARGIN);
+    // The bottom edge's snap margin is gone; only margins of the left edge remain.
+    expect(await panel.evaluate((el) => el.style.marginBottom)).toBe('');
+    await page.screenshot({ path: `${OUT}/dock-edge-switched-left.png` });
+
+    // To the top, then back to the bottom: the same reports as at the start.
+    await patchSettings(page, { position: 'top' });
+    await page.setViewportSize(TOP_VIEWPORT);
+    await expect(panel).toHaveAttribute('aria-orientation', 'horizontal');
+    await expect.poll(async () => (await lastRegion(page))?.panel.y).toBe(EDGE_MARGIN);
+    await patchSettings(page, { position: 'bottom' });
+    await expect.poll(() => lastRegion(page)).toEqual(bottom.region);
+    await expect.poll(() => lastSize(page)).toEqual(bottom.size);
+    await expect.poll(() => lastPanelRect(page)).toEqual(bottom.panel);
+    expect(await panel.evaluate((el) => el.style.marginTop)).toBe('');
+    // The same page all along.
+    expect(await page.evaluate(() => (window as unknown as { __marker?: number }).__marker)).toBe(
+      402,
+    );
   });
 });

@@ -6,9 +6,9 @@
 
 **A floating dock for Windows 11.**
 
-A rounded panel at the bottom of the screen shows your pinned and running apps, one icon per app.
-Icons grow as the pointer passes over them, dots mark running apps, and an icon bounces while its
-app starts. Stem is written in Rust with Tauri 2 and Svelte 5.
+A rounded panel on an edge of the screen shows your pinned and running apps, one icon per app. Icons
+grow as the pointer passes over them, dots mark running apps, and an icon bounces while its app
+starts. Stem is written in Rust with Tauri 2 and Svelte 5.
 
 <img src="docs/images/readme-dock-hover.png" alt="The dock in the dark theme with the pointer over Notepad: the icons next to it grow and a tooltip above it names the app" width="720">
 
@@ -16,7 +16,7 @@ app starts. Stem is written in Rust with Tauri 2 and Svelte 5.
 
 ![Rust](https://img.shields.io/badge/Rust-DEA584?logo=rust&logoColor=white) ![Tauri](https://img.shields.io/badge/Tauri-24C8DB?logo=tauri&logoColor=white) ![Svelte](https://img.shields.io/badge/Svelte-FF3E00?logo=svelte&logoColor=white) ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white) ![Windows 11](https://img.shields.io/badge/Windows_11-0078D4)
 
-Magnification · running dots · drag to pin · auto-hide · multi-monitor · theme sync
+Magnification · running dots · drag to pin · auto-hide · any screen edge · multi-monitor · theme sync
 
 [What is Stem?](#what-is-stem) · [Features](#features) · [In action](#in-action) ·
 [How it works](#how-it-works) · [Install](#install) · [Build from source](#build-from-source) ·
@@ -27,8 +27,9 @@ Magnification · running dots · drag to pin · auto-hide · multi-monitor · th
 ## What is Stem?
 
 Stem is a dock for Windows 11. It is a floating, centred, rounded panel on the bottom edge of the
-screen. It shows Start, your pinned apps, the other running apps and the Recycle Bin, and the
-windows of one app share one icon. Stem can hide the stock taskbar while it runs, or work beside it.
+screen by default, or on the left, right or top edge. It shows Start, your pinned apps, the other
+running apps and the Recycle Bin, and the windows of one app share one icon. Stem can hide the stock
+taskbar while it runs, or work beside it.
 
 Stem runs on Windows 11 only. Windows 10, macOS and Linux are not supported. It does not replace
 the notification area: the tray icons and the input indicators stay on the stock taskbar.
@@ -58,11 +59,11 @@ be turned on. The Recycle Bin item shows whether the bin is full, opens or empti
 files dropped on it to the bin.
 
 **Auto-hide and fullscreen.** The dock can hide always, or only while a window overlaps it. Move
-the pointer to the bottom edge under the dock to bring it back. Fullscreen apps (games, videos,
+the pointer to the screen edge the dock sits on to bring it back. Fullscreen apps (games, videos,
 presentations) hide the dock of their monitor. By default, clicks outside the panel go to the
 desktop and the windows behind it.
 
-**Edges and monitors.** The dock sits on the bottom edge. While auto-hide is
+**Edges and monitors.** The dock sits on the bottom, left, right or top edge. While auto-hide is
 off, it can reserve its band of the screen, as the stock taskbar does, so maximised windows stop
 short of it. You can have one dock per monitor, following monitors as they are plugged in and out,
 with an option to list only each monitor's windows on its dock. A change of display scale applies

@@ -14,9 +14,9 @@ these rules in [docs/development/](docs/development/index.md).
 **Stem** is a floating dock for Windows 11, written in Rust with a Tauri 2 shell and a Svelte 5
 frontend. It runs only on Windows; macOS and Linux hosts are used only for development and checks.
 
-- A **floating, centred, rounded panel** at the bottom of the screen, not an edge-to-edge bar.
-  Icons **magnify** near the cursor, running apps show a **dot indicator**, and launching an app
-  **bounces** its icon.
+- A **floating, centred, rounded panel** on one screen edge (the `position` setting: `bottom` by
+  default, `left`, `right` or `top`), not an edge-to-edge bar. Icons **magnify** near the cursor,
+  running apps show a **dot indicator**, and launching an app **bounces** its icon.
 - It shows **pinned apps** and **running windows**, grouped per application. You can activate,
   minimise and close windows, launch apps, pin and unpin them, and reorder them by drag.
 - Fixed items, each one turned on or off by a setting: at the left a launcher (Start, on by

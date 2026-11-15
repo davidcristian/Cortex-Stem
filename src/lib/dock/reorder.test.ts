@@ -2,11 +2,13 @@ import { describe, expect, it } from 'vitest';
 
 import {
   DRAG_START,
+  dropSlack,
   exceedsMoveThreshold,
   gapShift,
   insertionIndex,
   isInsideWithSlack,
   moveItem,
+  shiftTransform,
 } from './reorder';
 
 // Five pinned slots, 56 px apart, centred at 28, 84, 140, 196, 252.
@@ -131,5 +133,27 @@ describe('isInsideWithSlack', () => {
     expect(isInsideWithSlack(100 - 29, 75, bounds, 28, 48)).toBe(false);
     expect(isInsideWithSlack(200, 100 + 49, bounds, 28, 48)).toBe(false);
     expect(isInsideWithSlack(200, 0, bounds, 28, 48)).toBe(false);
+  });
+});
+
+describe('along either axis', () => {
+  it('shifts a slot along the main axis, and not at all for no shift', () => {
+    expect(shiftTransform('horizontal', 56)).toBe('translateX(56px)');
+    expect(shiftTransform('horizontal', -56)).toBe('translateX(-56px)');
+    expect(shiftTransform('vertical', 56)).toBe('translateY(56px)');
+    expect(shiftTransform('vertical', -56)).toBe('translateY(-56px)');
+    expect(shiftTransform('vertical', 0)).toBe('');
+  });
+
+  it("puts the slot of slack at the row's ends and the icon sizes across it", () => {
+    expect(dropSlack('horizontal', 56, 144)).toEqual({ x: 56, y: 144 });
+    expect(dropSlack('vertical', 56, 144)).toEqual({ x: 144, y: 56 });
+    // A column of pinned slots on a left dock: a release beside it still drops, past its end does not.
+    const column = { left: 16, right: 64, top: 400, bottom: 680 };
+    const slack = dropSlack('vertical', 56, 144);
+    expect(isInsideWithSlack(200, 500, column, slack.x, slack.y)).toBe(true);
+    expect(isInsideWithSlack(40, 680 + 56, column, slack.x, slack.y)).toBe(true);
+    expect(isInsideWithSlack(40, 680 + 57, column, slack.x, slack.y)).toBe(false);
+    expect(isInsideWithSlack(64 + 145, 500, column, slack.x, slack.y)).toBe(false);
   });
 });

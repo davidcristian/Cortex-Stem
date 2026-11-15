@@ -56,7 +56,7 @@ already registered.
 
 ## The dock vanished. How do I get it back?
 
-- With auto-hide on, move the pointer to the bottom edge of the screen, under
+- With auto-hide on, move the pointer to the edge the dock sits on, beside
   where the dock was. [Auto-hide](auto-hide.md) says where on that edge the
   dock comes back, and what to use with touch and pen.
 - Press the [toggle shortcut](keyboard-shortcuts.md#the-toggle-shortcut)

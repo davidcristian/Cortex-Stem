@@ -596,9 +596,9 @@
               value={settings.position}
               options={[
                 { value: 'bottom', label: 'Bottom' },
-                { value: 'left', label: 'Left (M4)', disabled: true },
-                { value: 'right', label: 'Right (M4)', disabled: true },
-                { value: 'top', label: 'Top (M4)', disabled: true },
+                { value: 'left', label: 'Left' },
+                { value: 'right', label: 'Right' },
+                { value: 'top', label: 'Top' },
               ]}
               onchange={(v) =>
                 edit((s) => {

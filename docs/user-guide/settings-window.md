@@ -100,10 +100,13 @@ what it shows and the `pinned` array behind it.
 _Position_ is `position` and _Monitors_ is `monitors`, both at the
 [top level](../SETTINGS.md#top-level) of the file.
 
-- _Position_ is the edge of the screen the dock is on. Only _Bottom_
-  (`bottom`) works. _Left_ (`left`), _Right_ (`right`) and _Top_ (`top`) are
-  greyed out in the window, and with one of them in the file the dock stays
-  at the bottom.
+- _Position_ is the edge of the screen the dock is on: _Bottom_ (`bottom`,
+  the default), _Left_ (`left`), _Right_ (`right`) or _Top_ (`top`). A change
+  applies at once. On the left and the right, the dock is a column centred
+  on the edge, with Start at the top and the Recycle Bin at the bottom. Its
+  icons grow towards the middle of the screen, and the title pills appear
+  beside them. On the top, the dock is a row centred below the screen's top
+  edge. On every edge, the dots are between the icons and the screen edge.
 - _Monitors_: _Primary monitor only_ (`primary`) gives one dock, on the
   primary monitor. _All monitors_ (`all`) gives one dock on every monitor.
   See [More than one monitor](multiple-monitors.md).

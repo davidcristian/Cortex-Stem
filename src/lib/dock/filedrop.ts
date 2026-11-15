@@ -8,6 +8,9 @@
  * leaves out what cannot be a program, so a drag of documents makes no
  * pointless calls and opens no gap. Which paths can be recycled is Rust's
  * decision too (`delete_to_recycle_bin`): the bin takes every path.
+ *
+ * Positions are along the dock's main axis (`edge.ts`): x on a
+ * horizontal dock, y on a vertical one. "Before" is left of, or above.
  */
 
 import type { AppId } from '$lib/ipc/generated/AppId';
@@ -71,14 +74,14 @@ export function pinnedIds(items: readonly DockItem[]): AppId[] {
 }
 
 /**
- * Where among the pinned items a file dropped at `x` goes: the number of
- * them whose centre lies left of `x` (`0..=n` for `n` items; `reorder.ts`'s
+ * Where among the pinned items a file dropped at `pos` goes: the number of
+ * them whose centre lies before `pos` (`0..=n` for `n` items; `reorder.ts`'s
  * `insertionIndex` with nothing lifted). `centres` are where the items are
  * drawn now, gap included: an open gap pushes its neighbours away from the
  * pointer, so the index under a pointer that does not move never flips.
  */
-export function dropIndex(x: number, centres: ArrayLike<number>): number {
-  return insertionIndex(x, centres, -1);
+export function dropIndex(pos: number, centres: ArrayLike<number>): number {
+  return insertionIndex(pos, centres, -1);
 }
 
 /**
@@ -143,34 +146,35 @@ export function gapAnchor(items: readonly DockItem[], index: number): GapAnchor 
   return first !== undefined ? { key: first.key, side: 'before' } : { key: null, side: 'after' };
 }
 
-/** A dock item's horizontal extent where it is drawn now (viewport CSS px). */
+/** A dock item's extent along the main axis where it is drawn now (viewport CSS px). */
 export interface ItemSpan {
   key: string;
   kind: DockItemKind;
-  left: number;
-  right: number;
+  start: number;
+  end: number;
 }
 
-/** The item whose span contains `x` (left edge inclusive), or `null`: padding, a separator's margin, the gap. */
-export function itemAt(x: number, spans: readonly ItemSpan[]): ItemSpan | null {
-  return spans.find((span) => x >= span.left && x < span.right) ?? null;
+/** The item whose span contains `pos` (start inclusive), or `null`: padding, a separator's margin, the gap. */
+export function itemAt(pos: number, spans: readonly ItemSpan[]): ItemSpan | null {
+  return spans.find((span) => pos >= span.start && pos < span.end) ?? null;
 }
 
 /**
- * The item a file drag at `x` points at: the one under it (`itemAt`), or,
- * past the right edge of every item, the last one when it is the Recycle
- * Bin (always the last item), so the panel's padding beyond the bin counts
- * as the bin. Without that, a drag carrying a program there would open the
- * pin gap, the gap would push the bin under the pointer, the bin would
- * close the gap again, and the two would take turns with every move.
+ * The item a file drag at `pos` points at: the one under it (`itemAt`), or,
+ * past the end of every item (right of them, or below them on a vertical
+ * dock), the last one when it is the Recycle Bin (always the last item), so
+ * the panel's padding beyond the bin counts as the bin. Without that, a
+ * drag carrying a program there would open the pin gap, the gap would push
+ * the bin under the pointer, the bin would close the gap again, and the two
+ * would take turns with every move.
  */
-export function dropTargetAt(x: number, spans: readonly ItemSpan[]): ItemSpan | null {
-  const under = itemAt(x, spans);
+export function dropTargetAt(pos: number, spans: readonly ItemSpan[]): ItemSpan | null {
+  const under = itemAt(pos, spans);
   if (under !== null) {
     return under;
   }
   const last = spans.at(-1);
-  return last !== undefined && last.kind === 'recycleBin' && x >= last.right ? last : null;
+  return last !== undefined && last.kind === 'recycleBin' && pos >= last.end ? last : null;
 }
 
 /** Where a file drag points, as the dock measured it. */
@@ -191,7 +195,7 @@ export interface FileDragSpot {
  *
  * The bin takes any drag that carries paths, documents and folders
  * included: it is the one item a document can be dropped on. Off the panel
- * (the transparent margin above it) nothing happens.
+ * (the transparent margin beside it) nothing happens.
  */
 export type FileDropAction =
   { kind: 'none' } | { kind: 'recycle'; key: string } | { kind: 'pin'; index: number };

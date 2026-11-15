@@ -12,13 +12,14 @@
     isAutoHidden,
     onDockAt,
     revealStrip,
-    revealStripHeight,
     revealStripOn,
-    workAreaReachesBottom,
+    revealStripThickness,
+    workAreaReachesEdge,
     type AutoHideEvent,
     type AutoHideState,
   } from '$lib/dock/autohide';
   import { watchDevicePixelRatio } from '$lib/dock/dpr';
+  import { along, axisOf, centreAlong, spanAlong, type DockEdge } from '$lib/dock/edge';
   import {
     dropIndex,
     dropTargetAt,
@@ -37,6 +38,7 @@
     type PinCandidate,
   } from '$lib/dock/filedrop';
   import {
+    edgeShift,
     hitRegionFor,
     integerRect,
     magnifiedRise,
@@ -44,22 +46,26 @@
     sameHitRegion,
     sameRect,
     sameSnap,
+    snapMarginProperties,
     snapOffsets,
     type HitRegion,
     type SnapMargins,
+    type Viewport,
   } from '$lib/dock/geometry';
   import { iconSources, type IconSources } from '$lib/dock/icon-size';
   import { gapTransition, itemTransition } from '$lib/dock/item-transition';
   import { nextFocusIndex, successorKey, tabStopKey } from '$lib/dock/keyboard';
-  import { computeScales, maxGrowth, type MagnifyParams } from '$lib/dock/magnify';
+  import { computeScales, maxGrowth, slotCentres, type MagnifyParams } from '$lib/dock/magnify';
   import { dockFactsFor, dockMonitor, itemsForMonitor, monitorFromSearch } from '$lib/dock/monitor';
   import {
     DRAG_START,
+    dropSlack,
     exceedsMoveThreshold,
     gapShift,
     insertionIndex,
     isInsideWithSlack,
     moveItem,
+    shiftTransform,
     type DropBounds,
   } from '$lib/dock/reorder';
   import { accentColor, effectiveOpacity, resolveTheme } from '$lib/dock/theme';
@@ -84,30 +90,44 @@
 
   // Layout constants (CSS px). They are also CSS variables on the stage so
   // the stylesheet and the sizing maths cannot drift apart. A slot is exactly
-  // the icon's height; the running dots hang below it inside the panel's
-  // bottom padding, which is why the padding is the same all round.
+  // the icon's size across the dock; the running dots hang between it and
+  // the edge inside the panel's padding, which is why the padding is the
+  // same all round.
   const SLOT_GAP = 8;
   const PANEL_PADDING = 8;
   const DOTS_GAP = 2;
   const DOT_SIZE = 4;
   const SEPARATOR_MARGIN = 6;
-  const BOTTOM_MARGIN = 8;
-  /** Room for the tooltip and the bounce above a magnified icon. */
+  /** Between the panel and the window's edge side (docs/ipc/sizing-protocol.md). */
+  const EDGE_MARGIN = 8;
+  /** Room for the tooltip and the bounce beyond a magnified icon, on a dock on `bottom` or `top`. */
   const HEADROOM = 48;
-  /** Room on each side for the drop shadow. */
+  /**
+   * The same on `left` and `right`, where the title pill sits beside
+   * the icon: 10 px to the pill, which wraps at `PILL_MAX_WIDTH`, plus room
+   * for its shadow.
+   */
+  const SIDE_HEADROOM = 240;
+  /** The widest a title pill gets beside the icons of a vertical dock before it wraps (CSS px). */
+  const PILL_MAX_WIDTH = 216;
+  /** Room at each end for the drop shadow. */
   const SIDE_SLACK = 24;
   /**
-   * How far above a fully magnified icon's top edge the hit envelope still
-   * counts as "inside" (CSS px). Small on purpose: anything higher is a band
-   * where nothing is drawn but clicks would still be swallowed.
+   * How far beyond a fully magnified icon's far side (its top edge on
+   * `bottom`) the hit envelope still counts as "inside" (CSS px). Small on
+   * purpose: anything farther is a band where nothing is drawn but clicks
+   * would still be swallowed.
    */
   const HIT_SLACK = 2;
   /**
-   * The window's height (CSS px; Rust clamps it to the work area) while an
-   * icon is being dragged, so the lifted icon can go anywhere on screen.
+   * The window's thickness (CSS px; Rust clamps it to the work area) while
+   * an icon is being dragged, so the lifted icon can go anywhere on screen.
    */
-  const DRAG_WINDOW_HEIGHT = 4096;
-  /** A release within this many icon sizes above or below the pinned row still drops; farther cancels. */
+  const DRAG_WINDOW_THICKNESS = 4096;
+  /**
+   * A release within this many icon sizes of the pinned row, towards or
+   * away from the edge, still drops; farther cancels.
+   */
   const DROP_SLACK_ICONS = 3;
   const TOOLTIP_DELAY_MS = 300;
 
@@ -137,12 +157,26 @@
   );
   const visibleItems = $derived(itemsForMonitor(store.state?.items ?? [], myMonitor, showOnlyMine));
   const facts = $derived(dockFactsFor(store.state?.docks ?? [], myMonitor));
+  // --- The edge (docs/ipc/sizing-protocol.md) ----------------------------
+  // `Settings.position` alone says where the window is: the page lays out
+  // for it (horizontal on `bottom` and `top`, vertical on `left` and
+  // `right`) and lays out again when a `dock://settings` changes it. The
+  // controllers below read `edge` and `axis` when they measure; the stage
+  // carries them for the stylesheet (`data-edge`, and `data-axis` on the
+  // panel for the item transitions, item-transition.ts).
+  const edge = $derived<DockEdge>(settings?.position ?? 'bottom');
+  const axis = $derived(axisOf(edge));
+  const vertical = $derived(axis === 'vertical');
   /**
-   * This dock window's bottom edge is the screen's: its monitor's
-   * work area reaches the bottom, no visible stock taskbar below it.
+   * This dock window's edge side is the screen's: its monitor's
+   * work area reaches the monitor's edge on the dock's side, no visible
+   * stock taskbar (or other app bar) between them.
    */
   const atScreenEdge = $derived(
-    workAreaReachesBottom(store.monitors.find((m) => m.id === myMonitor)),
+    workAreaReachesEdge(
+      store.monitors.find((m) => m.id === myMonitor),
+      edge,
+    ),
   );
   /**
    * The item list a file drop keeps on screen while its pins land:
@@ -258,7 +292,7 @@
     scheduleMeasure();
   }
 
-  // --- Magnification controller (imperative, width only) ----------------------
+  // --- Magnification controller (imperative, size only) ----------------------
   let panelEl = $state<HTMLDivElement>();
   let settling = $state(false);
   /** The slots that take part in layout: leaving ones are excluded. */
@@ -269,7 +303,9 @@
   let applied = new Float64Array(0);
   /** Which slots show their magnified bitmap (`data-magnified`, DockItem.svelte). */
   let magnified: boolean[] = [];
+  /** The pointer's latest position over the panel (viewport CSS px); only its coordinate along the dock counts. */
   let pointerX = 0;
+  let pointerY = 0;
   let hovering = false;
   let frame = 0;
   let settleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -317,10 +353,9 @@
     const n = slots.length;
     // Reads first, then writes: one layout pass per frame.
     for (let i = 0; i < n; i += 1) {
-      const rect = slots[i]!.getBoundingClientRect();
-      centres[i] = rect.left + rect.width / 2;
+      centres[i] = centreAlong(axis, slots[i]!.getBoundingClientRect());
     }
-    computeScales(pointerX, centres, slotPx, magnify, scales);
+    computeScales(axis, pointerX, pointerY, centres, slotPx, magnify, scales);
     for (let i = 0; i < n; i += 1) {
       if (!scalable[i]) {
         continue;
@@ -387,6 +422,7 @@
       return;
     }
     pointerX = e.clientX;
+    pointerY = e.clientY;
     if (!hovering) {
       hovering = true;
       settling = false;
@@ -470,15 +506,18 @@
     started: boolean;
     holdTimer: ReturnType<typeof setTimeout> | null;
     frame: number;
-    /** Pinned app slots in dock order, with their keys and rest centres, measured at start. */
+    /**
+     * Pinned app slots in dock order, with their keys and rest centres along
+     * the dock's main axis, measured at start.
+     */
     pinned: HTMLElement[];
     keys: string[];
     centres: Float64Array;
     bounds: DropBounds;
     from: number;
     to: number;
-    /** `window.innerHeight` the drag's y coordinates refer to (the window grows during a drag). */
-    viewportHeight: number;
+    /** The viewport the drag's coordinates refer to (the window grows during a drag). */
+    viewport: Viewport;
   }
 
   let drag: DragSession | null = null;
@@ -525,7 +564,7 @@
       bounds: { left: 0, right: 0, top: 0, bottom: 0 },
       from: -1,
       to: -1,
-      viewportHeight: window.innerHeight,
+      viewport: viewportNow(),
     };
   }
 
@@ -560,9 +599,9 @@
       top: Infinity,
       bottom: -Infinity,
     };
-    d.pinned.forEach((el, i) => {
-      const rect = el.getBoundingClientRect();
-      d.centres[i] = rect.left + rect.width / 2;
+    const rects = d.pinned.map((el) => el.getBoundingClientRect());
+    slotCentres(axis, rects, d.centres);
+    rects.forEach((rect) => {
       bounds.left = Math.min(bounds.left, rect.left);
       bounds.right = Math.max(bounds.right, rect.right);
       bounds.top = Math.min(bounds.top, rect.top);
@@ -576,25 +615,33 @@
         el.style.transition = transition;
       }
     }
-    // The lifted icon may go anywhere on screen: the window grows to the
-    // work area's height for the duration of the drag (the panel stays at
-    // the bottom; `onwindowresize` shifts the drag's y origin by the growth)
-    // and all of it accepts clicks.
-    d.viewportHeight = window.innerHeight;
+    // The lifted icon may go anywhere on screen: the window grows away from
+    // its edge to the work area's size for the duration of the drag (the
+    // panel stays on the edge; `onwindowresize` shifts the drag's origin by
+    // the growth on `bottom` and `right`) and all of it accepts clicks.
+    d.viewport = viewportNow();
     growWindowForDrag();
     dragHitReported = true;
     reportHitRegion();
     applyDrag();
   }
 
+  /** The window's thickness (its height, or its width on a vertical dock) goes to the drag's. */
   function growWindowForDrag(): void {
     if (reported.width === 0) {
       return;
     }
-    reported = { width: reported.width, height: DRAG_WINDOW_HEIGHT };
+    reported = vertical
+      ? { width: DRAG_WINDOW_THICKNESS, height: reported.height }
+      : { width: reported.width, height: DRAG_WINDOW_THICKNESS };
     void backend
-      .setDockContentSize(reported.width, DRAG_WINDOW_HEIGHT)
+      .setDockContentSize(reported.width, reported.height)
       .catch(report('set_dock_content_size', false));
+  }
+
+  /** The viewport's size now (CSS px). */
+  function viewportNow(): Viewport {
+    return { width: window.innerWidth, height: window.innerHeight };
   }
 
   /**
@@ -613,11 +660,13 @@
   }
 
   /**
-   * The viewport changed size. During a drag the window grew to the
-   * work area's height, or shrank back: its origin moved, so every stored y
-   * coordinate shifts by the change to keep pointing at the same screen
-   * spot, and the hit region is reported again for the new viewport (the
-   * panel shifted, the envelope the whole window).
+   * The viewport changed size. During a drag the window grew away
+   * from its edge to the work area's size, or shrank back: on `bottom` and
+   * `right` its origin moved (`edgeShift`), so every stored coordinate
+   * shifts by the change to keep pointing at the same screen spot, and the
+   * hit region is reported again for the new viewport (the panel shifted,
+   * the envelope the whole window). The shift is always across the dock,
+   * so the rest centres along it stay as they are.
    *
    * With no drag in progress the old measurement describes the wrong
    * coordinate space (the window shrank back after a drop, or moved to
@@ -633,14 +682,21 @@
       scheduleMeasure();
       return;
     }
-    const delta = window.innerHeight - d.viewportHeight;
-    if (delta === 0) {
-      return;
+    const now = viewportNow();
+    const { dx, dy } = edgeShift(edge, d.viewport, now);
+    d.viewport = now;
+    if (dx !== 0 || dy !== 0) {
+      d.startX += dx;
+      d.lastX += dx;
+      d.startY += dy;
+      d.lastY += dy;
+      d.bounds = {
+        left: d.bounds.left + dx,
+        right: d.bounds.right + dx,
+        top: d.bounds.top + dy,
+        bottom: d.bounds.bottom + dy,
+      };
     }
-    d.viewportHeight = window.innerHeight;
-    d.startY += delta;
-    d.lastY += delta;
-    d.bounds = { ...d.bounds, top: d.bounds.top + delta, bottom: d.bounds.bottom + delta };
     reportHitRegion();
     scheduleDragFrame();
   }
@@ -660,7 +716,7 @@
     const dx = d.lastX - d.startX;
     const dy = d.lastY - d.startY;
     d.el.style.transform = `translate(${dx}px, ${dy}px)`;
-    const to = insertionIndex((d.centres[d.from] ?? 0) + dx, d.centres, d.from);
+    const to = insertionIndex((d.centres[d.from] ?? 0) + along(axis, dx, dy), d.centres, d.from);
     if (to === d.to) {
       return;
     }
@@ -669,8 +725,7 @@
       if (el === d.el) {
         return;
       }
-      const shift = gapShift(i, d.from, to, slotPx);
-      el.style.transform = shift === 0 ? '' : `translateX(${shift}px)`;
+      el.style.transform = shiftTransform(axis, gapShift(i, d.from, to, slotPx));
     });
   }
 
@@ -707,10 +762,8 @@
       d.frame = 0;
     }
     applyDrag();
-    if (
-      d.to !== d.from &&
-      isInsideWithSlack(d.lastX, d.lastY, d.bounds, slotPx, DROP_SLACK_ICONS * iconSize)
-    ) {
+    const slack = dropSlack(axis, slotPx, DROP_SLACK_ICONS * iconSize);
+    if (d.to !== d.from && isInsideWithSlack(d.lastX, d.lastY, d.bounds, slack.x, slack.y)) {
       drop(d);
     } else {
       cancelDrag(true);
@@ -727,7 +780,7 @@
     const order = moveItem(d.keys, d.from, d.to);
     // Land in the gap now (no transition: the snapshot may arrive within a
     // frame, and the transforms are relative to the old DOM order).
-    d.el.style.transform = `translateX(${(d.centres[d.to] ?? 0) - (d.centres[d.from] ?? 0)}px)`;
+    d.el.style.transform = shiftTransform(axis, (d.centres[d.to] ?? 0) - (d.centres[d.from] ?? 0));
     liftedKey = null;
     drag = null;
     // The window shrinks back now; the pointer may never "leave".
@@ -889,15 +942,17 @@
   // animating in or out. Each report goes out only when its values changed.
   /** The panel's bounding box at rest, viewport-relative CSS px, after snapping. */
   let measured: Rect | null = null;
-  /** `window.innerHeight` when `measured` was taken: the viewport its y refers to. */
-  let measuredViewportHeight = 0;
+  /** The viewport when `measured` was taken: the one its coordinates refer to. */
+  let measuredViewport: Viewport = { width: 0, height: 0 };
   /**
    * The inline margins that hold the panel on whole device pixels.
-   * The stage centres the panel, so with an odd `innerWidth − panelWidth`
-   * every bitmap inside would sit on a half pixel and be smeared by the
-   * compositor; the margins cancel that (see `snapOffsets`).
+   * The stage centres the panel along the dock, so with an odd
+   * `innerWidth − panelWidth` every bitmap inside would sit on a half pixel
+   * and be smeared by the compositor; the margins cancel that (see
+   * `snapOffsets`; which CSS margins they are depends on the edge,
+   * `snapMarginProperties`).
    */
-  let snapMargins: SnapMargins = { marginLeft: 0, marginBottom: BOTTOM_MARGIN };
+  let snapMargins: SnapMargins = { start: 0, edge: EDGE_MARGIN };
   let reported = { width: 0, height: 0 };
   let reportedHit: HitRegion | null = null;
   /** The resting panel of the latest `set_dock_panel_rect`. */
@@ -939,43 +994,46 @@
     }
     let rect = restRect(panel);
     // Snap to whole device pixels. Only here, at rest: a magnified
-    // or dragged panel is not measured at all, and the window's height only
-    // ever changes by whole device pixels, so a snap survives Rust's resize.
-    // The live ratio, not `dpr`: this runs again whenever the geometry does.
-    const snap = snapOffsets(
-      rect.left,
-      rect.top,
-      window.devicePixelRatio || 1,
-      snapMargins.marginLeft,
-      snapMargins.marginBottom,
-    );
+    // or dragged panel is not measured at all, and the window's thickness
+    // only ever changes by whole device pixels, so a snap survives Rust's
+    // resize. The live ratio, not `dpr`: this runs again whenever the
+    // geometry does.
+    const snap = snapOffsets(rect.left, rect.top, window.devicePixelRatio || 1, snapMargins, edge);
     if (!sameSnap(snapMargins, snap)) {
       snapMargins = snap;
-      panel.style.marginLeft = `${snap.marginLeft}px`;
-      panel.style.marginBottom = `${snap.marginBottom}px`;
+      applySnapMargins(panel);
       rect = restRect(panel);
     }
     measured = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
-    measuredViewportHeight = window.innerHeight;
-    const resting = integerRect(measured);
-    const gap = snapMargins.marginBottom;
+    measuredViewport = viewportNow();
+    const whole = integerRect(measured);
+    const resting = spanAlong(axis, { left: whole.x, top: whole.y, ...whole });
+    const length = resting.end - resting.start;
+    const gap = snapMargins.edge;
     if (
       stripBox === null ||
-      stripBox.x !== resting.x ||
-      stripBox.width !== resting.width ||
+      stripBox.start !== resting.start ||
+      stripBox.length !== length ||
       stripBox.gap !== gap
     ) {
-      stripBox = { x: resting.x, width: resting.width, gap };
+      stripBox = { start: resting.start, length, gap };
     }
     reportSize();
   }
 
+  /** Write `snapMargins` to the CSS margins they stand for on this edge (`snapMarginProperties`). */
+  function applySnapMargins(panel: HTMLElement): void {
+    const names = snapMarginProperties(edge);
+    panel.style[names.start] = `${snapMargins.start}px`;
+    panel.style[names.edge] = `${snapMargins.edge}px`;
+  }
+
   /**
    * The panel's box where it rests: `getBoundingClientRect` includes the
-   * auto-hide slide, the panel's only transform (a pure `translateY`; never
-   * measured mid-transition), so its offset is taken off again. Items can
-   * come and go while the dock is hidden, and the strip and the region on
-   * reveal must describe the resting panel.
+   * auto-hide slide, the panel's only transform (a pure translation towards
+   * the edge; never measured mid-transition), so its offset is taken off
+   * again. Items can come and go while the dock is hidden, and the strip and
+   * the region on reveal must describe the resting panel.
    */
   function restRect(panel: HTMLElement): DOMRect {
     const rect = panel.getBoundingClientRect();
@@ -983,18 +1041,33 @@
     if (transform === '' || transform === 'none') {
       return rect;
     }
-    const dy = new DOMMatrixReadOnly(transform).m42;
-    return dy === 0 ? rect : new DOMRect(rect.x, rect.y - dy, rect.width, rect.height);
+    const { m41: dx, m42: dy } = new DOMMatrixReadOnly(transform);
+    return dx === 0 && dy === 0
+      ? rect
+      : new DOMRect(rect.x - dx, rect.y - dy, rect.width, rect.height);
   }
 
+  /**
+   * `set_dock_content_size` (docs/ipc/sizing-protocol.md): the value
+   * across the edge is the window's thickness (the height on `bottom` and
+   * `top`, the width on `left` and `right`): the panel, the margin to the
+   * edge, the magnified icons' rise and the room for the pill and the
+   * bounce beyond them. The value along the edge is informational: the
+   * panel, its magnification growth and room for the shadow at both ends.
+   */
   function reportSize(): void {
     if (measured === null || measured.width === 0) {
       return;
     }
-    const width = Math.ceil(measured.width + 2 * SIDE_SLACK + maxGrowth(slotPx, magnify));
-    const height = Math.ceil(
-      measured.height + snapMargins.marginBottom + iconSize * (magnify.maxScale - 1) + HEADROOM,
-    );
+    const lengthOf = (panelLength: number): number =>
+      Math.ceil(panelLength + 2 * SIDE_SLACK + maxGrowth(slotPx, magnify));
+    const rise = iconSize * (magnify.maxScale - 1);
+    const width = vertical
+      ? Math.ceil(measured.width + snapMargins.edge + rise + SIDE_HEADROOM)
+      : lengthOf(measured.width);
+    const height = vertical
+      ? lengthOf(measured.height)
+      : Math.ceil(measured.height + snapMargins.edge + rise + HEADROOM);
     if (width !== reported.width || height !== reported.height) {
       reported = { width, height };
       void backend.setDockContentSize(width, height).catch(report('set_dock_content_size', false));
@@ -1006,10 +1079,11 @@
    * The panel rounded outwards, and the envelope its magnified icons can
    * reach. A drag in progress makes the whole window clickable instead: the
    * lifted icon can be anywhere in it. The window grows for the drag with
-   * its bottom edge fixed, so the panel's y in the current viewport is the
-   * measured one plus the growth; reporting the rest y would put
-   * the panel far above its real place and the tracker would turn the
-   * window click-through while the icon is lifted.
+   * its edge side fixed, so on `bottom` (and `right`) the panel's y (x) in
+   * the current viewport is the measured one plus the growth
+   * (`edgeShift`); reporting the rest one would put the panel far from its
+   * real place and the tracker would turn the window click-through while
+   * the icon is lifted.
    *
    * With auto-hide active (or a fullscreen app in front) a
    * hidden dock reports the reveal strip as both rectangles, and a shown one
@@ -1021,23 +1095,25 @@
     if (measured === null || measured.width === 0) {
       return null;
     }
+    const viewport = viewportNow();
     if (drag?.started) {
-      const delta = window.innerHeight - measuredViewportHeight;
+      const { dx, dy } = edgeShift(edge, measuredViewport, viewport);
       return {
-        panel: integerRect({ ...measured, y: measured.y + delta }),
-        envelope: { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight },
+        panel: integerRect({ ...measured, x: measured.x + dx, y: measured.y + dy }),
+        envelope: { x: 0, y: 0, width: viewport.width, height: viewport.height },
       };
     }
     const region = hitRegionFor(
       measured,
-      // A file drag's gap widens the panel by one slot: the window
-      // keeps taking the drag there, magnification or not.
+      // A file drag's gap lengthens the panel by one slot: the
+      // window keeps taking the drag there, magnification or not.
       maxGrowth(slotPx, magnify) + (fileDrag !== null ? slotPx : 0),
-      // A magnified icon's top is iconSize × (maxScale − 1) above its slot's
-      // top edge, and the slot sits PANEL_PADDING below the panel's top edge.
+      // A magnified icon's far side is iconSize × (maxScale − 1) beyond its
+      // slot's, and the slot sits PANEL_PADDING inside the panel's edge.
       magnifiedRise(iconSize, magnify.maxScale, HIT_SLACK - PANEL_PADDING),
+      edge,
     );
-    return autoHideHitRegion(autoHide, region, window.innerHeight, atScreenEdge);
+    return autoHideHitRegion(autoHide, region, viewport, atScreenEdge, edge);
   }
 
   function reportHitRegion(): void {
@@ -1057,15 +1133,16 @@
    * rest box in the current viewport, whatever the auto-hide phase (the
    * hidden dock's hit region is the strip, which nothing could overlap, so
    * the overlap reference is reported on its own). The window grows for a
-   * drag with its bottom edge fixed, so the panel's y shifts by the growth,
-   * like the hit region's. Sent only when it changed.
+   * drag with its edge side fixed, so on `bottom` and `right` the panel
+   * shifts by the growth (`edgeShift`), like the hit region's. Sent
+   * only when it changed.
    */
   function reportDockPanel(): void {
     if (measured === null || measured.width === 0) {
       return;
     }
-    const delta = window.innerHeight - measuredViewportHeight;
-    const panel = integerRect({ ...measured, y: measured.y + delta });
+    const { dx, dy } = edgeShift(edge, measuredViewport, viewportNow());
+    const panel = integerRect({ ...measured, x: measured.x + dx, y: measured.y + dy });
     if (reportedPanel !== null && sameRect(reportedPanel, panel)) {
       return;
     }
@@ -1101,6 +1178,37 @@
     void magnify;
     void iconSize;
     reportSize();
+  });
+
+  // The edge changed (a `dock://settings` with another position): the
+  // stylesheet has already laid the panel out for it (`data-edge`). Whatever
+  // was going on along the old axis stops, the snap margins of the old edge
+  // go (they are other CSS margins now), and everything is measured and
+  // reported again for the new one; Rust moves the window meanwhile and
+  // keeps its old thickness until the next `set_dock_content_size`
+  // (docs/ipc/sizing-protocol.md, step 5).
+  let laidOutEdge: DockEdge | null = null;
+  $effect(() => {
+    const now = edge;
+    untrack(() => {
+      const before = laidOutEdge;
+      laidOutEdge = now;
+      if (before === null || before === now) {
+        return;
+      }
+      cancelDrag(false);
+      clearDragStyles();
+      endFileDrag(false, false);
+      leaveHoverState();
+      snapMargins = { start: 0, edge: EDGE_MARGIN };
+      panelEl?.style.removeProperty('margin');
+      measured = null;
+      stripBox = null;
+      reported = { width: 0, height: 0 };
+      reportedHit = null;
+      reportedPanel = null;
+      scheduleMeasure();
+    });
   });
 
   // The work area reached the screen's edge or left it (the stock taskbar
@@ -1152,11 +1260,12 @@
    */
   const stripOn = $derived(revealStripOn(autoHideView, atScreenEdge));
   /**
-   * The resting panel's whole-pixel x and width, which the reveal strip
-   * shares, and the margin under it, which the strip fills while the dock
-   * is on screen (`revealStripHeight`).
+   * The resting panel's whole-pixel start and length along the dock, which
+   * the reveal strip shares, and the margin between it and the window's
+   * edge side, which the strip fills while the dock is on screen
+   * (`revealStripThickness`).
    */
-  let stripBox = $state<{ x: number; width: number; gap: number } | null>(null);
+  let stripBox = $state<{ start: number; length: number; gap: number } | null>(null);
   /** Native menus from this dock that have not closed yet (`show_*_menu` pending). */
   let menusOpen = 0;
   let bounceHoldTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1233,7 +1342,7 @@
    * The drag is over. No `pointerleave` may ever come (the lifted icon was
    * under the pointer, and the window shrinks back), so where the
    * pointer is is worked out from the release point: over the panel, or
-   * below it down to the strip, counts as inside.
+   * between it and the strip, counts as inside.
    */
   function endDragHold(d: DragSession): void {
     autoHideSend({ type: 'pointer', inside: isOnDock(d.lastX, d.lastY) });
@@ -1241,8 +1350,8 @@
   }
 
   /**
-   * (`x`, `y`) is over the panel, or below it down to the window's bottom
-   * edge while the reveal strip is there to report the pointer leaving
+   * (`x`, `y`) is over the panel, or between it and the window's edge side
+   * while the reveal strip is there to report the pointer leaving
    * (`onDockAt`; not in fullscreen above a visible taskbar): where
    * the pointer counts as on the dock after a drag that produced no pointer
    * event to say so.
@@ -1251,7 +1360,7 @@
     const rect = panelEl?.getBoundingClientRect();
     return (
       rect !== undefined &&
-      onDockAt(rect, x, y, window.innerHeight, revealStripOn(autoHide, atScreenEdge))
+      onDockAt(rect, x, y, viewportNow(), revealStripOn(autoHide, atScreenEdge), edge)
     );
   }
 
@@ -1450,11 +1559,11 @@
     if (stripBox === null || !revealStripOn(autoHide, atScreenEdge)) {
       return false;
     }
-    const strip = revealStrip(
-      { x: stripBox.x, y: 0, width: stripBox.width, height: 0 },
-      window.innerHeight,
-    );
-    return rectContainsPoint(strip, x, y);
+    const { start, length } = stripBox;
+    const resting = vertical
+      ? { x: 0, y: start, width: 0, height: length }
+      : { x: start, y: 0, width: length, height: 0 };
+    return rectContainsPoint(revealStrip(resting, viewportNow(), edge), x, y);
   }
 
   /**
@@ -1475,17 +1584,17 @@
         key: el.dataset.key ?? '',
         // `data-kind` is the item's `DockItem.kind` (DockItem.svelte and the separator slot).
         kind: (el.dataset.kind ?? 'separator') as DockItemKind,
-        left: rect.left,
-        right: rect.right,
+        ...spanAlong(axis, rect),
       });
       if (el.dataset.kind === 'app' && el.dataset.pinned === 'true') {
-        centres.push(rect.left + rect.width / 2);
+        centres.push(centreAlong(axis, rect));
       }
     }
+    const pos = along(axis, x, y);
     return {
       onPanel: rectContainsPoint(panel.getBoundingClientRect(), x, y),
-      over: dropTargetAt(x, spans),
-      index: dropIndex(x, centres),
+      over: dropTargetAt(pos, spans),
+      index: dropIndex(pos, centres),
     };
   }
 
@@ -1686,7 +1795,7 @@
     }
     const key = itemSlotOf(e.target)?.dataset.key;
     const current = key === undefined ? -1 : items.findIndex((i) => i.key === key);
-    const next = nextFocusIndex(items, current, e.key);
+    const next = nextFocusIndex(items, current, e.key, axis);
     if (next === null) {
       return;
     }
@@ -1821,8 +1930,8 @@
   <div
     class="drop-gap"
     aria-hidden="true"
-    in:gapTransition|global={{ enabled: itemMotion }}
-    out:gapTransition|global={{ enabled: itemMotion && landedKey === null }}
+    in:gapTransition|global={{ enabled: itemMotion, axis }}
+    out:gapTransition|global={{ enabled: itemMotion && landedKey === null, axis }}
     onoutroend={ongapoutroend}
   >
     <div class="drop-indicator"></div>
@@ -1840,6 +1949,7 @@
 
 <div
   class="dock-stage"
+  data-edge={edge}
   style:--accent={accent}
   style:--panel-opacity={opacity}
   style:--radius="{cornerRadius}px"
@@ -1849,7 +1959,8 @@
   style:--dots-gap="{DOTS_GAP}px"
   style:--dot-size="{DOT_SIZE}px"
   style:--separator-margin="{SEPARATOR_MARGIN}px"
-  style:--bottom-margin="{BOTTOM_MARGIN}px"
+  style:--edge-margin="{EDGE_MARGIN}px"
+  style:--pill-max="{PILL_MAX_WIDTH}px"
   style:--shadow-room="{SIDE_SLACK}px"
   style:--slide="{AUTO_HIDE_SLIDE_MS}ms"
 >
@@ -1862,9 +1973,10 @@
       bind:this={panelEl}
       role="toolbar"
       aria-label="Stem"
-      aria-orientation="horizontal"
+      aria-orientation={axis}
       tabindex="-1"
       data-ready="true"
+      data-axis={axis}
       data-autohide={autoHideOn ? autoHidePhase : undefined}
       onpointermove={onpanelpointermove}
       onpointerenter={onpanelpointerenter}
@@ -1883,11 +1995,11 @@
           <div
             class="slot separator"
             role="separator"
-            aria-orientation="vertical"
+            aria-orientation={vertical ? 'horizontal' : 'vertical'}
             data-key={item.key}
             data-kind="separator"
-            in:itemTransition|global={{ enabled: itemMotion && introsEnabled }}
-            out:itemTransition|global={{ enabled: itemMotion }}
+            in:itemTransition|global={{ enabled: itemMotion && introsEnabled, axis }}
+            out:itemTransition|global={{ enabled: itemMotion, axis }}
             onintroend={onItemSettled}
             onoutroend={onItemSettled}
           ></div>
@@ -1927,26 +2039,31 @@
       {/if}
     </div>
     {#if stripOn && stripBox !== null}
-      <!-- The reveal strip (ADR-0008): the bottom edge under the resting
-           panel. Hidden, the window takes the pointer only in its bottom
-           2 px; shown, it fills the margin under the panel and counts as
-           part of the dock, so leaving it upwards is entering the panel.
-           None in fullscreen above a visible taskbar. Invisible. -->
+      <!-- The reveal strip (ADR-0008): the window's edge side beside the
+           resting panel (its bottom on `bottom`, its left side on `left`).
+           Hidden, the window takes the pointer only in its 2 px
+           there; shown, it fills the margin between the panel and that side
+           and counts as part of the dock, so leaving it towards the panel is
+           entering the panel. None in fullscreen above a visible
+           taskbar. Invisible. -->
+      {@const thickness = `${revealStripThickness(autoHidePhase, stripBox.gap)}px`}
       <div
         class="reveal-strip"
         aria-hidden="true"
-        style:left="{stripBox.x}px"
-        style:width="{stripBox.width}px"
-        style:height="{revealStripHeight(autoHidePhase, stripBox.gap)}px"
+        style:left={vertical ? undefined : `${stripBox.start}px`}
+        style:top={vertical ? `${stripBox.start}px` : undefined}
+        style:width={vertical ? thickness : `${stripBox.length}px`}
+        style:height={vertical ? `${stripBox.length}px` : thickness}
         onpointerenter={onstripenter}
         onpointerleave={onstripleave}
       ></div>
     {/if}
   {/if}
 
-  <!-- Failure notices: right-aligned just above the panel, never in the way;
-       while the panel is slid out they sit just above the bottom edge and
-       ride back up with it. -->
+  <!-- Failure notices: at the far end of the window just beyond the panel's
+       side away from the edge (right-aligned just above it on `bottom`),
+       never in the way; while the panel is slid out they sit just inside
+       the window's edge side and ride back out with it. -->
   <div class="toasts" class:at-edge={autoHidden} aria-live="polite">
     {#each toasts.items as toast (toast.id)}
       <div class="toast" role="status">{toast.message}</div>
@@ -1955,6 +2072,8 @@
 </div>
 
 <style>
+  /* The panel is anchored to the window's edge side and centred along it
+     (docs/ipc/sizing-protocol.md). */
   .dock-stage {
     position: relative;
     display: flex;
@@ -1963,29 +2082,82 @@
     width: 100%;
     height: 100%;
     color: var(--text);
+    /* The panel's thickness (icon + padding) plus its margin to the edge:
+       where its side away from the edge is. */
+    --panel-line: calc(var(--edge-margin) + var(--icon) + 2 * var(--panel-padding));
+  }
+
+  .dock-stage[data-edge='top'] {
+    align-items: flex-start;
+  }
+
+  .dock-stage[data-edge='left'] {
+    align-items: center;
+    justify-content: flex-start;
+  }
+
+  .dock-stage[data-edge='right'] {
+    align-items: center;
+    justify-content: flex-end;
   }
 
   .toasts {
     position: absolute;
     left: 8px;
     right: 8px;
-    /* The panel's top edge plus a small gap; the panel box is icon + padding. */
-    bottom: calc(var(--bottom-margin) + var(--icon) + 2 * var(--panel-padding) + 6px);
+    /* The panel's top edge plus a small gap. */
+    bottom: calc(var(--panel-line) + 6px);
     display: flex;
     flex-direction: column;
     align-items: flex-end;
     gap: 4px;
     pointer-events: none;
-    /* Follows the panel's slide: down by the panel box and the
-       margin under it, so the notices end 6 px above the bottom edge while
-       the panel is out, and back up with it. A transform, like the panel's
-       own slide, so nothing is laid out again. */
+    /* Follows the panel's slide: towards the edge by the panel box
+       and the margin to the edge, so the notices end 6 px inside the edge
+       side while the panel is out, and back with it. A transform, like the
+       panel's own slide, so nothing is laid out again. */
     transition: transform var(--slide) ease-out;
   }
 
   .toasts.at-edge {
-    transform: translateY(calc(var(--bottom-margin) + var(--icon) + 2 * var(--panel-padding)));
+    transform: translateY(var(--panel-line));
     transition: transform var(--slide) ease-in;
+  }
+
+  /* On `top`: right-aligned just below the panel, the newest nearest it. */
+  .dock-stage[data-edge='top'] .toasts {
+    bottom: auto;
+    top: calc(var(--panel-line) + 6px);
+    flex-direction: column-reverse;
+  }
+
+  .dock-stage[data-edge='top'] .toasts.at-edge {
+    transform: translateY(calc(-1 * var(--panel-line)));
+  }
+
+  /* On a side edge: at the bottom end of the window, just beside the panel. */
+  .dock-stage[data-edge='left'] .toasts,
+  .dock-stage[data-edge='right'] .toasts {
+    top: 8px;
+    bottom: 8px;
+    justify-content: flex-end;
+  }
+
+  .dock-stage[data-edge='left'] .toasts {
+    left: calc(var(--panel-line) + 6px);
+    align-items: flex-start;
+  }
+
+  .dock-stage[data-edge='left'] .toasts.at-edge {
+    transform: translateX(calc(-1 * var(--panel-line)));
+  }
+
+  .dock-stage[data-edge='right'] .toasts {
+    right: calc(var(--panel-line) + 6px);
+  }
+
+  .dock-stage[data-edge='right'] .toasts.at-edge {
+    transform: translateX(var(--panel-line));
   }
 
   .toast {
@@ -2042,9 +2214,11 @@
   }
 
   /* Content-sized and centred by the stage: items animating in and out
-     widen and narrow it without the window ever resizing (docs/ipc/sizing-protocol.md).
-     `measurePanel` sets inline `margin-left` / `margin-bottom` on top of
-     these to hold the panel on whole device pixels. */
+     lengthen and shorten it without the window ever resizing
+     (docs/ipc/sizing-protocol.md). A row on `bottom` and `top`, a column on
+     `left` and `right`. `measurePanel` sets inline margins (the start of
+     the main axis and the edge side: `margin-left` / `margin-bottom` on
+     `bottom`) on top of these to hold the panel on whole device pixels. */
   .dock-panel {
     position: relative;
     display: flex;
@@ -2052,7 +2226,7 @@
     flex: none;
     box-sizing: border-box;
     padding: var(--panel-padding);
-    margin-bottom: var(--bottom-margin);
+    margin-bottom: var(--edge-margin);
     border-radius: var(--radius);
     background: rgb(var(--panel-tint) / var(--panel-opacity));
     -webkit-backdrop-filter: blur(24px) saturate(1.4);
@@ -2070,17 +2244,39 @@
     pointer-events: none;
   }
 
-  /* Auto-hide (ADR-0008): the panel slides out below the window's
-     bottom edge, by its own height plus the margin under it and room for its
-     shadow, and back (ease-in out, ease-out in); the window itself never
-     moves. Out of view it takes neither the pointer nor keyboard focus.
-     Under reduced motion it fades instead. */
+  .dock-stage[data-edge='top'] .dock-panel {
+    align-items: flex-start;
+    margin-bottom: 0;
+    margin-top: var(--edge-margin);
+  }
+
+  .dock-stage[data-edge='left'] .dock-panel,
+  .dock-stage[data-edge='right'] .dock-panel {
+    flex-direction: column;
+    margin-bottom: 0;
+  }
+
+  .dock-stage[data-edge='left'] .dock-panel {
+    align-items: flex-start;
+    margin-left: var(--edge-margin);
+  }
+
+  .dock-stage[data-edge='right'] .dock-panel {
+    align-items: flex-end;
+    margin-right: var(--edge-margin);
+  }
+
+  /* Auto-hide (ADR-0008): the panel slides out past the window's
+     edge side, by its own thickness plus the margin to the edge and room
+     for its shadow, and back (ease-in out, ease-out in): down on `bottom`,
+     up on `top`, left on `left`, right on `right`. The window
+     itself never moves. Out of view it takes neither the pointer nor
+     keyboard focus. Under reduced motion it fades instead. */
   .dock-panel {
     transition: transform var(--slide) ease-out;
   }
 
   .dock-panel.slid-out {
-    transform: translateY(calc(100% + var(--bottom-margin) + var(--shadow-room)));
     visibility: hidden;
     pointer-events: none;
     transition:
@@ -2088,12 +2284,28 @@
       visibility 0s linear var(--slide);
   }
 
+  .dock-stage[data-edge='bottom'] .dock-panel.slid-out {
+    transform: translateY(calc(100% + var(--edge-margin) + var(--shadow-room)));
+  }
+
+  .dock-stage[data-edge='top'] .dock-panel.slid-out {
+    transform: translateY(calc(-100% - var(--edge-margin) - var(--shadow-room)));
+  }
+
+  .dock-stage[data-edge='left'] .dock-panel.slid-out {
+    transform: translateX(calc(-100% - var(--edge-margin) - var(--shadow-room)));
+  }
+
+  .dock-stage[data-edge='right'] .dock-panel.slid-out {
+    transform: translateX(calc(100% + var(--edge-margin) + var(--shadow-room)));
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .dock-panel {
       transition: opacity var(--slide) ease-out;
     }
 
-    .dock-panel.slid-out {
+    .dock-stage[data-edge] .dock-panel.slid-out {
       transform: none;
       opacity: 0;
       transition:
@@ -2102,10 +2314,25 @@
     }
   }
 
-  /* Its height is set inline (`revealStripHeight`). */
+  /* Its start, length and thickness are set inline (`revealStripThickness`). */
   .reveal-strip {
     position: absolute;
+  }
+
+  .dock-stage[data-edge='bottom'] .reveal-strip {
     bottom: 0;
+  }
+
+  .dock-stage[data-edge='top'] .reveal-strip {
+    top: 0;
+  }
+
+  .dock-stage[data-edge='left'] .reveal-strip {
+    left: 0;
+  }
+
+  .dock-stage[data-edge='right'] .reveal-strip {
+    right: 0;
   }
 
   .dock-panel.high-contrast {
@@ -2117,8 +2344,9 @@
     border: 2px solid var(--text);
   }
 
-  /* The drop gap: one slot at rest, the icon box at its bottom like
-     a slot's, never a pointer target. */
+  /* The drop gap: one slot long at rest, the icon box against its
+     edge side like a slot's (its bottom on `bottom`), never a pointer
+     target. */
   .drop-gap {
     position: relative;
     flex: none;
@@ -2130,6 +2358,26 @@
     height: var(--icon);
     transform-origin: 50% 100%;
     pointer-events: none;
+  }
+
+  .dock-stage[data-edge='top'] .drop-gap {
+    align-items: flex-start;
+    transform-origin: 50% 0;
+  }
+
+  .dock-stage[data-edge='left'] .drop-gap,
+  .dock-stage[data-edge='right'] .drop-gap {
+    align-items: center;
+    width: var(--icon);
+    height: calc(var(--icon) + var(--slot-gap));
+  }
+
+  .dock-stage[data-edge='left'] .drop-gap {
+    transform-origin: 0 50%;
+  }
+
+  .dock-stage[data-edge='right'] .drop-gap {
+    transform-origin: 100% 50%;
   }
 
   .drop-indicator {
@@ -2155,13 +2403,32 @@
     border-color: var(--text);
   }
 
-  /* Centred on the icons: 80 % of their height, 10 % off the bottom. */
+  /* Centred on the icons: 80 % of their height, 10 % off the bottom (off
+     the edge side: a horizontal line on `left` and `right`). */
   .separator {
     flex: none;
     width: 1px;
     height: calc(var(--icon) * 0.8);
     margin: 0 var(--separator-margin) calc(var(--icon) * 0.1);
     background: var(--separator);
+  }
+
+  .dock-stage[data-edge='top'] .separator {
+    margin: calc(var(--icon) * 0.1) var(--separator-margin) 0;
+  }
+
+  .dock-stage[data-edge='left'] .separator,
+  .dock-stage[data-edge='right'] .separator {
+    width: calc(var(--icon) * 0.8);
+    height: 1px;
+  }
+
+  .dock-stage[data-edge='left'] .separator {
+    margin: var(--separator-margin) 0 var(--separator-margin) calc(var(--icon) * 0.1);
+  }
+
+  .dock-stage[data-edge='right'] .separator {
+    margin: var(--separator-margin) calc(var(--icon) * 0.1) var(--separator-margin) 0;
   }
 
   /* Playing its leave animation (item-transition.ts): still painted, no longer a target. */
@@ -2172,6 +2439,11 @@
   /* Ease back to rest after the pointer left; instant while tracking it. */
   .dock-panel.settling :global(.slot) {
     transition: width 120ms ease;
+  }
+
+  .dock-stage[data-edge='left'] .dock-panel.settling :global(.slot),
+  .dock-stage[data-edge='right'] .dock-panel.settling :global(.slot) {
+    transition: height 120ms ease;
   }
 
   .dock-panel.settling :global(.bouncer) {
@@ -2189,17 +2461,155 @@
     }
   }
 
+  /* The items on `top`, `left` and `right`. DockItem lays an item
+     out for a dock on `bottom`: its slot as wide as the icon grows, the icon
+     on the slot's bottom edge growing up, the dots below it, the title pill
+     above it. Here the dock lays its items out for its own edge instead: on
+     a vertical dock the slot is as wide as the icon and grows in height
+     with `--scale`, the icon sits against the edge side and grows away from
+     it, the dots sit between the icon and the edge and the pill on the side
+     away from it; a file drop target grows away from the edge too. */
+  .dock-stage[data-edge='top'] .dock-panel :global(.slot:not([data-kind='separator'])) {
+    justify-content: flex-start;
+    transform-origin: 50% 0;
+  }
+
+  .dock-stage[data-edge='left'] .dock-panel :global(.slot:not([data-kind='separator'])),
+  .dock-stage[data-edge='right'] .dock-panel :global(.slot:not([data-kind='separator'])) {
+    width: var(--icon);
+    height: calc(var(--icon) * var(--scale, 1) + var(--slot-gap));
+    justify-content: center;
+  }
+
+  .dock-stage[data-edge='left'] .dock-panel :global(.slot:not([data-kind='separator'])) {
+    align-items: flex-start;
+    transform-origin: 0 50%;
+  }
+
+  .dock-stage[data-edge='right'] .dock-panel :global(.slot:not([data-kind='separator'])) {
+    align-items: flex-end;
+    transform-origin: 100% 50%;
+  }
+
+  .dock-stage[data-edge='top'] .dock-panel :global(.slot .dots) {
+    top: auto;
+    bottom: calc(100% + var(--dots-gap));
+  }
+
+  .dock-stage[data-edge='left'] .dock-panel :global(.slot .dots),
+  .dock-stage[data-edge='right'] .dock-panel :global(.slot .dots) {
+    top: 0;
+    bottom: 0;
+    flex-direction: column;
+    justify-content: center;
+    width: var(--dot-size);
+    height: auto;
+  }
+
+  .dock-stage[data-edge='left'] .dock-panel :global(.slot .dots) {
+    left: auto;
+    right: calc(100% + var(--dots-gap));
+  }
+
+  .dock-stage[data-edge='right'] .dock-panel :global(.slot .dots) {
+    left: calc(100% + var(--dots-gap));
+    right: auto;
+  }
+
+  .dock-stage[data-edge='left'] .dock-panel :global(.slot .dots.attention i),
+  .dock-stage[data-edge='right'] .dock-panel :global(.slot .dots.attention i) {
+    width: var(--dot-size);
+    height: calc(var(--dot-size) * 3);
+  }
+
+  .dock-stage[data-edge='top'] .dock-panel :global(.slot .tooltip) {
+    bottom: auto;
+    top: calc(100% + 10px + var(--icon) * (var(--scale, 1) - 1 + var(--drop-lift, 0)));
+  }
+
+  .dock-stage[data-edge='top'] .dock-panel :global(.slot .tooltip::after) {
+    top: auto;
+    bottom: 100%;
+    border-top-color: transparent;
+    border-bottom-color: var(--tooltip-bg);
+  }
+
+  /* Beside the icon there is no window length to spare: a long title
+     wraps at `--pill-max`, inside the room the window keeps for it
+     (`SIDE_HEADROOM`). */
+  .dock-stage[data-edge='left'] .dock-panel :global(.slot .tooltip),
+  .dock-stage[data-edge='right'] .dock-panel :global(.slot .tooltip) {
+    bottom: auto;
+    top: 50%;
+    transform: translateY(-50%);
+    width: max-content;
+    max-width: var(--pill-max);
+    white-space: normal;
+  }
+
+  .dock-stage[data-edge='left'] .dock-panel :global(.slot .tooltip) {
+    left: calc(100% + 10px + var(--icon) * (var(--scale, 1) - 1 + var(--drop-lift, 0)));
+  }
+
+  .dock-stage[data-edge='right'] .dock-panel :global(.slot .tooltip) {
+    left: auto;
+    right: calc(100% + 10px + var(--icon) * (var(--scale, 1) - 1 + var(--drop-lift, 0)));
+  }
+
+  .dock-stage[data-edge='left'] .dock-panel :global(.slot .tooltip::after),
+  .dock-stage[data-edge='right'] .dock-panel :global(.slot .tooltip::after) {
+    top: 50%;
+    transform: translateY(-50%);
+    border-top-color: transparent;
+  }
+
+  .dock-stage[data-edge='left'] .dock-panel :global(.slot .tooltip::after) {
+    left: auto;
+    right: 100%;
+    border-right-color: var(--tooltip-bg);
+  }
+
+  .dock-stage[data-edge='right'] .dock-panel :global(.slot .tooltip::after) {
+    left: 100%;
+    border-left-color: var(--tooltip-bg);
+  }
+
+  .dock-stage[data-edge='top'] .dock-panel :global(.slot[data-drop-target] .bouncer) {
+    transform: translateY(calc(50% * var(--drop-lift))) scale(calc(1 + var(--drop-lift)));
+  }
+
+  .dock-stage[data-edge='left'] .dock-panel :global(.slot[data-drop-target] .bouncer) {
+    transform: translateX(calc(50% * var(--drop-lift))) scale(calc(1 + var(--drop-lift)));
+  }
+
+  .dock-stage[data-edge='right'] .dock-panel :global(.slot[data-drop-target] .bouncer) {
+    transform: translateX(calc(-50% * var(--drop-lift))) scale(calc(1 + var(--drop-lift)));
+  }
+
   /* Forced colours (WebView2 under a Windows contrast theme): the
      browser repaints backgrounds in the theme's Canvas colour, so the
      separators (1 px backgrounds) and the toast's dot would vanish. They take
      the theme's text colour instead. The panel needs nothing: its border and
      text are forced to the theme's colours, its background is opaque in high
-     contrast (`effectiveOpacity`). */
+     contrast (`effectiveOpacity`). The title pill's arrow on another edge
+     takes the text colour like DockItem's own does on `bottom`. */
   @media (forced-colors: active) {
     .separator,
     .toast::before {
       forced-color-adjust: none;
       background: CanvasText;
+    }
+
+    .dock-stage[data-edge='top'] .dock-panel :global(.slot .tooltip::after) {
+      border-bottom-color: CanvasText;
+    }
+
+    .dock-stage[data-edge='left'] .dock-panel :global(.slot .tooltip::after) {
+      border-right-color: CanvasText;
+    }
+
+    .dock-stage[data-edge='right'] .dock-panel :global(.slot .tooltip::after) {
+      border-left-color: CanvasText;
     }
   }
 </style>

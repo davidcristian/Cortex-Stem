@@ -16,16 +16,17 @@ import {
   onlyFullscreenHides,
   REVEAL_STRIP_PX,
   revealStrip,
-  revealStripHeight,
   revealStripOn,
+  revealStripThickness,
   REVEALING_HOLDS,
   shownHitRegion,
-  workAreaReachesBottom,
+  workAreaReachesEdge,
   type AutoHideEvent,
   type AutoHideState,
   type TimerCommand,
 } from './autohide';
-import { rectContainsPoint, type HitRegion } from './geometry';
+import { DOCK_EDGES } from './edge';
+import { hitRegionFor, rectContains, rectContainsPoint, type HitRegion } from './geometry';
 
 /**
  * Drives the machine like `Dock.svelte` does: one timer, armed and cleared
@@ -1020,6 +1021,7 @@ describe('when overlapped', () => {
 
 describe('hit regions while auto-hide is on', () => {
   // A 559 × 64 panel resting 8 px above the bottom of a 1280 × 240 viewport.
+  const viewport = { width: 1280, height: 240 };
   const panel = { x: 360, y: 168, width: 561, height: 64 };
   const region: HitRegion = {
     panel,
@@ -1027,44 +1029,67 @@ describe('hit regions while auto-hide is on', () => {
   };
 
   it('the strip is the bottom 2 px, exactly as wide as the panel and in line with it', () => {
-    expect(revealStrip(panel, 240)).toEqual({ x: 360, y: 238, width: 561, height: 2 });
+    expect(revealStrip(panel, viewport, 'bottom')).toEqual({
+      x: 360,
+      y: 238,
+      width: 561,
+      height: 2,
+    });
   });
 
-  it('the strip never reaches above a tiny viewport', () => {
-    expect(revealStrip(panel, 1)).toEqual({ x: 360, y: 0, width: 561, height: 1 });
-    expect(revealStrip(panel, 0)).toEqual({ x: 360, y: 0, width: 561, height: 0 });
+  it('the strip never reaches beyond a tiny viewport', () => {
+    expect(revealStrip(panel, { width: 1280, height: 1 }, 'bottom')).toEqual({
+      x: 360,
+      y: 0,
+      width: 561,
+      height: 1,
+    });
+    expect(revealStrip(panel, { width: 1280, height: 0 }, 'bottom')).toEqual({
+      x: 360,
+      y: 0,
+      width: 561,
+      height: 0,
+    });
+    expect(revealStrip(panel, { width: 1, height: 900 }, 'right')).toEqual({
+      x: 0,
+      y: 168,
+      width: 1,
+      height: 64,
+    });
   });
 
   it('while hidden the strip is both rectangles', () => {
     const strip = { x: 360, y: 238, width: 561, height: 2 };
-    expect(hiddenHitRegion(panel, 240)).toEqual({ panel: strip, envelope: strip });
+    expect(hiddenHitRegion(panel, viewport, 'bottom')).toEqual({ panel: strip, envelope: strip });
   });
 
   it('while shown the envelope takes in the strip and the panel is unchanged', () => {
-    expect(shownHitRegion(region, 240)).toEqual({
+    expect(shownHitRegion(region, viewport, 'bottom')).toEqual({
       panel,
       envelope: { x: 278, y: 147, width: 725, height: 93 },
     });
   });
 
-  it('an envelope that already reaches the bottom (a drag) is unchanged', () => {
+  it('an envelope that already reaches the edge (a drag) is unchanged', () => {
     const whole: HitRegion = { panel, envelope: { x: 0, y: 0, width: 1280, height: 240 } };
-    expect(shownHitRegion(whole, 240)).toEqual(whole);
+    for (const edge of DOCK_EDGES) {
+      expect(shownHitRegion(whole, viewport, edge)).toEqual(whole);
+    }
   });
 
   it('follows the phase, and reports nothing while hidden without a strip', () => {
     const strip = { x: 360, y: 238, width: 561, height: 2 };
-    const at = (h: Harness, edge: boolean): HitRegion =>
-      autoHideHitRegion(h.state, region, 240, edge);
+    const at = (h: Harness, atEdge: boolean): HitRegion =>
+      autoHideHitRegion(h.state, region, viewport, atEdge, 'bottom');
     // Off: the plain region, wherever the window is.
     expect(at(new Harness(), true)).toEqual(region);
     expect(at(new Harness(), false)).toEqual(region);
     // `always`: the strip while hidden, the grown envelope while shown,
     // whether or not the work area reaches the screen's edge.
-    for (const edge of [true, false]) {
-      expect(at(always(250).advance(250), edge)).toEqual({ panel: strip, envelope: strip });
-      expect(at(always(250).send({ type: 'pointer', inside: true }), edge)).toEqual(
-        shownHitRegion(region, 240),
+    for (const atEdge of [true, false]) {
+      expect(at(always(250).advance(250), atEdge)).toEqual({ panel: strip, envelope: strip });
+      expect(at(always(250).send({ type: 'pointer', inside: true }), atEdge)).toEqual(
+        shownHitRegion(region, viewport, 'bottom'),
       );
     }
     // Fullscreen alone at the screen's edge: the same.
@@ -1089,6 +1114,110 @@ describe('hit regions while auto-hide is on', () => {
   });
 });
 
+describe('hit regions on every edge', () => {
+  // The same 64 px thick panel on each edge of its window, 8 px from the edge side:
+  // a 1280 × 240 window on `bottom` and `top`, a 330 × 900 one on `left` and `right`.
+  const horizontal = { width: 1280, height: 240 };
+  const vertical = { width: 330, height: 900 };
+  const cases = {
+    bottom: { viewport: horizontal, panel: { x: 360, y: 168, width: 561, height: 64 } },
+    top: { viewport: horizontal, panel: { x: 360, y: 8, width: 561, height: 64 } },
+    left: { viewport: vertical, panel: { x: 8, y: 170, width: 64, height: 561 } },
+    right: { viewport: vertical, panel: { x: 258, y: 170, width: 64, height: 561 } },
+  } as const;
+
+  it("the strip lies along the window's edge side, as long as the panel and in line with it", () => {
+    expect(revealStrip(cases.bottom.panel, horizontal, 'bottom')).toEqual({
+      x: 360,
+      y: 238,
+      width: 561,
+      height: 2,
+    });
+    expect(revealStrip(cases.top.panel, horizontal, 'top')).toEqual({
+      x: 360,
+      y: 0,
+      width: 561,
+      height: 2,
+    });
+    expect(revealStrip(cases.left.panel, vertical, 'left')).toEqual({
+      x: 0,
+      y: 170,
+      width: 2,
+      height: 561,
+    });
+    expect(revealStrip(cases.right.panel, vertical, 'right')).toEqual({
+      x: 328,
+      y: 170,
+      width: 2,
+      height: 561,
+    });
+  });
+
+  it('hidden, the strip is both rectangles; shown, the envelope reaches out to the edge side', () => {
+    for (const edge of DOCK_EDGES) {
+      const { viewport, panel } = cases[edge];
+      const region = hitRegionFor(panel, 117.6, 36.8, edge);
+      const strip = revealStrip(panel, viewport, edge);
+      expect(hiddenHitRegion(panel, viewport, edge)).toEqual({ panel: strip, envelope: strip });
+      const shown = shownHitRegion(region, viewport, edge);
+      expect(shown.panel).toEqual(region.panel);
+      expect(rectContains(shown.envelope, region.envelope)).toBe(true);
+      expect(rectContains(shown.envelope, strip)).toBe(true);
+      // Hidden by `always`: the strip; above a visible taskbar in fullscreen alone: nothing.
+      expect(
+        autoHideHitRegion(always(250).advance(250).state, region, viewport, true, edge),
+      ).toEqual({ panel: strip, envelope: strip });
+      const fullscreen = new Harness()
+        .send({ type: 'configure', mode: 'off', delayMs: 0 })
+        .send({ type: 'fullscreen', active: true });
+      expect(autoHideHitRegion(fullscreen.state, region, viewport, false, edge)).toEqual(
+        NO_HIT_REGION,
+      );
+    }
+    // The grown envelope of each edge: the panel's envelope out to that side.
+    expect(
+      shownHitRegion(hitRegionFor(cases.left.panel, 0, 0, 'left'), vertical, 'left').envelope,
+    ).toEqual({ x: 0, y: 170, width: 72, height: 561 });
+    expect(
+      shownHitRegion(hitRegionFor(cases.right.panel, 0, 0, 'right'), vertical, 'right').envelope,
+    ).toEqual({ x: 258, y: 170, width: 72, height: 561 });
+    expect(
+      shownHitRegion(hitRegionFor(cases.top.panel, 0, 0, 'top'), horizontal, 'top').envelope,
+    ).toEqual({ x: 360, y: 0, width: 561, height: 72 });
+  });
+
+  it('counts the band between the panel and the edge side as the dock only with the strip there', () => {
+    const inBand = {
+      bottom: [500, 236],
+      top: [500, 3],
+      left: [3, 400],
+      right: [327, 400],
+    } as const;
+    const beyondPanel = {
+      bottom: [500, 100],
+      top: [500, 120],
+      left: [120, 400],
+      right: [200, 400],
+    } as const;
+    for (const edge of DOCK_EDGES) {
+      const { viewport, panel } = cases[edge];
+      const [bx, by] = inBand[edge];
+      expect(onDockAt(panel, bx, by, viewport, true, edge)).toBe(true);
+      expect(onDockAt(panel, bx, by, viewport, false, edge)).toBe(false);
+      const [ox, oy] = beyondPanel[edge];
+      expect(onDockAt(panel, ox, oy, viewport, true, edge)).toBe(false);
+      // The panel itself, whatever the strip.
+      const cx = panel.x + panel.width / 2;
+      const cy = panel.y + panel.height / 2;
+      expect(onDockAt(panel, cx, cy, viewport, true, edge)).toBe(true);
+      expect(onDockAt(panel, cx, cy, viewport, false, edge)).toBe(true);
+    }
+    // Beside the band along the edge: never.
+    expect(onDockAt(cases.left.panel, 3, 169, vertical, true, 'left')).toBe(false);
+    expect(onDockAt(cases.left.panel, 3, 731, vertical, true, 'left')).toBe(false);
+  });
+});
+
 describe('the reveal strip', () => {
   /** The mock's demo monitor: 2560 × 1440, the stock taskbar's 48 px at the bottom. */
   function monitor(
@@ -1100,21 +1229,49 @@ describe('the reveal strip', () => {
   const off = (): Harness => new Harness().send({ type: 'configure', mode: 'off', delayMs: 250 });
 
   it('the work area reaches the bottom unless a visible taskbar holds the space below it', () => {
-    expect(workAreaReachesBottom(monitor({ x: 0, y: 0, width: 2560, height: 1392 }))).toBe(false);
+    const reaches = (m: MonitorInfo | null | undefined): boolean =>
+      workAreaReachesEdge(m, 'bottom');
+    expect(reaches(monitor({ x: 0, y: 0, width: 2560, height: 1392 }))).toBe(false);
     // Auto-hidden (Windows' own setting, or Stem's): the whole monitor.
-    expect(workAreaReachesBottom(monitor({ x: 0, y: 0, width: 2560, height: 1440 }))).toBe(true);
+    expect(reaches(monitor({ x: 0, y: 0, width: 2560, height: 1440 }))).toBe(true);
     // The taskbar at the top or on a side.
-    expect(workAreaReachesBottom(monitor({ x: 0, y: 48, width: 2560, height: 1392 }))).toBe(true);
-    expect(workAreaReachesBottom(monitor({ x: 62, y: 0, width: 2498, height: 1440 }))).toBe(true);
+    expect(reaches(monitor({ x: 0, y: 48, width: 2560, height: 1392 }))).toBe(true);
+    expect(reaches(monitor({ x: 62, y: 0, width: 2498, height: 1440 }))).toBe(true);
     // A monitor above the primary, in negative coordinates.
     const above = { x: 0, y: -1080, width: 1920, height: 1080 };
-    expect(
-      workAreaReachesBottom(monitor({ x: 0, y: -1080, width: 1920, height: 1032 }, above)),
-    ).toBe(false);
-    expect(workAreaReachesBottom(monitor({ ...above }, above))).toBe(true);
+    expect(reaches(monitor({ x: 0, y: -1080, width: 1920, height: 1032 }, above))).toBe(false);
+    expect(reaches(monitor({ ...above }, above))).toBe(true);
     // Not known yet: the strip as it always was.
-    expect(workAreaReachesBottom(undefined)).toBe(true);
-    expect(workAreaReachesBottom(null)).toBe(true);
+    expect(reaches(undefined)).toBe(true);
+    expect(reaches(null)).toBe(true);
+  });
+
+  it('on each edge the work area reaches the screen unless an app bar holds that side', () => {
+    const bottomBar = monitor({ x: 0, y: 0, width: 2560, height: 1392 });
+    const topBar = monitor({ x: 0, y: 48, width: 2560, height: 1392 });
+    const leftBar = monitor({ x: 62, y: 0, width: 2498, height: 1440 });
+    const rightBar = monitor({ x: 0, y: 0, width: 2498, height: 1440 });
+    const none = monitor({ x: 0, y: 0, width: 2560, height: 1440 });
+    const expected = {
+      bottom: [false, true, true, true, true],
+      top: [true, false, true, true, true],
+      left: [true, true, false, true, true],
+      right: [true, true, true, false, true],
+    } as const;
+    for (const edge of DOCK_EDGES) {
+      expect(
+        [bottomBar, topBar, leftBar, rightBar, none].map((m) => workAreaReachesEdge(m, edge)),
+      ).toEqual(expected[edge]);
+      expect(workAreaReachesEdge(undefined, edge)).toBe(true);
+    }
+    // A monitor left of the primary, in negative coordinates, its taskbar on its right.
+    const west = { x: -1920, y: 0, width: 1920, height: 1080 };
+    expect(
+      workAreaReachesEdge(monitor({ x: -1920, y: 0, width: 1858, height: 1080 }, west), 'right'),
+    ).toBe(false);
+    expect(
+      workAreaReachesEdge(monitor({ x: -1920, y: 0, width: 1858, height: 1080 }, west), 'left'),
+    ).toBe(true);
   });
 
   it('only fullscreen hides when the mode would not; the fullscreen window is itself the overlap', () => {
@@ -1158,48 +1315,53 @@ describe('the reveal strip', () => {
     expect(revealStripOn(fullscreen, false)).toBe(false);
   });
 
-  it('is the bottom 2 px while hidden and fills the margin under the panel on screen', () => {
-    expect(revealStripHeight('hidden', 8)).toBe(REVEAL_STRIP_PX);
-    expect(revealStripHeight('shown', 8)).toBe(8);
-    expect(revealStripHeight('pending', 7.5)).toBe(7.5);
+  it('is 2 px thick while hidden and fills the margin beside the panel on screen', () => {
+    expect(revealStripThickness('hidden', 8)).toBe(REVEAL_STRIP_PX);
+    expect(revealStripThickness('shown', 8)).toBe(8);
+    expect(revealStripThickness('pending', 7.5)).toBe(7.5);
     // Never thinner than the strip itself.
-    expect(revealStripHeight('shown', 0)).toBe(REVEAL_STRIP_PX);
+    expect(revealStripThickness('shown', 0)).toBe(REVEAL_STRIP_PX);
   });
 
   it('counts the band below the panel as the dock after a drop only with the strip there', () => {
     // A 400 x 60 panel 8 px above the bottom of a 100 px viewport.
     const panel = { x: 100, y: 32, width: 400, height: 60 };
+    const viewport = { width: 600, height: 100 };
+    const at = (x: number, y: number, stripOn: boolean): boolean =>
+      onDockAt(panel, x, y, viewport, stripOn, 'bottom');
     for (const stripOn of [true, false]) {
       // Over the panel, whatever the strip.
-      expect(onDockAt(panel, 300, 60, 100, stripOn)).toBe(true);
-      expect(onDockAt(panel, 100, 32, 100, stripOn)).toBe(true);
-      expect(onDockAt(panel, 499, 91, 100, stripOn)).toBe(true);
+      expect(at(300, 60, stripOn)).toBe(true);
+      expect(at(100, 32, stripOn)).toBe(true);
+      expect(at(499, 91, stripOn)).toBe(true);
       // Beside it, above it, below the viewport: never.
-      expect(onDockAt(panel, 99, 60, 100, stripOn)).toBe(false);
-      expect(onDockAt(panel, 500, 60, 100, stripOn)).toBe(false);
-      expect(onDockAt(panel, 300, 31, 100, stripOn)).toBe(false);
-      expect(onDockAt(panel, 300, 100, 100, stripOn)).toBe(false);
+      expect(at(99, 60, stripOn)).toBe(false);
+      expect(at(500, 60, stripOn)).toBe(false);
+      expect(at(300, 31, stripOn)).toBe(false);
+      expect(at(300, 100, stripOn)).toBe(false);
       // Beside the band.
-      expect(onDockAt(panel, 99, 95, 100, stripOn)).toBe(false);
-      expect(onDockAt(panel, 500, 95, 100, stripOn)).toBe(false);
+      expect(at(99, 95, stripOn)).toBe(false);
+      expect(at(500, 95, stripOn)).toBe(false);
     }
     // The band from the panel's bottom edge down to the viewport's.
     for (const y of [92, 95, 99]) {
-      expect(onDockAt(panel, 300, y, 100, true)).toBe(true);
-      expect(onDockAt(panel, 300, y, 100, false)).toBe(false);
+      expect(at(300, y, true)).toBe(true);
+      expect(at(300, y, false)).toBe(false);
     }
   });
 
   it('has the strip for a drop in fullscreen at the screen edge and none above a visible taskbar', () => {
     const panel = { x: 100, y: 32, width: 400, height: 60 };
+    const viewport = { width: 600, height: 100 };
+    const at = (stripOn: boolean): boolean => onDockAt(panel, 300, 95, viewport, stripOn, 'bottom');
     const fullscreen = off().send({ type: 'fullscreen', active: true }).send({ type: 'show' });
-    expect(onDockAt(panel, 300, 95, 100, revealStripOn(fullscreen.state, true))).toBe(true);
-    expect(onDockAt(panel, 300, 95, 100, revealStripOn(fullscreen.state, false))).toBe(false);
+    expect(at(revealStripOn(fullscreen.state, true))).toBe(true);
+    expect(at(revealStripOn(fullscreen.state, false))).toBe(false);
     // `always` keeps its strip on the work area's edge, taskbar or not.
     const pinned = always().send({ type: 'fullscreen', active: true });
-    expect(onDockAt(panel, 300, 95, 100, revealStripOn(pinned.state, false))).toBe(true);
+    expect(at(revealStripOn(pinned.state, false))).toBe(true);
     // Auto-hide off: no strip, so the band is not the dock.
-    expect(onDockAt(panel, 300, 95, 100, revealStripOn(INITIAL_AUTO_HIDE, true))).toBe(false);
+    expect(at(revealStripOn(INITIAL_AUTO_HIDE, true))).toBe(false);
   });
 
   it('above a visible taskbar the hidden dock comes back only on request or for attention', () => {

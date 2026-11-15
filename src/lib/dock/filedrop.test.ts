@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { DockItem } from '$lib/ipc/generated/DockItem';
 import type { DockItemKind } from '$lib/ipc/generated/DockItemKind';
 
+import { along, centreAlong, spanAlong, type Box } from './edge';
 import {
   dropIndex,
   dropTargetAt,
@@ -215,9 +216,9 @@ describe('sameAnchor', () => {
 
 describe('itemAt', () => {
   const SPANS: ItemSpan[] = [
-    { key: 'a', kind: 'app', left: 10, right: 66 },
-    { key: 'sep', kind: 'separator', left: 72, right: 73 },
-    { key: 'b', kind: 'app', left: 79, right: 135 },
+    { key: 'a', kind: 'app', start: 10, end: 66 },
+    { key: 'sep', kind: 'separator', start: 72, end: 73 },
+    { key: 'b', kind: 'app', start: 79, end: 135 },
   ];
 
   it('finds the item under the pointer; nothing between items', () => {
@@ -232,9 +233,9 @@ describe('itemAt', () => {
 });
 
 describe('dropTargetAt', () => {
-  const app: ItemSpan = { key: 'app:a', kind: 'app', left: 10, right: 66 };
-  const sep: ItemSpan = { key: 'sep:3', kind: 'separator', left: 72, right: 73 };
-  const bin: ItemSpan = { key: 'fixed:recycle-bin', kind: 'recycleBin', left: 79, right: 135 };
+  const app: ItemSpan = { key: 'app:a', kind: 'app', start: 10, end: 66 };
+  const sep: ItemSpan = { key: 'sep:3', kind: 'separator', start: 72, end: 73 };
+  const bin: ItemSpan = { key: 'fixed:recycle-bin', kind: 'recycleBin', start: 79, end: 135 };
 
   it('is the item under the pointer, or nothing between items', () => {
     expect(dropTargetAt(30, [app, sep, bin])).toBe(app);
@@ -259,9 +260,9 @@ describe('fileDropAction', () => {
     index: 2,
     ...over,
   });
-  const BIN: ItemSpan = { key: 'fixed:recycle-bin', kind: 'recycleBin', left: 600, right: 656 };
-  const APP: ItemSpan = { key: 'app:a', kind: 'app', left: 100, right: 156 };
-  const SEPARATOR: ItemSpan = { key: 'sep:3', kind: 'separator', left: 586, right: 587 };
+  const BIN: ItemSpan = { key: 'fixed:recycle-bin', kind: 'recycleBin', start: 600, end: 656 };
+  const APP: ItemSpan = { key: 'app:a', kind: 'app', start: 100, end: 156 };
+  const SEPARATOR: ItemSpan = { key: 'sep:3', kind: 'separator', start: 586, end: 587 };
   const EXE = 'C:\\Tools\\putty.exe';
   const TXT = 'C:\\Users\\me\\notes.txt';
   const FOLDER = 'C:\\Users\\me\\Old photos';
@@ -304,5 +305,40 @@ describe('recycleSubject', () => {
     expect(recycleSubject(['C:\\Users\\me\\Old photos\\'])).toBe('Old photos');
     expect(recycleSubject(['C:\\'])).toBe('C:');
     expect(recycleSubject(['C:\\a.txt', 'C:\\b'])).toBe('2 items');
+  });
+});
+
+describe('on a vertical dock', () => {
+  // A left dock's column: an app, a separator and the bin, 56 px slots from y = 300.
+  const boxes: Array<{ key: string; kind: DockItemKind; box: Box }> = [
+    { key: 'app:a', kind: 'app', box: { left: 16, top: 300, width: 48, height: 56 } },
+    { key: 'app:b', kind: 'app', box: { left: 16, top: 356, width: 48, height: 56 } },
+    { key: 'sep:3', kind: 'separator', box: { left: 20, top: 418, width: 38, height: 1 } },
+    {
+      key: 'fixed:recycle-bin',
+      kind: 'recycleBin',
+      box: { left: 16, top: 425, width: 48, height: 56 },
+    },
+  ];
+  const spans: ItemSpan[] = boxes.map(({ key, kind, box }) => ({
+    key,
+    kind,
+    ...spanAlong('vertical', box),
+  }));
+  const centres = boxes.filter((b) => b.kind === 'app').map((b) => centreAlong('vertical', b.box));
+
+  it("finds the item and the insertion index from the pointer's y; its x does not matter", () => {
+    for (const x of [20, 60, 200]) {
+      const pos = along('vertical', x, 370);
+      expect(dropTargetAt(pos, spans)?.key).toBe('app:b');
+      expect(dropIndex(pos, centres)).toBe(1);
+    }
+    expect(dropIndex(along('vertical', 40, 301), centres)).toBe(0);
+    expect(dropIndex(along('vertical', 40, 400), centres)).toBe(2);
+  });
+
+  it('counts the padding below the bin as the bin', () => {
+    expect(dropTargetAt(along('vertical', 40, 488), spans)?.key).toBe('fixed:recycle-bin');
+    expect(dropTargetAt(along('vertical', 40, 415), spans)).toBeNull();
   });
 });

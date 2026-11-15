@@ -1,5 +1,5 @@
 /**
- * `MockBackend`: the whole IPC contract (docs/ipc/ v1.15) without Rust, for
+ * `MockBackend`: the whole IPC contract (docs/ipc/ v1.16) without Rust, for
  * browser runs and Playwright screenshots.
  *
  * It mirrors, deliberately in this one file so the two sides can be compared,
@@ -31,6 +31,7 @@ import type { AppInfo } from '$lib/ipc/generated/AppInfo';
 import type { DockFacts } from '$lib/ipc/generated/DockFacts';
 import type { DockItem } from '$lib/ipc/generated/DockItem';
 import type { DockItemKind } from '$lib/ipc/generated/DockItemKind';
+import type { DockPosition } from '$lib/ipc/generated/DockPosition';
 import type { DockState } from '$lib/ipc/generated/DockState';
 import type { IconKey } from '$lib/ipc/generated/IconKey';
 import type { LaunchTarget } from '$lib/ipc/generated/LaunchTarget';
@@ -96,13 +97,26 @@ export interface MockOptions {
   /**
    * Height of the dock window's viewport in CSS px, for placing the resting
    * panel the UI reports (`setDockPanelRect`) on the mock monitor: like the
-   * real window's, the viewport's bottom edge is the work area's bottom edge
-   * (`panelOnScreen`). Default: `window.innerHeight` in a browser, read per
-   * call (a window that grows for a drag stays right); the work area's
-   * height, i.e. viewport px = screen px, where there is no `window` (unit
-   * tests).
+   * real window's, the viewport sits flush with its edge of the work area
+   * (`panelOnScreen`; on `bottom` its bottom edge is the work area's bottom
+   * edge). Default: `window.innerHeight` in a browser, read per call (a
+   * window that grows for a drag stays right); the work area's height, i.e.
+   * viewport px = screen px, where there is no `window` (unit tests).
    */
   viewportHeight?: number;
+  /**
+   * Width of the dock window's viewport in CSS px, the same way: on
+   * `right` the viewport's right edge is the work area's right edge.
+   * Default: `window.innerWidth` in a browser, read per call; the work
+   * area's width where there is no `window`.
+   */
+  viewportWidth?: number;
+  /**
+   * The edge the scenario's settings put the dock on (`Settings.position`).
+   * Absent: the scenario's own (`bottom`). A page in a browser
+   * takes it from `?position=` instead (`demo.ts`, `setPosition`).
+   */
+  position?: DockPosition;
 }
 
 /**
@@ -291,33 +305,37 @@ export function overlapped(
 /**
  * The app layer's conversion of the UI's resting panel (CSS px of the dock
  * window's viewport) to screen pixels (`windows::panel_on_screen` with the
- * dock window where `windows::layout` puts it: flush with the bottom of the
- * work area, from its left edge, scale 1): the viewport's bottom-left corner
- * is the work area's bottom-left corner.
+ * dock window where `windows::layout` puts it: flush with `edge` of the
+ * work area and spanning its length along it, docs/ipc/sizing-protocol.md,
+ * v1.16). The viewport's corner on the edge side is the work area's: its
+ * bottom-left corner on `bottom`, its top-left corner on `top` and `left`,
+ * its top-right corner on `right`. At a `scale` other than 1 the app layer
+ * scales the CSS rect (rounded outwards, like a hit region) and the
+ * viewport before placing them on the physical work area (`scale_rect`,
+ * `panel_on_screen` in src-tauri/src/windows.rs).
  */
-export function panelOnScreen(rect: Rect, workArea: Rect, viewportHeight: number, scale = 1): Rect {
+export function panelOnScreen(
+  rect: Rect,
+  workArea: Rect,
+  viewport: { width: number; height: number },
+  edge: DockPosition,
+  scale = 1,
+): Rect {
   const s = Number.isFinite(scale) && scale > 0 ? scale : 1;
-  if (s !== 1) {
-    // The app layer scales the CSS rect (rounded outwards, like a hit
-    // region) and the viewport before placing them on the physical work
-    // area (`scale_rect`, `panel_on_screen` in src-tauri/src/windows.rs).
-    const left = Math.floor(rect.x * s);
-    const top = Math.floor(rect.y * s);
-    const right = Math.ceil((rect.x + rect.width) * s);
-    const bottom = Math.ceil((rect.y + rect.height) * s);
-    return {
-      x: workArea.x + left,
-      y: workArea.y + workArea.height - Math.round(viewportHeight * s) + top,
-      width: right - left,
-      height: bottom - top,
-    };
-  }
-  return {
-    x: workArea.x + rect.x,
-    y: workArea.y + workArea.height - viewportHeight + rect.y,
-    width: rect.width,
-    height: rect.height,
-  };
+  const scaled =
+    s === 1
+      ? { ...rect }
+      : {
+          x: Math.floor(rect.x * s),
+          y: Math.floor(rect.y * s),
+          width: Math.ceil((rect.x + rect.width) * s) - Math.floor(rect.x * s),
+          height: Math.ceil((rect.y + rect.height) * s) - Math.floor(rect.y * s),
+        };
+  const width = s === 1 ? viewport.width : Math.round(viewport.width * s);
+  const height = s === 1 ? viewport.height : Math.round(viewport.height * s);
+  const originX = edge === 'right' ? workArea.x + workArea.width - width : workArea.x;
+  const originY = edge === 'bottom' ? workArea.y + workArea.height - height : workArea.y;
+  return { ...scaled, x: originX + scaled.x, y: originY + scaled.y };
 }
 
 /** `Settings::reorder_pinned`: listed ids first, the rest keep their order. */
@@ -507,10 +525,16 @@ export function dockLabel(monitor: MonitorId | null, primary: MonitorId | null):
 
 /**
  * A demo window with a frame on a demo monitor. Every demo frame
- * ends above the bottom 250 px of its work area, where the dock's panel
- * rests, so nothing overlaps it until a test moves one (`moveWindow`); a
- * minimised window keeps the frame it would be restored to (the overlap rule
- * ignores it while minimised). Same frames as the Rust demo.
+ * keeps clear of the 250 px of its work area along the bottom, the left and
+ * the right edge, where a dock's panel rests on those edges, so
+ * nothing overlaps it until a test moves one (`moveWindow`); a minimised
+ * window keeps the frame it would be restored to (the overlap rule ignores
+ * it while minimised). The top band is not kept clear: the frames start
+ * near the top as on a real desktop, and the demo has no room for windows
+ * of these sizes between two bands, so a dock on `top` with
+ * `whenOverlapped` hides in the demo. The Rust demo has the same frames
+ * except two: File Explorer and Code start at x = 260 here (x = 120 and
+ * x = 200 there), out of the left band.
  */
 function demoWindow(
   id: number,
@@ -549,7 +573,7 @@ const EXE = {
 
 function demoWindows(): RawWindow[] {
   return [
-    demoWindow(1, EXE.explorer, 'Downloads', false, { x: 120, y: 90, width: 1100, height: 700 }),
+    demoWindow(1, EXE.explorer, 'Downloads', false, { x: 260, y: 90, width: 1100, height: 700 }),
     demoWindow(2, EXE.firefox, 'Stem — Mozilla Firefox', false, {
       x: 640,
       y: 60,
@@ -562,7 +586,7 @@ function demoWindows(): RawWindow[] {
       width: 1400,
       height: 900,
     }),
-    demoWindow(4, EXE.code, 'lib.rs — Stem', false, { x: 200, y: 40, width: 1600, height: 1000 }),
+    demoWindow(4, EXE.code, 'lib.rs — Stem', false, { x: 260, y: 40, width: 1600, height: 1000 }),
     demoWindow(5, EXE.terminal, 'PowerShell', false, { x: 1300, y: 500, width: 1000, height: 600 }),
     demoWindow(6, EXE.spotify, 'Spotify Premium', true, {
       x: 400,
@@ -618,8 +642,8 @@ function demoScenario(): Scenario {
 /**
  * The demo plus a second monitor to the right with two windows on
  * it: one of Notepad (pinned, no window on the primary) and one of Paint
- * (not pinned, nowhere else), both clear of the bottom 250 px of that work
- * area. With `behavior.showOnlyCurrentMonitor` on, the second monitor's
+ * (not pinned, nowhere else), both clear of the 250 px of that work area
+ * along its bottom, left and right edges. With `behavior.showOnlyCurrentMonitor` on, the second monitor's
  * dock shows the pinned apps plus Paint, with Notepad's one window, and the
  * primary's shows everything but Paint, with no window for Notepad.
  */
@@ -632,7 +656,7 @@ function twoMonitorsScenario(): Scenario {
       EXE.notepad,
       'notes.txt - Notepad',
       false,
-      { x: 2700, y: 100, width: 900, height: 600 },
+      { x: 2820, y: 100, width: 900, height: 600 },
       SECOND_MONITOR_ID,
     ),
     demoWindow(
@@ -640,7 +664,7 @@ function twoMonitorsScenario(): Scenario {
       EXE.paint,
       'Untitled - Paint',
       false,
-      { x: 3200, y: 60, width: 1100, height: 700 },
+      { x: 3100, y: 60, width: 1100, height: 700 },
       SECOND_MONITOR_ID,
     ),
   );
@@ -677,12 +701,13 @@ function manyScenario(): Scenario {
 
   const windows: RawWindow[] = [];
   const open = (name: string, title: string, minimized = false): void => {
-    // A cascade from the top-left corner, every frame clear of the bottom
-    // 250 px of the work area (the 20th ends at y = 40 + 19 × 20 + 640).
+    // A cascade from the top-left corner, every frame clear of the 250 px of
+    // the work area along the bottom, left and right edges (the 19th ends at
+    // y = 40 + 18 × 20 + 640 and x = 260 + 18 × 50 + 1100).
     const n = windows.length;
     windows.push(
       demoWindow(n + 1, exeOf(name), title, minimized, {
-        x: 80 + 50 * n,
+        x: 260 + 50 * n,
         y: 40 + 20 * n,
         width: 1100,
         height: 640,
@@ -1299,6 +1324,7 @@ export class MockBackend implements Backend {
   private readonly identityDelayMs: number;
   private readonly logging: boolean;
   private readonly viewportHeight: number | undefined;
+  private readonly viewportWidth: number | undefined;
   /** The monitor of the dock page this backend serves (`MockOptions.monitor`); `null` for the primary's. */
   readonly pageMonitor: MonitorId | null;
   private readonly timers = new Set<ReturnType<typeof setTimeout>>();
@@ -1322,10 +1348,14 @@ export class MockBackend implements Backend {
 
   constructor(options: MockOptions = {}) {
     const scenario = SCENARIOS[options.scenario ?? 'default']();
+    if (options.position !== undefined) {
+      scenario.settings.position = options.position;
+    }
     this.latency = options.latencyMs ?? [20, 80];
     this.identityDelayMs = options.identityDelayMs ?? 300;
     this.logging = options.log ?? true;
     this.viewportHeight = options.viewportHeight;
+    this.viewportWidth = options.viewportWidth;
     this.pageMonitor = options.monitor ?? null;
     this.random = mulberry32(options.seed ?? 0x5eed);
 
@@ -1520,22 +1550,32 @@ export class MockBackend implements Backend {
   /**
    * `set_dock_panel_rect`: recorded, converted to the page's
    * monitor's screen coordinates the way the app layer converts it for the
-   * real window (`panelOnScreen`, at that monitor's scale; see
-   * `MockOptions.viewportHeight`), and handed to the engine under this dock
-   * window's label and monitor, which emits a state only when the
-   * docks' facts change.
+   * real window on the configured edge (`panelOnScreen`, at that monitor's
+   * scale; see `MockOptions.viewportHeight` and `viewportWidth`), and handed
+   * to the engine under this dock window's label and monitor, which
+   * emits a state only when the docks' facts change.
    */
   setDockPanelRect(rect: Rect): Promise<void> {
     return this.command(() => {
       this.record({ type: 'setDockPanelRect', rect: { ...rect } });
       const monitor = this.pageMonitorInfo();
       const workArea = monitor?.workArea ?? { x: 0, y: 0, width: 0, height: 0 };
-      const viewportHeight =
-        this.viewportHeight ??
-        (typeof window !== 'undefined' && window.innerHeight > 0
-          ? window.innerHeight
-          : workArea.height);
-      const screen = panelOnScreen(rect, workArea, viewportHeight, monitor?.scaleFactor ?? 1);
+      const browser = typeof window !== 'undefined';
+      const viewport = {
+        width:
+          this.viewportWidth ??
+          (browser && window.innerWidth > 0 ? window.innerWidth : workArea.width),
+        height:
+          this.viewportHeight ??
+          (browser && window.innerHeight > 0 ? window.innerHeight : workArea.height),
+      };
+      const screen = panelOnScreen(
+        rect,
+        workArea,
+        viewport,
+        this.engine.settings.position,
+        monitor?.scaleFactor ?? 1,
+      );
       const label = this.pageLabel;
       this.log(
         `set_dock_panel_rect(${rect.width}×${rect.height} at ${rect.x},${rect.y}) -> ` +
@@ -1745,6 +1785,18 @@ export class MockBackend implements Backend {
   dockPanel(label: string = this.pageLabel): Rect | null {
     const rect = this.engine.panels.get(label)?.rect ?? null;
     return rect === null ? null : { ...rect };
+  }
+
+  /**
+   * Put the dock on `position` the way a settings change does
+   * (validated, `dock://settings` to whoever listens): the browser demo's
+   * and Playwright's way to show each edge. The dock page calls it at load
+   * for `?position=` (`demo.ts`), before it has asked for anything.
+   */
+  setPosition(position: DockPosition): void {
+    const settings = structuredClone(this.engine.settings);
+    settings.position = position;
+    this.applySettings(validateSettings(settings));
   }
 
   /**

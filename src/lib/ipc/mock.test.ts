@@ -4,6 +4,7 @@ import type { DockState } from '$lib/ipc/generated/DockState';
 import type { Settings } from '$lib/ipc/generated/Settings';
 
 import type { BouncePayload, FileDragEvent } from './backend';
+import { applyDemoQuery, demoPosition } from './demo';
 import type { RawWindow } from '$lib/ipc/generated/RawWindow';
 import type { Rect } from '$lib/ipc/generated/Rect';
 
@@ -767,27 +768,107 @@ describe('a window over the dock (mirror of crates/stem-core/src/overlap.rs)', (
   it('panelOnScreen anchors the viewport to the bottom-left of the work area', () => {
     const workArea = { x: 0, y: 0, width: 2560, height: 1392 };
     // Playwright's 1280 × 240 viewport: the panel at y 168 rests 72 px above the screen's bottom.
-    expect(panelOnScreen({ x: 360, y: 168, width: 561, height: 64 }, workArea, 240)).toEqual({
-      x: 360,
-      y: 1320,
-      width: 561,
-      height: 64,
-    });
+    const viewport = { width: 1280, height: 240 };
+    expect(
+      panelOnScreen({ x: 360, y: 168, width: 561, height: 64 }, workArea, viewport, 'bottom'),
+    ).toEqual({ x: 360, y: 1320, width: 561, height: 64 });
     // The window grew for a drag (viewport 960 high; the UI reports y + 720): the same spot.
-    expect(panelOnScreen({ x: 360, y: 888, width: 561, height: 64 }, workArea, 960)).toEqual({
-      x: 360,
-      y: 1320,
-      width: 561,
-      height: 64,
-    });
+    expect(
+      panelOnScreen(
+        { x: 360, y: 888, width: 561, height: 64 },
+        workArea,
+        { width: 1280, height: 960 },
+        'bottom',
+      ),
+    ).toEqual({ x: 360, y: 1320, width: 561, height: 64 });
     // A work area that does not start at the origin.
     expect(
       panelOnScreen(
         { x: 10, y: 20, width: 30, height: 40 },
         { x: -1920, y: 100, width: 1920, height: 900 },
-        100,
+        { width: 1920, height: 100 },
+        'bottom',
       ),
     ).toEqual({ x: -1910, y: 920, width: 30, height: 40 });
+  });
+
+  it('panelOnScreen anchors the viewport to the corner of the work area on the dock\u2019s edge', () => {
+    const workArea = { x: 0, y: 0, width: 2560, height: 1392 };
+    // On top and on the left the viewport's top-left corner is the work area's.
+    expect(
+      panelOnScreen(
+        { x: 360, y: 8, width: 561, height: 64 },
+        workArea,
+        { width: 1280, height: 240 },
+        'top',
+      ),
+    ).toEqual({ x: 360, y: 8, width: 561, height: 64 });
+    expect(
+      panelOnScreen(
+        { x: 8, y: 400, width: 64, height: 561 },
+        workArea,
+        { width: 330, height: 1392 },
+        'left',
+      ),
+    ).toEqual({ x: 8, y: 400, width: 64, height: 561 });
+    // On the right its top-right corner is: a 330 px wide viewport starts at x = 2230.
+    expect(
+      panelOnScreen(
+        { x: 258, y: 400, width: 64, height: 561 },
+        workArea,
+        { width: 330, height: 1392 },
+        'right',
+      ),
+    ).toEqual({ x: 2488, y: 400, width: 64, height: 561 });
+    // The window grew for a drag on the right (viewport 2560 wide; the UI reports x + 2230): the same spot.
+    expect(
+      panelOnScreen(
+        { x: 2488, y: 400, width: 64, height: 561 },
+        workArea,
+        { width: 2560, height: 1392 },
+        'right',
+      ),
+    ).toEqual({ x: 2488, y: 400, width: 64, height: 561 });
+    // A work area that does not start at the origin (a taskbar on the left, a monitor above).
+    const offset = { x: 62, y: -1080, width: 1858, height: 1080 };
+    expect(
+      panelOnScreen(
+        { x: 8, y: 20, width: 64, height: 40 },
+        offset,
+        { width: 300, height: 1080 },
+        'left',
+      ),
+    ).toEqual({ x: 70, y: -1060, width: 64, height: 40 });
+    expect(
+      panelOnScreen(
+        { x: 228, y: 20, width: 64, height: 40 },
+        offset,
+        { width: 300, height: 1080 },
+        'right',
+      ),
+    ).toEqual({ x: 62 + 1858 - 300 + 228, y: -1060, width: 64, height: 40 });
+    expect(
+      panelOnScreen(
+        { x: 10, y: 8, width: 30, height: 64 },
+        offset,
+        { width: 1858, height: 200 },
+        'top',
+      ),
+    ).toEqual({ x: 72, y: -1072, width: 30, height: 64 });
+  });
+
+  it('panelOnScreen scales the viewport on the right edge for a monitor at 150 %', () => {
+    const workArea = { x: 2560, y: 0, width: 1920, height: 1032 };
+    // A 300 × 688 CSS viewport is 450 × 1032 physical px flush with the right edge (x 4030).
+    expect(
+      panelOnScreen(
+        { x: 228, y: 100, width: 64, height: 561 },
+        workArea,
+        { width: 300, height: 688 },
+        'right',
+        1.5,
+      ),
+    ).toEqual({ x: 4030 + 342, y: 150, width: 96, height: 842 });
   });
 
   it('the demo windows have frames on the mock monitor, none over a panel at its bottom', async () => {
@@ -813,6 +894,60 @@ describe('a window over the dock (mirror of crates/stem-core/src/overlap.rs)', (
     expect(overlapped({ x: 0, y: 1392 - 250, width: 2560, height: 250 }, manyWindows, null)).toBe(
       false,
     );
+  });
+
+  it('the demo windows keep clear of a vertical panel\u2019s band too, on every monitor', () => {
+    for (const scenario of ['default', 'many', 'twoMonitors'] as const) {
+      const b = fast({ scenario });
+      const windows = [...b['engine'].windows.values()].map((t) => t.raw);
+      for (const monitor of b['engine'].monitors) {
+        const { x, y, width, height } = monitor.workArea;
+        const mine = windows.filter((w) => w.monitor === monitor.id);
+        expect(mine.length).toBeGreaterThan(0);
+        expect(overlapped({ x, y, width: 250, height }, mine, null)).toBe(false);
+        expect(overlapped({ x: x + width - 250, y, width: 250, height }, mine, null)).toBe(false);
+      }
+    }
+  });
+
+  it('a position seeds the scenario\u2019s settings; setPosition changes it like a settings change', async () => {
+    expect((await fast().getSettings()).position).toBe('bottom');
+    expect((await fast({ position: 'left' }).getSettings()).position).toBe('left');
+    const b = fast();
+    const seen: string[] = [];
+    b.on('dock://settings', (settings) => seen.push(settings.position));
+    b.setPosition('right');
+    expect(seen).toEqual(['right']);
+    expect((await b.getSettings()).position).toBe('right');
+  });
+
+  it('the demo page takes its edge from ?position= and ignores anything else', async () => {
+    expect(demoPosition('?mock=1&position=top')).toBe('top');
+    expect(demoPosition('?position=left&monitor=x')).toBe('left');
+    expect(demoPosition('?mock=1')).toBeNull();
+    expect(demoPosition('?position=middle')).toBeNull();
+    expect(demoPosition('?position=Left')).toBeNull();
+    const b = fast();
+    applyDemoQuery(b, '?mock=1&position=right');
+    expect((await b.getSettings()).position).toBe('right');
+    const unchanged = fast();
+    applyDemoQuery(unchanged, '?mock=1&position=sideways');
+    expect((await unchanged.getSettings()).position).toBe('bottom');
+  });
+
+  it('a viewport width places a panel reported on the right edge like the app layer does', async () => {
+    const b = fast({ viewportHeight: 1392, viewportWidth: 330, position: 'right' });
+    await b.setDockPanelRect({ x: 258, y: 400, width: 64, height: 561 });
+    expect(b.dockPanel()).toEqual({ x: 2488, y: 400, width: 64, height: 561 });
+    expect(overlappedOn(await b.getDockState())).toBe(false);
+    // Terminal's window dragged over the right edge.
+    b.moveWindow(5, { x: 1500, y: 500, width: 1060, height: 600 });
+    expect(overlappedOn(await b.getDockState())).toBe(true);
+    // The same report on the left edge: the viewport's left edge is the work area's.
+    const left = fast({ viewportHeight: 1392, viewportWidth: 330, position: 'left' });
+    await left.setDockPanelRect({ x: 8, y: 400, width: 64, height: 561 });
+    expect(left.dockPanel()).toEqual({ x: 8, y: 400, width: 64, height: 561 });
+    expect(overlappedOn(await left.getDockState())).toBe(false);
   });
 
   /** The primary dock's `overlapped`, or `undefined` without an entry. */
@@ -893,23 +1028,35 @@ describe('a window over the dock (mirror of crates/stem-core/src/overlap.rs)', (
     const workArea = { x: 2560, y: 0, width: 1920, height: 1032 };
     // A 1280 × 240 CSS viewport is 1920 × 360 physical px: the panel at
     // y 168 css (252 px) rests 108 px above the work area's bottom edge.
-    expect(panelOnScreen({ x: 360, y: 168, width: 561, height: 64 }, workArea, 240, 1.5)).toEqual({
+    const viewport = { width: 1280, height: 240 };
+    expect(
+      panelOnScreen({ x: 360, y: 168, width: 561, height: 64 }, workArea, viewport, 'bottom', 1.5),
+    ).toEqual({
       x: 2560 + 540,
       y: 1032 - 360 + 252,
       width: 842,
       height: 96,
     });
     // Rounded outwards like a hit region: 11 css → 16.5 → 16; 21 css → 31.5 → 32.
-    expect(panelOnScreen({ x: 11, y: 0, width: 10, height: 8 }, workArea, 100, 1.5)).toEqual({
+    expect(
+      panelOnScreen(
+        { x: 11, y: 0, width: 10, height: 8 },
+        workArea,
+        { width: 1280, height: 100 },
+        'bottom',
+        1.5,
+      ),
+    ).toEqual({
       x: 2560 + 16,
       y: 1032 - 150,
       width: 16,
       height: 12,
     });
     // A scale of 1 (or a bad one) is the plain placement.
-    expect(panelOnScreen({ x: 10, y: 20, width: 30, height: 40 }, workArea, 100, 0)).toEqual(
-      panelOnScreen({ x: 10, y: 20, width: 30, height: 40 }, workArea, 100),
-    );
+    const small = { width: 1280, height: 100 };
+    expect(
+      panelOnScreen({ x: 10, y: 20, width: 30, height: 40 }, workArea, small, 'bottom', 0),
+    ).toEqual(panelOnScreen({ x: 10, y: 20, width: 30, height: 40 }, workArea, small, 'bottom'));
   });
 });
 

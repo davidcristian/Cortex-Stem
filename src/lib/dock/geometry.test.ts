@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
+import { DOCK_EDGES, type DockEdge } from './edge';
 import {
+  edgeShift,
   hitRegionFor,
   integerRect,
   LAYOUT_UNIT,
@@ -10,7 +12,9 @@ import {
   sameHitRegion,
   sameRect,
   sameSnap,
+  snapMarginProperties,
   snapOffsets,
+  type SnapMargins,
 } from './geometry';
 
 describe('integerRect', () => {
@@ -77,29 +81,72 @@ describe('hitRegionFor', () => {
   const panel = { x: 390.5, y: 168, width: 499, height: 64 };
 
   it('widens by half the growth on each side and raises by the rise, bottom fixed', () => {
-    const { panel: p, envelope: e } = hitRegionFor(panel, 117.6, 36.8);
+    const { panel: p, envelope: e } = hitRegionFor(panel, 117.6, 36.8, 'bottom');
     expect(p).toEqual({ x: 390, y: 168, width: 500, height: 64 });
     // left edge 390.5 - 58.8 = 331.7 → 331; right edge 889.5 + 58.8 = 948.3 → 949
     expect(e).toEqual({ x: 331, y: 131, width: 618, height: 101 });
     expect(e.y + e.height).toBe(p.y + p.height);
   });
 
-  it('always contains the panel', () => {
-    for (const [g, r] of [
-      [0, 0],
-      [0, 8],
-      [117.6, 36.8],
-      [1, 1],
-      [-5, -5],
-    ] as const) {
-      const region = hitRegionFor(panel, g, r);
-      expect(rectContains(region.envelope, region.panel)).toBe(true);
+  it('on top it widens the same and grows downwards, its top edge fixed', () => {
+    const { panel: p, envelope: e } = hitRegionFor({ ...panel, y: 8 }, 117.6, 36.8, 'top');
+    expect(p).toEqual({ x: 390, y: 8, width: 500, height: 64 });
+    // bottom edge 72 + 36.8 = 108.8 → 109
+    expect(e).toEqual({ x: 331, y: 8, width: 618, height: 101 });
+  });
+
+  it('on a side edge it lengthens along y and grows away from the edge, its edge side fixed', () => {
+    const side = { x: 8, y: 390.5, width: 64, height: 499 };
+    const left = hitRegionFor(side, 117.6, 36.8, 'left');
+    expect(left.panel).toEqual({ x: 8, y: 390, width: 64, height: 500 });
+    // right edge 72 + 36.8 = 108.8 → 109
+    expect(left.envelope).toEqual({ x: 8, y: 331, width: 101, height: 618 });
+    const right = hitRegionFor({ ...side, x: 248 }, 117.6, 36.8, 'right');
+    expect(right.panel).toEqual({ x: 248, y: 390, width: 64, height: 500 });
+    // left edge 248 - 36.8 = 211.2 → 211; the right edge stays at 312
+    expect(right.envelope).toEqual({ x: 211, y: 331, width: 101, height: 618 });
+    expect(right.envelope.x + right.envelope.width).toBe(right.panel.x + right.panel.width);
+  });
+
+  it('always contains the panel, on every edge', () => {
+    for (const edge of DOCK_EDGES) {
+      for (const [g, r] of [
+        [0, 0],
+        [0, 8],
+        [117.6, 36.8],
+        [1, 1],
+        [-5, -5],
+      ] as const) {
+        const region = hitRegionFor(panel, g, r, edge);
+        expect(rectContains(region.envelope, region.panel)).toBe(true);
+      }
     }
   });
 
   it('is the panel itself when nothing grows', () => {
-    const region = hitRegionFor({ x: 10, y: 20, width: 30, height: 40 }, 0, 0);
-    expect(sameHitRegion(region, { panel: region.panel, envelope: region.panel })).toBe(true);
+    for (const edge of DOCK_EDGES) {
+      const region = hitRegionFor({ x: 10, y: 20, width: 30, height: 40 }, 0, 0, edge);
+      expect(sameHitRegion(region, { panel: region.panel, envelope: region.panel })).toBe(true);
+    }
+  });
+});
+
+describe('edgeShift', () => {
+  const before = { width: 2560, height: 150 };
+
+  it('follows the side of the window that moves when it grows away from its edge', () => {
+    expect(edgeShift('bottom', before, { width: 2560, height: 1392 })).toEqual({ dx: 0, dy: 1242 });
+    expect(edgeShift('top', before, { width: 2560, height: 1392 })).toEqual({ dx: 0, dy: 0 });
+    const side = { width: 330, height: 1392 };
+    expect(edgeShift('right', side, { width: 2560, height: 1392 })).toEqual({ dx: 2230, dy: 0 });
+    expect(edgeShift('left', side, { width: 2560, height: 1392 })).toEqual({ dx: 0, dy: 0 });
+  });
+
+  it('runs backwards when the window shrinks again', () => {
+    expect(edgeShift('bottom', { width: 2560, height: 1392 }, before)).toEqual({
+      dx: 0,
+      dy: -1242,
+    });
   });
 });
 
@@ -112,105 +159,156 @@ describe('magnifiedRise', () => {
 });
 
 describe('snapOffsets', () => {
-  const BOTTOM = 8;
+  const EDGE = 8;
+  const REST: SnapMargins = { start: 0, edge: EDGE };
 
-  /** Where the panel lands once `margins` replace `current` (centred: half the left margin). */
+  /**
+   * Where the panel's corner lands once `margins` replace `current`: centred
+   * along the main axis (half the start margin), anchored to the edge side
+   * (the edge margin one to one, away from the edge).
+   */
   function apply(
+    edge: DockEdge,
     left: number,
     top: number,
-    current: { marginLeft: number; marginBottom: number },
-    margins: { marginLeft: number; marginBottom: number },
+    current: SnapMargins,
+    margins: SnapMargins,
   ): { left: number; top: number } {
-    return {
-      left: left + (margins.marginLeft - current.marginLeft) / 2,
-      top: top + (current.marginBottom - margins.marginBottom),
-    };
+    const main = (margins.start - current.start) / 2;
+    const delta = margins.edge - current.edge;
+    switch (edge) {
+      case 'bottom':
+        return { left: left + main, top: top - delta };
+      case 'top':
+        return { left: left + main, top: top + delta };
+      case 'left':
+        return { left: left + delta, top: top + main };
+      case 'right':
+        return { left: left - delta, top: top + main };
+    }
   }
 
   it('leaves a panel that already sits on whole device pixels alone', () => {
-    expect(snapOffsets(360, 168, 1, 0, BOTTOM)).toEqual({ marginLeft: 0, marginBottom: BOTTOM });
-    // 360.5 CSS px is 721 device px at 2×: whole.
-    expect(snapOffsets(360.5, 168, 2, 0, BOTTOM)).toEqual({ marginLeft: 0, marginBottom: BOTTOM });
-    expect(snapOffsets(360, 168, 1.5, 0, BOTTOM)).toEqual({ marginLeft: 0, marginBottom: BOTTOM });
+    for (const edge of DOCK_EDGES) {
+      expect(snapOffsets(360, 168, 1, REST, edge)).toEqual(REST);
+      // 360.5 CSS px is 721 device px at 2×: whole.
+      expect(snapOffsets(360.5, 168, 2, REST, edge)).toEqual(REST);
+      expect(snapOffsets(360, 168, 1.5, REST, edge)).toEqual(REST);
+    }
   });
 
   it('doubles the horizontal correction, because a flex-centred panel moves by half its margin', () => {
     // A 713 px panel centred in a 2560 px window at 100 %.
-    const margins = snapOffsets(923.5, 168, 1, 0, BOTTOM);
-    expect(margins).toEqual({ marginLeft: 1, marginBottom: BOTTOM });
-    expect(apply(923.5, 168, { marginLeft: 0, marginBottom: BOTTOM }, margins).left).toBe(924);
+    const margins = snapOffsets(923.5, 168, 1, REST, 'bottom');
+    expect(margins).toEqual({ start: 1, edge: EDGE });
+    expect(apply('bottom', 923.5, 168, REST, margins).left).toBe(924);
   });
 
   it('corrects the top edge through the bottom margin, one to one', () => {
     // 169 CSS px is 253.5 device px at 1.5×; the nearest whole is 254, a third of a CSS px down.
-    const margins = snapOffsets(360, 169, 1.5, 0, BOTTOM);
-    expect(margins.marginLeft).toBe(0);
-    expect(margins.marginBottom).toBeCloseTo(BOTTOM - 1 / 3, 12);
-    const { top } = apply(360, 169, { marginLeft: 0, marginBottom: BOTTOM }, margins);
+    const margins = snapOffsets(360, 169, 1.5, REST, 'bottom');
+    expect(margins.start).toBe(0);
+    expect(margins.edge).toBeCloseTo(EDGE - 1 / 3, 12);
+    const { top } = apply('bottom', 360, 169, REST, margins);
     expect(top * 1.5).toBeCloseTo(254, 12);
   });
 
-  it('works at any device pixel ratio', () => {
-    for (const dpr of [1, 1.25, 1.5, 1.75, 2, 2.5, 3]) {
-      for (const [left, top] of [
-        [360.5, 168],
-        [923.5, 113.328125],
-        [100.25, 50.75],
-        [0.1, 0.9],
-        [-12.5, 3],
-      ] as const) {
-        const current = { marginLeft: 0, marginBottom: BOTTOM };
-        const margins = snapOffsets(left, top, dpr, 0, BOTTOM);
-        const landed = apply(left, top, current, margins);
-        expect(landed.left * dpr).toBeCloseTo(Math.round(landed.left * dpr), 9);
-        expect(landed.top * dpr).toBeCloseTo(Math.round(landed.top * dpr), 9);
-        // Never more than half a device pixel either way.
-        expect(Math.abs(landed.left - left) * dpr).toBeLessThanOrEqual(0.5 + 1e-9);
-        expect(Math.abs(landed.top - top) * dpr).toBeLessThanOrEqual(0.5 + 1e-9);
+  it('on a vertical dock doubles the vertical correction and corrects x through the edge margin', () => {
+    // Centred along y: a top of 412.5 at 100 % asks for a top margin of 1.
+    const left = snapOffsets(8.5, 412.5, 1, REST, 'left');
+    expect(left).toEqual({ start: 1, edge: EDGE + 0.5 });
+    expect(apply('left', 8.5, 412.5, REST, left)).toEqual({ left: 9, top: 413 });
+    // On the right edge a larger right margin moves the panel left.
+    const right = snapOffsets(247.5, 412.5, 1, REST, 'right');
+    expect(right).toEqual({ start: 1, edge: EDGE - 0.5 });
+    expect(apply('right', 247.5, 412.5, REST, right)).toEqual({ left: 248, top: 413 });
+    // On the top edge a larger top margin moves the panel down.
+    const top = snapOffsets(923.5, 8.5, 1, REST, 'top');
+    expect(top).toEqual({ start: 1, edge: EDGE + 0.5 });
+    expect(apply('top', 923.5, 8.5, REST, top)).toEqual({ left: 924, top: 9 });
+  });
+
+  it('works at any device pixel ratio, on every edge', () => {
+    for (const edge of DOCK_EDGES) {
+      for (const dpr of [1, 1.25, 1.5, 1.75, 2, 2.5, 3]) {
+        for (const [left, top] of [
+          [360.5, 168],
+          [923.5, 113.328125],
+          [100.25, 50.75],
+          [0.1, 0.9],
+          [-12.5, 3],
+        ] as const) {
+          const margins = snapOffsets(left, top, dpr, REST, edge);
+          const landed = apply(edge, left, top, REST, margins);
+          expect(landed.left * dpr).toBeCloseTo(Math.round(landed.left * dpr), 9);
+          expect(landed.top * dpr).toBeCloseTo(Math.round(landed.top * dpr), 9);
+          // Never more than half a device pixel either way.
+          expect(Math.abs(landed.left - left) * dpr).toBeLessThanOrEqual(0.5 + 1e-9);
+          expect(Math.abs(landed.top - top) * dpr).toBeLessThanOrEqual(0.5 + 1e-9);
+        }
       }
     }
   });
 
   it('is idempotent: measuring the snapped panel asks for the same margins again', () => {
-    const current = { marginLeft: 0, marginBottom: BOTTOM };
-    const first = snapOffsets(360.5, 169, 1.5, current.marginLeft, current.marginBottom);
-    const landed = apply(360.5, 169, current, first);
-    const second = snapOffsets(landed.left, landed.top, 1.5, first.marginLeft, first.marginBottom);
-    expect(second.marginLeft).toBeCloseTo(first.marginLeft, 12);
-    expect(second.marginBottom).toBeCloseTo(first.marginBottom, 12);
+    for (const edge of DOCK_EDGES) {
+      const first = snapOffsets(360.5, 169, 1.5, REST, edge);
+      const landed = apply(edge, 360.5, 169, REST, first);
+      const second = snapOffsets(landed.left, landed.top, 1.5, first, edge);
+      expect(second.start).toBeCloseTo(first.start, 12);
+      expect(second.edge).toBeCloseTo(first.edge, 12);
+    }
   });
 
   it('builds on the margins the panel already has', () => {
     // Already nudged by 1 px, now half a pixel off again (an item came and went).
-    expect(snapOffsets(200.5, 168, 1, 1, BOTTOM)).toEqual({ marginLeft: 2, marginBottom: BOTTOM });
-    expect(snapOffsets(200.5, 168, 1, -1, BOTTOM)).toEqual({ marginLeft: 0, marginBottom: BOTTOM });
-    expect(snapOffsets(200, 168.5, 1, 0, 7.5)).toEqual({ marginLeft: 0, marginBottom: 7 });
+    expect(snapOffsets(200.5, 168, 1, { start: 1, edge: EDGE }, 'bottom')).toEqual({
+      start: 2,
+      edge: EDGE,
+    });
+    expect(snapOffsets(200.5, 168, 1, { start: -1, edge: EDGE }, 'bottom')).toEqual({
+      start: 0,
+      edge: EDGE,
+    });
+    expect(snapOffsets(200, 168.5, 1, { start: 0, edge: 7.5 }, 'bottom')).toEqual({
+      start: 0,
+      edge: 7,
+    });
   });
 
   it('treats a nonsense device pixel ratio as 1', () => {
-    expect(snapOffsets(10.5, 20, 0, 0, BOTTOM)).toEqual({ marginLeft: 1, marginBottom: BOTTOM });
-    expect(snapOffsets(10.5, 20, NaN, 0, BOTTOM)).toEqual({ marginLeft: 1, marginBottom: BOTTOM });
-    expect(snapOffsets(10.5, 20, -2, 0, BOTTOM)).toEqual({ marginLeft: 1, marginBottom: BOTTOM });
+    for (const dpr of [0, NaN, -2]) {
+      expect(snapOffsets(10.5, 20, dpr, REST, 'bottom')).toEqual({ start: 1, edge: EDGE });
+    }
+  });
+});
+
+describe('snapMarginProperties', () => {
+  it('puts the start margin on the main axis and the edge margin on the edge side', () => {
+    expect(snapMarginProperties('bottom')).toEqual({ start: 'marginLeft', edge: 'marginBottom' });
+    expect(snapMarginProperties('top')).toEqual({ start: 'marginLeft', edge: 'marginTop' });
+    expect(snapMarginProperties('left')).toEqual({ start: 'marginTop', edge: 'marginLeft' });
+    expect(snapMarginProperties('right')).toEqual({ start: 'marginTop', edge: 'marginRight' });
   });
 });
 
 describe('sameSnap', () => {
   it('ignores corrections within two layout units, which could not move the panel', () => {
-    const a = { marginLeft: 1 / 3, marginBottom: 8 - 1 / 3 };
+    const a = { start: 1 / 3, edge: 8 - 1 / 3 };
     expect(sameSnap(a, a)).toBe(true);
-    expect(sameSnap(a, { ...a, marginLeft: a.marginLeft + LAYOUT_UNIT })).toBe(true);
+    expect(sameSnap(a, { ...a, start: a.start + LAYOUT_UNIT })).toBe(true);
     // Measured at 150 %: the laid-out 1/3 px margin asked for 1/48 px (1.33 units) more.
-    expect(sameSnap(a, { ...a, marginLeft: a.marginLeft + 1 / 48 })).toBe(true);
-    expect(sameSnap(a, { ...a, marginLeft: a.marginLeft - 2 * LAYOUT_UNIT })).toBe(true);
-    expect(sameSnap(a, { ...a, marginBottom: a.marginBottom - LAYOUT_UNIT })).toBe(true);
+    expect(sameSnap(a, { ...a, start: a.start + 1 / 48 })).toBe(true);
+    expect(sameSnap(a, { ...a, start: a.start - 2 * LAYOUT_UNIT })).toBe(true);
+    expect(sameSnap(a, { ...a, edge: a.edge - LAYOUT_UNIT })).toBe(true);
   });
 
   it('sees a real correction', () => {
-    const a = { marginLeft: 0, marginBottom: 8 };
-    expect(sameSnap(a, { marginLeft: 1, marginBottom: 8 })).toBe(false);
-    expect(sameSnap(a, { marginLeft: 0, marginBottom: 7.5 })).toBe(false);
-    expect(sameSnap(a, { marginLeft: 3 * LAYOUT_UNIT, marginBottom: 8 })).toBe(false);
+    const a = { start: 0, edge: 8 };
+    expect(sameSnap(a, { start: 1, edge: 8 })).toBe(false);
+    expect(sameSnap(a, { start: 0, edge: 7.5 })).toBe(false);
+    expect(sameSnap(a, { start: 3 * LAYOUT_UNIT, edge: 8 })).toBe(false);
     // The smallest real snap at 200 %: a quarter CSS px, doubled.
-    expect(sameSnap(a, { marginLeft: 0.5, marginBottom: 8 })).toBe(false);
+    expect(sameSnap(a, { start: 0.5, edge: 8 })).toBe(false);
   });
 });

@@ -3,10 +3,10 @@
 This file describes how the dock is used with the keyboard.
 
 Inside the page, the panel is a `toolbar` labelled "Stem", whose
-`aria-orientation` is horizontal. It has one tab stop: a roving
-tabindex on the item the focus was on last. Right and Down move the focus
-to the next item, Left and Up to the previous one (the vertical pair is
-there for a later dock on a side edge), and Home and End go to the
+`aria-orientation` follows the dock's axis. It has one tab stop: a roving
+tabindex on the item the focus was on last. The arrows of the dock's main
+axis move the focus (Left and Right on a horizontal dock, Up and Down on a
+vertical one; the other pair does nothing), and Home and End go to the
 first and last item. The focus skips separators and stops at the ends
 (`src/lib/dock/keyboard.ts`, pure and unit-tested). When an item with the
 focus leaves the dock, the focus moves to its neighbour.

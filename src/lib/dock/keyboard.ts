@@ -4,14 +4,18 @@
  *
  * The toolbar is one tab stop (a roving tabindex): exactly one item has
  * `tabindex="0"`, the one the focus was on last (`tabStopKey`), the others
- * `-1`. ArrowRight and ArrowDown go to the next item, ArrowLeft and ArrowUp
- * to the previous one (the vertical pair is there for a dock on a side edge
- * later), Home and End to the first and the last; separators are skipped.
- * The focus stops at either end instead of wrapping around, so Home and End
- * and a held arrow all land in the same place.
+ * `-1`. The arrows of the dock's main axis move along it (the
+ * toolbar's `aria-orientation` says which): ArrowRight and ArrowLeft on a
+ * horizontal dock, ArrowDown and ArrowUp on a vertical one, to the next and
+ * the previous item; the other pair does nothing. Home and End go to the
+ * first and the last item; separators are skipped. The focus stops at
+ * either end instead of wrapping around, so Home and End and a held arrow
+ * all land in the same place.
  */
 
 import type { DockItemKind } from '$lib/ipc/generated/DockItemKind';
+
+import type { DockAxis } from './edge';
 
 /** What these functions need of a `DockItem`. */
 export interface NavigableItem {
@@ -19,21 +23,20 @@ export interface NavigableItem {
   readonly kind: DockItemKind;
 }
 
-/** The keys that move the focus along the toolbar. */
+/** The keys that can move the focus along the toolbar. */
 export type NavigationKey = 'ArrowLeft' | 'ArrowRight' | 'ArrowUp' | 'ArrowDown' | 'Home' | 'End';
 
-const NAVIGATION_KEYS: ReadonlySet<string> = new Set<NavigationKey>([
-  'ArrowLeft',
-  'ArrowRight',
-  'ArrowUp',
-  'ArrowDown',
-  'Home',
-  'End',
-]);
+/** The arrow to the next item and the one to the previous item along `axis`. */
+function arrowsOf(axis: DockAxis): { next: NavigationKey; previous: NavigationKey } {
+  return axis === 'horizontal'
+    ? { next: 'ArrowRight', previous: 'ArrowLeft' }
+    : { next: 'ArrowDown', previous: 'ArrowUp' };
+}
 
-/** `key` (a `KeyboardEvent.key`) moves the focus along the toolbar. */
-export function isNavigationKey(key: string): key is NavigationKey {
-  return NAVIGATION_KEYS.has(key);
+/** `key` (a `KeyboardEvent.key`) moves the focus along a toolbar whose orientation is `axis`. */
+export function isNavigationKey(key: string, axis: DockAxis): key is NavigationKey {
+  const { next, previous } = arrowsOf(axis);
+  return key === next || key === previous || key === 'Home' || key === 'End';
 }
 
 /** Every item but a separator takes keyboard focus. */
@@ -57,8 +60,10 @@ function seek(
 
 /**
  * The index of the item `key` moves the focus to from the item at
- * `current`, or `null` when it moves nothing: `key` is not a navigation key,
- * or no item takes focus. At an end the focus stays where it is (`current`).
+ * `current` on a toolbar whose orientation is `axis`, or `null` when it
+ * moves nothing: `key` is not a navigation key there (an arrow across the
+ * axis is not), or no item takes focus. At an end the focus stays where it
+ * is (`current`).
  * A `current` outside the list (the panel itself has the focus, or the
  * focused item has just gone) counts as before the first item for the
  * forward keys and after the last for the backward ones.
@@ -67,30 +72,29 @@ export function nextFocusIndex(
   items: readonly Pick<NavigableItem, 'kind'>[],
   current: number,
   key: string,
+  axis: DockAxis,
 ): number | null {
-  if (!isNavigationKey(key)) {
+  if (!isNavigationKey(key, axis)) {
     return null;
   }
   const last = items.length - 1;
   const inList = Number.isInteger(current) && current >= 0 && current <= last;
-  switch (key) {
-    case 'Home':
-      return seek(items, 0, 1);
-    case 'End':
-      return seek(items, last, -1);
-    case 'ArrowRight':
-    case 'ArrowDown':
-      if (!inList) {
-        return seek(items, 0, 1);
-      }
-      return seek(items, current + 1, 1) ?? seek(items, current, -1);
-    case 'ArrowLeft':
-    case 'ArrowUp':
-      if (!inList) {
-        return seek(items, last, -1);
-      }
-      return seek(items, current - 1, -1) ?? seek(items, current, 1);
+  if (key === 'Home') {
+    return seek(items, 0, 1);
   }
+  if (key === 'End') {
+    return seek(items, last, -1);
+  }
+  if (key === arrowsOf(axis).next) {
+    if (!inList) {
+      return seek(items, 0, 1);
+    }
+    return seek(items, current + 1, 1) ?? seek(items, current, -1);
+  }
+  if (!inList) {
+    return seek(items, last, -1);
+  }
+  return seek(items, current - 1, -1) ?? seek(items, current, 1);
 }
 
 /**

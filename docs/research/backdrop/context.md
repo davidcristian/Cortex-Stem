@@ -14,7 +14,8 @@ everywhere except the rounded panel, which the page centres
 setting picks the edge, `bottom` by default. This note describes the dock
 on `bottom`; on the other edges the same holds along that edge. The
 window's height is the panel plus room for magnified icons, tooltips and
-the bounce (`HEADROOM` in `src/dock/Dock.svelte`). Every system backdrop Windows offers is drawn behind
+the bounce (`HEADROOM` in `src/dock/Dock.svelte`, and `SIDE_HEADROOM` on
+`left` and `right`). Every system backdrop Windows offers is drawn behind
 a whole window. On the dock window it would paint a band across the bottom
 of the screen, not a panel.
 
@@ -52,8 +53,8 @@ What the code does, as far as it matters here:
   out, a file drag opens a gap, and a drag grows the window. The UI reports
   the panel only at rest (`set_dock_panel_rect`); nothing reports the live
   box.
-- Auto-hide slides the panel down with `translateY` over 200 ms, inside a
-  window that does not move ([ADR-0008](../../adr/0008-auto-hide.md)).
+- Auto-hide slides the panel off its edge with a CSS translate over 200 ms,
+  inside a window that does not move ([ADR-0008](../../adr/0008-auto-hide.md)).
 
 Two documented facts apply to every native option:
 

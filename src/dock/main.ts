@@ -1,7 +1,7 @@
 import { mount } from 'svelte';
 
 import { createBackend, MockBackend } from '$lib/ipc';
-import { exposeMock } from '$lib/ipc/demo';
+import { applyDemoQuery, exposeMock } from '$lib/ipc/demo';
 import { DockStore } from '$lib/stores/dock.svelte';
 
 import '../app.css';
@@ -15,6 +15,8 @@ if (!target) {
 const backend = createBackend();
 const demo = backend instanceof MockBackend;
 if (demo) {
+  // `?position=` and the like, before the store asks for anything.
+  applyDemoQuery(backend, window.location.search);
   exposeMock(backend);
 }
 

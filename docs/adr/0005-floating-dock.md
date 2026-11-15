@@ -21,9 +21,11 @@ the stock taskbar) is a different product with different layout rules
   taskbar (`system.hideWindowsTaskbar`) are opt-in.
 - Visual language: translucent rounded panel, 1 px hairline border, soft
   shadow, icons with a running-indicator dot, separators between groups,
-  bounce on launch, a tooltip above the hovered icon.
-- Fixed items follow macOS roles: the launcher at the left (Finder's
-  spot), the Recycle Bin at the right (Trash's spot).
+  bounce on launch, a tooltip beside the hovered icon on the side away from
+  the edge (above it on `bottom`).
+- Fixed items follow macOS roles: the launcher at the start (Finder's
+  spot: the left end of a row, the top of a column on `left` or `right`),
+  the Recycle Bin at the end (Trash's spot: the right end, or the bottom).
 
 ## Consequences
 
@@ -33,4 +35,5 @@ the stock taskbar) is a different product with different layout rules
   `docs/ipc/hit-region.md`). The headroom is kept minimal.
 - Maximised windows sit under the dock unless auto-hide or reservation is
   on. The user guide describes both settings.
-- Vertical positions (left and right) are a later layout variant.
+- The dock can also sit on the `top`, `left` or `right` edge
+  (`settings.position`); on `left` and `right` it is a column.

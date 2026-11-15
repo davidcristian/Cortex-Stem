@@ -18,12 +18,14 @@ panel. The dock comes back as soon as no window does. For that, the UI
 reports the resting panel through `set_dock_panel_rect` in every phase
 ([Data flow](data-flow.md)).
 
-The panel slides out downwards in 200 ms, by `translateY`: by its own height,
-the margin under it and room for its shadow. Under reduced motion it
+The panel slides out towards the dock's edge in 200 ms: by `translateY` on
+a horizontal dock and by `translateX` on a vertical one, by its own size,
+the margin to the edge and room for its shadow. Under reduced motion it
 fades instead. The window keeps its size and place.
 
 While the panel is hidden, the UI reports a reveal strip as both hit
-rectangles: the bottom 2 CSS px of the window, as wide as the resting panel. So the
+rectangles: the 2 CSS px along the window's edge side (the bottom 2 px on
+`bottom`, the leftmost 2 px on `left`), as long as the resting panel. So the
 hit-test thread ([Threads](threads.md)) lets the window take the pointer only
 there. The strip element's `pointerenter` reveals the panel. The region for
 the shown panel (its [envelope](dock-window.md#click-through-outside-the-panel),
