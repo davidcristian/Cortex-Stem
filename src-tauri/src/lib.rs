@@ -395,7 +395,8 @@ fn init_logging(app: &AppHandle, store: Option<&FileSettingsStore>) -> Option<Pa
     let raw_level = std::env::var("STEM_LOG").ok();
     let level = raw_level
         .as_deref()
-        .and_then(|v| v.parse::<log::LevelFilter>().ok())
+        // Trimmed: cmd's `set STEM_LOG=debug && …` keeps the space.
+        .and_then(|v| v.trim().parse::<log::LevelFilter>().ok())
         .unwrap_or(log::LevelFilter::Info);
     let file_logging = store.is_none_or(file_logging_wanted);
 
@@ -502,10 +503,11 @@ fn install_panic_hook() {
     }));
 }
 
-/// Debug builds only: `STEM_PANIC_TEST=1` panics once logging is up, so the
-/// panic hook can be exercised and the next start's crash report with it.
+/// Debug builds only: `STEM_PANIC_TEST=1` (surrounding blanks ignored)
+/// panics once logging is up, so the panic hook can be exercised and the
+/// next start's crash report with it.
 fn panic_test() {
-    if cfg!(debug_assertions) && std::env::var("STEM_PANIC_TEST").is_ok_and(|v| v == "1") {
+    if cfg!(debug_assertions) && std::env::var("STEM_PANIC_TEST").is_ok_and(|v| v.trim() == "1") {
         panic!("STEM_PANIC_TEST=1: intentional panic to exercise the panic hook");
     }
 }

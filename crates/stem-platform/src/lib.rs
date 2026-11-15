@@ -419,9 +419,11 @@ pub fn is_mock(platform: &dyn Platform) -> bool {
 /// What [`mock::MockPlatform::name`] returns.
 const MOCK_PLATFORM_NAME: &str = "mock";
 
-/// Build the platform for this host. Honors `STEM_PLATFORM=mock` on any host.
+/// Build the platform for this host. Honors `STEM_PLATFORM=mock` on any host
+/// (surrounding blanks ignored: cmd's `set STEM_PLATFORM=mock && …` keeps
+/// the space before `&&`).
 pub fn create_platform() -> Arc<dyn Platform> {
-    if std::env::var("STEM_PLATFORM").is_ok_and(|v| v.eq_ignore_ascii_case("mock")) {
+    if std::env::var("STEM_PLATFORM").is_ok_and(|v| v.trim().eq_ignore_ascii_case("mock")) {
         return Arc::new(mock::MockPlatform::with_demo_scenario());
     }
     #[cfg(windows)]
