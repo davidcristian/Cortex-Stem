@@ -611,11 +611,13 @@ fn demo_window(id: u64, exe: &str, title: &str, minimized: bool, rect: Rect) -> 
 }
 
 /// The demo's windows, each with a plausible frame on the demo monitor:
-/// all of them end above the bottom 250 px of the work area, where
-/// the dock's panel rests, so nothing overlaps it until a test moves one
-/// (`move_window`). A minimised window keeps the frame it would be restored
-/// to; the overlap rule ignores it while it is minimised. The TS mirror
-/// (`src/lib/ipc/mock.ts`) uses the same frames.
+/// all of them keep clear of the 250 px along the bottom, left and
+/// right edges of the work area, where the dock's panel rests on those
+/// edges, so nothing overlaps it until a test moves one
+/// (`move_window`). The top band is not kept clear (the frames start near
+/// the top, as on a real desktop). A minimised window keeps the frame it
+/// would be restored to; the overlap rule ignores it while it is minimised.
+/// The TS mirror (`src/lib/ipc/mock.ts`) uses the same frames.
 fn demo_windows() -> Vec<RawWindow> {
     vec![
         demo_window(
@@ -623,7 +625,7 @@ fn demo_windows() -> Vec<RawWindow> {
             r"C:\Windows\explorer.exe",
             "Downloads",
             false,
-            Rect::new(120, 90, 1100, 700),
+            Rect::new(260, 90, 1100, 700),
         ),
         demo_window(
             2,
@@ -644,7 +646,7 @@ fn demo_windows() -> Vec<RawWindow> {
             r"C:\Users\me\AppData\Local\Programs\Microsoft VS Code\Code.exe",
             "lib.rs — Stem",
             false,
-            Rect::new(200, 40, 1600, 1000),
+            Rect::new(260, 40, 1600, 1000),
         ),
         demo_window(
             5,
@@ -918,5 +920,22 @@ mod tests {
             .unwrap();
         assert_eq!(id.id, AppId::for_exe(std::path::Path::new(r"c:/a/b.exe")));
         assert_eq!(id.display_name, "b");
+    }
+
+    #[test]
+    fn demo_windows_keep_clear_of_the_bottom_left_and_right_panel_bands() {
+        // Where a dock's panel rests on those edges, as in the TS mirror.
+        const BAND: i32 = 250;
+        let work = demo_monitor().work_area;
+        for w in demo_windows() {
+            let r = w.rect.unwrap();
+            assert!(
+                r.bottom() <= work.bottom() - BAND,
+                "{}: bottom band",
+                w.title
+            );
+            assert!(r.x >= work.x + BAND, "{}: left band", w.title);
+            assert!(r.right() <= work.right() - BAND, "{}: right band", w.title);
+        }
     }
 }

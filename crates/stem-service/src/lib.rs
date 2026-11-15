@@ -1973,7 +1973,7 @@ mod tests {
         // Dragged away again: cleared.
         relay
             .mock
-            .move_window(WindowId(4), Some(Rect::new(200, 40, 1600, 1000)));
+            .move_window(WindowId(4), Some(Rect::new(260, 40, 1600, 1000)));
         wait_state(&rx, |s| !overlapped_on(s, DEMO_MONITOR));
 
         // A minimised window over the dock does not count; restoring it does.

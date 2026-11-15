@@ -532,9 +532,8 @@ export function dockLabel(monitor: MonitorId | null, primary: MonitorId | null):
  * it while minimised). The top band is not kept clear: the frames start
  * near the top as on a real desktop, and the demo has no room for windows
  * of these sizes between two bands, so a dock on `top` with
- * `whenOverlapped` hides in the demo. The Rust demo has the same frames
- * except two: File Explorer and Code start at x = 260 here (x = 120 and
- * x = 200 there), out of the left band.
+ * `whenOverlapped` hides in the demo. `demoWindows` has the same frames
+ * as the Rust demo (`demo_windows` in `crates/stem-platform/src/mock.rs`).
  */
 function demoWindow(
   id: number,
