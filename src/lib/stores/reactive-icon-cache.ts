@@ -50,4 +50,11 @@ export class ReactiveIconCache {
     this.cache.clear();
     this.icons.clear();
   }
+
+  /** Drop the entries of every size not in `sizes` (`IconCache.retain`). */
+  retainSizes(sizes: ReadonlySet<number>): void {
+    for (const id of this.cache.retain(sizes)) {
+      this.icons.delete(id);
+    }
+  }
 }

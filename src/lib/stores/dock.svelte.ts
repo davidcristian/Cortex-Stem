@@ -138,8 +138,13 @@ export class DockStore {
     this.iconCache.ensureIcon(key, size);
   }
 
-  /** Drop cached icons (e.g. on a DPI change) so they are requested again. */
+  /** Drop every cached icon so each is requested again. */
   clearIcons(): void {
     this.iconCache.clear();
+  }
+
+  /** Keep only the icons of `sizes`; the others are requested again if needed. */
+  retainIconSizes(sizes: ReadonlySet<number>): void {
+    this.iconCache.retainSizes(sizes);
   }
 }

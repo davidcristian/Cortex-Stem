@@ -49,6 +49,18 @@ describe('ReactiveIconCache', () => {
     expect(backend.requests).toHaveLength(3);
   });
 
+  it('retainSizes() drops the reactive entries of every other size', async () => {
+    const backend = fakeBackend();
+    const cache = new ReactiveIconCache(backend);
+    for (const size of [48, 96, 120]) {
+      cache.ensureIcon('mock:a', size);
+    }
+    await flush();
+    cache.retainSizes(new Set([96, 120]));
+    expect([...cache.icons.keys()].sort()).toEqual([iconId('mock:a', 120), iconId('mock:a', 96)]);
+    expect(cache.icon('mock:a', 48)).toBeUndefined();
+  });
+
   it('clear() forgets every entry so the next ensureIcon requests it again', async () => {
     const backend = fakeBackend();
     const cache = new ReactiveIconCache(backend);

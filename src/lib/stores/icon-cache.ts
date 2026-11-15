@@ -21,6 +21,11 @@ export function iconId(key: string, size: number): string {
   return `${key}@${size}`;
 }
 
+/** The size an `iconId` names (after its last `@`), or `NaN`. */
+export function iconIdSize(id: string): number {
+  return Number(id.slice(id.lastIndexOf('@') + 1));
+}
+
 export class IconCache {
   private readonly done = new Map<string, string | null>();
   private readonly inflight = new Map<string, Promise<string | null>>();
@@ -72,6 +77,25 @@ export class IconCache {
   /** Forget settled entries (e.g. after a DPI change); in-flight loads still complete. */
   clear(): void {
     this.done.clear();
+  }
+
+  /**
+   * Forget the settled entries of every size not in `sizes`, so a page that
+   * draws its icons at a new size (the icon size setting, the display
+   * scale) does not keep a bitmap per app for each size it ever drew.
+   * In-flight loads still complete. Returns the ids forgotten.
+   */
+  retain(sizes: ReadonlySet<number>): string[] {
+    const dropped: string[] = [];
+    for (const id of this.done.keys()) {
+      if (!sizes.has(iconIdSize(id))) {
+        dropped.push(id);
+      }
+    }
+    for (const id of dropped) {
+      this.done.delete(id);
+    }
+    return dropped;
   }
 
   private schedule<T>(job: () => Promise<T>): Promise<T> {

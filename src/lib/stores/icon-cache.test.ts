@@ -111,6 +111,25 @@ describe('IconCache', () => {
     warn.mockRestore();
   });
 
+  it('retain() forgets the settled entries of every other size', async () => {
+    const load = vi.fn(async (key: string, size: number) => `${key}@${size}`);
+    const cache = new IconCache(load, () => {});
+    await Promise.all([
+      cache.request('a', 48),
+      cache.request('a', 96),
+      cache.request('b@2x', 48),
+      cache.request('b@2x', 72),
+    ]);
+    expect(cache.retain(new Set([48]))).toEqual(['a@96', 'b@2x@72']);
+    expect(cache.get('a', 48)).toBe('a@48');
+    expect(cache.get('b@2x', 48)).toBe('b@2x@48');
+    expect(cache.get('a', 96)).toBeUndefined();
+    expect(cache.get('b@2x', 72)).toBeUndefined();
+    // A forgotten size loads again when asked for.
+    await cache.request('a', 96);
+    expect(load).toHaveBeenCalledTimes(5);
+  });
+
   it('clear() forgets settled entries so they load again', async () => {
     const load = vi.fn(async () => 'x');
     const cache = new IconCache(load, () => {});
