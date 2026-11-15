@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
 
   import { watchDevicePixelRatio } from '$lib/dock/dpr';
   import { moveItem } from '$lib/dock/reorder';
@@ -132,7 +132,44 @@
   }
 
   function removePinned(pin: PinnedApp): void {
-    void store.unpinApp(pin.id);
+    void removeRow('.pin', 'button[aria-label^="Unpin "]', 'h-pinned', pin.id, () =>
+      store.unpinApp(pin.id),
+    );
+  }
+
+  /**
+   * Run `remove` for the row of `id` among the rows `rowSelector` matches
+   * and, when the keyboard focus was in that row and went with it (to
+   * `<body>`), put it on the same button (`buttonSelector`) of the row that
+   * took its place, else of the row before it, else on the section's
+   * heading (`headingId`, focusable by script only). A row that is
+   * still there (the command failed) and a focus the user has moved
+   * meanwhile are left alone.
+   */
+  async function removeRow(
+    rowSelector: string,
+    buttonSelector: string,
+    headingId: string,
+    id: string,
+    remove: () => Promise<void>,
+  ): Promise<void> {
+    const rows = (): HTMLElement[] =>
+      Array.from(document.querySelectorAll<HTMLElement>(rowSelector));
+    const before = rows();
+    const index = before.findIndex((row) => row.dataset.id === id);
+    const row = before[index];
+    const focused = row !== undefined && row.contains(document.activeElement);
+    await remove();
+    await tick();
+    const now = document.activeElement;
+    if (!focused || row.isConnected || (now !== null && now !== document.body)) {
+      return;
+    }
+    const after = rows();
+    const next = after[index] ?? after[index - 1];
+    (
+      next?.querySelector<HTMLElement>(buttonSelector) ?? document.getElementById(headingId)
+    )?.focus();
   }
 
   // --- Hidden apps (docs/ipc/hidden-apps.md) --------------------------------------
@@ -164,6 +201,11 @@
       return bang > 0 ? `Store app · ${aumid.slice(0, bang)}` : `App ID · ${aumid}`;
     }
     return null;
+  }
+
+  /** *Show*: off the list, the focus to a neighbour (`removeRow`). */
+  function showHidden(app: HiddenApp): void {
+    void removeRow('.hidden-app', 'button', 'h-hidden', app.id, () => store.unhideApp(app.id));
   }
 
   // --- The user's dock.css (docs/ipc/themes.md) -----------------------------------
@@ -773,7 +815,8 @@
       </section>
 
       <section aria-labelledby="h-pinned">
-        <h2 id="h-pinned">Pinned apps</h2>
+        <!-- Focusable by script: where the focus goes when the last row goes. -->
+        <h2 id="h-pinned" tabindex="-1">Pinned apps</h2>
         <SettingsCard note="Drag apps onto the dock to pin them.">
           {#if settings.pinned.length === 0}
             <p class="empty">Nothing is pinned yet.</p>
@@ -830,7 +873,7 @@
            from Stem in an app's menu) and saves them; Show asks it to take
            one off the list. -->
       <section aria-labelledby="h-hidden">
-        <h2 id="h-hidden">Hidden apps</h2>
+        <h2 id="h-hidden" tabindex="-1">Hidden apps</h2>
         <SettingsCard note="Choose Hide from Stem in a running app's menu to keep it off the dock.">
           {#if settings.hiddenApps.length === 0}
             <p class="empty" data-hidden-apps="none">No apps are hidden.</p>
@@ -851,7 +894,7 @@
                     type="button"
                     class="button"
                     aria-label="Show {hiddenName(app)} on the dock"
-                    onclick={() => void store.unhideApp(app.id)}
+                    onclick={() => showHidden(app)}
                   >
                     Show
                   </button>
@@ -1241,6 +1284,19 @@
     font-size: 14px;
     line-height: 20px;
     font-weight: 600;
+  }
+
+  /* A heading takes the focus only from script, when the last row of its
+     list goes; the ring shows only after the keyboard. */
+  h2:focus {
+    outline: none;
+  }
+
+  h2:focus-visible {
+    width: fit-content;
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+    border-radius: 2px;
   }
 
   /* Pinned apps list */

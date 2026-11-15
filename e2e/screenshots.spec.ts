@@ -3849,6 +3849,66 @@ test.describe('settings window', () => {
     expect((await page.evaluate(SETTINGS_MOCK))?.hiddenApps).toEqual([]);
   });
 
+  test('Enter on Unpin or Show moves the focus to the next row, else the previous one, else the heading', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openSettings(page);
+    /** The focused element is drawn with its ring (the keyboard was used last). */
+    const ringShown = (): Promise<boolean> =>
+      page.evaluate(() => document.activeElement?.matches(':focus-visible') ?? false);
+    const pins = page.locator('.pin');
+    const unpin = (name: string): Locator => page.getByRole('button', { name: `Unpin ${name}` });
+    const names = await page.locator('.pin-name').allTextContents();
+    expect(names).toHaveLength(5);
+
+    // A row in the middle: the row that takes its place.
+    await unpin(names[2]!).focus();
+    await page.keyboard.press('Enter');
+    await expect(pins).toHaveCount(4);
+    await expect(unpin(names[3]!)).toBeFocused();
+    expect(await ringShown()).toBe(true);
+    // The last row: the one before it.
+    await unpin(names[4]!).focus();
+    await page.keyboard.press('Enter');
+    await expect(pins).toHaveCount(3);
+    await expect(unpin(names[3]!)).toBeFocused();
+    // From the top down: each time the next row, then the heading.
+    await unpin(names[0]!).focus();
+    await page.keyboard.press('Enter');
+    await expect(unpin(names[1]!)).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(unpin(names[3]!)).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(pins).toHaveCount(0);
+    await expect(page.locator('#h-pinned')).toBeFocused();
+    expect(await ringShown()).toBe(true);
+    await page.locator('#h-pinned').scrollIntoViewIfNeeded();
+    await page.screenshot({ path: `${OUT}/settings-pinned-emptied-focus.png` });
+
+    // Hidden apps alike. A refused Show keeps its row and the focus.
+    await setHidden(page, [CODE_ID, SPOTIFY_ID]);
+    const hidden = page.locator('.hidden-app');
+    await expect(hidden).toHaveCount(2);
+    const show = (name: string): Locator =>
+      page.getByRole('button', { name: `Show ${name} on the dock` });
+    await show('Code').focus();
+    await page.evaluate(() => {
+      (window as unknown as DemoWindow).__dockMock?.failNextCommand('refused');
+    });
+    await page.keyboard.press('Enter');
+    await expect(page.locator('.status')).toHaveText(/Couldn't save/);
+    await expect(hidden).toHaveCount(2);
+    await expect(show('Code')).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(hidden).toHaveCount(1);
+    await expect(show('Spotify')).toBeFocused();
+    expect(await ringShown()).toBe(true);
+    await page.keyboard.press('Enter');
+    await expect(hidden).toHaveCount(0);
+    await expect(page.locator('#h-hidden')).toBeFocused();
+  });
+
   test('a hidden app shows where it comes from: a path, a package family or nothing', async ({
     page,
   }) => {
