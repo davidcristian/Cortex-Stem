@@ -18,9 +18,10 @@ running dots use the Windows accent colour.
 settings file (`%APPDATA%\dev.davidcristian.stem\dock.css`).
 
 - _Edit dock.css_ creates the file from a template if it does not exist. It
-  then opens the file in the app Windows uses for `.css` files. The template
-  lists the variables you can set, all commented out: the panel's fill, blur,
-  line, shadow and corners, the separators, the dots and the name pills.
+  then opens the file in the app Windows uses for `.css` files, or in Notepad
+  if no app is set. The template lists the variables you can set, all
+  commented out: the panel's fill, blur, line, shadow and corners, the
+  separators, the dots and the name pills.
 - Save the file, then press _Reload_. Stem reads the file only when it starts
   and when you press _Reload_.
 - The _Your styles (dock.css)_ row says whether the dock uses the file.

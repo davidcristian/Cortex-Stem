@@ -547,27 +547,24 @@ async fn reload_user_css(app: AppHandle) -> CmdResult<UserCss> {
 }
 
 /// Create `dock.css` from the template if it does not exist, then open it
-/// with the default app for `.css`: `Platform::launch` hands the
-/// path to the shell (`ShellExecuteExW`), like `open_app_folder` does a
-/// folder, on Tauri's blocking pool. Nothing is read: the dock changes at
-/// the next `reload_user_css`. A failure (no settings file in this run, a
-/// template that cannot be written, no app for `.css`) is the command's
-/// error string.
+/// with the default app for `.css`, or with Notepad when that fails
+/// (`user_css::open_file`): `Platform::launch` hands the path to the
+/// shell (`ShellExecuteExW`), like `open_app_folder` does a folder, on
+/// Tauri's blocking pool. Nothing is read: the dock changes at the next
+/// `reload_user_css`. A failure (no settings file in this run, a template
+/// that cannot be written, neither the default app nor Notepad opening it)
+/// is the command's error string.
 #[tauri::command]
 async fn open_user_css(app: AppHandle, service: State<'_, AppService>) -> CmdResult<()> {
     let service = Arc::clone(&service.0);
     let joined = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
         let file = app.state::<UserCssState>().file_to_open()?;
-        let target = LaunchTarget::Uri {
-            uri: file.to_string_lossy().into_owned(),
-        };
-        service.platform().launch(&target).map_err(|e| {
-            format!(
-                "could not open {} with its default app: {e}",
-                file.display()
-            )
+        let notepad =
+            crate::user_css::notepad_for(&file, std::env::var_os("SystemRoot").as_deref());
+        let opener = crate::user_css::open_file(&file, &notepad, |target| {
+            service.platform().launch(target).map_err(|e| e.to_string())
         })?;
-        log::info!("open_user_css: opened {}", file.display());
+        log::info!("open_user_css: opened {} {opener}", file.display());
         Ok(())
     })
     .await;

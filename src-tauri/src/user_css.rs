@@ -13,18 +13,22 @@
 //!
 //! `open_user_css` writes [`TEMPLATE`] when there is no file yet (never over
 //! an existing one) and hands the path to `Platform::launch`, which opens it
-//! with the default app for `.css`.
+//! with the default app for `.css`, or with Notepad when that fails
+//! ([`open_file`]): a stock Windows may have no app for `.css`, and the
+//! shell, asked without UI, then refuses instead of offering its picker.
 //!
 //! A run without a settings file (the mock platform, a profile that could
 //! not be used) has no `dock.css` either: the path is a note in parentheses,
 //! nothing is read and `open_user_css` rejects.
 
+use std::ffi::OsStr;
+use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, Read as _, Write as _};
 use std::path::{Path, PathBuf};
 
 use parking_lot::Mutex;
-use stem_core::UserCss;
+use stem_core::{LaunchTarget, UserCss};
 use tauri::{AppHandle, Emitter, EventTarget};
 
 /// The stylesheet's file name, next to `settings.json`.
@@ -217,6 +221,76 @@ pub fn write_template_if_missing(path: &Path) -> std::io::Result<bool> {
     file.write_all(TEMPLATE.as_bytes())?;
     file.sync_all()?;
     Ok(true)
+}
+
+/// Notepad, which every Windows has: what [`open_file`] opens `file` with
+/// when the default app for `.css` does not. Its full path under
+/// `system_root` (`%SystemRoot%`) when that is known, so the shell does not
+/// look for a `notepad.exe` anywhere else first; the bare name otherwise.
+/// Built as a string with `\`, so it reads the same on any host.
+pub fn notepad_for(file: &Path, system_root: Option<&OsStr>) -> LaunchTarget {
+    let root = system_root.map(OsStr::to_string_lossy);
+    let path = match root
+        .as_deref()
+        .map(|r| r.trim().trim_end_matches(['\\', '/']))
+    {
+        Some(root) if !root.is_empty() => format!("{root}\\System32\\notepad.exe"),
+        _ => "notepad.exe".to_owned(),
+    };
+    LaunchTarget::Exe {
+        path: PathBuf::from(path),
+        args: vec![file.to_string_lossy().into_owned()],
+        working_dir: None,
+    }
+}
+
+/// What [`open_file`] opened `dock.css` with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Opener {
+    /// The app Windows opens a `.css` file with (a double click's).
+    DefaultApp,
+    /// Notepad, because the default app did not open it.
+    Notepad,
+}
+
+impl fmt::Display for Opener {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::DefaultApp => "with its default app",
+            Self::Notepad => "in Notepad",
+        })
+    }
+}
+
+/// Open `file` through `launch` (`Platform::launch`): first as a `Uri`
+/// target, which the shell opens with the default app for `.css` as a
+/// double click would; when that fails (on a stock Windows there may be no
+/// such app, and the shell, asked without UI, refuses instead of offering
+/// its "How do you want to open this file?" picker), with `notepad`
+/// ([`notepad_for`]), logged at `info`. `Err` is the command's error
+/// string, naming both failures. Blocking (the shell).
+pub fn open_file(
+    file: &Path,
+    notepad: &LaunchTarget,
+    mut launch: impl FnMut(&LaunchTarget) -> Result<(), String>,
+) -> Result<Opener, String> {
+    let default_app = LaunchTarget::Uri {
+        uri: file.to_string_lossy().into_owned(),
+    };
+    let Err(first) = launch(&default_app) else {
+        return Ok(Opener::DefaultApp);
+    };
+    log::info!(
+        "dock.css: the default app for .css did not open {} ({first}); opening it in Notepad",
+        file.display()
+    );
+    match launch(notepad) {
+        Ok(()) => Ok(Opener::Notepad),
+        Err(second) => Err(format!(
+            "could not open {} with its default app ({first}) or with Notepad ({second})",
+            file.display()
+        )),
+    }
 }
 
 /// The app's view of `dock.css`, in Tauri's managed state: where it is and
@@ -487,6 +561,77 @@ mod tests {
         assert_eq!(variables(TEMPLATE), variables(theming));
         assert_eq!(variables(TEMPLATE).len(), 9);
         assert!(decode(TEMPLATE.as_bytes().to_vec()).is_ok());
+    }
+
+    #[test]
+    fn open_tries_the_default_app_then_notepad_and_names_both_failures() {
+        let file = Path::new(r"C:\Users\me\AppData\Roaming\dev.davidcristian.stem\dock.css");
+        let notepad = notepad_for(file, Some(OsStr::new(r"C:\WINDOWS")));
+        assert_eq!(
+            notepad,
+            LaunchTarget::Exe {
+                path: PathBuf::from(r"C:\WINDOWS\System32\notepad.exe"),
+                args: vec![file.to_string_lossy().into_owned()],
+                working_dir: None,
+            }
+        );
+        let uri = LaunchTarget::Uri {
+            uri: file.to_string_lossy().into_owned(),
+        };
+
+        // The default app opens it: Notepad is never tried.
+        let mut tried = Vec::new();
+        let opened = open_file(file, &notepad, |target| {
+            tried.push(target.clone());
+            Ok(())
+        });
+        assert_eq!(opened, Ok(Opener::DefaultApp));
+        assert_eq!(tried, std::slice::from_ref(&uri));
+
+        // No app for `.css` (the shell refuses without UI): Notepad.
+        let mut tried = Vec::new();
+        let opened = open_file(file, &notepad, |target| {
+            tried.push(target.clone());
+            match target {
+                LaunchTarget::Uri { .. } => Err("no association".to_owned()),
+                _ => Ok(()),
+            }
+        });
+        assert_eq!(opened, Ok(Opener::Notepad));
+        assert_eq!(tried, [uri.clone(), notepad.clone()]);
+
+        // Both fail: one error naming the file and both reasons.
+        let opened = open_file(file, &notepad, |target| {
+            Err(match target {
+                LaunchTarget::Uri { .. } => "no association".to_owned(),
+                _ => "not found".to_owned(),
+            })
+        });
+        assert_eq!(
+            opened,
+            Err(format!(
+                "could not open {} with its default app (no association) or with Notepad (not found)",
+                file.display()
+            ))
+        );
+        assert_eq!(Opener::DefaultApp.to_string(), "with its default app");
+        assert_eq!(Opener::Notepad.to_string(), "in Notepad");
+    }
+
+    #[test]
+    fn notepad_is_under_system_root_when_it_is_known() {
+        let file = Path::new(r"C:\Users\me\dock.css");
+        let path_of = |root: Option<&str>| match notepad_for(file, root.map(OsStr::new)) {
+            LaunchTarget::Exe { path, .. } => path.to_string_lossy().into_owned(),
+            other => panic!("not an exe: {other:?}"),
+        };
+        assert_eq!(
+            path_of(Some(r"C:\Windows\")),
+            r"C:\Windows\System32\notepad.exe"
+        );
+        assert_eq!(path_of(Some(r" D:\Win ")), r"D:\Win\System32\notepad.exe");
+        assert_eq!(path_of(Some("")), "notepad.exe");
+        assert_eq!(path_of(None), "notepad.exe");
     }
 
     #[test]

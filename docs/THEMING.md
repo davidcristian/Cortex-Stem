@@ -5,7 +5,8 @@ optional stylesheet of your own, **`dock.css`**, on top of them. This page
 is the reference for both: what each preset draws, the stable CSS variables
 a `dock.css` can set, their defaults, and what the app's content security
 policy lets a stylesheet load. The IPC contract for it is
-[`docs/ipc/themes.md`](ipc/themes.md) (v1.20).
+[`docs/ipc/themes.md`](ipc/themes.md) (v1.20); the user guide's
+[Themes](user-guide/themes.md) page is the short version.
 
 - [Theme presets](#theme-presets)
 - [Your dock.css](#your-dockcss)
@@ -53,11 +54,12 @@ Independent of the preset:
   text at once.
 - **Creating it.** _Edit dock.css_ writes a commented template if there is
   no file yet (never over an existing one). It then opens the file with the
-  default app for `.css`. The template lists the variables below with example
+  default app for `.css`, or in Notepad when that fails (on a Windows with
+  no app for `.css`). The template lists the variables below with example
   values, all commented out, so it changes nothing until you edit it. If
-  Windows has no app for `.css`, the settings page shows the error: open the
-  file from its folder (_About_ → _Open folder_ next to the settings file)
-  with any text editor.
+  neither app opens the file, the settings page shows the error under the
+  row: open the file from its folder (_About_ → _Open folder_ next to the
+  settings file) with any text editor.
 - **What Stem accepts.** UTF-8 text of at most 64 KiB (65,536 bytes). A
   leading byte order mark, which Notepad may write, is dropped. Stem ignores
   the whole file when it is larger, not UTF-8 (Notepad's _UTF-16_ /

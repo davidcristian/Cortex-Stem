@@ -202,9 +202,9 @@ export interface Backend {
   reloadUserCss(): Promise<UserCss>;
   /**
    * Create `dock.css` from the template if it does not exist, then open it
-   * with the default app for `.css`. Reads nothing: the dock changes at the
-   * next `reloadUserCss`. Rejects when it cannot (a demo run saves no
-   * settings file; no app for `.css`).
+   * with the default app for `.css`, or in Notepad when that fails. Reads
+   * nothing: the dock changes at the next `reloadUserCss`. Rejects when it
+   * cannot (a demo run saves no settings file; neither opens the file).
    */
   openUserCss(): Promise<void>;
 
