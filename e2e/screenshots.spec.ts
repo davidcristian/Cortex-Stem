@@ -3827,7 +3827,11 @@ test.describe('settings window', () => {
     await expect(rows).toHaveCount(2);
     await expect(none).toHaveCount(0);
     await expect(rows.locator('.pin-name')).toHaveText(['Code', 'Spotify']);
-    await expect(rows.locator('.pin-launch')).toHaveText([CODE_ID, SPOTIFY_ID]);
+    // Where each comes from, the Windows way, never the internal id.
+    await expect(rows.locator('.pin-launch')).toHaveText([
+      'C:\\users\\me\\appdata\\local\\programs\\microsoft vs code\\code.exe',
+      'C:\\program files\\spotify\\spotify.exe',
+    ]);
     await expect(rows.getByRole('button')).toHaveText(['Show', 'Show']);
     await section.scrollIntoViewIfNeeded();
     await section.screenshot({ path: `${OUT}/settings-hidden-apps.png` });
@@ -3843,6 +3847,45 @@ test.describe('settings window', () => {
     await expect(none).toBeVisible();
     await expect(page.locator('.status')).toHaveText('Saved');
     expect((await page.evaluate(SETTINGS_MOCK))?.hiddenApps).toEqual([]);
+  });
+
+  test('a hidden app shows where it comes from: a path, a package family or nothing', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openSettings(page);
+    // A settings file naming one app of each kind of id.
+    await page.evaluate(async () => {
+      const mock = (window as unknown as DemoWindow).__dockMock!;
+      const settings = await mock.getSettings();
+      settings.hiddenApps = [
+        { id: 'exe:d:/tools/7-zip/7zfm.exe', name: '7-Zip' },
+        {
+          id: 'aumid:Microsoft.WindowsCalculator_8wekyb3d8bbwe!App',
+          name: 'Calculator',
+        },
+        { id: 'aumid:Mozilla.Firefox.Nightly', name: 'Firefox Nightly' },
+        { id: 'class:sunawtframe', name: 'A Java app' },
+      ];
+      mock.loadSettings(settings);
+    });
+    const rows = page.locator('section[aria-labelledby="h-hidden"] .hidden-app');
+    await expect(rows).toHaveCount(4);
+    const lines = await rows.evaluateAll((els) =>
+      els.map((el) => el.querySelector('.pin-launch')?.textContent ?? null),
+    );
+    expect(lines).toEqual([
+      'D:\\tools\\7-zip\\7zfm.exe',
+      'Store app · Microsoft.WindowsCalculator_8wekyb3d8bbwe',
+      'App ID · Mozilla.Firefox.Nightly',
+      null,
+    ]);
+    // No icon tile: the page has no icon key for an app without an item.
+    await expect(rows.locator('img, .pin-icon')).toHaveCount(0);
+    await page.locator('#h-hidden').scrollIntoViewIfNeeded();
+    await page.locator('section[aria-labelledby="h-hidden"]').screenshot({
+      path: `${OUT}/settings-hidden-apps-kinds.png`,
+    });
   });
 
   test('the position offers every edge, and a choice is saved', async ({ page }) => {

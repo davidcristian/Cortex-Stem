@@ -141,6 +141,31 @@
     return app.name.trim() === '' ? app.id : app.name;
   }
 
+  /**
+   * Where a hidden app comes from, for its row's second line, read
+   * from its id (`AppId::for_exe` / `for_app_user_model_id`): a program's
+   * path the Windows way, with backslashes and the drive letter in capitals
+   * (the id keeps the rest in lower case, and the page has nothing that
+   * knows the original case: a hidden app has no item in the dock state);
+   * the package family of a packaged app's AppUserModelID (the part before
+   * its `!`), or the whole AppUserModelID of an app that names its own;
+   * `null` for any other id (a window class), which says nothing readable.
+   */
+  function hiddenLocation(app: HiddenApp): string | null {
+    if (app.id.startsWith('exe:')) {
+      return app.id
+        .slice('exe:'.length)
+        .replaceAll('/', '\\')
+        .replace(/^([a-z]):/, (_, drive: string) => `${drive.toUpperCase()}:`);
+    }
+    if (app.id.startsWith('aumid:')) {
+      const aumid = app.id.slice('aumid:'.length);
+      const bang = aumid.indexOf('!');
+      return bang > 0 ? `Store app · ${aumid.slice(0, bang)}` : `App ID · ${aumid}`;
+    }
+    return null;
+  }
+
   // --- The user's dock.css (docs/ipc/themes.md) -----------------------------------
   // Not a setting: Rust reads the file at start and on Reload, and this
   // row shows where it is and whether the dock uses it. A failure is the
@@ -812,10 +837,15 @@
           {:else}
             <ul class="hidden-apps" aria-label="Hidden apps">
               {#each settings.hiddenApps as app (app.id)}
+                {@const location = hiddenLocation(app)}
+                <!-- No icon tile: a hidden app has no item in the dock
+                     state, so the page has no icon key for it. -->
                 <li class="hidden-app" data-id={app.id}>
                   <div class="pin-text">
                     <span class="pin-name">{hiddenName(app)}</span>
-                    <span class="pin-launch">{app.id}</span>
+                    {#if location !== null}
+                      <span class="pin-launch">{location}</span>
+                    {/if}
                   </div>
                   <button
                     type="button"
