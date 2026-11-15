@@ -28,6 +28,19 @@
 //! - `WM_DISPLAYCHANGE`/`WM_DPICHANGED` -> `MonitorsChanged` + `WindowsSnapshot`.
 //! - `WM_SETTINGCHANGE` ("ImmersiveColorSet") and `WM_DWMCOLORIZATIONCOLORCHANGED`
 //!   -> `ThemeChanged` (via `theme::current_theme`).
+//! - Clock format: `WM_SETTINGCHANGE` whose `lParam` names the
+//!   `intl` area (`locale::is_intl_area`; the window procedure copies at
+//!   most [`SETTING_AREA_MAX`] units of the string out while it is valid)
+//!   re-reads `locale::current` at once and once more
+//!   [`CLOCK_FORMAT_RECHECK`] later (one one-shot timer, re-armed by each
+//!   such broadcast), and emits `ClockFormatChanged` only when the reading
+//!   differs from the last one emitted (`locale::ChangeFilter`); the first
+//!   reading is emitted right after the start snapshot, after the power
+//!   reading. The second read is there because Microsoft does not document
+//!   that the process's copy of the user's locale data is current when the
+//!   broadcast arrives: a stale first read would equal the last reading and
+//!   be dropped. Debug line per emission: `clock format: <reading>
+//!   (<cause>)`.
 //! - Window moves: one more `SetWinEventHook`, for
 //!   `EVENT_OBJECT_LOCATIONCHANGE` alone, whose callback keeps only
 //!   `OBJID_WINDOW`/`CHILDID_SELF` reports about top-level windows
@@ -262,7 +275,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use super::{
-    actions, enumerate, fullscreen, monitors, power, recycle_bin, theme, util, virtual_desktop,
+    actions, enumerate, fullscreen, locale, monitors, power, recycle_bin, theme, util,
+    virtual_desktop,
 };
 use crate::rules::events::{
     self as rules, DesktopSwitchDetector, Intent, TitleDebouncer, TopLevel,
@@ -310,7 +324,9 @@ const _: () = {
 const MSG_WINEVENT: u32 = WM_APP + 1;
 /// `wParam` = `HSHELL_*` code, `lParam` = `HWND`.
 const MSG_SHELLHOOK: u32 = WM_APP + 2;
-/// `wParam` = the `WM_SETTINGCHANGE` action (`SPI_*`, or 0).
+/// `wParam` = the `WM_SETTINGCHANGE` action (`SPI_*`, or 0); `lParam` =
+/// [`SETTING_AREA_INTL`] when the message named the `intl` area,
+/// else 0.
 const MSG_SETTINGCHANGE: u32 = WM_APP + 3;
 const MSG_THEMECHANGE: u32 = WM_APP + 4;
 const MSG_DISPLAYCHANGE: u32 = WM_APP + 5;
@@ -320,6 +336,15 @@ const MSG_LOCATIONCHANGE: u32 = WM_APP + 6;
 /// `wParam` = the `PBT_*` code, `lParam` = the battery-saver state a
 /// `GUID_POWER_SAVING_STATUS` notification carried ([`saver_to_lparam`]).
 const MSG_POWERCHANGE: u32 = WM_APP + 7;
+
+/// `MSG_SETTINGCHANGE`'s `lParam` for a `WM_SETTINGCHANGE` that named the
+/// `intl` area.
+const SETTING_AREA_INTL: isize = 1;
+
+/// The most UTF-16 units of a `WM_SETTINGCHANGE` area name the window
+/// procedure reads, up to its NUL. The one name it looks for is
+/// `intl`; a longer name is not read to its end and is no match.
+const SETTING_AREA_MAX: usize = 32;
 
 /// The most bytes of a `POWERBROADCAST_SETTING`'s data the window procedure
 /// looks at. The one value it reads is a `DWORD`; a larger
@@ -356,6 +381,11 @@ pub const LOCATION_SETTLE: Duration = Duration::from_millis(150);
 /// and uncloaking, one `WindowsSnapshot` puts every window right.
 pub const DESKTOP_SWITCH_SETTLE: Duration =
     Duration::from_millis(DesktopSwitchDetector::SNAPSHOT_DELAY_MS);
+/// How long after a `WM_SETTINGCHANGE` for `intl` the regional format is
+/// read a second time: late enough for locale data that was not yet
+/// current at the first read, soon enough that the clock follows within a
+/// second.
+pub const CLOCK_FORMAT_RECHECK: Duration = Duration::from_millis(500);
 const START_TIMEOUT: Duration = Duration::from_secs(5);
 const STOP_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -830,12 +860,17 @@ struct ThreadState {
     switch: DesktopSwitchDetector,
     /// The [`DESKTOP_SWITCH_SETTLE`] timer, while a snapshot is pending.
     switch_timer: Option<ThreadTimer>,
+    /// The [`CLOCK_FORMAT_RECHECK`] timer, while the second read after an
+    /// `intl` broadcast is pending.
+    clock_format_timer: Option<ThreadTimer>,
     last_theme: Option<ThemeInfo>,
     /// The power readings already emitted.
     power: power::ChangeFilter,
     /// The battery-saver state of the last `GUID_POWER_SAVING_STATUS`
     /// notification; `None` before the first.
     notified_saver: Option<bool>,
+    /// The regional-format readings already emitted.
+    clock_format: locale::ChangeFilter,
     _hooks: Vec<WinEventHook>,
     /// Before `_window`: unregistered while the window still exists.
     _power_notifications: Vec<PowerNotification>,
@@ -883,9 +918,11 @@ impl ThreadState {
             fullscreen_timer: None,
             switch: DesktopSwitchDetector::default(),
             switch_timer: None,
+            clock_format_timer: None,
             last_theme: None,
             power: power::ChangeFilter::default(),
             notified_saver: None,
+            clock_format: locale::ChangeFilter::default(),
             _hooks: hooks,
             _power_notifications: power_notifications,
             _window: window,
@@ -903,9 +940,9 @@ impl ThreadState {
     }
 
     /// Same order as the mock platform (monitors, theme, windows,
-    /// foreground, power), minus the recycle bin, which the poll thread
-    /// emits; the first fullscreen verdict comes before the power
-    /// reading, so the engine starts right.
+    /// foreground, power, clock format), minus the recycle bin, which the
+    /// poll thread emits; the first fullscreen verdict comes before
+    /// the power reading, so the engine starts right.
     fn emit_initial(&mut self) {
         self.emit_monitors();
         self.refresh_theme(true);
@@ -915,6 +952,7 @@ impl ThreadState {
         ));
         self.check_fullscreen();
         self.refresh_power("start");
+        self.refresh_clock_format("start");
     }
 
     fn run(&mut self) {
@@ -956,6 +994,9 @@ impl ThreadState {
                     self.emit_monitors();
                 }
                 self.refresh_theme(false);
+                if msg.lParam.0 == SETTING_AREA_INTL {
+                    self.on_intl_change();
+                }
             }
             MSG_THEMECHANGE => self.refresh_theme(false),
             MSG_DISPLAYCHANGE => {
@@ -1069,6 +1110,15 @@ impl ThreadState {
             .is_some_and(|t| t.id() == timer_id)
         {
             self.on_desktop_switch_settled();
+        }
+        if self
+            .clock_format_timer
+            .as_ref()
+            .is_some_and(|t| t.id() == timer_id)
+        {
+            // Thread timers repeat; this one is one-shot.
+            self.clock_format_timer = None;
+            self.refresh_clock_format("re-read after intl");
         }
     }
 
@@ -1483,6 +1533,28 @@ impl ThreadState {
         }
     }
 
+    /// A `WM_SETTINGCHANGE` named the `intl` area: the regional
+    /// format or one of its formats changed. Read it now, and once more
+    /// [`CLOCK_FORMAT_RECHECK`] from now (a pending second read is moved to
+    /// then; replacing the timer kills the old one).
+    fn on_intl_change(&mut self) {
+        self.refresh_clock_format("WM_SETTINGCHANGE intl");
+        self.clock_format_timer = ThreadTimer::start(CLOCK_FORMAT_RECHECK);
+    }
+
+    /// Read the user's regional format and emit
+    /// `ClockFormatChanged` when it is the first reading or differs from the
+    /// last one emitted; `cause` names what asked, for the log.
+    fn refresh_clock_format(&mut self, cause: &str) {
+        let format = locale::current();
+        if self.clock_format.observe(&format) {
+            log::debug!("clock format: {format:?} ({cause})");
+            self.emit(PlatformEvent::ClockFormatChanged(format));
+        } else {
+            log::trace!("clock format unchanged ({cause})");
+        }
+    }
+
     /// Emit `ThemeChanged` when the theme differs from the last one emitted
     /// (or always, when `force`). Errors are skipped: the theme module is
     /// another task's and may still be a stub.
@@ -1569,6 +1641,36 @@ unsafe fn power_setting_saver(lparam: LPARAM) -> Option<bool> {
     // the slice is dropped before this function returns.
     let data = unsafe { core::slice::from_raw_parts(data, length) };
     power::notified_saver(&guid, data)
+}
+
+/// Whether the area a `WM_SETTINGCHANGE` names is `intl`:
+/// `locale::is_intl_area` of the string behind `lparam`, read while the
+/// window procedure runs, unit by unit up to its NUL and at most
+/// [`SETTING_AREA_MAX`] units, without assuming alignment; `false` for a
+/// NULL `lparam` and for a name not ended within the bound.
+///
+/// # Safety
+///
+/// `lparam` is NULL or points at a readable, NUL-terminated UTF-16 string,
+/// as the `lParam` of a `WM_SETTINGCHANGE` does while it is being handled.
+unsafe fn setting_is_intl(lparam: LPARAM) -> bool {
+    let base = lparam.0 as *const u16;
+    if base.is_null() {
+        return false;
+    }
+    let mut area = [0u16; SETTING_AREA_MAX];
+    for (i, slot) in area.iter_mut().enumerate() {
+        let at = base.wrapping_add(i);
+        // SAFETY: the caller guarantees a NUL-terminated string; no unit
+        // before this one was a NUL, so unit `i` is part of the string (at
+        // most its terminator) and readable. Read unaligned.
+        let unit = unsafe { at.read_unaligned() };
+        if unit == 0 {
+            return locale::is_intl_area(&area[..i]);
+        }
+        *slot = unit;
+    }
+    false
 }
 
 /// Post a thread message to the current thread's own queue. Used from the
@@ -1661,8 +1763,15 @@ unsafe extern "system" fn event_wndproc(
     match message {
         WM_SETTINGCHANGE => {
             // lParam may point at a string that is only valid during this
-            // call; only the action code travels on.
-            post_to_self(MSG_SETTINGCHANGE, wparam, LPARAM(0));
+            // call; the action code travels on, and whether the string named
+            // the `intl` area, read here.
+            // SAFETY: the lParam of WM_SETTINGCHANGE is NULL or a
+            // NUL-terminated string valid while this runs: the system copies
+            // it into this process for a sender elsewhere, and refuses to
+            // post the message (it can only be sent).
+            let intl = unsafe { setting_is_intl(lparam) };
+            let area = if intl { SETTING_AREA_INTL } else { 0 };
+            post_to_self(MSG_SETTINGCHANGE, wparam, LPARAM(area));
             LRESULT(0)
         }
         WM_DWMCOLORIZATIONCOLORCHANGED | WM_THEMECHANGED => {
@@ -1707,6 +1816,42 @@ mod tests {
     };
 
     use super::*;
+
+    /// `s` as UTF-16 with its NUL, one byte into a buffer, so the string is
+    /// not aligned the way a `u16` is; the string starts at byte 1.
+    fn unaligned_wide(s: &str) -> Vec<u8> {
+        let mut buffer = vec![0u8];
+        for unit in s.encode_utf16().chain(std::iter::once(0)) {
+            buffer.extend_from_slice(&unit.to_ne_bytes());
+        }
+        buffer
+    }
+
+    fn area_is_intl(s: &str) -> bool {
+        let buffer = unaligned_wide(s);
+        // SAFETY: the pointer is a NUL-terminated UTF-16 string inside
+        // `buffer`, alive for the call.
+        unsafe { setting_is_intl(LPARAM(buffer[1..].as_ptr() as isize)) }
+    }
+
+    #[test]
+    fn the_intl_area_is_read_out_of_a_setting_change() {
+        assert!(area_is_intl("intl"));
+        assert!(area_is_intl("Intl"));
+        for other in ["", "ImmersiveColorSet", "Policy", "int", "intl2"] {
+            assert!(!area_is_intl(other), "{other:?}");
+        }
+        // A name longer than the bound is not read to its end: no match,
+        // whatever follows.
+        assert!(!area_is_intl(&"x".repeat(SETTING_AREA_MAX + 8)));
+        assert!(!area_is_intl(&"i".repeat(SETTING_AREA_MAX)));
+        // An aligned string reads the same.
+        let aligned: Vec<u16> = "intl".encode_utf16().chain(std::iter::once(0)).collect();
+        // SAFETY: as above, for an aligned buffer.
+        assert!(unsafe { setting_is_intl(LPARAM(aligned.as_ptr() as isize)) });
+        // SAFETY: NULL is allowed and reads nothing.
+        assert!(!unsafe { setting_is_intl(LPARAM(0)) });
+    }
 
     #[test]
     fn the_power_broadcasts_that_re_read_the_status_are_the_contracts_three() {
