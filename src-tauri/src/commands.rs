@@ -189,10 +189,12 @@ async fn get_icon(
 }
 
 /// The dock UI reports the size of its visible content (CSS pixels) so the
-/// window can be resized and re-centred. See `docs/ipc/sizing-protocol.md`. Only a
-/// dock window may call it, with finite numbers; the range is clamped in
-/// `windows::apply_content_size`. Synchronous on purpose: it touches the
-/// window and must run on the main thread.
+/// window can take its thickness from it: the height on a horizontal dock
+/// (`bottom`, `top`), the width on a vertical one (`left`, `right`); the
+/// window stays as long as its work area along the edge. See `docs/ipc/sizing-protocol.md`
+/// . Only a dock window may call it, with finite numbers; the range
+/// is clamped in `windows::apply_content_size`. Synchronous on purpose: it
+/// touches the window and must run on the main thread.
 #[tauri::command]
 fn set_dock_content_size(
     app: AppHandle,

@@ -29,8 +29,9 @@ rectangle, an optional source rectangle, an opacity, a visibility flag and
 
 **What Stem has without previews.**
 
-- Each dock window spans the width of its monitor's work area and sits on
-  its bottom edge. Its height is the content size the UI reports
+- Each dock window spans the length of one edge of its monitor's work area
+  (`settings.position`; this ADR describes the default, `bottom`). Its
+  thickness, the height on `bottom`, is the content size the UI reports
   (`set_dock_content_size`). It is transparent, topmost, `WS_EX_TOOLWINDOW`
   and `WS_EX_NOACTIVATE` (tao keeps the bit from `focusable(false)`). The
   platform subclass returns `MA_NOACTIVATE` for `WM_MOUSEACTIVATE`, and

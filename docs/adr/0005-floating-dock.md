@@ -11,11 +11,11 @@ the stock taskbar) is a different product with different layout rules
 
 ## Decision
 
-- The dock window spans the full width of its monitor's work area, at the
-  bottom edge, and is as thick as the content plus the magnification
-  headroom. The UI reports that size (`set_dock_content_size`), Rust places
-  the window, and the UI centres the panel in it, so items animating in and
-  out never resize the window.
+- The dock window spans the full length of one edge of its monitor's work
+  area (`settings.position`, `bottom` by default) and is as thick as the
+  content plus the magnification headroom. The UI reports that size
+  (`set_dock_content_size`), Rust places the window, and the UI centres the
+  panel in it, so items animating in and out never resize the window.
 - No AppBar reservation by default; the dock overlays other windows.
   Reservation (`system.reserveScreenSpace`) is planned as an opt-in setting
   for M4. Hiding the stock taskbar (`system.hideWindowsTaskbar`) is opt-in.

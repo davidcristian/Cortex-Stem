@@ -27,8 +27,8 @@ Code read (this repository and the locked dependencies):
 
 - `crates/stem-platform/src/windows/dock_window.rs` (styles, corner
   preference, pass-through toggle, topmost re-assert)
-- `src-tauri/src/windows.rs` (the full-width window: `plan_dock_rect`,
-  `full_width_rect`; `panel_on_screen`) and `src-tauri/src/commands.rs`
+- `src-tauri/src/windows.rs` (the window along its edge: `plan_dock_rect`,
+  `edge_rect`; `panel_on_screen`) and `src-tauri/src/commands.rs`
   (`set_dock_panel_rect`)
 - `src/dock/Dock.svelte`, `src/lib/components/DockItem.svelte`,
   `src/lib/dock/magnify.ts` (panel styles, magnification, measurement,

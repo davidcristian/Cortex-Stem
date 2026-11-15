@@ -8,9 +8,11 @@ fallback where Windows cannot draw them. The workspace lists the
 always uses the built-in CSS look.
 
 The problem is the shape of the dock window. The window spans the full
-width of its monitor's work area, sits on its bottom edge, and is
-transparent everywhere except the rounded panel, which the page centres
-(`src-tauri/src/windows.rs`: `plan_dock_rect`, `full_width_rect`). The
+length of one edge of its monitor's work area and is transparent
+everywhere except the rounded panel, which the page centres
+(`src-tauri/src/windows.rs`: `plan_dock_rect`, `edge_rect`). The `position`
+setting picks the edge, `bottom` by default. This note describes the dock
+on `bottom`; on the other edges the same holds along that edge. The
 window's height is the panel plus room for magnified icons, tooltips and
 the bounce (`HEADROOM` in `src/dock/Dock.svelte`). Every system backdrop Windows offers is drawn behind
 a whole window. On the dock window it would paint a band across the bottom

@@ -1,17 +1,39 @@
 # Dock window placement
 
-This file describes where each dock window is placed: on which monitor, and again after a DPI
-change. In this file, `windows::` names the module `src-tauri/src/windows.rs`.
+This file describes where each dock window is placed: on which edge and monitor, and again
+after a DPI change. In this file, `windows::` names the module `src-tauri/src/windows.rs`.
 
 ## Position and size
 
-The dock window sits at the bottom of the monitor's **work area**, so a
+The dock window sits on the edge that `settings.position` names (`bottom`,
+the default, `top`, `left` or `right`) of the monitor's **work area**, so a
 visible or auto-hidden stock taskbar is respected. It is flush with that
-edge and as wide as the work area.
+edge and as long as the work area along it: its full width on `bottom` and
+`top`, its full height on `left` and `right`.
 
-The UI centres the panel along the window and reports its content height
+The UI centres the panel along the window and reports its content size
 (`set_dock_content_size`, see
 [`docs/ipc/sizing-protocol.md`](../ipc/sizing-protocol.md)).
+The value across the edge (the height on a horizontal dock, the width on a
+vertical one) is the window's **thickness**, scaled and clamped to the work
+area.
+
+One pure rule places every dock window:
+`windows::edge_rect(work_area, edge, thickness)`, with
+`windows::plan_dock_rect` for a content size in CSS px. Every path that
+sizes or moves a dock window goes through it: window creation (the
+initial height is the thickness on any edge), the content size, the
+per-monitor reconcile and any monitor or work-area change, the DPI re-plan,
+and the drag growth (a very thick content size, which grows the window
+away from its edge).
+
+A change of `settings.position` moves every dock window to the new edge
+**in place**: no window attribute depends on the edge, and a new window
+would reload its page. Each window keeps its thickness, now across the new
+edge, until its page reports a content size laid out for that edge
+(`windows::DockContent::on_edge`). The hit region stays window-local, and
+the panel rect is offset by the window's own origin, so both are correct
+for a window whose origin is not the work area's (a right or bottom dock).
 
 ## One window per monitor
 
@@ -25,11 +47,12 @@ id, percent-encoded). With `primary`, the default, there is only `dock`.
 over a monitor list. `reconcile_docks` applies it at startup, on every
 monitor change and when the setting changes. It creates the missing
 windows, destroys the ones whose monitor is gone (never the primary's), and
-lays out the rest on their own monitor's work area at its
+lays out the rest on the dock edge of their own monitor's work area at its
 scale.
 
-All per-window state is kept by label: the content size, the hit region,
-the panel rect, the scale and the monitor. Every UI report is routed by the calling
+All per-window state is kept by label: the content size and the edge it was
+reported on, the hit region, the panel rect, the scale, the monitor and the
+edge the window was placed on. Every UI report is routed by the calling
 window's label, and the engine gets the label and monitor with each panel
 rect. So `DockState.docks` contains one `{ monitor, fullscreen, overlapped }`
 per dock. The fullscreen result names its window's monitor; a result

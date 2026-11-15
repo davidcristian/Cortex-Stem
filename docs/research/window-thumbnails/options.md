@@ -66,7 +66,7 @@ this option and describes it.
 - Variant rejected: grow the window on each open through the drag path.
   That resizes a WebView2 window under the pointer on every hover. This
   rejection assumes that the panel could then show at the wrong height for
-  a frame. The dock window already spans the full width so that animations
+  a frame. The dock window already spans the whole edge so that animations
   never resize it.
 
 ## 4. Captured bitmaps (rejected without a prototype)
