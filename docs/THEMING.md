@@ -117,8 +117,9 @@ Notes:
   minimised). An app that needs attention keeps its orange pill, whatever
   `--stem-dot` is set to.
 - A contrast theme replaces the preset's values (see above) but not yours:
-  a variable you set still applies there, where WebView2's forced-colours
-  mode repaints most colours anyway.
+  a variable you set still applies there, `--stem-panel-blur` and
+  `--stem-panel-hairline` included (the line is 2 px wide there), where
+  WebView2's forced-colours mode repaints most colours anyway.
 - `--stem-panel-radius` rounds the CSS panel only. The experimental native
   backdrop (`appearance.backdrop` `acrylic` or `mica` in the settings
   file) uses _Corner radius_; neither the preset nor your stylesheet

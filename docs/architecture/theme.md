@@ -15,9 +15,11 @@ setting, the same way in both windows:
   contrast.
 
 `ThemeInfo.highContrast` also sets `data-high-contrast` on `<html>`. The
-dock then drops its blur and shadow and draws a 2 px border. The colour
-tokens in `src/app.css` (and the settings page's own) make tooltips,
-toasts, cards and controls solid, with lines in the full text colour.
+dock then drops its blur and shadow and draws a 2 px border. These are
+preset values, so the `--stem-*` variables of the user's `dock.css` still
+take precedence. The colour tokens in `src/app.css` (and the settings
+page's own) make tooltips, toasts, cards and controls solid, with lines in
+the full text colour.
 
 Under a Windows contrast theme WebView2 normally also renders in
 forced-colours mode, which repaints backgrounds in the theme's Canvas
