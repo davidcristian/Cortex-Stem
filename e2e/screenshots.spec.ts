@@ -73,6 +73,10 @@ interface DemoWindow {
     userCssOnDisk: () => string | null;
     /** `PowerChanged` as the events thread reports it: only a different reading counts. */
     setPower: (status: PowerStatus) => void;
+    /** `hide_app`: what *Hide from Stem* in an app's native menu runs. */
+    hideApp: (appId: string) => Promise<void>;
+    /** `unhide_app`. */
+    unhideApp: (appId: string) => Promise<void>;
   };
 }
 
@@ -422,6 +426,22 @@ const PAINT_SLOT = `${APP_SLOT}[data-key="app:exe:c:/windows/system32/mspaint.ex
 /** Code's only window in the demo scenario; closing it removes the (unpinned) item. */
 const CODE_WINDOW_ID = 4;
 const CODE_KEY = 'app:exe:c:/users/me/appdata/local/programs/microsoft vs code/code.exe';
+/** Code's and Spotify's app ids: the demo's two running, unpinned apps. */
+const CODE_ID = CODE_KEY.slice('app:'.length);
+const SPOTIFY_ID = 'exe:c:/program files/spotify/spotify.exe';
+
+/** Run `hide_app` (`unhide_app` with `show`) through the page's mock, as the native menu would. */
+function setHidden(page: Page, appIds: string[], show = false): Promise<void> {
+  return page.evaluate(
+    async ([ids, s]) => {
+      const mock = (window as unknown as DemoWindow).__dockMock!;
+      for (const id of ids as string[]) {
+        await (s ? mock.unhideApp(id) : mock.hideApp(id));
+      }
+    },
+    [appIds, show] as const,
+  );
+}
 
 test.beforeAll(() => {
   mkdirSync(OUT, { recursive: true });
@@ -1251,6 +1271,49 @@ test.describe('dock in mock mode', () => {
       ),
     );
     expect(sizes.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+test.describe('hidden apps on the dock', () => {
+  test('a hidden demo app leaves the dock while its window stays tracked; shown again it comes back', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openDock(page);
+    const code = page.locator(`${APP_SLOT}[data-key="${CODE_KEY}"]`);
+    await expect(code).toHaveCount(1);
+    await expect(page.locator(APP_SLOT)).toHaveCount(7);
+
+    // Hide from Stem: the item shrinks away like a closed app's; the
+    // running group keeps Spotify behind its separator.
+    await setHidden(page, [CODE_ID]);
+    await expect(code).toHaveCount(0);
+    await expect(page.locator('[data-leaving]')).toHaveCount(0);
+    await expect(page.locator(APP_SLOT)).toHaveCount(6);
+    await expect(page.locator(`${APP_SLOT}[data-key="app:${SPOTIFY_ID}"]`)).toHaveCount(1);
+    await expect(page.locator('[role="separator"]')).toHaveCount(3);
+    const saved = await page.evaluate(
+      async () => (await (window as unknown as DemoWindow).__dockMock!.getSettings()).hiddenApps,
+    );
+    expect(saved).toEqual([{ id: CODE_ID, name: 'Code' }]);
+
+    // Its window comes to the front: still tracked, but no item lights up.
+    await foreground(page, CODE_WINDOW_ID);
+    await expect(page.locator(`${APP_SLOT}[data-active="true"]`)).toHaveCount(0);
+    await expect
+      .poll(
+        async () =>
+          (await page.evaluate(() => (window as unknown as DemoWindow).__dockMock!.getDockState()))
+            .foreground,
+      )
+      .toBe(CODE_WINDOW_ID);
+    await page.screenshot({ path: `${OUT}/dock-hidden-app.png` });
+
+    // Shown again (Show on the settings page): back, and active.
+    await setHidden(page, [CODE_ID], true);
+    await expect(code).toHaveCount(1);
+    await expect(code).toHaveAttribute('data-active', 'true');
+    await expect(page.locator(APP_SLOT)).toHaveCount(7);
   });
 });
 
@@ -3316,6 +3379,45 @@ test.describe('settings window', () => {
     expect((await page.evaluate(SETTINGS_MOCK))?.appearance.backdrop).toBe('acrylic');
   });
 
+  test('hidden apps: none, then two listed by name with Show, then none again', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openSettings(page);
+    const section = page.locator('section[aria-labelledby="h-hidden"]');
+    const none = section.locator('[data-hidden-apps="none"]');
+    const rows = section.locator('.hidden-app');
+    await expect(section.locator('h2')).toHaveText('Hidden apps');
+    await expect(none).toHaveText('No apps are hidden.');
+    await expect(rows).toHaveCount(0);
+    await expect(section.locator('.note')).toContainText('Hide from Stem');
+    await section.scrollIntoViewIfNeeded();
+    await section.screenshot({ path: `${OUT}/settings-hidden-apps-none.png` });
+
+    // The dock's menu hides two running apps: the page hears of it as of
+    // any settings change and lists them by their saved names.
+    await setHidden(page, [CODE_ID, SPOTIFY_ID]);
+    await expect(rows).toHaveCount(2);
+    await expect(none).toHaveCount(0);
+    await expect(rows.locator('.pin-name')).toHaveText(['Code', 'Spotify']);
+    await expect(rows.locator('.pin-launch')).toHaveText([CODE_ID, SPOTIFY_ID]);
+    await expect(rows.getByRole('button')).toHaveText(['Show', 'Show']);
+    await section.scrollIntoViewIfNeeded();
+    await section.screenshot({ path: `${OUT}/settings-hidden-apps.png` });
+
+    // Show takes one off the list through unhide_app.
+    await page.getByRole('button', { name: 'Show Code on the dock' }).click();
+    await expect(rows).toHaveCount(1);
+    await expect(page.locator('.status')).toHaveText('Saved');
+    expect((await page.evaluate(SETTINGS_MOCK))?.hiddenApps).toEqual([
+      { id: SPOTIFY_ID, name: 'Spotify' },
+    ]);
+    await page.getByRole('button', { name: 'Show Spotify on the dock' }).click();
+    await expect(none).toBeVisible();
+    await expect(page.locator('.status')).toHaveText('Saved');
+    expect((await page.evaluate(SETTINGS_MOCK))?.hiddenApps).toEqual([]);
+  });
+
   test('the position offers every edge, and a choice is saved', async ({ page }) => {
     await openSettings(page);
     const position = page.locator('#position');
@@ -3568,9 +3670,13 @@ test.describe('settings window', () => {
     await page.locator('#icon-size').focus();
     await page.keyboard.press('ArrowRight');
     await expect(page.locator('output[for="icon-size"]')).toHaveText('49 px');
+    // A hidden app is shown again by the reset.
+    await setHidden(page, [CODE_ID]);
+    await expect(page.locator('.hidden-app')).toHaveCount(1);
 
     await page.getByRole('button', { name: 'Reset to defaults' }).click();
     await expect(page.getByRole('alertdialog')).toBeVisible();
+    await expect(page.getByRole('alertdialog')).toContainText('hidden apps shown again');
     await page.screenshot({ path: `${OUT}/settings-reset.png` });
     await page.getByRole('button', { name: 'Cancel' }).click();
     await expect(page.locator('output[for="icon-size"]')).toHaveText('49 px');
@@ -3578,7 +3684,10 @@ test.describe('settings window', () => {
     await page.getByRole('button', { name: 'Reset to defaults' }).click();
     await page.getByRole('button', { name: 'Reset', exact: true }).click();
     await expect(page.locator('output[for="icon-size"]')).toHaveText('48 px');
-    await expect(page.locator('.empty')).toHaveText('Nothing is pinned yet.');
+    await expect(page.locator('section[aria-labelledby="h-pinned"] .empty')).toHaveText(
+      'Nothing is pinned yet.',
+    );
+    await expect(page.locator('[data-hidden-apps="none"]')).toHaveText('No apps are hidden.');
     await expect(page.locator('.status')).toHaveText('Saved');
   });
 

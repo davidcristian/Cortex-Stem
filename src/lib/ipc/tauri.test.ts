@@ -153,3 +153,16 @@ describe('TauriBackend events (docs/ipc/events.md)', () => {
     expect(seen).toEqual([null]);
   });
 });
+
+describe('TauriBackend hidden apps (docs/ipc/hidden-apps.md, v1.23)', () => {
+  it('sends hide_app and unhide_app with the app id under appId', async () => {
+    const backend = new TauriBackend();
+    const before = invokeMock.mock.calls.length;
+    await backend.hideApp('exe:c:/windows/notepad.exe');
+    await backend.unhideApp('exe:c:/windows/notepad.exe');
+    expect(invokeMock.mock.calls.slice(before)).toEqual([
+      ['hide_app', { appId: 'exe:c:/windows/notepad.exe' }],
+      ['unhide_app', { appId: 'exe:c:/windows/notepad.exe' }],
+    ]);
+  });
+});

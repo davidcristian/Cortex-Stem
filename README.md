@@ -39,7 +39,8 @@ the notification area: the tray icons and the input indicators stay on the stock
 **Apps.** Pinned and running apps share the dock, grouped per app: a pinned app and its windows are
 one icon, with the app's real name and icon. Packaged (Store) apps are recognised as well as classic
 ones. Drag a pinned icon to reorder it, or drop an `.exe` or a shortcut from File Explorer onto the
-dock to pin it.
+dock to pin it. _Hide from Stem_ removes a running app that is not pinned from the dock until you
+show it again from the settings window.
 
 **Clicks and menus.** A click starts an app, brings its window to the front, minimises it or cycles
 through its windows. Whether a click on the app in front minimises it is a setting. A right-click
@@ -77,9 +78,9 @@ and `Ctrl+Alt+Shift+D` moves the keyboard into it. A left click on the tray icon
 dock, and the tray menu opens the settings, restarts Stem or quits it. Starting Stem again shows the
 running dock. After a crash, the next start says so once and offers to open the log folder.
 
-**Settings.** The settings window applies every change at once. It lists the pinned apps, has
-_Reset to defaults_, and ends with an About section that shows the version and the paths of the
-settings and log files and opens their folders.
+**Settings.** The settings window applies every change at once. It lists the pinned apps and the
+hidden apps, has _Reset to defaults_, and ends with an About section that shows the version and the
+paths of the settings and log files and opens their folders.
 
 Every setting is described in the [user guide](docs/user-guide/index.md), and every key of the
 settings file, with its type, range and default, in the [settings reference](docs/SETTINGS.md).

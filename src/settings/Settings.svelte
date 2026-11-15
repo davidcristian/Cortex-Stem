@@ -5,6 +5,7 @@
   import { moveItem } from '$lib/dock/reorder';
   import { accentColor, resolveTheme } from '$lib/dock/theme';
   import { userCssStatus } from '$lib/dock/user-css';
+  import type { HiddenApp } from '$lib/ipc/generated/HiddenApp';
   import type { IconKey } from '$lib/ipc/generated/IconKey';
   import type { PinnedApp } from '$lib/ipc/generated/PinnedApp';
   import type { Settings } from '$lib/ipc/generated/Settings';
@@ -120,6 +121,12 @@
 
   function removePinned(pin: PinnedApp): void {
     void store.unpinApp(pin.id);
+  }
+
+  // --- Hidden apps (docs/ipc/hidden-apps.md) --------------------------------------
+  /** The name saved when the app was hidden; the id for a hand-written entry without one. */
+  function hiddenName(app: HiddenApp): string {
+    return app.name.trim() === '' ? app.id : app.name;
   }
 
   // --- The user's dock.css (docs/ipc/themes.md) -----------------------------------
@@ -761,6 +768,37 @@
         </SettingsCard>
       </section>
 
+      <!-- Running apps the dock does not show. Rust adds them (Hide
+           from Stem in an app's menu) and saves them; Show asks it to take
+           one off the list. -->
+      <section aria-labelledby="h-hidden">
+        <h2 id="h-hidden">Hidden apps</h2>
+        <SettingsCard note="Choose Hide from Stem in a running app's menu to keep it off the dock.">
+          {#if settings.hiddenApps.length === 0}
+            <p class="empty" data-hidden-apps="none">No apps are hidden.</p>
+          {:else}
+            <ul class="hidden-apps" aria-label="Hidden apps">
+              {#each settings.hiddenApps as app (app.id)}
+                <li class="hidden-app" data-id={app.id}>
+                  <div class="pin-text">
+                    <span class="pin-name">{hiddenName(app)}</span>
+                    <span class="pin-launch">{app.id}</span>
+                  </div>
+                  <button
+                    type="button"
+                    class="button"
+                    aria-label="Show {hiddenName(app)} on the dock"
+                    onclick={() => void store.unhideApp(app.id)}
+                  >
+                    Show
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </SettingsCard>
+      </section>
+
       <section aria-labelledby="h-position">
         <h2 id="h-position">Position &amp; monitors</h2>
         <SettingsCard>
@@ -945,7 +983,9 @@
   <footer class="bottom">
     {#if confirmReset}
       <div class="confirm" role="alertdialog" aria-labelledby="confirm-reset">
-        <p id="confirm-reset">Reset all settings to their defaults? Pinned apps are removed too.</p>
+        <p id="confirm-reset">
+          Reset all settings to their defaults? Pinned apps are removed and hidden apps shown again.
+        </p>
         <div class="actions">
           <button type="button" class="button accent" onclick={reset}>Reset</button>
           <button type="button" class="button" onclick={() => (confirmReset = false)}>
@@ -1158,6 +1198,27 @@
   }
 
   .pin + .pin {
+    border-top: 1px solid var(--divider);
+  }
+
+  /* Hidden apps: a pin's row without the icon, with Show. */
+  .hidden-apps {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .hidden-app {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 16px;
+    min-height: 56px;
+    box-sizing: border-box;
+    padding: 8px 16px;
+  }
+
+  .hidden-app + .hidden-app {
     border-top: 1px solid var(--divider);
   }
 

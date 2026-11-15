@@ -155,6 +155,18 @@ class FakeBackend implements Backend {
     this.stored.pinned = this.stored.pinned.filter((p) => p.id !== appId);
   }
 
+  async hideApp(appId: AppId): Promise<void> {
+    this.log.push(`hide_app:${appId}`);
+    this.check();
+    this.stored.hiddenApps.push({ id: appId, name: appId.toUpperCase() });
+  }
+
+  async unhideApp(appId: AppId): Promise<void> {
+    this.log.push(`unhide_app:${appId}`);
+    this.check();
+    this.stored.hiddenApps = this.stored.hiddenApps.filter((h) => h.id !== appId);
+  }
+
   async getTheme(): Promise<ThemeInfo> {
     this.log.push('get_theme');
     return THEME;
@@ -499,6 +511,81 @@ describe('SettingsStore', () => {
     expect(backend.log.at(-1)).toBe('reset_settings');
     expect(store.settings).toEqual(defaultSettings());
     expect(store.status).toBe('saved');
+  });
+
+  it('Show for a hidden app flushes pending edits, runs unhide_app and refetches', async () => {
+    const backend = new FakeBackend();
+    backend.stored.hiddenApps = [
+      { id: 'x', name: 'X' },
+      { id: 'y', name: 'Y' },
+    ];
+    const store = new SettingsStore(backend, 150);
+    await store.start();
+    expect(store.settings?.hiddenApps.map((h) => h.id)).toEqual(['x', 'y']);
+    store.edit((s) => {
+      s.iconSize = 60;
+    });
+    const done = store.unhideApp('x');
+    await tick();
+    expect(backend.log.some((l) => l.startsWith('unhide_app'))).toBe(false);
+    backend.settleUpdate();
+    await done;
+    expect(backend.log.slice(-2)).toEqual(['unhide_app:x', 'get_settings']);
+    expect(store.settings?.hiddenApps).toEqual([{ id: 'y', name: 'Y' }]);
+    expect(store.settings?.iconSize).toBe(60);
+    expect(store.status).toBe('saved');
+  });
+
+  it('a draft made during Show takes over the fresh hidden apps', async () => {
+    const backend = new FakeBackend();
+    backend.stored.hiddenApps = [{ id: 'x', name: 'X' }];
+    const store = new SettingsStore(backend, 150);
+    await store.start();
+    const done = store.unhideApp('x');
+    store.edit((s) => {
+      s.iconSize = 90;
+    });
+    await done;
+    // The draft the debounce sends is the fresh list with the edit on top,
+    // so the save does not bring the app back.
+    expect(store.settings?.hiddenApps).toEqual([]);
+    expect(store.settings?.iconSize).toBe(90);
+    expect(store.status).toBe('saving');
+    await vi.advanceTimersByTimeAsync(150);
+    backend.settleUpdate();
+    await tick();
+    expect(store.status).toBe('saved');
+  });
+
+  it("a settings event during a pending edit hands the draft Rust's pins and hidden apps", async () => {
+    const { backend, store } = await started();
+    store.edit((s) => {
+      s.iconSize = 70;
+    });
+    // The dock's menu hid an app and unpinned another meanwhile.
+    const fromRust: Settings = {
+      ...structuredClone(backend.stored),
+      iconSize: 48,
+      pinned: [pin('a'), pin('c')],
+      hiddenApps: [{ id: 'x', name: 'X' }],
+    };
+    backend.emit('dock://settings', fromRust);
+    // The edit stays; the lists are Rust's, on screen and in what is sent.
+    expect(store.settings?.iconSize).toBe(70);
+    expect(store.settings?.pinned.map((p) => p.id)).toEqual(['a', 'c']);
+    expect(store.settings?.hiddenApps).toEqual([{ id: 'x', name: 'X' }]);
+    expect(store.status).toBe('saving');
+    const sent: Settings[] = [];
+    const update = backend.updateSettings.bind(backend);
+    backend.updateSettings = (s: Settings) => {
+      sent.push(structuredClone(s));
+      return update(s);
+    };
+    await vi.advanceTimersByTimeAsync(150);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.iconSize).toBe(70);
+    expect(sent[0]?.pinned.map((p) => p.id)).toEqual(['a', 'c']);
+    expect(sent[0]?.hiddenApps).toEqual([{ id: 'x', name: 'X' }]);
   });
 
   it('a failed command is reported', async () => {

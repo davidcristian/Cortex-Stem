@@ -111,6 +111,15 @@ export interface Backend {
   /** Pin a dropped/chosen target; returns the canonical id it was pinned under. */
   pinTarget(target: LaunchTarget): Promise<AppId>;
   unpinApp(appId: AppId): Promise<void>;
+  /**
+   * Stop showing a running, unpinned app on every dock (docs/ipc/hidden-apps.md
+   * ): Rust adds `{ id, name }` to `Settings.hiddenApps` and
+   * saves; the pages hear of it as of any settings change. Rejects a pinned
+   * app and an app the engine does not know.
+   */
+  hideApp(appId: AppId): Promise<void>;
+  /** Show a hidden app again; an id that is not hidden is no error. */
+  unhideApp(appId: AppId): Promise<void>;
   reorderPinned(order: AppId[]): Promise<void>;
   /** PNG `data:` URL, or `null` for `shell:*` keys and unknown keys. */
   getIcon(iconKey: IconKey, size: number): Promise<string | null>;

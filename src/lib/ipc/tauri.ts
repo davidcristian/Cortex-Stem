@@ -161,6 +161,14 @@ export class TauriBackend implements Backend {
     return invoke<void>('unpin_app', { appId });
   }
 
+  hideApp(appId: AppId): Promise<void> {
+    return invoke<void>('hide_app', { appId });
+  }
+
+  unhideApp(appId: AppId): Promise<void> {
+    return invoke<void>('unhide_app', { appId });
+  }
+
   reorderPinned(order: AppId[]): Promise<void> {
     return invoke<void>('reorder_pinned', { order });
   }

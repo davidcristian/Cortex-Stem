@@ -99,6 +99,8 @@ class FakeBackend implements Backend {
     return '';
   }
   async unpinApp(): Promise<void> {}
+  async hideApp(): Promise<void> {}
+  async unhideApp(): Promise<void> {}
   async reorderPinned(): Promise<void> {}
 
   async getIcon(iconKey: string, size: number): Promise<string | null> {

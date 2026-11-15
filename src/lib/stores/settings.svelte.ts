@@ -6,9 +6,9 @@
  *
  * Edits are optimistic on screen and sent as one `update_settings` after a
  * short debounce; the value Rust returns (validated, clamped) replaces the
- * draft. Pin commands and the reset go through their own IPC commands; they
- * wait for pending edits first so a stale full document can never overwrite
- * what the command just changed.
+ * draft. Pin commands, *Show* for a hidden app and the reset go
+ * through their own IPC commands; they wait for pending edits first so a
+ * stale full document can never overwrite what the command just changed.
  */
 
 import type { SvelteMap } from 'svelte/reactivity';
@@ -83,6 +83,12 @@ export class SettingsStore {
         // While an edit of ours is pending, its own result is the newer truth.
         if (!this.busy) {
           this.settings = s;
+        } else if (this.draft !== null) {
+          // Except for the pins and hidden apps, which only Rust's commands
+          // change (the dock's menu, a drop): the pending edit takes
+          // the current ones, so its save does not undo what the dock did.
+          this.draft = { ...this.draft, pinned: s.pinned, hiddenApps: s.hiddenApps };
+          this.settings = this.draft;
         }
       }),
       this.backend.on('dock://theme', (t) => {
@@ -220,6 +226,11 @@ export class SettingsStore {
     return this.command(() => this.backend.unpinApp(appId));
   }
 
+  /** Show a hidden app on the dock again (*Show* in Hidden apps). */
+  unhideApp(appId: AppId): Promise<void> {
+    return this.command(() => this.backend.unhideApp(appId));
+  }
+
   /** Drop pending edits and restore the defaults. */
   async reset(): Promise<void> {
     await this.settle();
@@ -277,9 +288,10 @@ export class SettingsStore {
   }
 
   /**
-   * A command that changes settings on the Rust side (pins). Pending edits go
-   * first; afterwards the document is fetched again and a draft made in the
-   * meantime takes over the fresh pins, which edits never touch.
+   * A command that changes settings on the Rust side (pins, hidden apps).
+   * Pending edits go first; afterwards the document is fetched again and a
+   * draft made in the meantime takes over the fresh pins and hidden apps,
+   * which edits never touch.
    */
   private async command(run: () => Promise<void>): Promise<void> {
     await this.settle();
@@ -289,7 +301,7 @@ export class SettingsStore {
       .then(() => this.backend.getSettings())
       .then((fresh) => {
         if (this.draft !== null) {
-          this.draft = { ...this.draft, pinned: fresh.pinned };
+          this.draft = { ...this.draft, pinned: fresh.pinned, hiddenApps: fresh.hiddenApps };
           this.settings = this.draft;
         } else {
           this.settings = fresh;

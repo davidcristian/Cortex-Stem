@@ -652,6 +652,121 @@ describe('pins (mirror of stem-service pin/unpin/reorder)', () => {
   });
 });
 
+describe('hidden apps (docs/ipc/hidden-apps.md; mirror of hide_app / unhide_app)', () => {
+  it('no app is hidden in the demo', async () => {
+    const b = fast();
+    expect((await b.getSettings()).hiddenApps).toEqual([]);
+    expect(defaultSettings().hiddenApps).toEqual([]);
+  });
+
+  it('hiding a running app saves it with its name, drops its item and keeps its windows', async () => {
+    const b = fast();
+    const states = recordStates(b);
+    const settingsEvents: Settings[] = [];
+    b.on('dock://settings', (s) => settingsEvents.push(s));
+
+    await b.hideApp(CODE);
+    // The settings first, then the state without the item.
+    expect(settingsEvents.at(-1)?.hiddenApps).toEqual([{ id: CODE, name: 'Code' }]);
+    expect((await b.getSettings()).hiddenApps).toEqual([{ id: CODE, name: 'Code' }]);
+    const state = states.at(-1)!;
+    expect(keys(state)).not.toContain(app(CODE));
+    expect(keys(state).slice(-5)).toEqual([
+      app(SETTINGS),
+      'sep:2',
+      app(SPOTIFY),
+      'sep:3',
+      'fixed:recycle-bin',
+    ]);
+
+    // Its window is still the foreground's candidate and a click on its
+    // stale key does nothing.
+    await expect(b.primaryClick(app(CODE))).rejects.toMatch(/unknown dock item/);
+    expect(b.calls).toEqual([]);
+    b.pushForeground(4);
+    const after = await b.getDockState();
+    expect(after.foreground).toBe(4);
+    expect(after.items.some((i) => i.isActive)).toBe(false);
+
+    // A second window of it brings no item.
+    b.pushWindow({
+      id: 40,
+      title: 'main.rs — Stem',
+      className: 'CodeClass',
+      processId: 1040,
+      exePath: 'C:\\Users\\me\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe',
+      appUserModelId: null,
+      isVisible: true,
+      isMinimized: false,
+      isCloaked: false,
+      onCurrentDesktop: true,
+      monitor: 'mock-primary',
+      rect: null,
+      iconKey: null,
+    });
+    expect(keys(states.at(-1)!)).not.toContain(app(CODE));
+    expect(keys(await b.getDockState())).not.toContain(app(CODE));
+
+    // Hiding again changes nothing.
+    const events = settingsEvents.length;
+    await b.hideApp(CODE);
+    expect(settingsEvents).toHaveLength(events);
+
+    // Shown again: back with both windows, in first-seen order.
+    await b.unhideApp(CODE);
+    expect((await b.getSettings()).hiddenApps).toEqual([]);
+    const shown = item(states.at(-1)!, app(CODE));
+    expect(shown.windows.map((w) => w.id)).toEqual([4, 40]);
+    expect(keys(states.at(-1)!).slice(-4)).toEqual([
+      app(CODE),
+      app(SPOTIFY),
+      'sep:3',
+      'fixed:recycle-bin',
+    ]);
+    // Showing an app that is not hidden is no error and sends nothing.
+    const sent = settingsEvents.length;
+    await b.unhideApp(CODE);
+    expect(settingsEvents).toHaveLength(sent);
+  });
+
+  it('a pinned or unknown app is refused; pinning a hidden app shows it as a pin', async () => {
+    const b = fast();
+    await expect(b.hideApp(EXPLORER)).rejects.toMatch(/is pinned/);
+    await expect(b.hideApp('exe:c:/nope.exe')).rejects.toMatch(/unknown app/);
+    expect((await b.getSettings()).hiddenApps).toEqual([]);
+
+    await b.hideApp(SPOTIFY);
+    expect((await b.getSettings()).hiddenApps.map((h) => h.id)).toEqual([SPOTIFY]);
+    await b.pinApp(SPOTIFY);
+    const settings = await b.getSettings();
+    expect(settings.hiddenApps).toEqual([]);
+    expect(item(await b.getDockState(), app(SPOTIFY)).pinned).toBe(true);
+  });
+
+  it('the name is the first window title until the identity is known', async () => {
+    const b = new MockBackend({ latencyMs: [0, 0], identityDelayMs: 60_000, log: false });
+    backends.push(b);
+    await b.hideApp(CODE);
+    expect((await b.getSettings()).hiddenApps).toEqual([{ id: CODE, name: 'lib.rs — Stem' }]);
+  });
+
+  it('a settings document that hides an app hides it; pinned, blank and repeated entries are dropped', async () => {
+    const b = fast();
+    const s = await b.getSettings();
+    s.hiddenApps = [
+      { id: SPOTIFY, name: 'Spotify' },
+      { id: EXPLORER, name: 'pinned' },
+      { id: ' ', name: 'blank' },
+      { id: SPOTIFY, name: 'again' },
+    ];
+    const saved = await b.updateSettings(s);
+    expect(saved.hiddenApps).toEqual([{ id: SPOTIFY, name: 'Spotify' }]);
+    const state = await b.getDockState();
+    expect(keys(state)).not.toContain(app(SPOTIFY));
+    expect(item(state, app(EXPLORER)).pinned).toBe(true);
+  });
+});
+
 describe('file drags (docs/ipc/file-drags.md; simulated: a browser gets no OLE drags)', () => {
   it('delivers each simulated event, as a copy, to every subscriber until it unsubscribes', () => {
     const b = fast();
@@ -2065,6 +2180,18 @@ describe('helpers mirrored from stem-core', () => {
     expect(v.magnification.rangeIcons).toBe(1);
     expect(v.appearance.opacity).toBe(0);
     expect(v.pinned.map((p) => p.id)).toEqual(['a', 'b']);
+    // Hidden apps: never a pinned one, a blank id or a repeat.
+    s.hiddenApps = [
+      { id: 'c', name: 'C' },
+      { id: 'a', name: 'pinned' },
+      { id: ' \t', name: 'blank' },
+      { id: 'c', name: 'again' },
+      { id: 'd', name: '' },
+    ];
+    expect(validateSettings(s).hiddenApps).toEqual([
+      { id: 'c', name: 'C' },
+      { id: 'd', name: '' },
+    ]);
     // Idempotent and non-mutating.
     expect(validateSettings(v)).toEqual(v);
     expect(s.iconSize).toBe(999);

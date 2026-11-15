@@ -326,6 +326,7 @@ export function defaultSettings(): Settings {
       focusShortcut: 'Ctrl+Alt+Shift+D',
     },
     pinned: [],
+    hiddenApps: [],
     system: {
       autostart: false,
       hideWindowsTaskbar: false,
@@ -337,7 +338,11 @@ export function defaultSettings(): Settings {
 
 const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
 
-/** `Settings::validate`: clamp numeric fields, drop empty/duplicate pins. Returns a copy. */
+/**
+ * `Settings::validate`: clamp numeric fields, drop empty/duplicate pins, and
+ * drop hidden apps that are pinned, have a blank id or repeat one.
+ * Returns a copy.
+ */
 export function validateSettings(input: Settings): Settings {
   const s: Settings = structuredClone(input);
   s.version = 1;
@@ -353,6 +358,15 @@ export function validateSettings(input: Settings): Settings {
       return false;
     }
     seen.add(p.id);
+    return true;
+  });
+  // After the pins, which win: a pinned app is never hidden.
+  const hidden = new Set<AppId>();
+  s.hiddenApps = s.hiddenApps.filter((h) => {
+    if (h.id.trim() === '' || seen.has(h.id) || hidden.has(h.id)) {
+      return false;
+    }
+    hidden.add(h.id);
     return true;
   });
   return s;
@@ -1211,6 +1225,27 @@ class Engine {
     return this.settings.pinned.some((p) => p.id === appId);
   }
 
+  /** `Settings::is_hidden`. */
+  isHidden(appId: AppId): boolean {
+    return this.settings.hiddenApps.some((h) => h.id === appId);
+  }
+
+  /**
+   * `DockEngine::app_name`: the resolved display name, else the
+   * title of the app's first-seen tracked window (shown or not); `null`
+   * when the engine knows nothing of the app.
+   */
+  appName(appId: AppId): string | null {
+    const identity = this.identities.get(appId);
+    if (identity) {
+      return identity.displayName;
+    }
+    const first = [...this.windows.values()]
+      .filter((t) => appIdFor(t.raw) === appId)
+      .sort((a, b) => a.seq - b.seq)[0];
+    return first?.raw.title ?? null;
+  }
+
   firstWindowOf(appId: AppId): RawWindow | undefined {
     return this.shownWindows().find((t) => appIdFor(t.raw) === appId)?.raw;
   }
@@ -1262,13 +1297,16 @@ class Engine {
       return this.appItem(pin.id, true, pin.label, windows);
     });
 
-    // 3. Running, unpinned apps in first-seen order.
+    // 3. Running, unpinned apps in first-seen order, but the hidden ones;
+    // the pins above took their windows first.
     const runningItems: DockItem[] = [];
     for (const id of this.runningOrder) {
       const windows = byApp.get(id);
       if (windows) {
         byApp.delete(id);
-        runningItems.push(this.appItem(id, false, null, windows));
+        if (!this.isHidden(id)) {
+          runningItems.push(this.appItem(id, false, null, windows));
+        }
       }
     }
 
@@ -1375,6 +1413,10 @@ class Engine {
       return { type: 'none' };
     }
     const appId = itemKey.slice('app:'.length);
+    if (this.isHidden(appId) && !this.isPinned(appId)) {
+      // No item: a click on its key from a page a state behind.
+      return { type: 'none' };
+    }
     const windows = this.windowsOnDock(appId, dock);
     if (windows.length === 0) {
       const launchable =
@@ -1683,7 +1725,8 @@ export class MockBackend implements Backend {
       }
       const settings = structuredClone(this.engine.settings);
       settings.pinned.push({ id: appId, label: null, launch });
-      this.applySettings(settings);
+      // Validated like every change in Rust: a hidden app pinned is shown.
+      this.applySettings(validateSettings(settings));
     });
   }
 
@@ -1696,7 +1739,7 @@ export class MockBackend implements Backend {
         this.engine.setIdentity(identity.id, identity);
         const settings = structuredClone(this.engine.settings);
         settings.pinned.push({ id: identity.id, label: null, launch: identity.launch ?? target });
-        this.applySettings(settings);
+        this.applySettings(validateSettings(settings));
       }
       return identity.id;
     });
@@ -1709,6 +1752,47 @@ export class MockBackend implements Backend {
       }
       const settings = structuredClone(this.engine.settings);
       settings.pinned = settings.pinned.filter((p) => p.id !== appId);
+      this.applySettings(settings);
+    });
+  }
+
+  /**
+   * `hide_app`: `{ id, name }` with the name the app's item shows
+   * now (the id's file name when that is blank), saved like a pin. Hiding
+   * a hidden app again changes nothing; a pinned app and one the engine
+   * knows nothing of are refused with the Rust error's words.
+   */
+  hideApp(appId: AppId): Promise<void> {
+    return this.command(() => {
+      if (this.engine.isPinned(appId)) {
+        throw `app "${appId}" is pinned; unpin it to hide it`;
+      }
+      if (this.engine.isHidden(appId)) {
+        return;
+      }
+      const name = this.engine.appName(appId);
+      if (name === null) {
+        throw `unknown app: "${appId}"`;
+      }
+      this.log(`hide ${appId}`);
+      const settings = structuredClone(this.engine.settings);
+      settings.hiddenApps.push({
+        id: appId,
+        name: name.trim() === '' ? fallbackDisplayName(appId) : name,
+      });
+      this.applySettings(validateSettings(settings));
+    });
+  }
+
+  /** `unhide_app`: an id that is not hidden is no error and changes nothing. */
+  unhideApp(appId: AppId): Promise<void> {
+    return this.command(() => {
+      if (!this.engine.isHidden(appId)) {
+        return;
+      }
+      this.log(`show ${appId}`);
+      const settings = structuredClone(this.engine.settings);
+      settings.hiddenApps = settings.hiddenApps.filter((h) => h.id !== appId);
       this.applySettings(settings);
     });
   }
