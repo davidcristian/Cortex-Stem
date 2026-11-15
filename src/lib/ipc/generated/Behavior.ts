@@ -47,4 +47,17 @@ clickThrough: boolean,
  * key, or one another app already holds) is kept as written, but no
  * shortcut is active and the log has a warning.
  */
-toggleShortcut: string, };
+toggleShortcut: string, 
+/**
+ * Global keyboard shortcut that moves the keyboard focus into the dock
+ * from any app, like Win+T for the stock taskbar. The arrow keys then
+ * move from item to item, Enter or Space opens the focused one, and
+ * Escape (or the shortcut again) goes back to the window that was in
+ * front. The dock on that window's monitor receives the focus, or the
+ * primary monitor's dock when that monitor has no dock. Same format
+ * and rules as `toggleShortcut`. A value equal to
+ * `toggleShortcut`, ignoring case and modifier order, is not
+ * registered, and the toggle shortcut keeps those keys. Empty means no
+ * shortcut.
+ */
+focusShortcut: string, };

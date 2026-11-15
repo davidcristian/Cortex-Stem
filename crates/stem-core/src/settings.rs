@@ -26,6 +26,9 @@ pub const SETTINGS_VERSION: u32 = 1;
 /// Default of [`Behavior::toggle_shortcut`].
 pub const DEFAULT_TOGGLE_SHORTCUT: &str = "Ctrl+Alt+D";
 
+/// Default of [`Behavior::focus_shortcut`].
+pub const DEFAULT_FOCUS_SHORTCUT: &str = "Ctrl+Alt+Shift+D";
+
 #[derive(Debug, Error)]
 pub enum SettingsError {
     #[error("settings file is not valid JSON: {0}")]
@@ -489,6 +492,17 @@ pub struct Behavior {
     /// key, or one another app already holds) is kept as written, but no
     /// shortcut is active and the log has a warning.
     pub toggle_shortcut: String,
+    /// Global keyboard shortcut that moves the keyboard focus into the dock
+    /// from any app, like Win+T for the stock taskbar. The arrow keys then
+    /// move from item to item, Enter or Space opens the focused one, and
+    /// Escape (or the shortcut again) goes back to the window that was in
+    /// front. The dock on that window's monitor receives the focus, or the
+    /// primary monitor's dock when that monitor has no dock. Same format
+    /// and rules as `toggleShortcut`. A value equal to
+    /// `toggleShortcut`, ignoring case and modifier order, is not
+    /// registered, and the toggle shortcut keeps those keys. Empty means no
+    /// shortcut.
+    pub focus_shortcut: String,
 }
 
 impl Default for Behavior {
@@ -500,6 +514,7 @@ impl Default for Behavior {
             running_indicators: true,
             click_through: true,
             toggle_shortcut: DEFAULT_TOGGLE_SHORTCUT.to_owned(),
+            focus_shortcut: DEFAULT_FOCUS_SHORTCUT.to_owned(),
         }
     }
 }
@@ -675,6 +690,16 @@ mod tests {
                 toggle_shortcut: rng
                     .pick(&["", " ", DEFAULT_TOGGLE_SHORTCUT, "ctrl+shift+F9", "Nope+?"])
                     .to_owned(),
+                focus_shortcut: rng
+                    .pick(&[
+                        "",
+                        " ",
+                        DEFAULT_FOCUS_SHORTCUT,
+                        DEFAULT_TOGGLE_SHORTCUT,
+                        "alt+ctrl+d",
+                        "Nope+?",
+                    ])
+                    .to_owned(),
             },
             pinned: (0..rng.below(8))
                 .map(|_| {
@@ -743,6 +768,31 @@ mod tests {
             let s = Settings::from_json(&json).unwrap();
             assert_eq!(s.behavior.toggle_shortcut, written);
             assert!(s.to_json_pretty().contains(r#""toggleShortcut""#));
+            assert_eq!(Settings::from_json(&s.to_json_pretty()).unwrap(), s);
+        }
+    }
+
+    #[test]
+    fn focus_shortcut_defaults_when_missing_and_keeps_what_is_written() {
+        assert_eq!(Behavior::default().focus_shortcut, "Ctrl+Alt+Shift+D");
+        assert_ne!(DEFAULT_FOCUS_SHORTCUT, DEFAULT_TOGGLE_SHORTCUT);
+
+        // A file written before the field existed gets the default, and the
+        // toggle shortcut it has is left alone.
+        let old =
+            Settings::from_json(r#"{"version": 1, "behavior": {"toggleShortcut": "F9"}}"#).unwrap();
+        assert_eq!(old.behavior.toggle_shortcut, "F9");
+        assert_eq!(old.behavior.focus_shortcut, DEFAULT_FOCUS_SHORTCUT);
+
+        // Empty (no shortcut), the toggle shortcut's own chord and values
+        // the app cannot register are kept as written: the app layer
+        // decides what registers, so the user sees and can fix the value.
+        for written in ["", "ctrl+alt+d", "Shift+Alt+F12", "not a shortcut"] {
+            let json = format!(r#"{{"behavior": {{"focusShortcut": {written:?}}}}}"#);
+            let s = Settings::from_json(&json).unwrap();
+            assert_eq!(s.behavior.focus_shortcut, written);
+            assert_eq!(s.behavior.toggle_shortcut, DEFAULT_TOGGLE_SHORTCUT);
+            assert!(s.to_json_pretty().contains(r#""focusShortcut""#));
             assert_eq!(Settings::from_json(&s.to_json_pretty()).unwrap(), s);
         }
     }

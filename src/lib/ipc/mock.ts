@@ -229,6 +229,7 @@ export function defaultSettings(): Settings {
       runningIndicators: true,
       clickThrough: true,
       toggleShortcut: 'Ctrl+Alt+D',
+      focusShortcut: 'Ctrl+Alt+Shift+D',
     },
     pinned: [],
     system: {
