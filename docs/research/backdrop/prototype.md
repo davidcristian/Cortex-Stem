@@ -73,7 +73,9 @@ Where it differs from the design of [option 6](backdrop-window.md):
   measured again. When the window grows for a drag, shrinks back after the
   drop or takes another thickness, the stored panel rect is re-anchored to
   the new viewport, so the material stays under the panel without waiting
-  for the UI's next report.
+  for the UI's next report. Only a panel that no longer fits the window (a
+  much smaller icon size on `bottom` or `top`, whose content size arrives
+  before its panel rect) has no material until that report, a moment later.
   The live box needs the IPC change listed under
   [Remaining work](remaining-work.md).
 - **Fullscreen** has no path of its own: the UI slides the panel out in
