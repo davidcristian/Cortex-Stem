@@ -56,6 +56,7 @@
 import { expect, test, type Browser, type CDPSession, type Page } from '@playwright/test';
 
 import type { Settings } from '../src/lib/ipc/generated/Settings';
+import type { ThemeInfo } from '../src/lib/ipc/generated/ThemeInfo';
 import type { ThemePreset } from '../src/lib/ipc/generated/ThemePreset';
 
 /** How long a settled page is watched. */
@@ -125,6 +126,8 @@ interface DemoWindow {
     /** `HSHELL_FLASH` as the platform reports it (`WindowAttention`). */
     pushAttention: (id: number, flashing: boolean) => void;
     pushForeground: (id: number | null) => void;
+    /** Windows' theme changed (`dock://theme`). */
+    setTheme: (theme: ThemeInfo) => void;
   };
 }
 
@@ -704,6 +707,38 @@ function presetScenario(theme: ThemePreset): Scenario {
   };
 }
 
+/** Windows' theme as the mock starts with it (`DEFAULT_THEME` in src/lib/ipc/mock.ts). */
+const OS_THEME: ThemeInfo = {
+  accent: '#0078D4',
+  dark: true,
+  highContrast: false,
+  transparency: true,
+};
+
+/**
+ * One fact of Windows' theme changed, as `dock://theme` reports it
+ * (light mode, a contrast theme, transparency effects off): each switches
+ * the page to other CSS (no blur, opaque fills, forced lines).
+ */
+function osThemeScenario(
+  name: string,
+  theme: Partial<ThemeInfo>,
+  applied: (page: Page) => Promise<void>,
+): Scenario {
+  return {
+    name,
+    setup: async (page) => {
+      await page.evaluate(
+        (t) => {
+          (window as unknown as DemoWindow).__dockMock?.setTheme(t);
+        },
+        { ...OS_THEME, ...theme },
+      );
+      await applied(page);
+    },
+  };
+}
+
 /** The magnification scale a slot renders with. */
 function scaleOf(page: Page, index: number): Promise<number> {
   return page
@@ -772,7 +807,9 @@ function setAutoHide(page: Page, mode: Settings['autoHide']['mode']): Promise<vo
 }
 
 test.describe('the dock page goes quiet once it has settled', () => {
-  test('at rest on every edge and with each theme preset', async ({ browser }) => {
+  test('at rest on every edge, with each theme preset and with each OS theme fact', async ({
+    browser,
+  }) => {
     await expectQuiet(browser, [
       { name: 'bottom, the standard preset (the default)' },
       { name: 'top', query: 'position=top' },
@@ -780,6 +817,22 @@ test.describe('the dock page goes quiet once it has settled', () => {
       { name: 'right', query: 'position=right', viewport: SIDE_VIEWPORT },
       presetScenario('solid'),
       presetScenario('minimal'),
+      osThemeScenario('light mode', { dark: false }, async (page) => {
+        await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+      }),
+      osThemeScenario('a contrast theme', { highContrast: true }, async (page) => {
+        await expect(page.locator('html')).toHaveAttribute('data-high-contrast', '');
+        await expect(page.locator(PANEL)).toHaveCSS('backdrop-filter', 'none');
+      }),
+      osThemeScenario('transparency effects off', { transparency: false }, async (page) => {
+        await expect
+          .poll(() =>
+            page
+              .locator('.dock-stage')
+              .evaluate((el) => (el as HTMLElement).style.getPropertyValue('--panel-opacity')),
+          )
+          .toBe('0.95');
+      }),
     ]);
   });
 
