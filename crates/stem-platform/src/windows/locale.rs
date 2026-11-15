@@ -18,7 +18,9 @@
 //!   of [`SHORT_TIME_MAX`] units), by [`hour12_of`]: `H` is a 24-hour clock
 //!   (`false`), `h` a 12-hour one (`true`); text inside single quotes is
 //!   literal and ignored; the first hour letter decides; a pattern without
-//!   one, or a failed call, gives `None`.
+//!   one, or a failed call, gives `None`. Microsoft documents that the value
+//!   may be a semicolon-delimited list whose first entry is the preferred
+//!   format; the first hour letter is that entry's.
 //!
 //! Both calls read the user's locale data in this process and do not block.
 //! A failure is a `debug` line and that field is `None`; the reading itself
@@ -37,8 +39,10 @@ use windows::core::PCWSTR;
 use super::util;
 
 /// The most UTF-16 units of the short time format read, its NUL included.
-/// Microsoft documents at most 80 for `LOCALE_SSHORTTIME`; a longer value
-/// fails the call (`ERROR_INSUFFICIENT_BUFFER`) and gives no hour cycle.
+/// A chosen bound, not a documented one: Microsoft gives no maximum for
+/// `LOCALE_SSHORTTIME`, and real patterns are a dozen units or so. A
+/// longer value fails the call (`ERROR_INSUFFICIENT_BUFFER`) and gives no
+/// hour cycle.
 pub const SHORT_TIME_MAX: usize = 128;
 
 /// The user's regional format right now, by the rules in the module docs.
@@ -94,7 +98,9 @@ pub fn bcp47_name(raw: &str) -> Option<String> {
 /// Whether a Windows time format pattern is a 12-hour one: `Some(true)`
 /// for `h`, `Some(false)` for `H`, from the first hour letter outside
 /// single quotes (quoted text is literal; two quotes in a row are an empty
-/// literal, so the rule holds for them too); `None` without one.
+/// literal, so the rule holds for them too); `None` without one. In a
+/// semicolon-delimited list (`HH:mm;h:mm tt`) that is the first, preferred
+/// entry's hour letter.
 pub fn hour12_of(pattern: &str) -> Option<bool> {
     let mut quoted = false;
     for c in pattern.chars() {
@@ -177,6 +183,16 @@ mod tests {
     fn the_first_hour_letter_decides() {
         assert_eq!(hour12_of("HH:mm (h tt)"), Some(false));
         assert_eq!(hour12_of("h:mm (HH)"), Some(true));
+    }
+
+    #[test]
+    fn a_list_of_formats_takes_the_first_preferred_one() {
+        // LOCALE_SSHORTTIME may be a semicolon-delimited list whose first
+        // entry is the preferred format.
+        assert_eq!(hour12_of("HH:mm;h:mm tt"), Some(false));
+        assert_eq!(hour12_of("h:mm tt;HH:mm"), Some(true));
+        // A quoted semicolon is literal text, not a separator.
+        assert_eq!(hour12_of("'a;b' HH:mm;h:mm tt"), Some(false));
     }
 
     #[test]
