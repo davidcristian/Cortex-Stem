@@ -21,7 +21,9 @@
  */
 
 import type { DockItemKind } from '$lib/ipc/generated/DockItemKind';
+import type { MonitorInfo } from '$lib/ipc/generated/MonitorInfo';
 
+import { across, along, type DockAxis } from './edge';
 import { maxGrowth, type MagnifyParams } from './magnify';
 
 /** The smallest size the fit goes down to (CSS px). */
@@ -29,6 +31,84 @@ export const MIN_FITTED_ICON = 16;
 
 /** What the fitted panel leaves free at each end of the viewport's length (CSS px). */
 export const FIT_END_MARGIN = 8;
+
+/**
+ * How long the page waits for its window to be moved after a change of
+ * `position` to the other axis (ms, `awaitingMove`). Rust moves it right
+ * after `dock://settings` (docs/ipc/sizing-protocol.md, step 5); when no
+ * move comes in this time (`MockBackend`, which has no window to move, or a
+ * move that failed), the page takes the window as shaped for the axis it
+ * has.
+ */
+export const MOVE_WAIT_MS = 1000;
+
+/** A width and a height (CSS px). */
+export interface Extent {
+  width: number;
+  height: number;
+}
+
+/** What the fit's room is made from (`fitRoom`). */
+export interface RoomInput {
+  /** The axis the page lays out for (`Settings.position`). */
+  axis: DockAxis;
+  /**
+   * The axis the window is shaped for: the page's at its first settings,
+   * at a `resize` that leaves the window longer along the page's axis than
+   * across it, and when `MOVE_WAIT_MS` ran out; `null` before the first
+   * settings.
+   */
+  shapedAxis: DockAxis | null;
+  /** The viewport (CSS px). */
+  viewport: Extent;
+  /** This dock's monitor's work area in CSS px (`workAreaCss`); `null` without a monitor list. */
+  workArea: Extent | null;
+}
+
+/**
+ * The page has switched to the other axis and its window is still shaped
+ * for the old one: longer across the new axis than along it. Rust moves it
+ * to the new edge after `dock://settings` (docs/ipc/sizing-protocol.md,
+ * step 5), so until then the viewport's length along the new axis is the
+ * old window's thickness, not the room the dock will have.
+ */
+export function awaitingMove({ axis, shapedAxis, viewport }: RoomInput): boolean {
+  if (shapedAxis === null || shapedAxis === axis) {
+    return false;
+  }
+  return (
+    along(axis, viewport.width, viewport.height) < across(axis, viewport.width, viewport.height)
+  );
+}
+
+/**
+ * The fit's room: the length along the edge that the dock's window has, or
+ * is about to have. That is the viewport's length along the edge, except
+ * while `awaitingMove`: then it is the work area's length along the new
+ * edge, the length Rust gives a dock window on any edge
+ * (docs/ipc/sizing-protocol.md, steps 1 and 3), so the first reports for
+ * the new edge are made at the size the window will fit, in either
+ * direction (bottom → left and left → bottom). Without a monitor list
+ * nothing better is known than the viewport.
+ */
+export function fitRoom(input: RoomInput): number {
+  const { axis, viewport, workArea } = input;
+  const alongNow = along(axis, viewport.width, viewport.height);
+  if (!awaitingMove(input) || workArea === null) {
+    return alongNow;
+  }
+  const alongWorkArea = along(axis, workArea.width, workArea.height);
+  return alongWorkArea > 0 ? alongWorkArea : alongNow;
+}
+
+/** `monitor`'s work area in CSS px (its rect is in physical px at its `scaleFactor`); `null` without one. */
+export function workAreaCss(monitor: MonitorInfo | null | undefined): Extent | null {
+  if (monitor === null || monitor === undefined) {
+    return null;
+  }
+  const scale = monitor.scaleFactor > 0 ? monitor.scaleFactor : 1;
+  return { width: monitor.workArea.width / scale, height: monitor.workArea.height / scale };
+}
 
 /** The page's layout constants along the main axis (CSS px; Dock.svelte). */
 export interface PanelLayout {

@@ -44,7 +44,16 @@
     type ItemSpan,
     type PinCandidate,
   } from '$lib/dock/filedrop';
-  import { fitIconSize, slotCounts, type PanelLayout } from '$lib/dock/fit';
+  import {
+    awaitingMove,
+    fitIconSize,
+    fitRoom,
+    MOVE_WAIT_MS,
+    slotCounts,
+    workAreaCss,
+    type PanelLayout,
+    type RoomInput,
+  } from '$lib/dock/fit';
   import {
     edgeShift,
     hitRegionFor,
@@ -239,13 +248,15 @@
   let viewportWidth = $state(window.innerWidth);
   let viewportHeight = $state(window.innerHeight);
   /**
-   * The axis the window is shaped for: the page's at the first settings and
-   * at every `resize`. After a change of `position` to the other axis the
-   * page lays itself out before Rust moves its window (docs/ipc/sizing-protocol.md,
-   * step 5); until then the window is still longer across the new axis
-   * than along it, and its length along the old axis stands in, so the
-   * first reports for the new edge are not made at a size fitted to the
-   * old window's thickness.
+   * The axis the window is shaped for (`fit.ts`, `RoomInput.shapedAxis`):
+   * the page's at the first settings, at a `resize` that leaves the window
+   * longer along the page's axis than across it, and when `MOVE_WAIT_MS`
+   * ran out. After a change of `position` to the other axis the page lays
+   * itself out before Rust moves its window (docs/ipc/sizing-protocol.md,
+   * step 5); until then (`awaitingMove`) the work area's length along the
+   * new edge, the length the window is about to have, is the fit's room,
+   * so the first reports for the new edge are made at the size it will
+   * fit.
    */
   let shapedAxis = $state<DockAxis | null>(null);
   $effect(() => {
@@ -253,12 +264,24 @@
       shapedAxis = untrack(() => axis);
     }
   });
-  const fitLength = $derived.by(() => {
-    const alongNow = vertical ? viewportHeight : viewportWidth;
-    const acrossNow = vertical ? viewportWidth : viewportHeight;
-    return shapedAxis !== null && shapedAxis !== axis && alongNow < acrossNow
-      ? acrossNow
-      : alongNow;
+  const room = $derived<RoomInput>({
+    axis,
+    shapedAxis,
+    viewport: { width: viewportWidth, height: viewportHeight },
+    workArea: workAreaCss(store.monitors.find((m) => m.id === myMonitor)),
+  });
+  const fitLength = $derived(fitRoom(room));
+  const waitingForMove = $derived(awaitingMove(room));
+  // No move came (`MockBackend` has no window to move, or the move
+  // failed): the window is as it is, and its viewport is the room again.
+  $effect(() => {
+    if (!waitingForMove) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      shapedAxis = axis;
+    }, MOVE_WAIT_MS);
+    return () => window.clearTimeout(timer);
   });
   const fitSize = $derived(
     fitIconSize({
@@ -836,7 +859,14 @@
     // The fit's room; a drag holds the size whatever it is.
     viewportWidth = window.innerWidth;
     viewportHeight = window.innerHeight;
-    shapedAxis = axis;
+    // Shaped for the page's axis, the move done; a resize that leaves the
+    // window longer across than along (a thickness set before the move)
+    // does not end the wait for it.
+    if (
+      (vertical ? viewportHeight : viewportWidth) >= (vertical ? viewportWidth : viewportHeight)
+    ) {
+      shapedAxis = axis;
+    }
     const d = drag;
     if (d === null || !d.started) {
       leaveHoverState();

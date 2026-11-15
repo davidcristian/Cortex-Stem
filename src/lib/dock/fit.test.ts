@@ -1,14 +1,19 @@
 import { describe, expect, it } from 'vitest';
 
 import type { DockItemKind } from '$lib/ipc/generated/DockItemKind';
+import type { MonitorInfo } from '$lib/ipc/generated/MonitorInfo';
 
 import {
+  awaitingMove,
   FIT_END_MARGIN,
   fitIconSize,
+  fitRoom,
   fittedPanelLength,
   MIN_FITTED_ICON,
   slotCounts,
+  workAreaCss,
   type FitInput,
+  type RoomInput,
 } from './fit';
 import { maxGrowth } from './magnify';
 
@@ -138,5 +143,104 @@ describe('fitIconSize', () => {
   it('depends on nothing but its inputs: the same inputs give the same size', () => {
     const a = input({ iconSize: 64, counts: { icons: 20, separators: 3 }, viewportLength: 1032 });
     expect(fitIconSize(a)).toBe(fitIconSize({ ...a }));
+  });
+});
+
+describe('fitRoom: the length along the edge the window has, or is about to have', () => {
+  /** A 1920×1080 monitor at 100 %, the stock taskbar at the bottom (CSS px). */
+  const WORK_AREA = { width: 1920, height: 1032 };
+
+  function room(patch: Partial<RoomInput>): RoomInput {
+    return {
+      axis: 'vertical',
+      shapedAxis: 'vertical',
+      viewport: { width: 341, height: 1032 },
+      workArea: WORK_AREA,
+      ...patch,
+    };
+  }
+
+  it("is the viewport's length along the edge while the window is shaped for it", () => {
+    expect(fitRoom(room({}))).toBe(1032);
+    expect(
+      fitRoom(
+        room({
+          axis: 'horizontal',
+          shapedAxis: 'horizontal',
+          viewport: { width: 1920, height: 150 },
+        }),
+      ),
+    ).toBe(1920);
+    // A side dock in a window wider than tall (a browser at 800×600, the
+    // hands-on case): shaped for its axis all along, so its viewport.
+    expect(fitRoom(room({ viewport: { width: 800, height: 600 } }))).toBe(600);
+    // Before the first settings nothing has switched.
+    expect(fitRoom(room({ shapedAxis: null, viewport: { width: 1920, height: 150 } }))).toBe(150);
+  });
+
+  it("bottom to left before the move: the work area's height, not the bottom window's thickness or width", () => {
+    const r = room({ shapedAxis: 'horizontal', viewport: { width: 1920, height: 150 } });
+    expect(awaitingMove(r)).toBe(true);
+    expect(fitRoom(r)).toBe(1032);
+  });
+
+  it("left to bottom before the move: the work area's width, not the side window's height", () => {
+    const r = room({ axis: 'horizontal', viewport: { width: 341, height: 1032 } });
+    expect(awaitingMove(r)).toBe(true);
+    expect(fitRoom(r)).toBe(1920);
+  });
+
+  it('after the move the viewport again, even before the page saw the resize', () => {
+    const r = room({ shapedAxis: 'horizontal', viewport: { width: 150, height: 1032 } });
+    expect(awaitingMove(r)).toBe(false);
+    expect(fitRoom(r)).toBe(1032);
+  });
+
+  it('a change along the same axis (left to right) waits for nothing', () => {
+    expect(awaitingMove(room({ shapedAxis: 'vertical' }))).toBe(false);
+  });
+
+  it('without a monitor list, or with an empty work area, nothing better than the viewport is known', () => {
+    const r = room({
+      shapedAxis: 'horizontal',
+      viewport: { width: 1920, height: 150 },
+      workArea: null,
+    });
+    expect(awaitingMove(r)).toBe(true);
+    expect(fitRoom(r)).toBe(150);
+    expect(fitRoom({ ...r, workArea: { width: 0, height: 0 } })).toBe(150);
+  });
+
+  it('a bottom-to-left switch on 1920×1080 fits the column the window will have', () => {
+    const r = room({ shapedAxis: 'horizontal', viewport: { width: 1920, height: 150 } });
+    const size = fitIconSize(
+      input({ iconSize: 64, counts: { icons: 24, separators: 3 }, viewportLength: fitRoom(r) }),
+    );
+    expect(size).toBeLessThan(64);
+    expect(
+      fittedPanelLength(size, { icons: 24, separators: 3 }, LAYOUT, MAGNIFY),
+    ).toBeLessThanOrEqual(1032 - 2 * FIT_END_MARGIN);
+  });
+});
+
+describe('workAreaCss', () => {
+  const monitor = (scaleFactor: number): MonitorInfo => ({
+    id: 'm',
+    name: 'm',
+    bounds: { x: 0, y: 0, width: 2880, height: 1620 },
+    workArea: { x: 0, y: 0, width: 2880, height: 1548 },
+    scaleFactor,
+    isPrimary: true,
+  });
+
+  it("turns the physical work area into CSS px at the monitor's scale", () => {
+    expect(workAreaCss(monitor(1.5))).toEqual({ width: 1920, height: 1032 });
+    expect(workAreaCss(monitor(1))).toEqual({ width: 2880, height: 1548 });
+  });
+
+  it('has nothing without a monitor, and takes a scale it cannot use as 1', () => {
+    expect(workAreaCss(null)).toBeNull();
+    expect(workAreaCss(undefined)).toBeNull();
+    expect(workAreaCss(monitor(0))).toEqual({ width: 2880, height: 1548 });
   });
 });

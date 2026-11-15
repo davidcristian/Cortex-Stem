@@ -6324,6 +6324,19 @@ test.describe('fitting the dock to its edge', () => {
   /** The panel's length at rest at `icon`, as Dock.svelte lays it out. */
   const restLength = (icon: number, c: { icons: number; separators: number }): number =>
     2 * PANEL_PADDING + c.icons * (icon + SLOT_GAP) + c.separators * SEPARATOR_LENGTH;
+  /** The size fit.ts gives at `setting` for `c` in `length`: the largest that fits, not below 16. */
+  const fittedFor = (
+    length: number,
+    c: { icons: number; separators: number },
+    setting = SETTING,
+  ): number => {
+    for (let size = setting; size > MIN_FITTED; size -= 1) {
+      if (restLength(size, c) + growth(size) <= length - 2 * FIT_END_MARGIN + 1e-6) {
+        return size;
+      }
+    }
+    return Math.min(setting, MIN_FITTED);
+  };
 
   /** Open the dock on `edge` in `viewport`, switch every fixed item on at `SETTING`, and wait until it is still and reported. */
   async function openFitted(page: Page, edge: Edge, viewport = smallViewport(edge)): Promise<void> {
@@ -6523,6 +6536,127 @@ test.describe('fitting the dock to its edge', () => {
     expect(await drawnSize(page)).toBe(icon);
     await fileDrag(page, { type: 'leave' });
     await expect(gap).toHaveCount(0);
+  });
+
+  // A change of position to the other axis (docs/ipc/sizing-protocol.md,
+  // step 5): the page lays itself out for the new edge before Rust moves
+  // its window.
+  test('a switch from bottom to left that no move follows (a browser) fits the column the window has', async ({
+    page,
+  }) => {
+    const viewport = { width: 800, height: 600 };
+    await openFitted(page, 'bottom', viewport);
+    const c = await counts(page);
+    const row = fittedFor(viewport.width, c);
+    expect(await drawnSize(page)).toBe(row);
+
+    await patchSettings(page, { position: 'left' });
+    await expect(page.locator(PANEL)).toHaveAttribute('aria-orientation', 'vertical');
+    // The column the window has is shorter than the row was.
+    const icon = fittedFor(viewport.height, c);
+    expect(icon).toBeLessThan(row);
+    await expect.poll(() => drawnSize(page)).toBe(icon);
+    await expect(page.locator(`${STAGE}[data-fitted]`)).toHaveCount(1);
+    await expect.poll(() => runningAnimations(page)).toBe(0);
+    for (const slot of await slotBoxes(page)) {
+      expect(inside(slot, viewport), JSON.stringify(slot)).toBe(true);
+    }
+    expect(inside(await box(page.locator('.slot[data-kind="launcher"]')), viewport)).toBe(true);
+    expect(inside(await box(page.locator('.slot[data-kind="recycleBin"]')), viewport)).toBe(true);
+    await expect
+      .poll(async () => (await lastPanelRect(page)) ?? null)
+      .toEqual(restRect(await box(page.locator(PANEL))));
+    expect((await panelRects(page)).at(-1)?.edge).toBe('left');
+    expect((await lastPanelRect(page))!.width).toBe(icon + 2 * PANEL_PADDING);
+  });
+
+  test('a switch to the other axis reports, before the window moves, at the size the moved window fits', async ({
+    page,
+  }) => {
+    // Large enough that the fit differs on every length involved: the
+    // bottom row at 1280, the old window's lengths (1280 across, 240
+    // along) and the mock monitor's work area (2560×1392 at 100 %,
+    // WORK_AREA), where Rust puts a dock window on any edge.
+    const LARGE = 128;
+    await openFitted(page, 'bottom', { width: 1280, height: 240 });
+    await patchSettings(page, { iconSize: LARGE });
+    const c = await counts(page);
+    await expect.poll(() => drawnSize(page)).toBe(fittedFor(1280, c, LARGE));
+    await expect.poll(() => runningAnimations(page)).toBe(0);
+    await expect
+      .poll(async () => (await lastPanelRect(page)) ?? null)
+      .toEqual(restRect(await box(page.locator(PANEL))));
+
+    type Report =
+      | { type: 'size'; edge: unknown; width: number; height: number }
+      | { type: 'rect'; edge: unknown; rect: Rect };
+    const reportsSince = (mark: number): Promise<Report[]> =>
+      page.evaluate(
+        (m) =>
+          ((window as unknown as DemoWindow).__dockMock?.calls ?? [])
+            .slice(m)
+            .flatMap((call): Report[] => {
+              switch (call.type) {
+                case 'setDockContentSize':
+                  return [
+                    {
+                      type: 'size',
+                      edge: call.edge,
+                      width: call.width as number,
+                      height: call.height as number,
+                    },
+                  ];
+                case 'setDockPanelRect':
+                  return [{ type: 'rect', edge: call.edge, rect: call.rect as Rect }];
+                case 'setDockHitRegion':
+                  return [{ type: 'rect', edge: call.edge, rect: call.panel as Rect }];
+                default:
+                  return [];
+              }
+            }),
+        mark,
+      );
+
+    for (const [edge, moved] of [
+      // Bottom to left: the old window is 1280 across the new edge and 240 along it.
+      ['left', { width: 420, height: WORK_AREA.height }],
+      // Left to bottom: the old window is 1392 across the new edge and 420 along it.
+      ['bottom', { width: WORK_AREA.width, height: 240 }],
+    ] as const) {
+      const vertical = isVertical(edge);
+      const icon = fittedFor(vertical ? moved.height : moved.width, c, LARGE);
+      const thickness = Math.ceil(
+        icon +
+          2 * PANEL_PADDING +
+          EDGE_MARGIN +
+          icon * (MAX_SCALE - 1) +
+          (vertical ? SIDE_HEADROOM : HEADROOM),
+      );
+      const mark = await callCount(page);
+      await patchSettings(page, { position: edge });
+      // Rust moves the window after `dock://settings`.
+      await page.setViewportSize(moved);
+      await expect(page.locator(PANEL)).toHaveAttribute(
+        'aria-orientation',
+        vertical ? 'vertical' : 'horizontal',
+      );
+      await expect.poll(() => drawnSize(page)).toBe(icon);
+      await expect.poll(async () => (await panelRects(page)).at(-1)?.viewport).toEqual(moved);
+      const since = await reportsSince(mark);
+      expect(new Set(since.map((r) => r.type))).toEqual(new Set(['size', 'rect']));
+      for (const report of since) {
+        // Every report for the new edge, the first ones before the move
+        // included, is made at the size the moved window fits.
+        expect(report.edge, JSON.stringify(report)).toBe(edge);
+        if (report.type === 'size') {
+          expect(vertical ? report.width : report.height, JSON.stringify(report)).toBe(thickness);
+        } else {
+          expect(vertical ? report.rect.width : report.rect.height, JSON.stringify(report)).toBe(
+            icon + 2 * PANEL_PADDING,
+          );
+        }
+      }
+    }
   });
 });
 
