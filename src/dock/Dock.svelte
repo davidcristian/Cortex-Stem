@@ -316,13 +316,12 @@
     // (`iconUrlAt`'s fallback until the new bitmaps arrive) stay cached:
     // the rest size is exact device pixels, so every icon size or display
     // scale would otherwise keep one more bitmap per app for good.
-    const keep = new Set([iconSizes.rest, iconSizes.magnified]);
+    const keep = [iconSizes.rest, iconSizes.magnified];
     const previous = untrack(() => previousIconSizes);
     if (previous !== null) {
-      keep.add(previous.rest);
-      keep.add(previous.magnified);
+      keep.push(previous.rest, previous.magnified);
     }
-    store.retainIconSizes(keep);
+    store.retainIconSizes(new Set(keep));
   });
 
   // --- Item enter/leave animations ---------------------------------------------
