@@ -19,7 +19,7 @@
 //!
 //! This module holds the decisions (which pins qualify, what an answer
 //! means, how the pinned list changes); `Inner::reidentify_stale_pins` in
-//! the crate root does the platform calls and the one save.
+//! `resolver.rs` does the platform calls and the one save.
 
 use std::fmt;
 
