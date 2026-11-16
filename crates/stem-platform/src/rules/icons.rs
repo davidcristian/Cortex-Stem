@@ -6,7 +6,8 @@
 //! `RT_GROUP_ICON` directory parser and the rule that picks the image to
 //! load from it ([`parse_group_icon_dir`], [`select_group_icon_entry`]) live
 //! here too, with the rule for which paths are PE images
-//! ([`is_pe_image_path`]); the Windows side only moves bytes.
+//! ([`is_pe_image_path`]); the Windows side only moves bytes. So does the
+//! rule for which keys the in-memory cache keeps ([`is_cacheable`]).
 //!
 //! Buffer conventions (what `GetDIBits` produces when asked for a top-down
 //! 32-bit `BITMAPINFOHEADER`):
@@ -489,6 +490,20 @@ pub fn select_group_icon_entry(
         .filter(|entry| entry.edge() <= max_edge)
         .max_by_key(|entry| (entry.edge(), entry.bit_count, entry.bytes_in_res))
         .copied()
+}
+
+// ---- The in-memory cache ----
+
+/// The icon-key namespace whose PNGs `windows::icons::IconCache` never
+/// keeps: an `hwnd:` key is tied to a live window, which may change its
+/// icon, and an entry could outlive the window.
+pub const UNCACHED_NAMESPACE: &str = "hwnd";
+
+/// Whether the in-memory cache keeps the PNG of the icon key `key`: every
+/// key but one in [`UNCACHED_NAMESPACE`].
+pub fn is_cacheable(key: &str) -> bool {
+    key.split_once(':')
+        .is_none_or(|(namespace, _)| namespace != UNCACHED_NAMESPACE)
 }
 
 #[cfg(test)]
@@ -1037,5 +1052,20 @@ mod tests {
             GroupIconError::BadType(2).to_string(),
             "icon group directory has type 2, expected 1"
         );
+    }
+
+    #[test]
+    fn only_window_icon_keys_are_left_out_of_the_cache() {
+        assert!(!is_cacheable("hwnd:132456:4242"));
+        assert!(!is_cacheable("hwnd:132456"));
+        assert!(is_cacheable(r"exe:C:\Windows\explorer.exe"));
+        assert!(is_cacheable(r"file:C:\Users\me\notes.txt"));
+        assert!(is_cacheable(
+            "aumid:Microsoft.WindowsTerminal_8wekyb3d8bbwe!App"
+        ));
+        // The namespace is compared whole, and a key without one (which
+        // loads nothing) is not left out.
+        assert!(is_cacheable("hwndx:1"));
+        assert!(is_cacheable("hwnd"));
     }
 }

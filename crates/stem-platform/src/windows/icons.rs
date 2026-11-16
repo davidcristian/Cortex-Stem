@@ -122,7 +122,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{BOOL, HRESULT, PCWSTR};
 
 use super::util::{self, LoadedLibrary, OwnedBitmap, OwnedIcon, ScreenDc};
-use crate::rules::icons::{self as pixels, AlphaMode, IconConvertError, IconImage};
+use crate::rules::icons::{
+    self as pixels, AlphaMode, IconConvertError, IconImage, UNCACHED_NAMESPACE,
+};
 use crate::rules::identity::{
     apps_folder_parsing_name, hwnd_icon_owner_matches, parse_hwnd_icon_value,
 };
@@ -150,9 +152,6 @@ const ICON_RESOURCE_VERSION: u32 = 0x0003_0000;
 
 type CacheKey = (IconKey, u32);
 
-/// Namespace of keys that are never cached here (see the module docs).
-const UNCACHED_NAMESPACE: &str = "hwnd";
-
 #[derive(Debug, Default)]
 pub struct IconCache {
     entries: Mutex<HashMap<CacheKey, Arc<Vec<u8>>>>,
@@ -160,7 +159,8 @@ pub struct IconCache {
 
 impl IconCache {
     pub fn get_or_load(&self, key: &IconKey, size: u32) -> PlatformResult<Option<Vec<u8>>> {
-        if !Self::is_cacheable(key) {
+        // `hwnd:` keys are tied to a live window and are not cached.
+        if !pixels::is_cacheable(&key.0) {
             return load_icon_png(key, size);
         }
         if let Some(png) = self.entries.lock().get(&(key.clone(), size)) {
@@ -173,13 +173,6 @@ impl IconCache {
             .lock()
             .insert((key.clone(), size), Arc::new(png.clone()));
         Ok(Some(png))
-    }
-
-    /// `hwnd:` keys are tied to a live window and are not cached.
-    fn is_cacheable(key: &IconKey) -> bool {
-        key.0
-            .split_once(':')
-            .is_none_or(|(namespace, _)| namespace != UNCACHED_NAMESPACE)
     }
 }
 
