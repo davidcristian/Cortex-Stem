@@ -1,7 +1,7 @@
 //! Generates the settings reference, `docs/SETTINGS.md`, from the doc
 //! comments and serde attributes of the settings types in `src/settings.rs`
-//! (and of `LaunchTarget` in `src/model.rs`), and from the values of
-//! `Settings::default()`.
+//! (and of `LaunchTarget` and the ids it uses in `src/model/`), and from the
+//! values of `Settings::default()`.
 //!
 //! `settings_reference_is_up_to_date` fails when the file differs from what
 //! it would generate. With `STEM_UPDATE_SETTINGS_REFERENCE=1` it rewrites the
@@ -23,15 +23,20 @@ use serde_json::{Map, Value};
 use stem_core::Settings;
 
 /// The files the settings types live in, compiled into this test so that a
-/// change to them rebuilds and reruns it.
-const SOURCES: [(&str, &str); 2] = [
+/// change to them rebuilds and reruns it. The page lists the root file of
+/// each one's module ([`module_file`]).
+const SOURCES: [(&str, &str); 3] = [
     (
         "crates/stem-core/src/settings.rs",
         include_str!("../src/settings.rs"),
     ),
     (
-        "crates/stem-core/src/model.rs",
-        include_str!("../src/model.rs"),
+        "crates/stem-core/src/model/ids.rs",
+        include_str!("../src/model/ids.rs"),
+    ),
+    (
+        "crates/stem-core/src/model/app.rs",
+        include_str!("../src/model/app.rs"),
     ),
 ];
 
@@ -662,7 +667,7 @@ struct ValuesClaim {
 #[derive(Debug, Default)]
 struct Reference {
     sections: Vec<Section>,
-    sources: Vec<&'static str>,
+    sources: Vec<String>,
     ranges: Vec<RangeClaim>,
     values: Vec<ValuesClaim>,
 }
@@ -690,6 +695,19 @@ fn default_json() -> Map<String, Value> {
     }
 }
 
+/// The root file of the module that the source file `path` belongs to:
+/// `crates/stem-core/src/model.rs` for `crates/stem-core/src/model/app.rs`,
+/// and `path` itself for a file directly in `src/`.
+fn module_file(path: &str) -> String {
+    let (crate_dir, file) = path
+        .split_once("/src/")
+        .unwrap_or_else(|| panic!("{path} is not under a src/ folder"));
+    match file.split_once('/') {
+        Some((module, _)) => format!("{crate_dir}/src/{module}.rs"),
+        None => path.to_owned(),
+    }
+}
+
 fn generate(items: &[Item]) -> Reference {
     let mut generator = Generator {
         items,
@@ -714,10 +732,12 @@ impl Generator<'_> {
         }
     }
 
-    /// Records the file an item came from, for the page's list of sources.
+    /// Records the module of the file an item came from, for the page's list
+    /// of sources.
     fn visit(&mut self, item: &Item) {
-        if !self.reference.sources.contains(&item.source) {
-            self.reference.sources.push(item.source);
+        let module = module_file(item.source);
+        if !self.reference.sources.contains(&module) {
+            self.reference.sources.push(module);
         }
     }
 
