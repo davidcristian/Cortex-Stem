@@ -1,14 +1,16 @@
 /**
  * Idle guard for the dock page.
  *
- * The dock runs permanently and must idle at ~0 % CPU (docs/development/frontend-rules.md,
- * docs/architecture/performance.md): once it has settled after a start, a hover, a
- * launch bounce, a toast, a drag or an auto-hide slide, the page must do
- * nothing at all until the next input or backend event. Each scenario opens
- * the dock in its own browser context (its own renderer process, so the
- * thread-wide `TaskDuration` is the page's own), drives it into a state,
- * waits for an explicit settled condition and then watches it for
- * `WINDOW_MS`:
+ * The dock runs permanently and must idle at ~0 % CPU
+ * (docs/development/frontend-rules.md, docs/architecture/performance.md):
+ * once it has settled after a start, a hover, a launch bounce, a toast, a
+ * drag or an auto-hide slide, with the keyboard focus resting in the
+ * toolbar, under reduced motion, on either dock of two monitors and after a
+ * file drag over it, the page must do nothing at all until the next input
+ * or backend event. Each scenario opens the dock in its own browser context
+ * (its own renderer process, so the thread-wide `TaskDuration` is the
+ * page's own), drives it into a state, waits for an explicit settled
+ * condition and then watches it for `WINDOW_MS`:
  *
  * - CDP `Performance.getMetrics` deltas: `LayoutCount` and
  *   `RecalcStyleCount` must not move, `ScriptDuration` and `TaskDuration`
@@ -128,6 +130,27 @@ const BATTERY = '.slot[data-kind="battery"]';
 /** A live timer the probe takes as once a minute because it is due on a minute of the wall clock. */
 const MINUTE_TIMER =
   /^timeout \d+ ms from .*, every 60000 ms \(due on a minute of the wall clock\)$/;
+/** The demo's Explorer item: pinned and running. */
+const EXPLORER_KEY = 'app:exe:c:/windows/explorer.exe';
+/** The Recycle Bin item, always last. */
+const BIN = '.slot[data-kind="recycleBin"]';
+/** The gap a file drag opens among the pinned apps. */
+const GAP = '.drop-gap';
+/** The mock's `twoMonitors` scenario, and its second monitor (`SECOND_MONITOR_ID` in src/lib/ipc/mock.ts). */
+const TWO_MONITORS = 'scenario=twoMonitors';
+const DISPLAY3 = '\\\\.\\DISPLAY3';
+/** Paint's item: its one window is on the second monitor in `twoMonitors`. */
+const PAINT = `${APP_SLOT}[data-key="app:exe:c:/windows/system32/mspaint.exe"]`;
+/** A Start-menu shortcut, a program and a document, as Explorer hands them over. */
+const LNK = 'C:\\Users\\me\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Paint.lnk';
+const EXE = 'C:\\Tools\\PuTTY\\putty.exe';
+const TXT = 'C:\\Users\\me\\Documents\\notes.txt';
+
+/** `FileDragEvent` of `src/lib/ipc/backend.ts` (structural: e2e has no `$lib` alias). */
+type FileDrag =
+  | { type: 'enter' | 'drop'; paths: string[]; position: { x: number; y: number } }
+  | { type: 'over'; position: { x: number; y: number } }
+  | { type: 'leave' };
 
 /** What the pages expose in mock mode (`src/lib/ipc/demo.ts`; structural, for `page.evaluate`). */
 interface DemoWindow {
@@ -141,6 +164,10 @@ interface DemoWindow {
     pushForeground: (id: number | null) => void;
     /** Windows' theme changed (`dock://theme`). */
     setTheme: (theme: ThemeInfo) => void;
+    /** Tauri's file drag events: a browser page gets no OLE drags. */
+    simulateFileDrag: (event: FileDrag) => void;
+    /** This page's dock window label (`dock`, or `dock-<monitor>` on another monitor). */
+    pageLabel: string;
   };
 }
 
@@ -637,6 +664,8 @@ interface Scenario {
   /** Query parameters after `mock=1`, e.g. `position=left`. */
   query?: string;
   viewport?: { width: number; height: number };
+  /** Media features emulated before the page loads (`page.emulateMedia`). */
+  media?: { reducedMotion: 'reduce' | 'no-preference' };
   /**
    * Drive the dock into the state to watch. `measureNow` watches it there
    * and then (for the attention control).
@@ -667,6 +696,9 @@ async function runScenario(browser: Browser, scenario: Scenario): Promise<Measur
     await installIdleProbe(page);
     const cdp = await context.newCDPSession(page);
     await cdp.send('Performance.enable');
+    if (scenario.media !== undefined) {
+      await page.emulateMedia(scenario.media);
+    }
     await openDock(page, scenario.query);
     expect(await page.evaluate(() => document.visibilityState)).toBe('visible');
     await scenario.setup?.(page, (watch) => measure(page, cdp, watch));
@@ -840,6 +872,59 @@ function hoverScenario(edge: 'bottom' | 'left'): Scenario {
 
 function setAutoHide(page: Page, mode: Settings['autoHide']['mode']): Promise<void> {
   return patchSettings(page, { autoHide: { mode, delayMs: 250 } });
+}
+
+/** The focused item's key; `null` when the focus is not on an item of the dock. */
+function focusedKey(page: Page): Promise<string | null> {
+  return page.evaluate((panel) => {
+    const active = document.activeElement;
+    if (!(active instanceof HTMLElement) || active.closest(panel) === null) {
+      return null;
+    }
+    return active.dataset.key ?? null;
+  }, PANEL);
+}
+
+/**
+ * Tab into the toolbar and arrow along to the item `key`, as the keyboard
+ * tests of screenshots.spec.ts do: the focus is `:focus-visible`, so
+ * the item shows its pill.
+ */
+async function focusItem(page: Page, key: string): Promise<void> {
+  await page.keyboard.press('Tab');
+  await expect.poll(() => focusedKey(page)).not.toBeNull();
+  const count = await page.locator(`${PANEL} > [role="button"]`).count();
+  await page.keyboard.press('Home');
+  for (let i = 0; i < count && (await focusedKey(page)) !== key; i += 1) {
+    await page.keyboard.press('ArrowRight');
+  }
+  expect(await focusedKey(page)).toBe(key);
+}
+
+/** Tauri's file drag events, as the mock delivers them: viewport CSS px. */
+function fileDrag(page: Page, event: FileDrag): Promise<void> {
+  return page.evaluate((e) => {
+    (window as unknown as DemoWindow).__dockMock?.simulateFileDrag(e);
+  }, event);
+}
+
+async function centreOf(page: Page, selector: string): Promise<{ x: number; y: number }> {
+  const box = (await page.locator(selector).boundingBox())!;
+  return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+}
+
+/** Halfway between the centres of pinned items `a` and `b`, at the icons' mid-height. */
+async function betweenPinned(page: Page, a: number, b: number): Promise<{ x: number; y: number }> {
+  const boxA = (await page.locator(PINNED).nth(a).boundingBox())!;
+  const boxB = (await page.locator(PINNED).nth(b).boundingBox())!;
+  return {
+    x: (boxA.x + boxA.width / 2 + boxB.x + boxB.width / 2) / 2,
+    y: boxA.y + boxA.height / 2,
+  };
+}
+
+function pageLabel(page: Page): Promise<string | undefined> {
+  return page.evaluate(() => (window as unknown as DemoWindow).__dockMock?.pageLabel);
 }
 
 test.describe('the dock page goes quiet once it has settled', () => {
@@ -1209,6 +1294,170 @@ test.describe('the dock page goes quiet once it has settled', () => {
           await page.mouse.move(viewport.width / 2, viewport.height - 1);
           await expect(page.locator(PANEL)).toHaveAttribute('data-autohide', 'shown');
           await expect(page.locator(PANEL)).toBeVisible();
+        },
+      },
+    ]);
+  });
+
+  test('with the keyboard focus resting in the toolbar, and under reduced motion', async ({
+    browser,
+  }) => {
+    await expectQuiet(browser, [
+      {
+        name: 'the keyboard focus resting on an item, its pill shown',
+        setup: async (page) => {
+          await page.mouse.move(AWAY.x, AWAY.y);
+          await focusItem(page, EXPLORER_KEY);
+          // The focused item shows its pill, without magnifying.
+          await expect(page.locator(`${EXPLORER} .tooltip`)).toHaveCount(1);
+          expect(await scaleOf(page, 0)).toBe(1);
+        },
+      },
+      {
+        name: 'auto-hide on, held shown by the keyboard focus resting on an item',
+        setup: async (page) => {
+          await page.mouse.move(AWAY.x, AWAY.y);
+          await focusItem(page, EXPLORER_KEY);
+          await setAutoHide(page, 'always');
+          // The focus holds the dock up (`focus`): past the delay it stays.
+          expect(await settle(page)).toEqual([]);
+          await expect(page.locator(PANEL)).toHaveAttribute('data-autohide', 'shown');
+          expect(await focusedKey(page)).toBe(EXPLORER_KEY);
+        },
+      },
+      {
+        name: 'after the keyboard lets go with Escape',
+        setup: async (page) => {
+          await page.mouse.move(AWAY.x, AWAY.y);
+          await focusItem(page, EXPLORER_KEY);
+          await expect(page.locator('.tooltip')).toHaveCount(1);
+          await page.keyboard.press('ArrowRight');
+          await page.keyboard.press('Escape');
+          await expect.poll(() => focusedKey(page)).toBeNull();
+          await expect(page.locator('.tooltip')).toHaveCount(0);
+          await expect.poll(() => callsOfType(page, 'releaseDockFocus')).toBe(1);
+        },
+      },
+      {
+        name: 'reduced motion from the start, at rest',
+        media: { reducedMotion: 'reduce' },
+        setup: async (page) => {
+          expect(
+            await page.evaluate(() => matchMedia('(prefers-reduced-motion: reduce)').matches),
+          ).toBe(true);
+        },
+      },
+      {
+        name: 'reduced motion switched on, after a hover and a launch (no magnification, no bounce)',
+        setup: async (page) => {
+          await page.emulateMedia({ reducedMotion: 'reduce' });
+          await expect
+            .poll(() => page.evaluate(() => matchMedia('(prefers-reduced-motion: reduce)').matches))
+            .toBe(true);
+          // Notepad: pinned, not running; the pill comes, the icon stays its size.
+          const notepad = page.locator(APP_SLOT).nth(3);
+          await notepad.hover();
+          await expect(notepad.locator('.tooltip')).toHaveCount(1);
+          expect(await scaleOf(page, 3)).toBe(1);
+          await page.mouse.down({ button: 'middle' });
+          await page.mouse.up({ button: 'middle' });
+          await expect.poll(() => callsOfType(page, 'launch')).toBe(1);
+          await page.mouse.move(AWAY.x, AWAY.y);
+          await expect(page.locator('.tooltip')).toHaveCount(0);
+          expect(
+            await notepad.locator('.bouncer').evaluate((el) => el.getAnimations().length),
+          ).toBe(0);
+        },
+      },
+      {
+        name: 'reduced motion, auto-hide on and faded out',
+        media: { reducedMotion: 'reduce' },
+        setup: async (page) => {
+          await page.mouse.move(AWAY.x, AWAY.y);
+          await setAutoHide(page, 'always');
+          await expect(page.locator(PANEL)).toHaveAttribute('data-autohide', 'hidden');
+          await expect(page.locator(PANEL)).toBeHidden();
+        },
+      },
+    ]);
+  });
+
+  test('on either dock of two monitors, and after a file drag over the dock ends', async ({
+    browser,
+  }) => {
+    await expectQuiet(browser, [
+      {
+        name: 'two monitors (the twoMonitors scenario): the primary dock',
+        query: TWO_MONITORS,
+        setup: async (page) => {
+          expect(await pageLabel(page)).toBe('dock');
+          // Paint's window is on the second monitor; with the setting off it is listed here too.
+          await expect(page.locator(PAINT)).toHaveCount(1);
+        },
+      },
+      {
+        name: "two monitors: the second monitor's dock, with only its own windows",
+        query: `${TWO_MONITORS}&monitor=${encodeURIComponent(DISPLAY3)}`,
+        setup: async (page) => {
+          expect(await pageLabel(page)).toBe('dock-DISPLAY3');
+          await expect(page.locator(APP_SLOT)).toHaveCount(8);
+          await patchSettings(page, {
+            monitors: 'all',
+            behavior: { showOnlyCurrentMonitor: true },
+          });
+          // The pinned apps and Paint stay; Code and Spotify, on the primary, go.
+          await expect(page.locator(APP_SLOT)).toHaveCount(6);
+          await expect(page.locator(PAINT)).toHaveCount(1);
+        },
+      },
+      {
+        name: 'after a shortcut and a program are dropped between two pinned apps',
+        setup: async (page) => {
+          await page.mouse.move(AWAY.x, AWAY.y);
+          await expect(page.locator(PINNED)).toHaveCount(5);
+          const at = await betweenPinned(page, 1, 2);
+          const paths = [LNK, EXE];
+          await fileDrag(page, { type: 'enter', paths, position: at });
+          await expect(page.locator(GAP)).toHaveCount(1);
+          const moved = { x: at.x + 3, y: at.y - 4 };
+          await fileDrag(page, { type: 'over', position: moved });
+          await fileDrag(page, { type: 'drop', paths, position: moved });
+          await expect.poll(() => callsOfType(page, 'reorderPinned')).toBe(1);
+          await expect(page.locator(PINNED)).toHaveCount(7);
+          await expect(page.locator(GAP)).toHaveCount(0);
+          await expect(page.locator(`${APP_SLOT}:not([data-icon="loaded"])`)).toHaveCount(0);
+        },
+      },
+      {
+        name: 'after files are dropped on the Recycle Bin',
+        setup: async (page) => {
+          await page.mouse.move(AWAY.x, AWAY.y);
+          const at = await centreOf(page, BIN);
+          const paths = [TXT, EXE];
+          await fileDrag(page, { type: 'enter', paths, position: at });
+          await expect(page.locator(`${BIN}[data-drop-target]`)).toHaveCount(1);
+          await expect(page.locator(`${BIN} .tooltip`)).toHaveCount(1);
+          const moved = { x: at.x + 4, y: at.y - 3 };
+          await fileDrag(page, { type: 'over', position: moved });
+          await fileDrag(page, { type: 'drop', paths, position: moved });
+          await expect.poll(() => callsOfType(page, 'deleteToRecycleBin')).toBe(1);
+          await expect(page.locator('.slot[data-drop-target]')).toHaveCount(0);
+          await expect(page.locator(`${BIN} .tooltip`)).toHaveCount(0);
+          await expect(page.locator(GAP)).toHaveCount(0);
+        },
+      },
+      {
+        name: 'after a file drag over the dock leaves the window',
+        setup: async (page) => {
+          await page.mouse.move(AWAY.x, AWAY.y);
+          const at = await betweenPinned(page, 2, 3);
+          await fileDrag(page, { type: 'enter', paths: [EXE], position: at });
+          await expect(page.locator(GAP)).toHaveCount(1);
+          await fileDrag(page, { type: 'over', position: { x: at.x + 5, y: at.y } });
+          await fileDrag(page, { type: 'leave' });
+          // The gap shrinks away; nothing was asked of the backend.
+          await expect(page.locator(GAP)).toHaveCount(0);
+          expect(await callsOfType(page, 'pinTarget')).toBe(0);
         },
       },
     ]);
