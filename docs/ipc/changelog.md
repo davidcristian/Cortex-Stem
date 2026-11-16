@@ -3,8 +3,10 @@
 This file lists every version of the [IPC contract](index.md), newest first. A section name links
 to the file that covers that section now.
 
-- **v1.29 (small fixes):** No command or event was added or renamed. The page's wheel handling
-  over an item ignores an event with `ctrlKey` set: a touchpad pinch, or Ctrl with the wheel
+- **v1.29 (small fixes):** No command or event was added or renamed. The settings page keeps a
+  `dock://settings` that arrives before its first `get_settings` result
+  ([Startup sequence](events.md#startup-sequence-ui-side)). The page's wheel handling over an
+  item ignores an event with `ctrlKey` set: a touchpad pinch, or Ctrl with the wheel
   ([Scrolling over an item](scrolling-over-an-item.md)). `UserCss` gains
   `problem: UserCssProblem | null` (`notFound`, `unreadable`, `notUtf8`, `tooLarge`), the reason
   `css` is `null`, which the settings page's dock.css row shows ([Themes](themes.md)).

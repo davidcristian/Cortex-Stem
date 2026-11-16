@@ -24,4 +24,8 @@ window) are not part of this contract; see [File drags](file-drags.md).
 A page subscribes to the events first, then calls `get_dock_state`, `get_settings`, `get_theme`
 and `get_monitors`. A dock page needs the monitors to find the monitor it is on, and the start-up
 `dock://monitors` may have been sent before the page subscribed. The page ignores a snapshot
-whose revision is lower than the one it already rendered.
+whose revision is lower than the one it already rendered. `Settings` has no revision. So the
+settings page keeps a `dock://settings` that arrives before its first `get_settings` returns, and
+drops that return value (v1.29). This is correct because Rust emits one event per change, in
+order: when the return value is newer than the event, the event of the change between them
+follows.
