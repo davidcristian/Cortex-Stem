@@ -8,6 +8,7 @@ mod docks;
 mod focus;
 mod placement;
 mod provenance;
+mod settings_window;
 
 fn monitor(id: &str, primary: bool, x: i32, scale: f64) -> MonitorInfo {
     MonitorInfo {

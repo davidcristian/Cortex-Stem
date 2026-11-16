@@ -1,4 +1,5 @@
 use super::*;
+use crate::windows::create::show_new_dock_window;
 use crate::windows::placement::DockContent;
 use crate::windows::plan::{DockPlan, dock_label, dock_page, plan_docks, query_value};
 use crate::windows::state::DockWindowState;
@@ -159,4 +160,16 @@ fn a_closing_dock_window_defers_a_reconcile_until_it_is_gone() {
     assert_eq!(geometry.finish_closing("dock-DISPLAY2"), Some(true));
     assert_eq!(geometry.finish_closing("dock-DISPLAY2"), None);
     assert!(!geometry.defer_if_closing("dock-DISPLAY2"));
+}
+
+#[test]
+fn a_new_secondary_dock_window_follows_the_primary_and_the_primary_always_shows() {
+    // The primary's window is shown whatever is passed.
+    for primary_visible in [None, Some(false), Some(true)] {
+        assert!(show_new_dock_window(DOCK_LABEL, primary_visible));
+    }
+    // A secondary one only while the set is on screen.
+    assert!(show_new_dock_window("dock-DISPLAY3", Some(true)));
+    assert!(!show_new_dock_window("dock-DISPLAY3", Some(false)));
+    assert!(!show_new_dock_window("dock-DISPLAY3", None));
 }

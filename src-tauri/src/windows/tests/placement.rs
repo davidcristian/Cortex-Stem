@@ -1,12 +1,10 @@
 use super::*;
-use crate::windows::create::show_new_dock_window;
 use crate::windows::panel::panel_on_screen;
 use crate::windows::placement::{
     DockContent, LENGTH_RANGE, PlaceStep, THICKNESS_RANGE, clamp_content, edge_rect, is_vertical,
     physical_px, placement_steps, plan_dock_rect, relayout_rect, scale_rect, thickness_of,
     with_min_length,
 };
-use crate::windows::settings_window::native_theme;
 
 const EDGES: [DockPosition; 4] = [
     DockPosition::Bottom,
@@ -354,25 +352,6 @@ fn panel_on_screen_scales_like_a_hit_region_and_offsets_by_the_window_origin() {
     assert_eq!(validate_panel_rect(Rect::new(0, 0, 0, 0)), Ok(()));
     assert!(validate_panel_rect(Rect::new(0, 0, -1, 10)).is_err());
     assert!(validate_panel_rect(Rect::new(0, 0, 10, -1)).is_err());
-}
-
-#[test]
-fn native_theme_forces_light_or_dark_and_follows_windows_for_system() {
-    assert_eq!(native_theme(ThemeMode::System), None);
-    assert_eq!(native_theme(ThemeMode::Light), Some(tauri::Theme::Light));
-    assert_eq!(native_theme(ThemeMode::Dark), Some(tauri::Theme::Dark));
-}
-
-#[test]
-fn a_new_secondary_dock_window_follows_the_primary_and_the_primary_always_shows() {
-    // The primary's window is shown whatever is passed.
-    for primary_visible in [None, Some(false), Some(true)] {
-        assert!(show_new_dock_window(DOCK_LABEL, primary_visible));
-    }
-    // A secondary one only while the set is on screen.
-    assert!(show_new_dock_window("dock-DISPLAY3", Some(true)));
-    assert!(!show_new_dock_window("dock-DISPLAY3", Some(false)));
-    assert!(!show_new_dock_window("dock-DISPLAY3", None));
 }
 
 #[test]
