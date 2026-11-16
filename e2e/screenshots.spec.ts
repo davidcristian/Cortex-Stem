@@ -13,6 +13,7 @@ import type { Settings } from '../src/lib/ipc/generated/Settings';
 import type { ThemeInfo } from '../src/lib/ipc/generated/ThemeInfo';
 import type { ThemePreset } from '../src/lib/ipc/generated/ThemePreset';
 import type { UserCss } from '../src/lib/ipc/generated/UserCss';
+import type { VolumeStatus } from '../src/lib/ipc/generated/VolumeStatus';
 
 const OUT = 'e2e/output';
 const APP_SLOT = '.slot[data-kind="app"]';
@@ -81,6 +82,10 @@ interface DemoWindow {
     setPower: (status: PowerStatus) => void;
     /** `ClockFormatChanged` after a `WM_SETTINGCHANGE` for `intl` (v1.25). */
     setClockFormat: (format: ClockFormat) => void;
+    /** `VolumeChanged` as the volume thread reports it (v1.30; `null`: no device). */
+    setVolume: (status: VolumeStatus | null) => void;
+    /** The volume item's *Mute* / *Unmute* menu entry, which Rust runs from its native menu. */
+    chooseVolumeMute: (muted: boolean) => Promise<void>;
     /** `hide_app`: what *Hide from Stem* in an app's native menu runs. */
     hideApp: (appId: string) => Promise<void>;
     /** `unhide_app`. */
@@ -2498,6 +2503,290 @@ test.describe('clock and battery', () => {
       await expect(clock).toHaveAttribute('aria-label', AMERICAN_FULL);
       expect(errors).toEqual([]);
     });
+  });
+});
+
+test.describe('the volume item (v1.30)', () => {
+  const VOLUME = '.slot[data-kind="volume"]';
+  /** The dock's last slots with the volume, battery and clock on. */
+  const TRAILING = ['sep:3', 'fixed:volume', 'fixed:battery', 'fixed:clock', 'fixed:recycle-bin'];
+  const NOW = '2026-11-15T10:42:00+01:00';
+  test.use({ locale: 'en-US', timezoneId: 'Europe/Berlin' });
+
+  /** The keys of the rendered slots (items and separators), in dock order. */
+  function keys(page: Page): Promise<string[]> {
+    return page
+      .locator('.dock-panel > .slot:not([data-leaving])')
+      .evaluateAll((els) => els.map((el) => (el as HTMLElement).dataset.key ?? ''));
+  }
+
+  /** A new reading, as the volume thread reports it. */
+  async function setVolume(page: Page, status: VolumeStatus | null): Promise<void> {
+    await page.evaluate((s) => (window as unknown as DemoWindow).__dockMock!.setVolume(s), status);
+  }
+
+  /** The mock's volume now (`DockState.volume`). */
+  function volumeNow(page: Page): Promise<VolumeStatus | null> {
+    return page.evaluate(
+      async () => (await (window as unknown as DemoWindow).__dockMock!.getDockState()).volume,
+    );
+  }
+
+  /** What the face draws: its waves, the cross, the slash and the text. */
+  function face(
+    page: Page,
+  ): Promise<{ waves: number; cross: boolean; slash: boolean; text: string }> {
+    return page.locator(`${VOLUME} svg`).evaluate((svg) => ({
+      waves: svg.querySelectorAll('path.wave').length,
+      cross: svg.querySelector('path.cross') !== null,
+      slash: svg.querySelector('path.slash') !== null,
+      text: svg.querySelector('text.percent')?.textContent ?? '',
+    }));
+  }
+
+  /** Every `scroll_item` the page sent so far: key and direction. */
+  const scrolls = (page: Page): Promise<Array<{ itemKey: unknown; direction: unknown }>> =>
+    page.evaluate(() =>
+      ((window as unknown as DemoWindow).__dockMock?.calls ?? [])
+        .filter((c) => c.type === 'scrollItem')
+        .map((c) => ({ itemKey: c.itemKey, direction: c.direction })),
+    );
+
+  /** The volume item with the battery and the clock, as the settings window would. */
+  async function switchOn(page: Page): Promise<void> {
+    await patchSettings(page, { items: { volume: true, battery: true, clock: true } });
+    await expect.poll(async () => (await keys(page)).slice(-5)).toEqual(TRAILING);
+    await expect.poll(() => runningAnimations(page)).toBe(0);
+  }
+
+  /**
+   * Put the pointer on the volume item and keep it there: the pointer's
+   * way across the dock magnifies the items it passes and moves them, so
+   * hover once more where the item came to rest, then let the
+   * magnification settle around it.
+   */
+  async function hoverVolume(page: Page): Promise<void> {
+    const volume = page.locator(VOLUME);
+    await volume.hover();
+    await expect.poll(() => runningAnimations(page)).toBe(0);
+    await volume.hover();
+    await expect.poll(() => runningAnimations(page)).toBe(0);
+    await expect(page.locator('.tooltip')).toHaveText(/^(Volume|No audio)/);
+  }
+
+  /** A screenshot of the volume item and a little around it. */
+  async function shootItem(page: Page, name: string): Promise<void> {
+    await expect.poll(() => runningAnimations(page)).toBe(0);
+    const box = (await page.locator(VOLUME).boundingBox())!;
+    await page.screenshot({
+      path: `${OUT}/${name}.png`,
+      clip: { x: box.x - 24, y: box.y - 12, width: box.width + 48, height: box.height + 24 },
+    });
+  }
+
+  test('is off by default; on, it sits before the battery with its face, name, click and menu', async ({
+    page,
+  }) => {
+    await page.clock.setFixedTime(NOW);
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openDock(page);
+    await expect(page.locator(VOLUME)).toHaveCount(0);
+
+    await switchOn(page);
+    const volume = page.locator(VOLUME);
+    // Rust's title; the demo's device at 60 %: two waves and the level.
+    await expect(volume).toHaveAttribute('aria-label', 'Volume 60 %');
+    await expect(volume).toHaveAttribute('data-icon', 'shell');
+    await expect(volume).toHaveAttribute('tabindex', '-1');
+    expect(await face(page)).toEqual({ waves: 2, cross: false, slash: false, text: '60%' });
+    await expect.poll(async () => (await volume.locator('svg').boundingBox())?.width).toBe(ICON);
+    await page.screenshot({ path: `${OUT}/dock-volume-dark.png` });
+
+    await volume.hover();
+    await expect(page.locator('.tooltip')).toHaveText('Volume 60 %');
+    await page.mouse.move(640, 10);
+    await expect(page.locator('.tooltip')).toHaveCount(0);
+
+    // A click opens Quick Settings, as Windows' volume icon does; so do
+    // Enter and Space from the keyboard; a right-click asks for the menu.
+    await volume.click();
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          ((window as unknown as DemoWindow).__dockMock?.calls ?? [])
+            .filter((c) => c.type === 'shell')
+            .map((c) => c.action),
+        ),
+      )
+      .toEqual(['openQuickSettings']);
+    await volume.focus();
+    await page.keyboard.press('Enter');
+    await page.keyboard.press(' ');
+    await expect.poll(() => callsOfType(page, 'shell')).toBe(3);
+    await volume.click({ button: 'right' });
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          ((window as unknown as DemoWindow).__dockMock?.calls ?? [])
+            .filter((c) => c.type === 'showItemMenu')
+            .map((c) => c.itemKey),
+        ),
+      )
+      .toEqual(['fixed:volume']);
+    await page.mouse.move(640, 10);
+    // Let go of the keyboard focus, so the pictures below show no ring.
+    await volume.evaluate((el) => (el as HTMLElement).blur());
+
+    // A few levels: no wave at 0 %, one, two, three.
+    for (const [percent, waves] of [
+      [0, 0],
+      [20, 1],
+      [100, 3],
+    ] as const) {
+      await setVolume(page, { percent, muted: false });
+      await expect(volume).toHaveAttribute('aria-label', `Volume ${percent} %`);
+      expect(await face(page)).toEqual({
+        waves,
+        cross: false,
+        slash: false,
+        text: `${percent}%`,
+      });
+      await shootItem(page, `dock-volume-${percent}-dark`);
+    }
+
+    // Muted (here through the menu's Mute): a cross instead of the waves,
+    // the level kept; Unmute brings the waves back.
+    await setVolume(page, { percent: 45, muted: false });
+    await page.evaluate(() => (window as unknown as DemoWindow).__dockMock!.chooseVolumeMute(true));
+    await expect(volume).toHaveAttribute('aria-label', 'Volume muted');
+    expect(await face(page)).toEqual({ waves: 0, cross: true, slash: false, text: '45%' });
+    await shootItem(page, 'dock-volume-muted-dark');
+    await page.evaluate(() =>
+      (window as unknown as DemoWindow).__dockMock!.chooseVolumeMute(false),
+    );
+    await expect(volume).toHaveAttribute('aria-label', 'Volume 45 %');
+
+    // No output device: the item stays, struck out, with a dash.
+    await setVolume(page, null);
+    await expect(volume).toHaveAttribute('aria-label', 'No audio output');
+    expect(await face(page)).toEqual({ waves: 0, cross: false, slash: true, text: '–' });
+    await shootItem(page, 'dock-volume-none-dark');
+
+    // Off, live: it goes, the battery and the clock stay.
+    await patchSettings(page, { items: { volume: false } });
+    await expect(volume).toHaveCount(0);
+    await expect
+      .poll(async () => (await keys(page)).slice(-4))
+      .toEqual(['sep:3', 'fixed:battery', 'fixed:clock', 'fixed:recycle-bin']);
+  });
+
+  test('a wheel over it steps the volume by 2 per notch with scrollAction none; up unmutes, the ends clamp', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openDock(page);
+    await page.evaluate(() => {
+      const w = window as unknown as { __wheelPrevented?: boolean[] };
+      w.__wheelPrevented = [];
+      window.addEventListener('wheel', (e) => w.__wheelPrevented!.push(e.defaultPrevented));
+    });
+    await switchOn(page);
+    const settings = await page.evaluate(() =>
+      (window as unknown as DemoWindow).__dockMock!.getSettings(),
+    );
+    expect(settings.behavior.scrollAction).toBe('none');
+
+    // Over an app item, `none` still sends nothing.
+    await page.locator(APP_SLOT).first().hover();
+    await page.mouse.wheel(0, -100);
+    // Over the volume: every notch is a `scroll_item` and a step of 2.
+    const volume = page.locator(VOLUME);
+    await hoverVolume(page);
+    for (let i = 0; i < 3; i++) {
+      await page.mouse.wheel(0, -100);
+    }
+    await expect.poll(() => volumeNow(page)).toEqual({ percent: 66, muted: false });
+    await page.mouse.wheel(0, 100);
+    await expect.poll(() => volumeNow(page)).toEqual({ percent: 64, muted: false });
+    await expect(volume).toHaveAttribute('aria-label', 'Volume 64 %');
+    await page.mouse.wheel(0, -100);
+    await expect.poll(() => volumeNow(page)).toEqual({ percent: 66, muted: false });
+    expect(await scrolls(page)).toEqual([
+      { itemKey: 'fixed:volume', direction: 'previous' },
+      { itemKey: 'fixed:volume', direction: 'previous' },
+      { itemKey: 'fixed:volume', direction: 'previous' },
+      { itemKey: 'fixed:volume', direction: 'next' },
+      { itemKey: 'fixed:volume', direction: 'previous' },
+    ]);
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => (window as unknown as { __wheelPrevented?: boolean[] }).__wheelPrevented ?? [],
+        ),
+      )
+      .toEqual([false, true, true, true, true, true]);
+    expect(await callsOfType(page, 'windowAction')).toBe(0);
+
+    // Muted at 98: a notch up unmutes and reaches 100, the next stays there.
+    await setVolume(page, { percent: 98, muted: true });
+    await page.mouse.wheel(0, -100);
+    await expect.poll(() => volumeNow(page)).toEqual({ percent: 100, muted: false });
+    await page.mouse.wheel(0, -100);
+    await expect.poll(async () => (await scrolls(page)).length).toBe(7);
+    expect(await volumeNow(page)).toEqual({ percent: 100, muted: false });
+    // Muted at 3: down keeps the mute and stops at 0.
+    await setVolume(page, { percent: 3, muted: true });
+    await page.mouse.wheel(0, 100);
+    await page.mouse.wheel(0, 100);
+    await page.mouse.wheel(0, 100);
+    await expect.poll(async () => (await scrolls(page)).length).toBe(10);
+    expect(await volumeNow(page)).toEqual({ percent: 0, muted: true });
+
+    // Without a device the notches still go to Rust, which does nothing.
+    await setVolume(page, null);
+    await page.mouse.wheel(0, -100);
+    await expect.poll(async () => (await scrolls(page)).length).toBe(11);
+    expect(await volumeNow(page)).toBeNull();
+    expect(await callsOfType(page, 'setVolume')).toBe(8);
+  });
+
+  test('in the light theme, muted', async ({ page }) => {
+    await page.clock.setFixedTime(NOW);
+    await page.emulateMedia({ colorScheme: 'light' });
+    await openDock(page);
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+    await switchOn(page);
+    await setVolume(page, { percent: 30, muted: true });
+    await expect(page.locator(VOLUME)).toHaveAttribute('aria-label', 'Volume muted');
+    await expect.poll(() => runningAnimations(page)).toBe(0);
+    await page.screenshot({ path: `${OUT}/dock-volume-muted-light.png` });
+  });
+
+  test('on a left dock (dark): in the column above the battery', async ({ page }) => {
+    await page.clock.setFixedTime(NOW);
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await page.setViewportSize({ width: 360, height: 900 });
+    await openDock(page, 'mock=1&position=left');
+    await switchOn(page);
+    await setVolume(page, { percent: 80, muted: false });
+    await expect(page.locator(VOLUME)).toHaveAttribute('aria-label', 'Volume 80 %');
+    const xs = new Set(
+      await page
+        .locator('.slot[data-kind="volume"], .slot[data-kind="battery"]')
+        .evaluateAll((els) => els.map((el) => Math.round(el.getBoundingClientRect().left))),
+    );
+    expect(xs.size).toBe(1);
+    const [volumeTop, batteryTop] = await page
+      .locator('.slot[data-kind="volume"], .slot[data-kind="battery"]')
+      .evaluateAll((els) => els.map((el) => el.getBoundingClientRect().top));
+    expect(volumeTop!).toBeLessThan(batteryTop!);
+    // The wheel steps it on a side edge too.
+    await hoverVolume(page);
+    await page.mouse.wheel(0, -100);
+    await expect.poll(() => volumeNow(page)).toEqual({ percent: 82, muted: false });
+    await page.mouse.move(340, 10);
+    await expect.poll(() => runningAnimations(page)).toBe(0);
+    await page.screenshot({ path: `${OUT}/dock-volume-left-dark.png` });
   });
 });
 

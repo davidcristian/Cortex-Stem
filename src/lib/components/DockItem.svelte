@@ -14,6 +14,7 @@
   import type { ClockFormat } from '$lib/ipc/generated/ClockFormat';
   import type { DockItem } from '$lib/ipc/generated/DockItem';
   import type { PowerStatus } from '$lib/ipc/generated/PowerStatus';
+  import type { VolumeStatus } from '$lib/ipc/generated/VolumeStatus';
 
   interface Props {
     item: DockItem;
@@ -72,6 +73,12 @@
      */
     power?: PowerStatus | null;
     /**
+     * `DockState.volume`: the volume item draws its face from it;
+     * `null` (the default) without an output device or before the page has
+     * a state.
+     */
+    volume?: VolumeStatus | null;
+    /**
      * `DockState.clockFormat`: the clock item formats its face, its
      * title pill and its accessible name in it. `null` (the default) before
      * the page has a state: the page's own locale.
@@ -107,6 +114,7 @@
     tabStop,
     dropTarget,
     power = null,
+    volume = null,
     clockFormat = null,
     onprimary,
     onmiddle,
@@ -347,7 +355,7 @@
     >
       <div class="icon" class:dual>
         {#if shellName !== null}
-          <ShellIcon name={shellName} {clock} {power} />
+          <ShellIcon name={shellName} {clock} {power} {volume} />
         {:else if iconState === 'loaded'}
           <!-- `decoding="sync"`: the hidden one of the pair is decoded in the
                paint that first shows it, so switching never leaves a blank frame. -->

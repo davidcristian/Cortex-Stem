@@ -787,6 +787,20 @@
             />
           </SettingRow>
           <SettingRow
+            id="item-volume"
+            label="Volume"
+            description="The speaker's volume; scroll over it to change it. Opens quick settings"
+          >
+            <Toggle
+              id="item-volume"
+              checked={settings.items.volume}
+              onchange={(v) =>
+                edit((s) => {
+                  s.items.volume = v;
+                })}
+            />
+          </SettingRow>
+          <SettingRow
             id="item-battery"
             label="Battery"
             description="The battery's charge; only on a PC with a battery. Opens quick settings"

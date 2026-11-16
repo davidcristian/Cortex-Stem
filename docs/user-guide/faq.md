@@ -45,8 +45,8 @@ No. Replacing the notification area is not a goal, for the reasons in the
 [notification area research](../research/notification-area/index.md). The
 tray icons and the input indicators stay on the stock taskbar, which stays
 reachable with [_Hide the Windows taskbar_](hiding-the-windows-taskbar.md) on.
-The dock's optional Quick Settings, Notification Center, battery and clock
-items open Windows' own panels (see [Fixed items](fixed-items.md)).
+The dock's optional Quick Settings, Notification Center, volume, battery and
+clock items open Windows' own panels (see [Fixed items](fixed-items.md)).
 
 ## Which keyboard shortcuts can I use?
 

@@ -95,7 +95,7 @@
   } from '$lib/dock/reorder';
   import { accentColor, effectiveOpacity, resolveTheme } from '$lib/dock/theme';
   import { applyUserCss, NO_USER_CSS, nextUserCss, type UserCssView } from '$lib/dock/user-css';
-  import { WheelNotches } from '$lib/dock/wheel';
+  import { WheelNotches, wheelSends } from '$lib/dock/wheel';
   import type { Backend, CssPoint, FileDragEvent } from '$lib/ipc/backend';
   import type { AppId } from '$lib/ipc/generated/AppId';
   import type { DockItem as DockItemModel } from '$lib/ipc/generated/DockItem';
@@ -336,8 +336,11 @@
   const bounceEnabled = $derived((settings?.appearance.bounceOnLaunch ?? true) && !reducedMotion);
   const itemMotion = $derived(!reducedMotion);
   const showDots = $derived(settings?.behavior.runningIndicators ?? true);
-  /** `behavior.scrollAction`: the wheel over an item sends nothing while it is `none`. */
-  const scrollOn = $derived((settings?.behavior.scrollAction ?? 'none') !== 'none');
+  /**
+   * `behavior.scrollAction`: the wheel over an item sends nothing
+   * while it is `none`, but over the volume item (`wheelSends`).
+   */
+  const scrollAction = $derived(settings?.behavior.scrollAction ?? 'none');
 
   // --- Theme on <html> --------------------------------------------------------
   $effect(() => {
@@ -1113,20 +1116,22 @@
   // item and says when a notch is complete (100 px, or one event of 30 px
   // or more, whatever Windows' lines to scroll at a time); each one is a
   // `scroll_item`, and Rust decides what it does (cycle the item's windows,
-  // at most once per 150 ms). Nothing is counted or sent while the setting
-  // is `none`, nor for a pinch or Ctrl and the wheel (`ctrlKey`),
-  // and the page's default handling is only prevented for an event that
-  // sends something.
+  // at most once per 150 ms; step the volume over the volume item, every
+  // notch). Nothing is counted or sent while the setting is `none`,
+  // except over the volume item (`wheelSends`), nor for a pinch or Ctrl and
+  // the wheel (`ctrlKey`), and the page's default handling is only
+  // prevented for an event that sends something.
   const wheelNotches = new WheelNotches();
 
   function onpanelwheel(e: WheelEvent): void {
-    if (!scrollOn || drag?.started) {
-      wheelNotches.reset();
-      return;
-    }
     const slot =
       e.target instanceof Element ? e.target.closest<HTMLElement>('.slot[data-key]') : null;
     const key = slot !== null && panelEl?.contains(slot) ? (slot.dataset.key ?? null) : null;
+    const kind = key === null ? null : (items.find((i) => i.key === key)?.kind ?? null);
+    if (key !== null && (!wheelSends(scrollAction, kind) || drag?.started)) {
+      wheelNotches.reset();
+      return;
+    }
     const notches = wheelNotches.add({
       key,
       deltaX: e.deltaX,
@@ -2443,6 +2448,7 @@
               (dropTargetKey === item.key && tooltipsEnabled)}
             dropTarget={dropTargetKey === item.key}
             power={store.state.power}
+            volume={store.state.volume}
             clockFormat={store.state.clockFormat}
             bounce={bounceEnabled && store.bounceKey === item.key ? store.bounceSerial : 0}
             animate={itemMotion}
@@ -2559,7 +2565,8 @@
      separators, which sit on the wallpaper and so take more contrast. The
      panel keeps its box (padding, hit region, size), so a preset change
      never moves an icon. Stem's own neutral tiles (Task View, Show
-     Desktop, Quick Settings, Notification Center, the clock, the battery)
+     Desktop, Quick Settings, Notification Center, the volume, the battery,
+     the clock)
      are a light wash over the panel elsewhere; with no panel under them
      they take a nearly opaque tile in the panel's tint, so their text and
      lines read over any wallpaper (`--panel-tint` follows the colour

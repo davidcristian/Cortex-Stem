@@ -9,6 +9,7 @@ import {
   NOTCH_SLACK_PX,
   wheelPixels,
   WheelNotches,
+  wheelSends,
   type WheelInput,
 } from './wheel';
 
@@ -251,5 +252,18 @@ describe('WheelNotches (docs/ipc/scrolling-over-an-item.md)', () => {
     expect(notches.add(wheel('app:a', -5, PAGE))).toEqual(Array(10).fill('previous'));
     expect(notches.add(wheel('app:a', Number.NaN))).toEqual([]);
     expect(notches.add(wheel('app:a', 100))).toEqual(['next']);
+  });
+});
+
+describe('wheelSends', () => {
+  it('sends over the volume item whatever the setting, over other items only while it is not none', () => {
+    expect(wheelSends('none', 'volume')).toBe(true);
+    expect(wheelSends('cycleWindows', 'volume')).toBe(true);
+    for (const kind of ['app', 'launcher', 'battery', 'clock', 'recycleBin'] as const) {
+      expect(wheelSends('none', kind)).toBe(false);
+      expect(wheelSends('cycleWindows', kind)).toBe(true);
+    }
+    expect(wheelSends('none', null)).toBe(false);
+    expect(wheelSends('cycleWindows', null)).toBe(false);
   });
 });

@@ -30,8 +30,15 @@
  * and Ctrl and the wheel is a zoom, not a scroll. Both leave the rest as
  * it was, and the caller leaves such an event alone (it sends nothing, so
  * it does not prevent its default either).
+ *
+ * Whether the wheel over an item sends anything at all is [`wheelSends`]:
+ * over the volume item always (v1.30: Rust steps the volume whatever
+ * `behavior.scrollAction` says), over any other item only while that
+ * setting is not `none`.
  */
 
+import type { DockItemKind } from '$lib/ipc/generated/DockItemKind';
+import type { ScrollAction } from '$lib/ipc/generated/ScrollAction';
 import type { ScrollDirection } from '$lib/ipc/generated/ScrollDirection';
 
 /** Vertical travel per notch, in CSS px: one `scroll_item` each. */
@@ -87,6 +94,19 @@ export function wheelPixels(deltaY: number, deltaMode: number, pageHeight: numbe
     px = pageHeight > 0 ? deltaY * pageHeight : 0;
   }
   return Number.isFinite(px) ? px : 0;
+}
+
+/**
+ * Whether the wheel over an item of `kind` (`null`: over no item) sends
+ * `scroll_item` under `scrollAction`: over the volume item whatever the
+ * setting, over other items only while it is not `none`, over no item
+ * never.
+ */
+export function wheelSends(scrollAction: ScrollAction, kind: DockItemKind | null): boolean {
+  if (kind === null) {
+    return false;
+  }
+  return kind === 'volume' || scrollAction !== 'none';
 }
 
 /** Whether the event is a vertical scroll: more travel up or down than sideways. */

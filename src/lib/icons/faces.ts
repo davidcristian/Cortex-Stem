@@ -1,11 +1,12 @@
 /**
- * The words and numbers on the clock and battery faces (docs/ipc/widget-items.md
- * "Clock and battery items"). Pure: `ShellIcon.svelte` draws them and
+ * The words and numbers on the clock, battery and volume faces
+ * (docs/ipc/widget-items.md). Pure: `ShellIcon.svelte` draws them and
  * `DockItem.svelte` runs the clock's minute timer.
  */
 
 import type { ClockFormat } from '$lib/ipc/generated/ClockFormat';
 import type { PowerStatus } from '$lib/ipc/generated/PowerStatus';
+import type { VolumeStatus } from '$lib/ipc/generated/VolumeStatus';
 
 /** What the clock face shows, in the user's regional format. */
 export interface ClockText {
@@ -163,5 +164,46 @@ export function batteryFace(power: PowerStatus | null, locale?: string): Battery
     glyph: power?.charging ? 'bolt' : power?.onAc ? 'plug' : null,
     saver,
     low: level !== null && level < BATTERY_LOW_LEVEL && !power?.charging && !saver,
+  };
+}
+
+/**
+ * The lowest level, in percent, at which the speaker shows one, two and
+ * three waves (Windows' own three steps): none at 0 %, one from 1 % to
+ * 33 %, two from 34 % to 66 %, three from 67 %.
+ */
+export const VOLUME_WAVE_LEVELS = [1, 34, 67] as const;
+
+/** What the volume face shows. */
+export interface VolumeFace {
+  /**
+   * `on`: the speaker with its waves; `muted`: the speaker with a cross
+   * where the waves would be; `none`: no output device, a struck-out,
+   * dimmed speaker.
+   */
+  state: 'on' | 'muted' | 'none';
+  /** The waves beside the speaker, 0 to 3 (`VOLUME_WAVE_LEVELS`); 0 unless `on`. */
+  waves: 0 | 1 | 2 | 3;
+  /** The level as text in the page's locale (`45%`), also while muted; `–` without a device. */
+  percentText: string;
+}
+
+/**
+ * The volume face for `volume` (`DockState.volume`: `null` without an
+ * output device, and before the page has a state). `locale` is for tests.
+ */
+export function volumeFace(volume: VolumeStatus | null, locale?: string): VolumeFace {
+  if (volume === null) {
+    return { state: 'none', waves: 0, percentText: '–' };
+  }
+  const percent = Math.min(100, Math.max(0, volume.percent));
+  const waves = VOLUME_WAVE_LEVELS.filter((level) => percent >= level).length as 0 | 1 | 2 | 3;
+  return {
+    state: volume.muted ? 'muted' : 'on',
+    waves: volume.muted ? 0 : waves,
+    percentText: new Intl.NumberFormat(locale, {
+      style: 'percent',
+      maximumFractionDigits: 0,
+    }).format(percent / 100),
   };
 }

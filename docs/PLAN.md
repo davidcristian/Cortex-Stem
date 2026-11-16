@@ -170,13 +170,13 @@ area, stacks and folders, widgets (clock, battery, volume), and theming.
   step.
 - Jump lists and recent documents in the dock's menu have a study
   ([research](research/jump-lists/index.md)) and no code.
-- The clock and battery items are done (`items.clock`,
-  `items.battery`).
+- The clock, battery and volume items are done (`items.clock`,
+  `items.battery`, `items.volume`).
 - Theming is done: three theme presets and the user's own `dock.css`
   ([THEMING.md](THEMING.md)).
 
-**Planned.** Jump lists and recent documents in the dock's menu, stacks
-and folders, and the volume item.
+**Planned.** Jump lists and recent documents in the dock's menu, and stacks
+and folders.
 
 **Exit criterion.** None.
 

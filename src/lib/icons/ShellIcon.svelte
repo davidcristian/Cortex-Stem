@@ -2,8 +2,9 @@
   // Built-in vector art for the `shell:` icon namespace (docs/ipc/icon-keys.md).
   // Tiles use the same 22 % corner radius as app icons so the row reads as one.
   import type { PowerStatus } from '$lib/ipc/generated/PowerStatus';
+  import type { VolumeStatus } from '$lib/ipc/generated/VolumeStatus';
 
-  import { batteryFace, DAY_PERIOD_SCALE, timeFontSize, type ClockText } from './faces';
+  import { batteryFace, DAY_PERIOD_SCALE, timeFontSize, volumeFace, type ClockText } from './faces';
 
   interface Props {
     /** The key without its `shell:` prefix, e.g. `start`, `recycle-bin-full`. */
@@ -15,11 +16,17 @@
     clock?: ClockText | null;
     /** `DockState.power`, for the battery face (`shell:battery`). */
     power?: PowerStatus | null;
+    /**
+     * `DockState.volume`, for the volume face (`shell:volume`):
+     * `null` without an output device.
+     */
+    volume?: VolumeStatus | null;
   }
 
-  let { name, clock = null, power = null }: Props = $props();
+  let { name, clock = null, power = null, volume = null }: Props = $props();
 
   const battery = $derived(name === 'battery' ? batteryFace(power) : null);
+  const speaker = $derived(name === 'volume' ? volumeFace(volume) : null);
   const timeSize = $derived(clock === null ? 0 : timeFontSize(clock));
   /** The day period with the space that parts it from the time, before or after it. */
   const periodBefore = $derived(
@@ -170,6 +177,39 @@
     <text class="face percent" x="32" y="53" font-size="14" text-anchor="middle"
       >{battery.percentText}</text
     >
+  {:else if name === 'volume' && speaker !== null}
+    <!-- A speaker with one to three waves by level (none at 0 %), a cross
+         where the waves would be while muted, struck out and dimmed
+         without an output device; the level below as text
+         (`volumeFace`). The slash is outlined in the panel's tint so it
+         reads over the speaker, as the battery's glyph does. -->
+    <rect x="2" y="2" width="60" height="60" rx="14" fill="var(--tile-neutral)" />
+    <g class="speaker" class:none={speaker.state === 'none'}>
+      <path class="cone" d="M17 22.5h6l8.5-7.5v23l-8.5-7.5h-6Z" />
+      {#if speaker.waves >= 1}
+        <path class="wave" d="M34.95 21.55A7 7 0 0 1 34.95 31.45" />
+      {/if}
+      {#if speaker.waves >= 2}
+        <path class="wave" d="M38.49 18.01A12 12 0 0 1 38.49 34.99" />
+      {/if}
+      {#if speaker.waves >= 3}
+        <path class="wave" d="M42.02 14.48A17 17 0 0 1 42.02 38.52" />
+      {/if}
+      {#if speaker.state === 'muted'}
+        <path class="cross" d="M36.5 22l9 9M45.5 22l-9 9" />
+      {/if}
+    </g>
+    {#if speaker.state === 'none'}
+      <path class="slash" d="M15 13L49 40" />
+    {/if}
+    <text
+      class="face percent"
+      class:quiet={speaker.state !== 'on'}
+      x="32"
+      y="53"
+      font-size="14"
+      text-anchor="middle">{speaker.percentText}</text
+    >
   {:else if name === 'recycle-bin-empty' || name === 'recycle-bin-full'}
     <!-- A free-standing silver bin, like the macOS Trash: fluted body with a
          horizontal "cylinder" gradient, a flared rim, and a lid that sits flat
@@ -304,5 +344,39 @@
     stroke-width: 1.5;
     stroke-linejoin: round;
     paint-order: stroke;
+  }
+
+  /* The volume face: the text colour, like the other tiles; the
+     speaker and its text quieter without a device, the text while muted. */
+  .cone {
+    fill: currentColor;
+    stroke: currentColor;
+    stroke-width: 1;
+    stroke-linejoin: round;
+  }
+
+  .wave,
+  .cross {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 3;
+    stroke-linecap: round;
+  }
+
+  .speaker.none {
+    opacity: 0.45;
+  }
+
+  .slash {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 3;
+    stroke-linecap: round;
+    /* An outline in the panel's tint parts it from the speaker under it. */
+    filter: drop-shadow(0 0 1.5px rgb(var(--panel-tint)));
+  }
+
+  .percent.quiet {
+    opacity: 0.6;
   }
 </style>

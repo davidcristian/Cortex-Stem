@@ -10,6 +10,8 @@ import {
   clockText,
   msUntilNextMinute,
   timeFontSize,
+  VOLUME_WAVE_LEVELS,
+  volumeFace,
 } from './faces';
 
 /** Sunday 15 November 2026, 10:42:30.250 local time. */
@@ -236,5 +238,39 @@ describe('batteryFace', () => {
     });
     expect(batteryFace(power({ percent: null })).low).toBe(false);
     expect(batteryFace(null).low).toBe(false);
+  });
+});
+
+describe('volumeFace', () => {
+  it('draws no wave at 0 %, one up to 33 %, two up to 66 %, three from 67 %', () => {
+    expect(VOLUME_WAVE_LEVELS).toEqual([1, 34, 67]);
+    const waves = (percent: number): number => volumeFace({ percent, muted: false }).waves;
+    expect([0, 1, 33, 34, 66, 67, 100].map(waves)).toEqual([0, 1, 1, 2, 2, 3, 3]);
+    for (let percent = 0; percent <= 100; percent += 1) {
+      expect(volumeFace({ percent, muted: false }).state).toBe('on');
+    }
+  });
+
+  it('writes the level in the locale, also while muted', () => {
+    expect(volumeFace({ percent: 45, muted: false }, 'en-US').percentText).toBe('45%');
+    // German puts a no-break space before the sign.
+    expect(volumeFace({ percent: 45, muted: false }, 'de-DE').percentText).toMatch(/^45\s%$/);
+    expect(volumeFace({ percent: 45, muted: true }, 'en-US')).toEqual({
+      state: 'muted',
+      waves: 0,
+      percentText: '45%',
+    });
+  });
+
+  it('has a no-device face: no waves and a dash, before any state too', () => {
+    expect(volumeFace(null)).toEqual({ state: 'none', waves: 0, percentText: '–' });
+  });
+
+  it('clamps a level out of range (never sent)', () => {
+    expect(volumeFace({ percent: 250, muted: false }, 'en-US')).toEqual({
+      state: 'on',
+      waves: 3,
+      percentText: '100%',
+    });
   });
 });
