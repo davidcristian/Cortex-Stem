@@ -176,6 +176,18 @@ pub fn version_string_path(lang: u16, codepage: u16, name: &str) -> String {
     format!(r"\StringFileInfo\{lang:04x}{codepage:04x}\{name}")
 }
 
+/// A string value of a version block, from the bytes `VerQueryValueW`
+/// points at: `len` UTF-16 units, little-endian (the NUL included or
+/// not), cut to what `bytes` holds, decoded up to the first NUL.
+pub fn version_string_value(bytes: &[u8], len: usize) -> String {
+    let units = len.min(bytes.len() / 2);
+    let wide: Vec<u16> = bytes[..units * 2]
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect();
+    super::wide::from_wide(&wide)
+}
+
 /// Parse the `\VarFileInfo\Translation` block: an array of
 /// `(language, code page)` 16-bit pairs, little-endian. Trailing bytes that
 /// do not form a pair are ignored.
@@ -1383,5 +1395,20 @@ mod tests {
         assert_eq!(quote_argument(r"C:\dir\"), r"C:\dir\");
         assert_eq!(quote_argument(r"C:\my dir\"), r#""C:\my dir\\""#);
         assert_eq!(join_command_line(&["a".into(), "b c".into()]), r#"a "b c""#);
+    }
+
+    #[test]
+    fn a_version_string_value_is_read_up_to_its_nul_inside_the_block() {
+        let bytes: Vec<u8> = "Notepad\0rest"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        // With and without the NUL in the length, and a shorter length.
+        assert_eq!(version_string_value(&bytes, 8), "Notepad");
+        assert_eq!(version_string_value(&bytes, 7), "Notepad");
+        assert_eq!(version_string_value(&bytes, 3), "Not");
+        // A length past the block is cut to it, an odd last byte dropped.
+        assert_eq!(version_string_value(&bytes[..5], 100), "No");
+        assert_eq!(version_string_value(&[], 4), "");
     }
 }

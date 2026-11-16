@@ -126,6 +126,7 @@ use crate::rules::identity::{
     file_name, file_stem, first_display_name, has_extension, hwnd_icon_key, needs_env_expansion,
     package_app_aumid, packaged_exe, parse_app_exec_link, parse_apps_folder, plan_shortcut,
     split_command_line, strings_at, translation_candidates, translations, version_string_path,
+    version_string_value,
 };
 use crate::{PlatformError, PlatformResult};
 
@@ -755,13 +756,7 @@ fn query_bytes(block: &[u8], sub_block: PCWSTR) -> Option<Vec<u8>> {
 fn query_string(block: &[u8], sub_block: PCWSTR) -> Option<String> {
     let (ptr, len) = query_value(block, sub_block)?;
     let offset = ptr as usize - block.as_ptr() as usize;
-    let bytes = block.get(offset..)?;
-    let units = len.min(bytes.len() / 2);
-    let wide: Vec<u16> = bytes[..units * 2]
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
-        .collect();
-    Some(util::from_wide(&wide))
+    Some(version_string_value(block.get(offset..)?, len))
 }
 
 // ----- Executables under WindowsApps ------------------------------------------
