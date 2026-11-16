@@ -1,7 +1,7 @@
 //! Generates the settings reference, `docs/SETTINGS.md`, from the doc
 //! comments and serde attributes of the settings types in `src/settings.rs`
-//! (and of `LaunchTarget` and the ids it uses in `src/model/`), and from the
-//! values of `Settings::default()`.
+//! and `src/settings/` (and of `LaunchTarget` and the ids it uses in
+//! `src/model/`), and from the values of `Settings::default()`.
 //!
 //! `settings_reference_is_up_to_date` fails when the file differs from what
 //! it would generate. With `STEM_UPDATE_SETTINGS_REFERENCE=1` it rewrites the
@@ -25,10 +25,34 @@ use stem_core::Settings;
 /// The files the settings types live in, compiled into this test so that a
 /// change to them rebuilds and reruns it. The page lists the root file of
 /// each one's module ([`module_file`]).
-const SOURCES: [(&str, &str); 3] = [
+const SOURCES: [(&str, &str); 9] = [
     (
         "crates/stem-core/src/settings.rs",
         include_str!("../src/settings.rs"),
+    ),
+    (
+        "crates/stem-core/src/settings/appearance.rs",
+        include_str!("../src/settings/appearance.rs"),
+    ),
+    (
+        "crates/stem-core/src/settings/apps.rs",
+        include_str!("../src/settings/apps.rs"),
+    ),
+    (
+        "crates/stem-core/src/settings/behavior.rs",
+        include_str!("../src/settings/behavior.rs"),
+    ),
+    (
+        "crates/stem-core/src/settings/items.rs",
+        include_str!("../src/settings/items.rs"),
+    ),
+    (
+        "crates/stem-core/src/settings/layout.rs",
+        include_str!("../src/settings/layout.rs"),
+    ),
+    (
+        "crates/stem-core/src/settings/system.rs",
+        include_str!("../src/settings/system.rs"),
     ),
     (
         "crates/stem-core/src/model/ids.rs",
