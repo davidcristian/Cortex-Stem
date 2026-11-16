@@ -885,7 +885,9 @@ test.describe('the dock page goes quiet once it has settled', () => {
           await page.locator(APP_SLOT).nth(3).hover();
           await expect.poll(() => scaleOf(page, 3)).toBeGreaterThan(1.5);
           // As Rust reports it: a `dock://settings` and no new state, since
-          // the items stay the same (the mock would send one).
+          // the items stay the same (the mock decides alike;
+          // holding `emitState` back also keeps a state a later panel
+          // report could cause from standing in for the change).
           await page.evaluate(() => {
             (window as unknown as { __dockMock: Record<string, unknown> }).__dockMock.emitState =
               () => undefined;

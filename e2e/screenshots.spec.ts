@@ -211,8 +211,11 @@ function patchSettings(page: Page, patch: SettingsPatch): Promise<void> {
  * Change some settings the way Rust reports a change that leaves the items
  * as they are: a `dock://settings` and no `dock://state` (stem-core's
  * engine does not count `SettingsChanged` as a change of the snapshot
- * then). The mock sends a new state after every settings change, which
- * would hide a page that only reacts to its items.
+ * then). The mock decides the same way, so such a change sends
+ * no state anyway; `emitState` is still held back for the change, so that
+ * a state a later report could cause (the resized panel flipping
+ * `overlapped`) cannot stand in for the settings change and hide a page
+ * that only reacts to its items.
  */
 async function patchSettingsAlone(page: Page, patch: SettingsPatch): Promise<void> {
   await page.evaluate(() => {
