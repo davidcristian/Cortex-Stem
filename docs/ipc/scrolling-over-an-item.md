@@ -28,13 +28,12 @@ This file describes what a notch of the mouse wheel over a dock item does.
   ([Dock windows per monitor](windows.md#dock-windows-per-monitor)): `next` activates the window
   after the item's foreground window in that list, and `previous` the one before it, wrapping
   around at either end.
-  - A notch is *admitted* when the 150 ms limit below lets it through. Until the foreground
-    changes, and for at most 2 s after its last admitted notch
-    (`stem_core::engine::SCROLL_MEMORY`, v1.31), a dock window's next notch steps instead from the
-    window that this notch tried, while that window is still in the list. So a window that
-    Windows does not bring forward is passed over, and a late foreground report does not activate
-    the same window twice. A notch after a pause steps from the foreground again, and tries such a
-    window once more.
+  - A notch is *admitted* when the 150 ms limit below lets it through. A dock window's next notch
+    steps instead from the window that its last admitted notch tried, while that window is still
+    in the list, until the foreground changes and for at most 2 s after that admitted notch
+    (`stem_core::engine::SCROLL_MEMORY`, v1.31). So a window that Windows does not bring forward
+    is passed over, and a late foreground report does not activate the same window twice. A
+    notch after a pause steps from the foreground again, and tries such a window once more.
   - When neither window is in the list, `next` activates the first window and `previous` the
     last. The activation is `WindowAction::Activate`, which restores a minimised window.
   - The volume item steps the volume whatever the setting, without the limit below (see

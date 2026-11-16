@@ -27,7 +27,8 @@ per notch, so each window has time to come to the front. Sometimes Windows
 does not let Stem bring a window forward (an app running as administrator
 can cause this). A notice then appears next to the dock, and the next notch
 goes on to the window after it. After a pause of two seconds or more, the
-wheel starts again from the window in front, so that window is tried again.
+wheel starts again from the window in front, so the window that failed is
+tried again.
 
 Scrolling over a fixed item other than the volume item, or over a pinned app
 without windows, does nothing. Scrolling never starts an app. With the
