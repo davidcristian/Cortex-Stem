@@ -12,6 +12,7 @@
  */
 
 import type { UserCss } from '$lib/ipc/generated/UserCss';
+import type { UserCssProblem } from '$lib/ipc/generated/UserCssProblem';
 
 /**
  * The stable variables (docs/THEMING.md): the dock's own stylesheet reads
@@ -112,28 +113,34 @@ export function applyUserCss(doc: Document, css: string | null): boolean {
 }
 
 /**
- * What the user last did in the settings page's dock.css row, which says
- * what the last read means (`UserCss` does not say why it found nothing):
- * `'none'` nothing yet, the last read is the one at start; `'edit'`
- * *Edit dock.css* ran since the last read (`open_user_css` creates the
- * file from the template when there is none, so the file is there once it
- * has succeeded); `'reload'` the last read was a *Reload*, after an *Edit*
- * or not: pressing it says the user expects a file.
+ * What the user last did in the settings page's dock.css row, which the
+ * status reads besides the last read: `'none'` nothing yet, the last read
+ * is the one at start; `'edit'` *Edit dock.css* ran since the last read
+ * (`open_user_css` creates the file from the template when there is none,
+ * so the file is there once it has succeeded, but the last read predates
+ * it); `'reload'` the last read was a *Reload*, after an *Edit* or not,
+ * which reads like the one at start.
  */
 export type UserCssAction = 'none' | 'edit' | 'reload';
 
+/** Why the dock does not use the file, from `UserCss.problem` (IPC v1.29). */
+const NOT_IN_USE: Record<UserCssProblem, string> = {
+  notFound: 'Not in use: there is no dock.css yet. Edit dock.css creates one from a template',
+  unreadable: 'Not in use: Stem cannot read the file (the log says why)',
+  notUtf8: 'Not in use: the file is not UTF-8 text. Save it as UTF-8, then press Reload',
+  tooLarge: 'Not in use: the file is larger than 64 KiB, the most Stem reads',
+};
+
 /**
  * What the settings page says about the file under its path: whether the
- * dock uses it, and if not, why. `UserCss` does not say why a read
- * found nothing, so the page tells the cases apart by what it saw:
+ * dock uses it, and if not, why:
  *
  * - a path in parentheses: a run that saves no files has no `dock.css`;
- * - only the read at start: the normal case, no file yet (a file Stem
- *   could not use reads the same, so the text points to the log for that);
- * - after an *Edit*, before a *Reload*: the file is there but not read;
- * - read by a *Reload*: the user expects a file, so a read that found
- *   nothing failed, and the reasons Rust may have had are listed (its log
- *   says which one; "missing" covers a Reload with no file at all).
+ * - after an *Edit*, before a *Reload*: the file is there but not read yet;
+ * - otherwise what the last read found (`UserCss.problem`): no file, the
+ *   normal case, says what *Edit* does; a file Stem cannot use says why
+ *   (the log has the details). A payload without a problem (an older
+ *   build's) reads as no file.
  */
 export function userCssStatus(payload: UserCss | null, last: UserCssAction = 'none'): string {
   if (payload === null) {
@@ -145,12 +152,9 @@ export function userCssStatus(payload: UserCss | null, last: UserCssAction = 'no
   if (payload.path.startsWith('(')) {
     return 'Not in use: this run saves no files, so it has no dock.css';
   }
-  switch (last) {
-    case 'none':
-      return 'Not in use: there is no dock.css yet. Edit dock.css creates one from a template; if you already have one, the log says why it is not used';
-    case 'edit':
-      return 'Not in use yet: save the file, then press Reload';
-    case 'reload':
-      return 'Not in use: the file is missing, unreadable, not UTF-8 or larger than 64 KiB (the log says which)';
+  if (last === 'edit') {
+    return 'Not in use yet: save the file, then press Reload';
   }
+  // `problem` goes with `css: null`; it is missing only from an older build's payload.
+  return NOT_IN_USE[payload.problem ?? 'notFound'];
 }

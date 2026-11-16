@@ -49,6 +49,7 @@ import type { Settings } from '$lib/ipc/generated/Settings';
 import type { ShellAction } from '$lib/ipc/generated/ShellAction';
 import type { ThemeInfo } from '$lib/ipc/generated/ThemeInfo';
 import type { UserCss } from '$lib/ipc/generated/UserCss';
+import type { UserCssProblem } from '$lib/ipc/generated/UserCssProblem';
 import type { WindowAction } from '$lib/ipc/generated/WindowAction';
 import type { WindowId } from '$lib/ipc/generated/WindowId';
 import type { WindowInfo } from '$lib/ipc/generated/WindowInfo';
@@ -123,12 +124,14 @@ export interface MockOptions {
    */
   position?: DockPosition;
   /**
-   * The text of the user's `dock.css` when the backend starts,
-   * read then like Rust reads it at start (`readUserCss`: over 64 KiB is
-   * no CSS); absent or `null`: there is no file. `writeUserCss` changes the
-   * file afterwards and `reloadUserCss` reads it again.
+   * The user's `dock.css` when the backend starts (a `MockUserCssFile`:
+   * its text, its bytes, or a file that cannot be read), read then like
+   * Rust reads it at start (`readUserCss`: over 64 KiB, or bytes that are
+   * not UTF-8, are no CSS); absent or `null`: there is no file.
+   * `writeUserCss` changes the file afterwards and `reloadUserCss` reads
+   * it again.
    */
-  userCss?: string | null;
+  userCss?: MockUserCssFile;
   /**
    * The power reading when the backend starts (`PlatformEvent::PowerChanged`
    * after the start snapshot). Absent: the demo's laptop at 76 %, on
@@ -251,15 +254,49 @@ export const MOCK_USER_CSS_TEMPLATE =
   "/* dock.css: your own styles for Stem's dock (mock template). */\n.dock-stage {\n  /* --stem-dot: #0078d4; */\n}\n";
 
 /**
- * `user_css::read_file` for the mock's file (`null`: none): over 64 KiB of
- * UTF-8 is no CSS, a leading byte order mark is dropped. (A JS string is
- * always valid text, so the not-UTF-8 case has no stand-in.)
+ * The mock's `dock.css` "on disk": its text (saved as
+ * UTF-8), its bytes as an editor saved them (`Uint8Array`, which need not
+ * be UTF-8), a file that is there but cannot be read (`{ unreadable }`,
+ * with the error the log would name), or `null` for no file.
  */
-export function readUserCss(file: string | null): string | null {
-  if (file === null || new TextEncoder().encode(file).length > USER_CSS_MAX_BYTES) {
-    return null;
+export type MockUserCssFile = string | Uint8Array | { readonly unreadable: string } | null;
+
+/**
+ * `user_css::read_file` and `report` for the mock's file: what the page
+ * gets (`UserCss` without its path). No file is `notFound`; over 64 KiB
+ * is `tooLarge` (checked first, as Rust checks the size before it
+ * decodes); bytes that are not UTF-8 are `notUtf8`; `{ unreadable }` is
+ * `unreadable`. A leading byte order mark is dropped.
+ */
+export function readUserCss(file: MockUserCssFile): Pick<UserCss, 'css' | 'problem'> {
+  const refused = (problem: UserCssProblem): Pick<UserCss, 'css' | 'problem'> => ({
+    css: null,
+    problem,
+  });
+  if (file === null) {
+    return refused('notFound');
   }
-  return file.startsWith('\uFEFF') ? file.slice(1) : file;
+  if (!(file instanceof Uint8Array) && typeof file !== 'string') {
+    return refused('unreadable');
+  }
+  const bytes = typeof file === 'string' ? new TextEncoder().encode(file) : file;
+  if (bytes.length > USER_CSS_MAX_BYTES) {
+    return refused('tooLarge');
+  }
+  let text: string;
+  try {
+    // `ignoreBOM` keeps a byte order mark in the text, so that only a
+    // leading one is dropped below, as `user_css::decode` drops it.
+    text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    return refused('notUtf8');
+  }
+  return { css: text.startsWith('\uFEFF') ? text.slice(1) : text, problem: null };
+}
+
+/** What a read of `file` gives the page (`readUserCss` with the demo's path). */
+function userCssFrom(file: MockUserCssFile): UserCss {
+  return { path: DEMO_USER_CSS_PATH, ...readUserCss(file) };
 }
 
 // ---------------------------------------------------------------------------
@@ -1676,13 +1713,13 @@ export class MockBackend implements Backend {
    */
   private shortcutFocus = false;
   /** The user's `dock.css` "on disk" (`null`: no file); `writeUserCss` changes it. */
-  private userCssFile: string | null;
+  private userCssFile: MockUserCssFile;
   /** What the last read of it gave: at construction, then each `reloadUserCss`. */
   private userCssRead: UserCss;
 
   constructor(options: MockOptions = {}) {
     this.userCssFile = options.userCss ?? null;
-    this.userCssRead = { path: DEMO_USER_CSS_PATH, css: readUserCss(this.userCssFile) };
+    this.userCssRead = userCssFrom(this.userCssFile);
     const scenario = SCENARIOS[options.scenario ?? 'default']();
     if (options.position !== undefined) {
       scenario.settings.position = options.position;
@@ -2186,9 +2223,10 @@ export class MockBackend implements Backend {
   reloadUserCss(): Promise<UserCss> {
     return this.command(() => {
       this.record({ type: 'reloadUserCss' });
-      this.userCssRead = { path: DEMO_USER_CSS_PATH, css: readUserCss(this.userCssFile) };
+      this.userCssRead = userCssFrom(this.userCssFile);
+      const { css, problem } = this.userCssRead;
       this.log(
-        `reload_user_css(): ${this.userCssRead.css === null ? 'no CSS' : `${this.userCssRead.css.length} chars`}`,
+        `reload_user_css(): ${css === null ? `no CSS (${problem})` : `${css.length} chars`}`,
       );
       this.emit('dock://user-css', { ...this.userCssRead });
       return { ...this.userCssRead };
@@ -2248,15 +2286,16 @@ export class MockBackend implements Backend {
   }
 
   /**
-   * Change the user's `dock.css` on "disk" (`null` deletes it), as
-   * an editor would: nothing is read until the next `reloadUserCss`.
+   * Change the user's `dock.css` on "disk" (`null` deletes it; bytes
+   * or `{ unreadable }` make a file Stem cannot use), as an editor
+   * would: nothing is read until the next `reloadUserCss`.
    */
-  writeUserCss(css: string | null): void {
-    this.userCssFile = css;
+  writeUserCss(file: MockUserCssFile): void {
+    this.userCssFile = file;
   }
 
   /** The mock's `dock.css` on "disk" (`null`: none), e.g. after `openUserCss` wrote the template. */
-  userCssOnDisk(): string | null {
+  userCssOnDisk(): MockUserCssFile {
     return this.userCssFile;
   }
 

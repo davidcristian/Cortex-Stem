@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { UserCss } from '$lib/ipc/generated/UserCss';
+import type { UserCssProblem } from '$lib/ipc/generated/UserCssProblem';
 
 // The sources themselves, as text (Vite's `?raw`), for the drift checks.
 import theming from '../../../docs/THEMING.md?raw';
@@ -17,7 +18,12 @@ import {
 } from './user-css';
 
 const PATH = 'C:\\Users\\me\\AppData\\Roaming\\dev.davidcristian.stem\\dock.css';
-const file = (css: string | null): UserCss => ({ path: PATH, css });
+/** A read of `dock.css`: its text, or no text and why (`notFound` unless named). */
+const file = (css: string | null, problem: UserCssProblem = 'notFound'): UserCss => ({
+  path: PATH,
+  css,
+  problem: css === null ? problem : null,
+});
 
 /** Every `--stem-<name>` in `text`. */
 function variables(text: string): string[] {
@@ -172,17 +178,40 @@ describe('userCssStatus', () => {
     expect(none).not.toMatch(/missing|unreadable|UTF-8|64 KiB/);
   });
 
-  it('after Edit, asks for a Reload; read by a Reload, Edit or not, lists what can go wrong', () => {
-    expect(userCssStatus(file(null), 'edit')).toBe(
-      'Not in use yet: save the file, then press Reload',
-    );
-    expect(userCssStatus(file(null), 'reload')).toMatch(
-      /^Not in use: the file is missing, unreadable, not UTF-8 or larger than 64 KiB/,
-    );
+  it('after Edit, asks for a Reload, whatever the last read found', () => {
+    for (const problem of ['notFound', 'unreadable', 'notUtf8', 'tooLarge'] as const) {
+      expect(userCssStatus(file(null, problem), 'edit')).toBe(
+        'Not in use yet: save the file, then press Reload',
+      );
+    }
+  });
+
+  it('says why a file is not used, from the problem the read found, Reload or not', () => {
+    for (const last of ['none', 'reload'] as const) {
+      expect(userCssStatus(file(null, 'notFound'), last)).toBe(
+        'Not in use: there is no dock.css yet. Edit dock.css creates one from a template',
+      );
+      expect(userCssStatus(file(null, 'unreadable'), last)).toBe(
+        'Not in use: Stem cannot read the file (the log says why)',
+      );
+      expect(userCssStatus(file(null, 'notUtf8'), last)).toBe(
+        'Not in use: the file is not UTF-8 text. Save it as UTF-8, then press Reload',
+      );
+      expect(userCssStatus(file(null, 'tooLarge'), last)).toBe(
+        'Not in use: the file is larger than 64 KiB, the most Stem reads',
+      );
+    }
+    // An older build's payload, without the field: no file.
+    const old = { path: PATH, css: null } as unknown as UserCss;
+    expect(userCssStatus(old)).toBe(userCssStatus(file(null, 'notFound')));
   });
 
   it('says a run that saves no files has no dock.css, whatever the user did', () => {
-    const noFiles: UserCss = { path: '(not saved: the mock platform)', css: null };
+    const noFiles: UserCss = {
+      path: '(not saved: the mock platform)',
+      css: null,
+      problem: 'notFound',
+    };
     for (const last of ['none', 'edit', 'reload'] as const) {
       expect(userCssStatus(noFiles, last)).toBe(
         'Not in use: this run saves no files, so it has no dock.css',

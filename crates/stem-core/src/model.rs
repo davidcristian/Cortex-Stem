@@ -534,8 +534,28 @@ pub struct UserCss {
     pub path: String,
     /// The file's text, a leading byte order mark dropped; `null` when the
     /// file does not exist, cannot be read, is not UTF-8 or is larger than
-    /// 64 KiB (the log says which).
+    /// 64 KiB (`problem` says which, and so does the log).
     pub css: Option<String>,
+    /// Why `css` is `null` (IPC v1.29); `null` when it is not.
+    pub problem: Option<UserCssProblem>,
+}
+
+/// Why the app has no text from the user's `dock.css` ([`UserCss::problem`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub enum UserCssProblem {
+    /// There is no such file: the normal case until the user makes one
+    /// (*Edit dock.css* writes a template). Also what a run that saves no
+    /// files says, which has no `dock.css` at all.
+    NotFound,
+    /// The file is there but could not be opened or read (no permission,
+    /// locked, a folder of that name, a disk error).
+    Unreadable,
+    /// The file is not UTF-8 text (UTF-16 from Notepad's *Unicode*, say).
+    NotUtf8,
+    /// The file is larger than 64 KiB, the most the app reads.
+    TooLarge,
 }
 
 #[cfg(test)]
@@ -547,6 +567,7 @@ mod tests {
         let none = UserCss {
             path: r"C:\Users\me\AppData\Roaming\dev.davidcristian.stem\dock.css".to_owned(),
             css: None,
+            problem: Some(UserCssProblem::NotFound),
         };
         let json = serde_json::to_value(&none).unwrap();
         assert_eq!(
@@ -554,17 +575,26 @@ mod tests {
             serde_json::json!({
                 "path": r"C:\Users\me\AppData\Roaming\dev.davidcristian.stem\dock.css",
                 "css": null,
+                "problem": "notFound",
             })
         );
         assert_eq!(serde_json::from_value::<UserCss>(json).unwrap(), none);
         let some = UserCss {
             css: Some(".dock-stage { --stem-dot: red; }".to_owned()),
+            problem: None,
             ..none
         };
-        assert_eq!(
-            serde_json::to_value(&some).unwrap()["css"],
-            ".dock-stage { --stem-dot: red; }"
-        );
+        let json = serde_json::to_value(&some).unwrap();
+        assert_eq!(json["css"], ".dock-stage { --stem-dot: red; }");
+        assert_eq!(json["problem"], serde_json::Value::Null);
+        for (problem, name) in [
+            (UserCssProblem::NotFound, "notFound"),
+            (UserCssProblem::Unreadable, "unreadable"),
+            (UserCssProblem::NotUtf8, "notUtf8"),
+            (UserCssProblem::TooLarge, "tooLarge"),
+        ] {
+            assert_eq!(serde_json::to_value(problem).unwrap(), name);
+        }
     }
 
     #[test]

@@ -12,15 +12,18 @@ This file describes the theme presets and the user's stylesheet, `dock.css`.
 - **The user's stylesheet.** `dock.css` is in the settings file's folder
   (`%APPDATA%\dev.davidcristian.stem\dock.css` for an installed Stem). Rust reads it at start and
   on `reload_user_css`, never on its own (there is no file watching). The result is
-  `UserCss { path: string, css: string | null }`. `css` is `null` when the file does not exist,
-  cannot be read, is not UTF-8 or is larger than 64 KiB. The log records which: a `warn` line for
-  the last three reasons, and one `info` line for a missing file, which is the normal case.
+  `UserCss { path: string, css: string | null, problem: UserCssProblem | null }`. `css` is
+  `null` when the file does not exist, cannot be read, is not UTF-8 or is larger than 64 KiB, and
+  then `problem` names the reason (v1.29: `notFound`, `unreadable`, `notUtf8`, `tooLarge`).
+  `problem` is `null` exactly when `css` is not. The log records it too: a `warn` line with the
+  details (the size, the OS error) for the last three reasons, and one `info` line for a missing
+  file, which is the normal case.
 
   `open_user_css` writes a commented template that lists the supported variables if the file
   does not exist, then opens the file with the default app for `.css`, or in Notepad when that
   fails. It rejects when neither opens it. A run that saves no settings file (the mock platform,
   or a profile that could not be used) has no `dock.css`: `path` is a note in parentheses, `css`
-  is `null`, and `open_user_css` rejects.
+  is `null`, `problem` is `notFound`, and `open_user_css` rejects.
 - The dock page puts `css` in one `<style>` element after its own styles, so the file can
   override them, and replaces it on `dock://user-css`. `docs/THEMING.md` lists the supported
   variables and their defaults per preset. That list is stable; anything else in the file may
@@ -28,5 +31,7 @@ This file describes the theme presets and the user's stylesheet, `dock.css`.
   and `url()` loads are subject to the app's content security policy (`docs/THEMING.md` says what
   that allows).
 - The settings page shows the file's path with *Edit dock.css* (`open_user_css`) and *Reload*
-  (`reload_user_css`) buttons.
-- `MockBackend` takes `MockOptions.userCss`. `reload_user_css` emits it.
+  (`reload_user_css`) buttons. Under the path it shows whether the dock uses the file and, if
+  not, why, from `problem` (v1.29), so a broken file is told apart from a missing one.
+- `MockBackend` takes `MockOptions.userCss`: its text, its bytes (which need not be UTF-8), or
+  `{ unreadable }` (v1.29). `reload_user_css` emits it.

@@ -232,8 +232,8 @@
     userCssError = null;
     try {
       userCss = await store.backend.reloadUserCss();
-      // Pressing Reload says there is a file, Edit or not: a read that
-      // finds nothing failed, whatever window or session made the file.
+      // The read says why it found nothing (`UserCss.problem`); an
+      // Edit before it is no longer pending.
       userCssLast = 'reload';
     } catch (err) {
       userCssError = `Couldn't read dock.css: ${describeError(err)}`;

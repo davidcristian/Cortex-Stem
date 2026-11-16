@@ -68,8 +68,11 @@ interface DemoWindow {
     requestFocus: () => void;
     /** What `get_app_info` answers from now on. */
     setAppInfo: (info: Partial<AppInfo>) => void;
-    /** Change the user's dock.css on "disk" (`null` deletes it); read at the next reload. */
-    writeUserCss: (css: string | null) => void;
+    /**
+     * Change the user's dock.css on "disk" (`null` deletes it; bytes that need not be UTF-8,
+     * or `{ unreadable }` for a file Stem cannot read); read at the next reload.
+     */
+    writeUserCss: (file: string | Uint8Array | { unreadable: string } | null) => void;
     /** `reload_user_css`: read it again and send `dock://user-css`. */
     reloadUserCss: () => Promise<UserCss>;
     /** The mock's dock.css on "disk" (`null`: none). */
@@ -7415,7 +7418,7 @@ test.describe('theme presets and the user dock.css', () => {
     // Set on :root, levels above the dots: still applies, since the page
     // sets no --stem-* variable of its own.
     const root = ':root { --stem-dot: rgb(16, 124, 16); --stem-panel-radius: 4px; }';
-    expect(await reloadWith(page, root)).toEqual({ path: DOCK_CSS_PATH, css: root });
+    expect(await reloadWith(page, root)).toEqual({ path: DOCK_CSS_PATH, css: root, problem: null });
     await expect(dot).toHaveCSS('background-color', 'rgb(16, 124, 16)');
     await expect(panel).toHaveCSS('border-top-left-radius', '4px');
     await expect(style).toHaveCount(1);
@@ -7454,7 +7457,7 @@ test.describe('theme presets and the user dock.css', () => {
 
     // Larger than 64 KiB: ignored whole, like Rust does.
     const big = `.dock-stage { --stem-dot: rgb(255, 185, 0); }\n/*${'x'.repeat(64 * 1024)}*/`;
-    expect((await reloadWith(page, big))?.css).toBeNull();
+    expect(await reloadWith(page, big)).toMatchObject({ css: null, problem: 'tooLarge' });
     await expect(style).toHaveCount(0);
     await expect(dot).toHaveCSS('background-color', DARK_ACCENT_RGB);
   });
@@ -7559,47 +7562,68 @@ test.describe('theme presets and the user dock.css', () => {
       await page.getByRole('button', { name: 'Reload dock.css' }).click();
       await expect(page.locator('.file-error')).toHaveCount(0);
 
-      // A file that is there but cannot be used, read after an Edit: the
-      // reasons Rust may have had.
+      // A file that is there but cannot be used, read after an Edit: why,
+      // from the read (`UserCss.problem`).
       await page.evaluate(() => {
         (window as unknown as DemoWindow).__dockMock?.writeUserCss('a'.repeat(64 * 1024 + 1));
       });
       await page.getByRole('button', { name: 'Reload dock.css' }).click();
       await expect(status).toHaveText(
-        'Not in use: the file is missing, unreadable, not UTF-8 or larger than 64 KiB (the log says which)',
+        'Not in use: the file is larger than 64 KiB, the most Stem reads',
       );
     });
 
-    test('a Reload without an Edit says why a file is not used, not that there is none', async ({
+    test('a Reload says why a file is not used, and that there is none once it is gone', async ({
       page,
     }) => {
       await openSettings(page);
-      const status = page.locator('[data-row="user-css"] [data-user-css-status]');
+      const row = page.locator('[data-row="user-css"]');
+      const status = row.locator('[data-user-css-status]');
+      const reload = page.getByRole('button', { name: 'Reload dock.css' });
       await expect(status).toContainText('Not in use: there is no dock.css yet.');
       // A file from an earlier session, or written outside this window, that
-      // Stem cannot use; no Edit in this window. Reload says the user has one.
+      // Stem cannot use; no Edit in this window. Each reason reads apart.
       await page.evaluate(() => {
         (window as unknown as DemoWindow).__dockMock?.writeUserCss('a'.repeat(64 * 1024 + 1));
       });
-      await page.getByRole('button', { name: 'Reload dock.css' }).click();
+      await reload.click();
       await expect.poll(() => userCssCalls(page)).toEqual(['reloadUserCss']);
       await expect(status).toHaveText(
-        'Not in use: the file is missing, unreadable, not UTF-8 or larger than 64 KiB (the log says which)',
+        'Not in use: the file is larger than 64 KiB, the most Stem reads',
       );
-      // Fixed and reloaded: in use; broken again: the failure again, never
-      // "no dock.css yet".
+      // Saved by Notepad as "Unicode" (UTF-16, with its byte order mark).
+      await page.evaluate(() => {
+        (window as unknown as DemoWindow).__dockMock?.writeUserCss(
+          new Uint8Array([0xff, 0xfe, 0x61, 0, 0x7b, 0, 0x7d, 0]),
+        );
+      });
+      await reload.click();
+      await expect(status).toHaveText(
+        'Not in use: the file is not UTF-8 text. Save it as UTF-8, then press Reload',
+      );
+      await row.scrollIntoViewIfNeeded();
+      await row.screenshot({ path: `${OUT}/settings-user-css-not-utf8.png` });
+      await page.evaluate(() => {
+        (window as unknown as DemoWindow).__dockMock?.writeUserCss({
+          unreadable: 'Access is denied. (os error 5)',
+        });
+      });
+      await reload.click();
+      await expect(status).toHaveText('Not in use: Stem cannot read the file (the log says why)');
+      // Fixed and reloaded: in use; deleted: there is none again.
       await page.evaluate(() => {
         (window as unknown as DemoWindow).__dockMock?.writeUserCss('a {}');
       });
-      await page.getByRole('button', { name: 'Reload dock.css' }).click();
+      await reload.click();
       await expect(status).toHaveText('In use since the last start or Reload');
       await page.evaluate(() => {
         (window as unknown as DemoWindow).__dockMock?.writeUserCss(null);
       });
-      await page.getByRole('button', { name: 'Reload dock.css' }).click();
+      await reload.click();
       await expect(status).toHaveText(
-        'Not in use: the file is missing, unreadable, not UTF-8 or larger than 64 KiB (the log says which)',
+        'Not in use: there is no dock.css yet. Edit dock.css creates one from a template',
       );
+      await expect.poll(() => userCssCalls(page)).toHaveLength(5);
     });
   });
 });

@@ -7,7 +7,8 @@
 //! page gets ([`UserCss::css`]) is the file's, a leading byte order mark
 //! dropped, or `None` when the file does not exist (an `info` line: the
 //! normal case), cannot be read, is not UTF-8 or is larger than
-//! [`MAX_BYTES`] (a `warn` line each, saying which). The read is bounded:
+//! [`MAX_BYTES`] (a `warn` line each, saying which); [`UserCss::problem`]
+//! says which of the four it was, for the settings page. The read is bounded:
 //! the file's size is checked before and while reading, so a huge or
 //! growing file costs at most [`MAX_BYTES`] + 1 bytes.
 //!
@@ -32,7 +33,7 @@ use std::io::{ErrorKind, Read as _, Write as _};
 use std::path::{Path, PathBuf};
 
 use parking_lot::Mutex;
-use stem_core::{LaunchTarget, UserCss};
+use stem_core::{LaunchTarget, UserCss, UserCssProblem};
 use tauri::{AppHandle, Emitter, EventTarget};
 
 /// The stylesheet's file name, next to `settings.json`.
@@ -114,6 +115,18 @@ pub enum Refusal {
     Unreadable(String),
 }
 
+impl Refusal {
+    /// What the page is told about it ([`UserCss::problem`]); the details
+    /// (the size, the OS error) are the log's.
+    pub fn problem(&self) -> UserCssProblem {
+        match self {
+            Self::TooLarge(_) => UserCssProblem::TooLarge,
+            Self::NotUtf8 => UserCssProblem::NotUtf8,
+            Self::Unreadable(_) => UserCssProblem::Unreadable,
+        }
+    }
+}
+
 /// What reading `dock.css` gave.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReadOutcome {
@@ -167,40 +180,37 @@ pub fn decode(bytes: Vec<u8>) -> Result<String, Refusal> {
 }
 
 /// The log line for `outcome` (`warn` for a refusal, `info` otherwise) and
-/// the CSS the page gets.
-fn report(path: &Path, outcome: ReadOutcome) -> Option<String> {
+/// what the page gets: the CSS, or why there is none.
+fn report(path: &Path, outcome: ReadOutcome) -> Result<String, UserCssProblem> {
     match outcome {
         ReadOutcome::Missing => {
             log::info!(
                 "dock.css: none at {}; the dock uses its own styles only",
                 path.display()
             );
-            None
+            Err(UserCssProblem::NotFound)
         }
         ReadOutcome::Css(css) => {
             log::info!("dock.css: {} bytes from {}", css.len(), path.display());
-            Some(css)
+            Ok(css)
         }
-        ReadOutcome::Refused(Refusal::TooLarge(size)) => {
-            log::warn!(
-                "dock.css at {} is ignored: it is {size} bytes, more than the {MAX_BYTES} (64 KiB) Stem reads",
-                path.display()
-            );
-            None
-        }
-        ReadOutcome::Refused(Refusal::NotUtf8) => {
-            log::warn!(
-                "dock.css at {} is ignored: it is not UTF-8 text (save it as UTF-8)",
-                path.display()
-            );
-            None
-        }
-        ReadOutcome::Refused(Refusal::Unreadable(e)) => {
-            log::warn!(
-                "dock.css at {} is ignored: it cannot be read ({e})",
-                path.display()
-            );
-            None
+        ReadOutcome::Refused(refusal) => {
+            let problem = refusal.problem();
+            match refusal {
+                Refusal::TooLarge(size) => log::warn!(
+                    "dock.css at {} is ignored: it is {size} bytes, more than the {MAX_BYTES} (64 KiB) Stem reads",
+                    path.display()
+                ),
+                Refusal::NotUtf8 => log::warn!(
+                    "dock.css at {} is ignored: it is not UTF-8 text (save it as UTF-8)",
+                    path.display()
+                ),
+                Refusal::Unreadable(e) => log::warn!(
+                    "dock.css at {} is ignored: it cannot be read ({e})",
+                    path.display()
+                ),
+            }
+            Err(problem)
         }
     }
 }
@@ -315,7 +325,9 @@ pub struct UserCssState {
 impl UserCssState {
     /// The state for a run whose settings file is `settings_file` (`None`
     /// for the in-memory store; `demo` says whether that is the mock
-    /// platform). Reads nothing yet: [`UserCssState::reload`] does.
+    /// platform). Reads nothing yet: [`UserCssState::reload`] does; until
+    /// then there is no CSS and the problem is `notFound` (`setup` reads
+    /// before any page exists to ask).
     pub fn new(settings_file: Option<&Path>, demo: bool) -> Self {
         let file = path_for(settings_file);
         let path = match &file {
@@ -325,7 +337,11 @@ impl UserCssState {
         };
         Self {
             file,
-            current: Mutex::new(UserCss { path, css: None }),
+            current: Mutex::new(UserCss {
+                path,
+                css: None,
+                problem: Some(UserCssProblem::NotFound),
+            }),
             reloading: Mutex::new(()),
         }
     }
@@ -351,13 +367,19 @@ impl UserCssState {
     /// pool.
     pub fn reload_and(&self, publish: impl FnOnce(&UserCss)) -> UserCss {
         let _reloading = self.reloading.lock();
-        let css = self
+        // No settings file this run: no `dock.css` either.
+        let result = self
             .file
             .as_deref()
-            .and_then(|file| report(file, read_file(file)));
+            .map_or(Err(UserCssProblem::NotFound), |file| {
+                report(file, read_file(file))
+            });
         let read = {
             let mut current = self.current.lock();
-            current.css = css;
+            (current.css, current.problem) = match result {
+                Ok(css) => (Some(css), None),
+                Err(problem) => (None, Some(problem)),
+            };
             current.clone()
         };
         publish(&read);
@@ -513,6 +535,7 @@ mod tests {
         let none = UserCss {
             path: path.clone(),
             css: None,
+            problem: Some(UserCssProblem::NotFound),
         };
         assert_eq!(state.current(), none);
 
@@ -520,13 +543,57 @@ mod tests {
         assert_eq!(state.current(), none, "no read before reload");
         let read = state.reload();
         assert_eq!(read.css.as_deref(), Some("a {}"));
+        assert_eq!(read.problem, None);
         assert_eq!(state.current(), read);
 
-        // An edit shows only at the next reload; a refused file clears it.
+        // An edit shows only at the next reload; a refused file clears it
+        // and says why.
         std::fs::write(dir.join(FILE_NAME), [0xff, 0xfe]).unwrap();
         assert_eq!(state.current(), read);
+        let refused = UserCss {
+            problem: Some(UserCssProblem::NotUtf8),
+            ..none.clone()
+        };
+        assert_eq!(state.reload(), refused);
+        assert_eq!(state.current(), refused);
+        std::fs::remove_file(dir.join(FILE_NAME)).unwrap();
         assert_eq!(state.reload(), none);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn each_read_says_why_there_is_no_css() {
+        let dir = scratch_dir("problem");
+        let state = UserCssState::new(Some(&dir.join("settings.json")), false);
+        let file = dir.join(FILE_NAME);
+        let problem = |state: &UserCssState| {
+            let read = state.reload();
+            assert_eq!(read.css.is_none(), read.problem.is_some(), "{read:?}");
+            read.problem
+        };
+        assert_eq!(problem(&state), Some(UserCssProblem::NotFound));
+        std::fs::write(&file, "a {}").unwrap();
+        assert_eq!(problem(&state), None);
+        let limit = usize::try_from(MAX_BYTES).unwrap();
+        std::fs::write(&file, "a".repeat(limit + 1)).unwrap();
+        assert_eq!(problem(&state), Some(UserCssProblem::TooLarge));
+        std::fs::write(&file, [0xff, 0xfe, b'a', 0]).unwrap();
+        assert_eq!(problem(&state), Some(UserCssProblem::NotUtf8));
+        // A folder by the file's name exists but is no file to read.
+        std::fs::remove_file(&file).unwrap();
+        std::fs::create_dir_all(&file).unwrap();
+        assert_eq!(problem(&state), Some(UserCssProblem::Unreadable));
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(
+            Refusal::Unreadable("denied".to_owned()).problem(),
+            UserCssProblem::Unreadable
+        );
+        assert_eq!(Refusal::NotUtf8.problem(), UserCssProblem::NotUtf8);
+        assert_eq!(
+            Refusal::TooLarge(MAX_BYTES + 1).problem(),
+            UserCssProblem::TooLarge
+        );
     }
 
     #[test]
@@ -536,6 +603,7 @@ mod tests {
             let expected = UserCss {
                 path: note.to_owned(),
                 css: None,
+                problem: Some(UserCssProblem::NotFound),
             };
             assert_eq!(state.current(), expected);
             assert_eq!(state.reload(), expected);

@@ -5,7 +5,10 @@ to the file that covers that section now.
 
 - **v1.29 (small fixes):** No command or event was added or renamed. The page's wheel handling
   over an item ignores an event with `ctrlKey` set: a touchpad pinch, or Ctrl with the wheel
-  ([Scrolling over an item](scrolling-over-an-item.md)).
+  ([Scrolling over an item](scrolling-over-an-item.md)). `UserCss` gains
+  `problem: UserCssProblem | null` (`notFound`, `unreadable`, `notUtf8`, `tooLarge`), the reason
+  `css` is `null`, which the settings page's dock.css row shows ([Themes](themes.md)).
+  `MockOptions.userCss` and `writeUserCss` also take bytes and `{ unreadable }`.
 - **v1.28 (fitting the edge):** The page draws the dock at a smaller fitted icon size when it
   would not fit its edge. No command, event or payload changed. New section
   [Fitting the edge](sizing-protocol.md#fitting-the-edge-v128).

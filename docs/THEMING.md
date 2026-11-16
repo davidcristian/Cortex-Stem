@@ -72,7 +72,8 @@ Independent of the preset:
   log has a `warn` line saying which (`dock.css at … is ignored: …`). A
   missing file is the normal case and logs one `info` line. Under the file's
   path, the settings page shows what the last start or _Reload_ found:
-  _In use_ or _Not in use_. When the dock does not use the
+  _In use_, or _Not in use_ and why (there is no file yet, it cannot be read,
+  it is not UTF-8, or it is larger than 64 KiB). When the dock does not use the
   file and you press _Edit dock.css_, it shows _Not in use yet_ until the
   next _Reload_.
 - **How it is applied.** The dock page puts the text in one `<style>`

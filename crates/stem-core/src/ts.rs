@@ -25,8 +25,8 @@ use ts_rs::{Config, ExportError, TS};
 use crate::model::{
     AppFolder, AppId, AppIdentity, AppInfo, ClockFormat, DockFacts, DockItem, DockItemKind,
     DockState, IconKey, LaunchTarget, MonitorId, MonitorInfo, PowerStatus, RawWindow, Rect,
-    RecycleBinState, ScrollDirection, ShellAction, ThemeInfo, UserCss, WindowAction, WindowId,
-    WindowInfo,
+    RecycleBinState, ScrollDirection, ShellAction, ThemeInfo, UserCss, UserCssProblem,
+    WindowAction, WindowId, WindowInfo,
 };
 use crate::settings::{
     Appearance, AutoHide, AutoHideMode, Backdrop, Behavior, DockPosition, FixedItems, HiddenApp,
@@ -92,6 +92,7 @@ exported_types! {
     ShellAction,
     ThemeInfo,
     UserCss,
+    UserCssProblem,
     WindowAction,
     WindowId,
     WindowInfo,
@@ -132,6 +133,7 @@ const IPC_PAYLOAD_TYPES: &[&str] = &[
     "AppInfo",
     "AppFolder",
     "UserCss",
+    "UserCssProblem",
     "ScrollDirection",
 ];
 

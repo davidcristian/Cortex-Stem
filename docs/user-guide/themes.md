@@ -26,8 +26,9 @@ settings file (`%APPDATA%\dev.davidcristian.stem\dock.css`).
 - Save the file, then press _Reload_. Stem reads the file only when it starts
   and when you press _Reload_.
 - The _Your styles (dock.css)_ row says whether the dock uses the file.
-  Stem ignores a file that is larger than 64 KiB or that is not saved as
-  UTF-8, and the log has the reason.
+  Stem ignores a file that is larger than 64 KiB, that is not saved as
+  UTF-8, or that it cannot read. The row then says which, and the log has
+  the details.
 - The file is CSS only. It cannot load images or fonts from your disk or the
   web, but a `data:` URL works.
 

@@ -218,10 +218,10 @@ class FakeBackend implements Backend {
   async showDockMenu(): Promise<void> {}
   async releaseDockFocus(): Promise<void> {}
   async getUserCss(): Promise<UserCss> {
-    return { path: 'dock.css', css: null };
+    return { path: 'dock.css', css: null, problem: 'notFound' };
   }
   async reloadUserCss(): Promise<UserCss> {
-    return { path: 'dock.css', css: null };
+    return { path: 'dock.css', css: null, problem: 'notFound' };
   }
   async openUserCss(): Promise<void> {}
   onFileDrag(): Unsubscribe {

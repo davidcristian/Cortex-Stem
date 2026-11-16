@@ -1237,7 +1237,11 @@ describe('revisions and events', () => {
 
   it('the user css: read at start from MockOptions.userCss, again on reload, which emits it; open writes the template only once', async () => {
     const none = fast();
-    expect(await none.getUserCss()).toEqual({ path: DEMO_USER_CSS_PATH, css: null });
+    expect(await none.getUserCss()).toEqual({
+      path: DEMO_USER_CSS_PATH,
+      css: null,
+      problem: 'notFound',
+    });
 
     const css = '.dock-stage { --stem-dot: #ffb900; }';
     const b = fast({ userCss: css });
@@ -1246,23 +1250,31 @@ describe('revisions and events', () => {
       events.push(payload);
     });
     const states = recordStates(b);
-    expect(await b.getUserCss()).toEqual({ path: DEMO_USER_CSS_PATH, css });
+    expect(await b.getUserCss()).toEqual({ path: DEMO_USER_CSS_PATH, css, problem: null });
 
     // An edit shows only once reloaded; the reload answers what it sent.
     b.writeUserCss('.dock-stage { --stem-dot: red; }');
     expect((await b.getUserCss()).css).toBe(css);
     expect(events).toHaveLength(0);
     const reloaded = await b.reloadUserCss();
-    expect(reloaded).toEqual({ path: DEMO_USER_CSS_PATH, css: '.dock-stage { --stem-dot: red; }' });
+    expect(reloaded).toEqual({
+      path: DEMO_USER_CSS_PATH,
+      css: '.dock-stage { --stem-dot: red; }',
+      problem: null,
+    });
     expect(events).toEqual([reloaded]);
     expect(await b.getUserCss()).toEqual(reloaded);
 
-    // A deleted file, then a too large one: no CSS, still sent.
+    // A deleted file, then a too large one: no CSS, still sent, and why.
     b.writeUserCss(null);
-    expect((await b.reloadUserCss()).css).toBeNull();
+    expect(await b.reloadUserCss()).toMatchObject({ css: null, problem: 'notFound' });
     b.writeUserCss('a'.repeat(USER_CSS_MAX_BYTES + 1));
-    expect((await b.reloadUserCss()).css).toBeNull();
-    expect(events.map((e) => e.css)).toEqual(['.dock-stage { --stem-dot: red; }', null, null]);
+    expect(await b.reloadUserCss()).toMatchObject({ css: null, problem: 'tooLarge' });
+    expect(events.map((e) => [e.css, e.problem])).toEqual([
+      ['.dock-stage { --stem-dot: red; }', null],
+      [null, 'notFound'],
+      [null, 'tooLarge'],
+    ]);
 
     // Open creates the template when there is no file, and never again.
     b.writeUserCss(null);
@@ -1279,25 +1291,49 @@ describe('revisions and events', () => {
       { type: 'openUserCss', created: false },
     ]);
     expect(states).toHaveLength(0);
+
+    // A file that cannot be read is there: Edit opens it without the template.
+    b.writeUserCss({ unreadable: 'Access is denied. (os error 5)' });
+    await b.openUserCss();
+    expect(b.calls.at(-1)).toEqual({ type: 'openUserCss', created: false });
+    expect(await b.reloadUserCss()).toMatchObject({ css: null, problem: 'unreadable' });
   });
 
   it('readUserCss mirrors the Rust read: 64 KiB of UTF-8 at most, a leading BOM dropped', () => {
     const bom = String.fromCharCode(0xfeff);
     const eAcute = String.fromCharCode(0xe9);
-    expect(readUserCss(null)).toBeNull();
-    expect(readUserCss('')).toBe('');
-    expect(readUserCss(`${bom}a {}`)).toBe('a {}');
-    expect(readUserCss(`a${bom}`)).toBe(`a${bom}`);
-    expect(readUserCss('a'.repeat(USER_CSS_MAX_BYTES))).toHaveLength(USER_CSS_MAX_BYTES);
-    expect(readUserCss('a'.repeat(USER_CSS_MAX_BYTES + 1))).toBeNull();
+    const css = (file: Parameters<typeof readUserCss>[0]): string | null => readUserCss(file).css;
+    expect(readUserCss(null)).toEqual({ css: null, problem: 'notFound' });
+    expect(readUserCss('')).toEqual({ css: '', problem: null });
+    expect(css(`${bom}a {}`)).toBe('a {}');
+    expect(css(`a${bom}`)).toBe(`a${bom}`);
+    expect(css('a'.repeat(USER_CSS_MAX_BYTES))).toHaveLength(USER_CSS_MAX_BYTES);
+    expect(readUserCss('a'.repeat(USER_CSS_MAX_BYTES + 1))).toEqual({
+      css: null,
+      problem: 'tooLarge',
+    });
     // Bytes, not characters: an e with an acute accent is two bytes in UTF-8.
-    expect(readUserCss(eAcute.repeat(USER_CSS_MAX_BYTES / 2))).not.toBeNull();
-    expect(readUserCss(`${eAcute.repeat(USER_CSS_MAX_BYTES / 2)}a`)).toBeNull();
+    expect(css(eAcute.repeat(USER_CSS_MAX_BYTES / 2))).not.toBeNull();
+    expect(css(`${eAcute.repeat(USER_CSS_MAX_BYTES / 2)}a`)).toBeNull();
     // The BOM's three bytes count.
-    expect(readUserCss(`${bom}${'a'.repeat(USER_CSS_MAX_BYTES - 3)}`)).toHaveLength(
-      USER_CSS_MAX_BYTES - 3,
-    );
-    expect(readUserCss(`${bom}${'a'.repeat(USER_CSS_MAX_BYTES - 2)}`)).toBeNull();
+    expect(css(`${bom}${'a'.repeat(USER_CSS_MAX_BYTES - 3)}`)).toHaveLength(USER_CSS_MAX_BYTES - 3);
+    expect(css(`${bom}${'a'.repeat(USER_CSS_MAX_BYTES - 2)}`)).toBeNull();
+
+    // A file's bytes: UTF-8 reads as text, a leading BOM dropped;
+    // anything else is not UTF-8, unless it is too large anyway.
+    const utf8 = (text: string): Uint8Array => new TextEncoder().encode(text);
+    expect(readUserCss(utf8(`${bom}a {}`))).toEqual({ css: 'a {}', problem: null });
+    expect(readUserCss(utf8(`a${bom}`))).toEqual({ css: `a${bom}`, problem: null });
+    // UTF-16 (Notepad's "Unicode"), with its byte order mark, as in user_css.rs.
+    const utf16 = new Uint8Array([0xff, 0xfe, 0x61, 0, 0x7b, 0, 0x7d, 0]);
+    expect(readUserCss(utf16)).toEqual({ css: null, problem: 'notUtf8' });
+    expect(readUserCss(new Uint8Array([0xc3, 0x28]))).toEqual({ css: null, problem: 'notUtf8' });
+    const big = new Uint8Array(USER_CSS_MAX_BYTES + 1).fill(0xff);
+    expect(readUserCss(big)).toEqual({ css: null, problem: 'tooLarge' });
+    expect(readUserCss({ unreadable: 'Access is denied. (os error 5)' })).toEqual({
+      css: null,
+      problem: 'unreadable',
+    });
   });
 
   it('the default settings have the standard theme preset, like Settings::default()', () => {
