@@ -42,12 +42,18 @@
 //! before the box and `MessageBoxW`, which blocks until answered, never
 //! runs on the UI thread or the service worker
 //! (`docs/development/windows-rules.md`). The store is the shape of
-//! `taskbar.rs` (atomic temp file + rename, an unreadable file counts as
-//! absent after a warning), copied rather than shared: this module has no
+//! `taskbar/marker.rs` (atomic temp file + rename, an unreadable file counts
+//! as absent after a warning), copied rather than shared: this module has no
 //! in-memory variant, because under the mock platform (demo runs) nothing
 //! is written and the check does nothing, like autostart and taskbar. No
 //! external crate for the time stamp: [`rfc3339_utc`] formats a
 //! `SystemTime` by hand.
+
+mod markers;
+mod store;
+#[cfg(test)]
+mod tests;
+mod timestamp;
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -56,6 +62,10 @@ use std::time::{Duration, SystemTime};
 use stem_core::LaunchTarget;
 use stem_platform::{Platform, is_mock};
 use tauri::{AppHandle, Manager};
+
+use markers::{CrashKind, CrashMarker, RunMarker, Verdict, assess, dialog_text};
+use store::{delete_marker, read_marker, write_marker};
+use timestamp::rfc3339_utc;
 
 use crate::AppService;
 
@@ -68,84 +78,10 @@ const CRASH_FILE_NAME: &str = "crash.json";
 const REPORT_DELAY: Duration = Duration::from_secs(2);
 /// The dialog's title bar.
 const DIALOG_TITLE: &str = "Stem";
-/// The dialog shows at most this much of the panic message; the rest is in
-/// the log and in the marker.
-const DIALOG_MESSAGE_CHARS: usize = 400;
 
 /// Where the markers live, once [`init`] has resolved it. The panic hook
 /// reads it without an `AppHandle`; unset means "write no marker".
 static MARKER_DIR: OnceLock<PathBuf> = OnceLock::new();
-
-/// `run.json`: the run that is (or was) in progress.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RunMarker {
-    /// RFC 3339, UTC.
-    pub started_at: String,
-    pub pid: u32,
-    /// The package version of the binary that wrote it.
-    pub version: String,
-}
-
-/// `crash.json`: what the panic hook saw.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CrashMarker {
-    pub kind: CrashKind,
-    pub message: String,
-    /// `file:line:column`, as the panic hook formats it.
-    pub location: String,
-    /// RFC 3339, UTC.
-    pub time: String,
-}
-
-/// What kind of crash a marker records. Only panics are caught today; the
-/// field exists so that another kind can be told apart later.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum CrashKind {
-    Panic,
-}
-
-/// What the previous run left behind means.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Verdict {
-    /// Nothing to report: a clean exit, or the first start.
-    Clean,
-    /// The previous run never reached `RunEvent::Exit` and did not panic:
-    /// log once.
-    UncleanExit(RunMarker),
-    /// The previous run panicked: tell the user once.
-    Crashed(CrashMarker),
-}
-
-/// The decision, pure: a crash marker wins; a run marker from another
-/// process is an unclean exit; a run marker with this process's pid cannot
-/// be a previous run's (this run has not written one yet) and is ignored.
-pub fn assess(crash: Option<CrashMarker>, run: Option<RunMarker>, this_pid: u32) -> Verdict {
-    if let Some(crash) = crash {
-        return Verdict::Crashed(crash);
-    }
-    match run {
-        Some(run) if run.pid != this_pid => Verdict::UncleanExit(run),
-        _ => Verdict::Clean,
-    }
-}
-
-/// The dialog's text for a crash: when, where, what, and the question. The
-/// message is cut at [`DIALOG_MESSAGE_CHARS`] characters (on a character
-/// boundary) with an ellipsis, so a long panic message cannot produce a
-/// screen-high box.
-pub fn dialog_text(crash: &CrashMarker) -> String {
-    let message = match crash.message.char_indices().nth(DIALOG_MESSAGE_CHARS) {
-        Some((cut, _)) => format!("{}…", &crash.message[..cut]),
-        None => crash.message.clone(),
-    };
-    format!(
-        "Stem crashed last time ({}, {}):\n{message}\n\nOpen the log folder?",
-        crash.time, crash.location
-    )
-}
 
 /// Resolve where the markers live, read what the previous run left, write
 /// this run's marker and, after a crash, schedule the report. Runs in
@@ -312,314 +248,4 @@ fn write_crash_marker(path: &Path, message: &str, location: &str) -> std::io::Re
             time: rfc3339_utc(SystemTime::now()),
         },
     )
-}
-
-// ---------------------------------------------------------------------------
-// The marker store (the shape of `taskbar.rs`)
-// ---------------------------------------------------------------------------
-
-/// The marker as it is; a file that cannot be read or parsed counts as
-/// absent, after a warning (the next write replaces it).
-fn read_marker<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
-        Err(e) => {
-            log::warn!(
-                "crash: could not read the marker {} ({e}); counting it as absent",
-                path.display()
-            );
-            return None;
-        }
-    };
-    match serde_json::from_str::<T>(&text) {
-        Ok(marker) => Some(marker),
-        Err(e) => {
-            log::warn!(
-                "crash: the marker {} is not valid ({e}); counting it as absent",
-                path.display()
-            );
-            None
-        }
-    }
-}
-
-/// Atomic (temp file + rename), like the settings file: a crash in the
-/// middle must not leave a half-written marker that reads as absent.
-fn write_marker<T: serde::Serialize>(path: &Path, marker: &T) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let json = serde_json::to_string_pretty(marker)?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, json)?;
-    std::fs::rename(&tmp, path)
-}
-
-/// Idempotent: a marker that is already gone is fine.
-fn delete_marker(path: &Path) -> std::io::Result<()> {
-    match std::fs::remove_file(path) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        result => result,
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Time stamps
-// ---------------------------------------------------------------------------
-
-/// `time` as `YYYY-MM-DDTHH:MM:SSZ` (RFC 3339, UTC, whole seconds), the way
-/// the log's own time stamps read. A time before 1970 reads as the epoch.
-/// Cannot panic: it runs inside the panic hook.
-pub fn rfc3339_utc(time: SystemTime) -> String {
-    let secs = time
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or_default();
-    let (year, month, day) = civil_from_days(secs / 86_400);
-    let of_day = secs % 86_400;
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
-        of_day / 3_600,
-        of_day % 3_600 / 60,
-        of_day % 60
-    )
-}
-
-/// Days since 1970-01-01 to a proleptic Gregorian (year, month, day).
-/// Howard Hinnant's `civil_from_days`, for non-negative days only.
-fn civil_from_days(days: u64) -> (u64, u64, u64) {
-    let z = days + 719_468;
-    let era = z / 146_097;
-    let doe = z - era * 146_097; // day of era, [0, 146096]
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // day of year from March, [0, 365]
-    let mp = (5 * doy + 2) / 153; // month from March, [0, 11]
-    let day = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
-    let month = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
-    let year = yoe + era * 400 + u64::from(month <= 2);
-    (year, month, day)
-}
-
-#[cfg(test)]
-mod tests {
-    use stem_platform::mock::{MockCall, MockPlatform};
-
-    use super::*;
-
-    fn scratch_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("stem-crash-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        dir
-    }
-
-    fn a_run(pid: u32) -> RunMarker {
-        RunMarker {
-            started_at: "2026-11-08T09:00:00Z".to_owned(),
-            pid,
-            version: "0.1.0".to_owned(),
-        }
-    }
-
-    fn a_crash() -> CrashMarker {
-        CrashMarker {
-            kind: CrashKind::Panic,
-            message: "STEM_PANIC_TEST=1: intentional panic to exercise the panic hook".to_owned(),
-            location: r"src-tauri\src\lib.rs:320:9".to_owned(),
-            time: "2026-11-08T09:00:02Z".to_owned(),
-        }
-    }
-
-    #[test]
-    fn nothing_left_behind_is_clean() {
-        assert_eq!(assess(None, None, 1234), Verdict::Clean);
-    }
-
-    #[test]
-    fn a_run_marker_of_another_process_is_an_unclean_exit() {
-        assert_eq!(
-            assess(None, Some(a_run(4321)), 1234),
-            Verdict::UncleanExit(a_run(4321))
-        );
-    }
-
-    #[test]
-    fn a_run_marker_with_this_pid_is_not_a_previous_run() {
-        assert_eq!(assess(None, Some(a_run(1234)), 1234), Verdict::Clean);
-    }
-
-    #[test]
-    fn a_crash_marker_outranks_the_run_marker() {
-        assert_eq!(
-            assess(Some(a_crash()), Some(a_run(4321)), 1234),
-            Verdict::Crashed(a_crash())
-        );
-        assert_eq!(
-            assess(Some(a_crash()), None, 1234),
-            Verdict::Crashed(a_crash())
-        );
-    }
-
-    #[test]
-    fn the_dialog_says_when_where_what_and_asks() {
-        assert_eq!(
-            dialog_text(&a_crash()),
-            "Stem crashed last time (2026-11-08T09:00:02Z, src-tauri\\src\\lib.rs:320:9):\n\
-             STEM_PANIC_TEST=1: intentional panic to exercise the panic hook\n\
-             \n\
-             Open the log folder?"
-        );
-    }
-
-    #[test]
-    fn the_dialog_cuts_a_long_message_on_a_character_boundary() {
-        let mut crash = a_crash();
-        crash.message = "é".repeat(DIALOG_MESSAGE_CHARS + 50);
-        let text = dialog_text(&crash);
-        let shown = text.lines().nth(1).expect("the message is the second line");
-        assert_eq!(shown.chars().count(), DIALOG_MESSAGE_CHARS + 1);
-        assert!(shown.ends_with('…'));
-        assert!(text.ends_with("\n\nOpen the log folder?"));
-
-        crash.message = "é".repeat(DIALOG_MESSAGE_CHARS);
-        assert!(
-            !dialog_text(&crash).contains('…'),
-            "exactly the limit is not cut"
-        );
-    }
-
-    #[test]
-    fn the_markers_round_trip_in_the_documented_shapes() {
-        let dir = scratch_dir("round-trip");
-        let run_path = dir.join("nested").join(RUN_FILE_NAME);
-        let crash_path = dir.join("nested").join(CRASH_FILE_NAME);
-        assert_eq!(read_marker::<RunMarker>(&run_path), None);
-        assert_eq!(read_marker::<CrashMarker>(&crash_path), None);
-
-        write_marker(&run_path, &a_run(1234)).unwrap();
-        write_crash_marker(&crash_path, "boom", "src/x.rs:1:2").unwrap();
-        assert!(!dir.join("nested").join("run.json.tmp").exists());
-        assert!(!dir.join("nested").join("crash.json.tmp").exists());
-
-        let run: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&run_path).unwrap()).unwrap();
-        assert_eq!(
-            run,
-            serde_json::json!({
-                "startedAt": "2026-11-08T09:00:00Z",
-                "pid": 1234,
-                "version": "0.1.0",
-            })
-        );
-        let crash: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&crash_path).unwrap()).unwrap();
-        assert_eq!(crash["kind"], "panic");
-        assert_eq!(crash["message"], "boom");
-        assert_eq!(crash["location"], "src/x.rs:1:2");
-        let time = crash["time"].as_str().unwrap();
-        assert_eq!(time.len(), "2026-11-08T09:00:02Z".len(), "{time}");
-        assert!(time.ends_with('Z'));
-
-        assert_eq!(read_marker::<RunMarker>(&run_path), Some(a_run(1234)));
-        let back = read_marker::<CrashMarker>(&crash_path).unwrap();
-        assert_eq!(back.kind, CrashKind::Panic);
-        assert_eq!(back.message, "boom");
-
-        delete_marker(&run_path).unwrap();
-        delete_marker(&run_path).unwrap();
-        assert_eq!(read_marker::<RunMarker>(&run_path), None);
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn an_invalid_marker_file_counts_as_absent() {
-        let dir = scratch_dir("invalid");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(CRASH_FILE_NAME);
-        std::fs::write(&path, "{ not json").unwrap();
-        assert_eq!(read_marker::<CrashMarker>(&path), None);
-        std::fs::write(
-            &path,
-            r#"{"kind": "meteor", "message": "", "location": "", "time": ""}"#,
-        )
-        .unwrap();
-        assert_eq!(read_marker::<CrashMarker>(&path), None, "unknown kind");
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn the_report_asks_once_opens_the_folder_on_yes_and_deletes_the_marker() {
-        let dir = scratch_dir("report-yes");
-        let logs = dir.join("logs");
-        std::fs::create_dir_all(&logs).unwrap();
-        let crash_path = dir.join(CRASH_FILE_NAME);
-        write_marker(&crash_path, &a_crash()).unwrap();
-
-        let platform = MockPlatform::new();
-        platform.script_yes_no_answer(true);
-        report(&platform, &a_crash(), &dir, Some(&logs));
-        assert_eq!(
-            platform.calls(),
-            vec![
-                MockCall::AskYesNo {
-                    title: "Stem".to_owned(),
-                    text: dialog_text(&a_crash()),
-                },
-                MockCall::Launch(LaunchTarget::Uri {
-                    uri: logs.to_string_lossy().into_owned(),
-                }),
-            ]
-        );
-        assert!(!crash_path.exists(), "one dialog per crash");
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn the_report_opens_nothing_on_no_and_still_deletes_the_marker() {
-        let dir = scratch_dir("report-no");
-        let crash_path = dir.join(CRASH_FILE_NAME);
-        write_marker(&crash_path, &a_crash()).unwrap();
-
-        let platform = MockPlatform::new();
-        report(&platform, &a_crash(), &dir, Some(&dir.join("logs")));
-        assert_eq!(platform.calls().len(), 1, "only the question");
-        assert!(!crash_path.exists());
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn the_folder_to_open_falls_back_to_the_markers_folder() {
-        let dir = scratch_dir("folder");
-        std::fs::create_dir_all(&dir).unwrap();
-        let logs = dir.join("logs");
-        assert_eq!(folder_to_open(&dir, Some(&logs)), dir, "no logs folder yet");
-        assert_eq!(folder_to_open(&dir, None), dir);
-        std::fs::create_dir_all(&logs).unwrap();
-        assert_eq!(folder_to_open(&dir, Some(&logs)), logs);
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn rfc3339_utc_matches_known_instants() {
-        let at = |secs: u64| rfc3339_utc(SystemTime::UNIX_EPOCH + Duration::from_secs(secs));
-        assert_eq!(at(0), "1970-01-01T00:00:00Z");
-        assert_eq!(at(951_782_400), "2000-02-29T00:00:00Z");
-        assert_eq!(at(1_000_000_000), "2001-09-09T01:46:40Z");
-        assert_eq!(at(1_700_000_000), "2023-11-14T22:13:20Z");
-        assert_eq!(at(1_735_689_599), "2024-12-31T23:59:59Z");
-        assert_eq!(at(1_735_689_600), "2025-01-01T00:00:00Z");
-        assert_eq!(
-            rfc3339_utc(SystemTime::UNIX_EPOCH - Duration::from_secs(5)),
-            "1970-01-01T00:00:00Z",
-            "before the epoch reads as the epoch rather than panicking"
-        );
-    }
-
-    #[test]
-    fn record_panic_writes_nothing_before_init() {
-        // The global is unset in this test binary (no `init` runs here), so
-        // the hook's path must be a quiet no-op.
-        record_panic("boom", "src/x.rs:1:2");
-        assert!(MARKER_DIR.get().is_none());
-    }
 }
