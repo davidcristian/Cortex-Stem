@@ -93,6 +93,35 @@
     transform: translateY(calc(-50% * var(--drop-lift))) scale(calc(1 + var(--drop-lift)));
   }
 
+  /* On `top`, `left` and `right` the drop target grows away from the edge
+     (DockStage.svelte says how the dock lays its items out there). */
+  :global(.dock-stage[data-edge='top'] .dock-panel .slot[data-drop-target]) .bouncer {
+    transform: translateY(calc(50% * var(--drop-lift))) scale(calc(1 + var(--drop-lift)));
+  }
+
+  :global(.dock-stage[data-edge='left'] .dock-panel .slot[data-drop-target]) .bouncer {
+    transform: translateX(calc(50% * var(--drop-lift))) scale(calc(1 + var(--drop-lift)));
+  }
+
+  :global(.dock-stage[data-edge='right'] .dock-panel .slot[data-drop-target]) .bouncer {
+    transform: translateX(calc(-50% * var(--drop-lift))) scale(calc(1 + var(--drop-lift)));
+  }
+
+  /* Ease back to rest after the pointer left; instant while tracking it. */
+  :global(.dock-panel.settling) .bouncer {
+    transition:
+      width 120ms ease,
+      height 120ms ease,
+      transform 120ms ease,
+      filter 120ms ease;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    :global(.dock-panel.settling) .bouncer {
+      transition: none;
+    }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .bouncer {
       transition: none;

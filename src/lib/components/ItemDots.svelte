@@ -67,6 +67,39 @@
     opacity: 1;
   }
 
+  /* On `top`, `left` and `right` the dots sit between the icon and the edge
+     (DockStage.svelte says how the dock lays its items out there). */
+  :global(.dock-stage[data-edge='top'] .dock-panel .slot) .dots {
+    top: auto;
+    bottom: calc(100% + var(--dots-gap));
+  }
+
+  :global(.dock-stage[data-edge='left'] .dock-panel .slot) .dots,
+  :global(.dock-stage[data-edge='right'] .dock-panel .slot) .dots {
+    top: 0;
+    bottom: 0;
+    flex-direction: column;
+    justify-content: center;
+    width: var(--dot-size);
+    height: auto;
+  }
+
+  :global(.dock-stage[data-edge='left'] .dock-panel .slot) .dots {
+    left: auto;
+    right: calc(100% + var(--dots-gap));
+  }
+
+  :global(.dock-stage[data-edge='right'] .dock-panel .slot) .dots {
+    left: calc(100% + var(--dots-gap));
+    right: auto;
+  }
+
+  :global(.dock-stage[data-edge='left'] .dock-panel .slot) .dots.attention i,
+  :global(.dock-stage[data-edge='right'] .dock-panel .slot) .dots.attention i {
+    width: var(--dot-size);
+    height: calc(var(--dot-size) * 3);
+  }
+
   /* Forced colours (WebView2 under a Windows contrast theme): the
      browser repaints every background in the theme's Canvas colour, which
      erases the dots. They opt out and take the contrast theme's own system
