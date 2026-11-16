@@ -405,15 +405,17 @@ impl Platform for MockPlatform {
         Ok(identity_for(&raw))
     }
 
+    /// A `StoreApp` target is the same identity as the app's windows
+    /// ([`identity_for_aumid`]), as on Windows, where both come from the
+    /// AppsFolder; the rest are named after the file or the URI.
     fn identify_target(&self, target: &LaunchTarget) -> PlatformResult<AppIdentity> {
         let (id, name) = match target {
             LaunchTarget::Exe { path, .. } | LaunchTarget::Shortcut { path } => {
                 (AppId::for_exe(path), file_stem(path))
             }
-            LaunchTarget::StoreApp { app_user_model_id } => (
-                AppId::for_app_user_model_id(app_user_model_id),
-                app_user_model_id.clone(),
-            ),
+            LaunchTarget::StoreApp { app_user_model_id } => {
+                return Ok(identity_for_aumid(app_user_model_id));
+            }
             LaunchTarget::Uri { uri } => (AppId(format!("uri:{uri}")), uri.clone()),
         };
         Ok(AppIdentity {
@@ -649,7 +651,22 @@ impl Platform for MockPlatform {
     }
 }
 
+/// The identity of a window, shaped like `windows::identity::identify_window`:
+/// a window whose AppUserModelID the shell knows
+/// ([`apps_folder_knows`]) is that app ([`identity_for_aumid`]), so
+/// Calculator in an `ApplicationFrameHost` frame launches the Store app and
+/// names no file, not the frame host. Any other window, a desktop program
+/// with an AppUserModelID of its own included (its id stays `aumid:`), is
+/// named after its exe's stem, else its title, and launches that exe.
 fn identity_for(raw: &RawWindow) -> AppIdentity {
+    if let Some(aumid) = raw
+        .app_user_model_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|aumid| apps_folder_knows(aumid))
+    {
+        return identity_for_aumid(aumid);
+    }
     let id = stem_core::app_id_for(raw);
     let display_name = raw
         .exe_path
@@ -667,6 +684,49 @@ fn identity_for(raw: &RawWindow) -> AppIdentity {
         display_name,
         launch,
     }
+}
+
+/// The identity of a packaged app, shaped like the real platform's
+/// `identity_for_aumid`: the `aumid:` id, a `StoreApp` launch by the
+/// AppUserModelID and no file. The mock has no AppsFolder to name the app,
+/// so its name is the one the real platform derives from the AppUserModelID
+/// when the shell cannot name it (`rules::identity::aumid_fallback_name`:
+/// `Microsoft.WindowsCalculator_8wekyb3d8bbwe!App` → `WindowsCalculator`),
+/// and its icon key is the mock's (`mock:<id>`) instead of `aumid:`.
+fn identity_for_aumid(aumid: &str) -> AppIdentity {
+    let aumid = aumid.trim();
+    let id = AppId::for_app_user_model_id(aumid);
+    AppIdentity {
+        icon_key: Some(IconKey(format!("mock:{}", id.as_str()))),
+        id,
+        display_name: rules::identity::aumid_fallback_name(aumid),
+        launch: Some(LaunchTarget::StoreApp {
+            app_user_model_id: aumid.to_owned(),
+        }),
+    }
+}
+
+/// Whether the mock's shell knows `aumid` as an AppsFolder item.
+/// The real platform asks `shell:AppsFolder\<aumid>`, which knows every
+/// packaged app and those desktop programs whose shortcut registered their
+/// AppUserModelID. The mock knows exactly the packaged form,
+/// `<package family name>!<application id>` with the family
+/// `<name>_<publisher id>` (`Microsoft.WindowsCalculator_8wekyb3d8bbwe!App`),
+/// and no desktop program's own AppUserModelID (`308046B0AF4A39CB`,
+/// `Chrome.Profile1`), which therefore takes the exe branch as an AUMID the
+/// shell does not know does on Windows. The TS mirror is `appsFolderKnows`
+/// in `src/lib/ipc/mock.ts`.
+fn apps_folder_knows(aumid: &str) -> bool {
+    let Some((family, app)) = aumid.trim().split_once('!') else {
+        return false;
+    };
+    let Some((name, publisher)) = family.split_once('_') else {
+        return false;
+    };
+    !name.trim().is_empty()
+        && !publisher.is_empty()
+        && publisher.chars().all(|c| c.is_ascii_alphanumeric())
+        && !app.trim().is_empty()
 }
 
 /// File name without extension, treating both `/` and `\` as separators so
@@ -1405,6 +1465,97 @@ mod tests {
             .unwrap();
         assert_eq!(id.id, AppId::for_exe(std::path::Path::new(r"c:/a/b.exe")));
         assert_eq!(id.display_name, "b");
+    }
+
+    #[test]
+    fn a_packaged_app_in_a_frame_host_window_is_the_store_app_and_names_no_file() {
+        // As `windows::identity::identify_window` resolves an AUMID
+        // the AppsFolder knows.
+        const CALCULATOR: &str = "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App";
+        const FRAME_HOST: &str = r"C:\Windows\System32\ApplicationFrameHost.exe";
+        let p = MockPlatform::new();
+        let frame = |id: u64, exe: &str, aumid: Option<&str>| RawWindow {
+            id: WindowId(id),
+            title: "Calculator".into(),
+            class_name: "ApplicationFrameWindow".into(),
+            app_user_model_id: aumid.map(str::to_owned),
+            ..demo_window(id, exe, "", false, Rect::new(300, 100, 400, 600))
+        };
+        // Calculator as Windows shows it: a frame of the frame host's
+        // process that names the app's AppUserModelID.
+        p.push(PlatformEvent::WindowAdded(frame(
+            60,
+            FRAME_HOST,
+            Some(CALCULATOR),
+        )));
+        let calc = AppId::for_app_user_model_id(CALCULATOR);
+        let store_app = AppIdentity {
+            id: calc.clone(),
+            display_name: "WindowsCalculator".into(),
+            icon_key: Some(IconKey(format!("mock:{}", calc.as_str()))),
+            launch: Some(LaunchTarget::StoreApp {
+                app_user_model_id: CALCULATOR.into(),
+            }),
+        };
+        assert_eq!(p.identify_window(WindowId(60)).unwrap(), store_app);
+        // A pin of the Store app is the same identity, as both come from
+        // the AppsFolder on Windows; blanks around the id are not kept.
+        let pinned = LaunchTarget::StoreApp {
+            app_user_model_id: format!(" {CALCULATOR} "),
+        };
+        assert_eq!(p.identify_target(&pinned).unwrap(), store_app);
+
+        // A desktop program with an AppUserModelID of its own, which the
+        // mock's shell does not know: still an `aumid:` id, but named after
+        // and launching its exe, as on Windows for an AUMID outside the
+        // AppsFolder.
+        const FIREFOX: &str = r"C:\Program Files\Mozilla Firefox\firefox.exe";
+        p.push(PlatformEvent::WindowAdded(frame(
+            70,
+            FIREFOX,
+            Some("308046B0AF4A39CB"),
+        )));
+        let firefox = p.identify_window(WindowId(70)).unwrap();
+        assert_eq!(firefox.id, AppId::for_app_user_model_id("308046B0AF4A39CB"));
+        assert_eq!(firefox.display_name, "firefox");
+        assert_eq!(
+            firefox.launch,
+            Some(LaunchTarget::Exe {
+                path: PathBuf::from(FIREFOX),
+                args: vec![],
+                working_dir: None,
+            })
+        );
+        // No AppUserModelID: unchanged, the exe's identity.
+        p.push(PlatformEvent::WindowAdded(frame(80, FIREFOX, None)));
+        let plain = p.identify_window(WindowId(80)).unwrap();
+        assert_eq!(plain.id, AppId::for_exe(std::path::Path::new(FIREFOX)));
+        assert_eq!(plain.display_name, "firefox");
+        assert_eq!(plain.launch, firefox.launch);
+    }
+
+    #[test]
+    fn the_mock_shell_knows_packaged_app_user_model_ids_only() {
+        for known in [
+            "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App",
+            " Microsoft.WindowsTerminal_8wekyb3d8bbwe!App ",
+            "windows.immersivecontrolpanel_cw5n1h2txyewy!microsoft.windows.immersivecontrolpanel",
+        ] {
+            assert!(apps_folder_knows(known), "{known}");
+        }
+        for unknown in [
+            "",
+            "308046B0AF4A39CB",
+            "Chrome.Profile1",
+            "Microsoft.WindowsCalculator_8wekyb3d8bbwe",
+            "Microsoft.WindowsCalculator!App",
+            "_8wekyb3d8bbwe!App",
+            "Microsoft.WindowsCalculator_!App",
+            "Microsoft.WindowsCalculator_8wekyb3d8bbwe!",
+            "Microsoft.WindowsCalculator_1.0_x64__8wekyb3d8bbwe!App",
+        ] {
+            assert!(!apps_folder_knows(unknown), "{unknown}");
+        }
     }
 
     #[test]
