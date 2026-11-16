@@ -524,7 +524,7 @@ pub enum AppFolder {
 /// to `get_user_css` and `reload_user_css`, and the payload of
 /// `dock://user-css`. The dock page puts `css` in one `<style>` element
 /// after its own styles; `docs/THEMING.md` lists the variables it supports.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct UserCss {
