@@ -1135,6 +1135,50 @@ describe('revisions and events', () => {
     expect(states).toHaveLength(3);
   });
 
+  it('sends dock://state and bumps the revision only when the snapshot changed, as Rust', async () => {
+    const b = fast();
+    const states = recordStates(b);
+    const themes: unknown[] = [];
+    b.on('dock://theme', (t) => {
+      themes.push(t);
+    });
+    const r0 = (await b.getDockState()).revision;
+    const unchanged = async (): Promise<void> => {
+      expect(states).toHaveLength(0);
+      expect((await b.getDockState()).revision).toBe(r0);
+    };
+
+    // The theme is not part of the snapshot: its own event, no state.
+    b.setTheme({ ...(await b.getTheme()), accent: '#E81123' });
+    expect(themes).toHaveLength(1);
+    // Neither is a setting no item shows, nor a frame that covers no panel.
+    const settings = await b.getSettings();
+    settings.appearance.opacity = 0.5;
+    settings.autoHide.delayMs = 900;
+    await b.updateSettings(settings);
+    b.moveWindow(4, { x: 10, y: 10, width: 300, height: 200 });
+    // Nor the Recycle Bin's size while it stays full, nor a monitor list
+    // that moves no dock's fact.
+    const bin = item(await b.getDockState(), 'fixed:recycle-bin').iconKey;
+    b.pushRecycleBin({ itemCount: 7, sizeBytes: 123_456 });
+    expect(item(await b.getDockState(), 'fixed:recycle-bin').iconKey).toBe(bin);
+    b['engine'].setMonitors(structuredClone(b['engine'].monitors).reverse());
+    // Nor a repeat of the foreground or of the power reading.
+    b.pushForeground((await b.getDockState()).foreground);
+    b.setPower(DEMO_POWER);
+    await unchanged();
+
+    // Something the snapshot shows: one state, one revision up, and every
+    // later one one more.
+    b.pushRecycleBin({ itemCount: 0, sizeBytes: 0 });
+    await b.windowAction(5, 'minimize');
+    const settled = await b.getSettings();
+    settled.items.launcher = false;
+    await b.updateSettings(settled);
+    expect(states.map((s) => s.revision)).toEqual([r0 + 1, r0 + 2, r0 + 3]);
+    expect((await b.getDockState()).revision).toBe(r0 + 3);
+  });
+
   it('updateSettings validates, emits dock://settings and re-renders when items change', async () => {
     const b = fast();
     const states = recordStates(b);

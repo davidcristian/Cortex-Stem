@@ -8,7 +8,12 @@ to the file that covers that section now.
   ([Scrolling over an item](scrolling-over-an-item.md)). `UserCss` gains
   `problem: UserCssProblem | null` (`notFound`, `unreadable`, `notUtf8`, `tooLarge`), the reason
   `css` is `null`, which the settings page's dock.css row shows ([Themes](themes.md)).
-  `MockOptions.userCss` and `writeUserCss` also take bytes and `{ unreadable }`.
+  `MockOptions.userCss` and `writeUserCss` also take bytes and `{ unreadable }`. `MockBackend`
+  decides, like `DockEngine::apply`, whether an input changed the snapshot by comparing it, and
+  only then sends `dock://state` and increments the revision. So it no longer sends one for a
+  theme change, a setting no item shows, an identity of an app without an item, or a monitor list
+  or Recycle Bin size that changes nothing (the [`dock://state` row](events.md)). It validates
+  every settings change, as `mutate_settings` does.
 - **v1.28 (fitting the edge):** The page draws the dock at a smaller fitted icon size when it
   would not fit its edge. No command, event or payload changed. New section
   [Fitting the edge](sizing-protocol.md#fitting-the-edge-v128).

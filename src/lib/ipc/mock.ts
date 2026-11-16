@@ -1062,10 +1062,23 @@ class Engine {
     this.theme = theme;
   }
 
-  // --- inputs (each returns whether the snapshot changed; `apply` bumps the revision)
+  // --- inputs (each returns whether the snapshot changed; `input` decides and bumps the revision)
 
-  apply(changed: boolean): boolean {
+  /**
+   * `DockEngine::apply`: run one input (`mutate`), then tell whether the
+   * renderable snapshot changed by comparing it with the one before
+   * (`EngineOutcome::changed`); only then does the revision go up,
+   * by one, and only then does the backend send a `dock://state`. So an
+   * input that changes nothing the snapshot shows changes nothing: the
+   * theme, a monitor list that moves no dock's fact, the identity of an
+   * app without an item, a setting no item depends on, a frame that flips
+   * no `overlapped`, the size of the Recycle Bin's contents.
+   */
+  private input(mutate: () => void): boolean {
+    const before = JSON.stringify(this.snapshot());
+    mutate();
     this.rebuildRunningOrder();
+    const changed = JSON.stringify(this.snapshot()) !== before;
     if (changed) {
       this.revision += 1;
     }
@@ -1073,50 +1086,50 @@ class Engine {
   }
 
   snapshotWindows(list: RawWindow[]): boolean {
-    const before = JSON.stringify([...this.windows.values()]);
-    const next = new Map<WindowId, Tracked>();
-    for (const raw of list) {
-      const prev = this.windows.get(raw.id);
-      next.set(raw.id, {
-        raw,
-        seq: prev?.seq ?? this.allocSeq(),
-        attention: prev?.attention ?? false,
-      });
-    }
-    this.windows.clear();
-    for (const [id, t] of next) {
-      this.windows.set(id, t);
-    }
-    const changed = JSON.stringify([...this.windows.values()]) !== before;
-    return this.apply(this.recomputeOverlap() || changed);
+    return this.input(() => {
+      const next = new Map<WindowId, Tracked>();
+      for (const raw of list) {
+        const prev = this.windows.get(raw.id);
+        next.set(raw.id, {
+          raw,
+          seq: prev?.seq ?? this.allocSeq(),
+          attention: prev?.attention ?? false,
+        });
+      }
+      this.windows.clear();
+      for (const [id, t] of next) {
+        this.windows.set(id, t);
+      }
+      this.recomputeOverlap();
+    });
   }
 
   /**
    * `WindowAdded` / `WindowUpdated`. A change of the frame alone is stored
-   * without bumping the revision (nothing renders it), unless it flips
-   * `overlapped`, exactly like `DockEngine::upsert`.
+   * and changes nothing (no item shows it), unless it flips `overlapped`,
+   * exactly like `DockEngine::upsert`.
    */
   upsertWindow(raw: RawWindow): boolean {
-    const t = this.windows.get(raw.id);
-    if (t) {
-      const rendered = !sameWindow(t.raw, raw);
-      t.raw = raw;
-      return this.apply(this.recomputeOverlap() || rendered);
-    }
-    this.windows.set(raw.id, { raw, seq: this.allocSeq(), attention: false });
-    this.recomputeOverlap();
-    return this.apply(true);
+    return this.input(() => {
+      const t = this.windows.get(raw.id);
+      if (t) {
+        t.raw = raw;
+      } else {
+        this.windows.set(raw.id, { raw, seq: this.allocSeq(), attention: false });
+      }
+      this.recomputeOverlap();
+    });
   }
 
   removeWindow(id: WindowId): boolean {
-    const removed = this.windows.delete(id);
-    if (this.foreground === id) {
-      this.foreground = null;
-    }
-    if (removed) {
-      this.recomputeOverlap();
-    }
-    return this.apply(removed);
+    return this.input(() => {
+      if (this.windows.delete(id)) {
+        this.recomputeOverlap();
+      }
+      if (this.foreground === id) {
+        this.foreground = null;
+      }
+    });
   }
 
   /**
@@ -1124,32 +1137,28 @@ class Engine {
    * sits on `monitor` with its panel at `rect` (screen px; `null` while the
    * window is hidden); both `null` forgets the label (the window closed).
    * Only a change of the docks' facts (an entry coming or going, a flip of
-   * its `overlapped`) bumps the revision.
+   * its `overlapped`) changes the snapshot.
    */
   setDockPanel(label: string, monitor: MonitorId | null, rect: Rect | null): boolean {
-    const before = JSON.stringify(this.dockFacts());
-    if (monitor === null && rect === null) {
-      this.panels.delete(label);
-    } else {
-      const panel = this.panels.get(label) ?? { monitor: null, rect: null, overlapped: false };
-      panel.monitor = monitor;
-      panel.rect = rect === null ? null : { ...rect };
-      this.panels.set(label, panel);
-    }
-    this.recomputeOverlap();
-    return this.apply(JSON.stringify(this.dockFacts()) !== before);
+    return this.input(() => {
+      if (monitor === null && rect === null) {
+        this.panels.delete(label);
+      } else {
+        const panel = this.panels.get(label) ?? { monitor: null, rect: null, overlapped: false };
+        panel.monitor = monitor;
+        panel.rect = rect === null ? null : { ...rect };
+        this.panels.set(label, panel);
+      }
+      this.recomputeOverlap();
+    });
   }
 
-  /** `overlap::overlapped` over the tracked windows, per panel; whether any flag flipped. */
-  private recomputeOverlap(): boolean {
+  /** `overlap::overlapped` over the tracked windows, per panel. */
+  private recomputeOverlap(): void {
     const windows = [...this.windows.values()].map((t) => t.raw);
-    let flipped = false;
     for (const panel of this.panels.values()) {
-      const next = overlapped(panel.rect, windows, this.ownProcessId);
-      flipped ||= next !== panel.overlapped;
-      panel.overlapped = next;
+      panel.overlapped = overlapped(panel.rect, windows, this.ownProcessId);
     }
-    return flipped;
   }
 
   /** The primary monitor as the app layer picks it: the flagged one, else the first. */
@@ -1189,29 +1198,26 @@ class Engine {
   }
 
   setForeground(id: WindowId | null): boolean {
-    const next = id !== null && this.windows.has(id) ? id : null;
-    let changed = this.foreground !== next;
-    this.foreground = next;
-    const t = next !== null ? this.windows.get(next) : undefined;
-    if (t?.attention) {
-      // Activating a window clears its attention request.
-      t.attention = false;
-      changed = true;
-    }
-    return this.apply(changed);
+    return this.input(() => {
+      const next = id !== null && this.windows.has(id) ? id : null;
+      this.foreground = next;
+      const t = next !== null ? this.windows.get(next) : undefined;
+      if (t) {
+        // Activating a window clears its attention request.
+        t.attention = false;
+      }
+    });
   }
 
   setAttention(id: WindowId, flashing: boolean): boolean {
-    const t = this.windows.get(id);
-    if (!t) {
-      return this.apply(false);
-    }
-    // As `PlatformEvent::WindowAttention` in engine.rs: the window
-    // in front already has the user's attention, so its flash flags nothing.
-    const next = flashing && this.foreground !== id;
-    const changed = t.attention !== next;
-    t.attention = next;
-    return this.apply(changed);
+    return this.input(() => {
+      const t = this.windows.get(id);
+      if (t) {
+        // As `PlatformEvent::WindowAttention` in engine.rs: the window
+        // in front already has the user's attention, so its flash flags nothing.
+        t.attention = flashing && this.foreground !== id;
+      }
+    });
   }
 
   /**
@@ -1220,31 +1226,33 @@ class Engine {
    * verdict about a monitor without a dock, changes nothing.
    */
   setFullscreen(active: boolean, monitor: MonitorId | null): boolean {
-    const before = JSON.stringify(this.dockFacts());
-    this.fullscreen = { active, monitor: active ? monitor : null };
-    return this.apply(JSON.stringify(this.dockFacts()) !== before);
+    return this.input(() => {
+      this.fullscreen = { active, monitor: active ? monitor : null };
+    });
   }
 
+  /**
+   * `PlatformEvent::MonitorsChanged`: not part of the snapshot, except that
+   * a new primary can move a verdict without a monitor to another dock.
+   */
   setMonitors(monitors: MonitorInfo[]): boolean {
-    const before = JSON.stringify(this.dockFacts());
-    const changed = JSON.stringify(monitors) !== JSON.stringify(this.monitors);
-    this.monitors = monitors;
-    // A new primary can move a verdict without a monitor to another dock.
-    return this.apply(changed || JSON.stringify(this.dockFacts()) !== before);
+    return this.input(() => {
+      this.monitors = monitors;
+    });
   }
 
+  /** `PlatformEvent::ThemeChanged`: kept for `get_theme`; not part of the snapshot. */
   setTheme(theme: ThemeInfo): boolean {
-    const changed = JSON.stringify(theme) !== JSON.stringify(this.theme);
-    this.theme = theme;
-    return this.apply(changed);
+    return this.input(() => {
+      this.theme = theme;
+    });
   }
 
+  /** `PlatformEvent::RecycleBinChanged`: the snapshot shows only whether the bin is empty. */
   setRecycleBin(state: RecycleBinState): boolean {
-    const changed =
-      state.itemCount !== this.recycleBin.itemCount ||
-      state.sizeBytes !== this.recycleBin.sizeBytes;
-    this.recycleBin = state;
-    return this.apply(changed);
+    return this.input(() => {
+      this.recycleBin = state;
+    });
   }
 
   /**
@@ -1252,9 +1260,9 @@ class Engine {
    * settings say, so only a different reading bumps the revision.
    */
   setPower(power: PowerStatus): boolean {
-    const changed = JSON.stringify(power) !== JSON.stringify(this.power);
-    this.power = { ...power };
-    return this.apply(changed);
+    return this.input(() => {
+      this.power = { ...power };
+    });
   }
 
   /**
@@ -1263,23 +1271,23 @@ class Engine {
    * bumps the revision.
    */
   setClockFormat(format: ClockFormat): boolean {
-    const next: ClockFormat = { locale: format.locale, hour12: format.hour12 };
-    const changed =
-      next.locale !== this.clockFormat.locale || next.hour12 !== this.clockFormat.hour12;
-    this.clockFormat = next;
-    return this.apply(changed);
+    return this.input(() => {
+      this.clockFormat = { locale: format.locale, hour12: format.hour12 };
+    });
   }
 
+  /** `EngineInput::SettingsChanged`: a change counts only where an item shows it. */
   setSettings(settings: Settings): boolean {
-    const changed = JSON.stringify(settings) !== JSON.stringify(this.settings);
-    this.settings = settings;
-    return this.apply(changed);
+    return this.input(() => {
+      this.settings = settings;
+    });
   }
 
+  /** `EngineInput::IdentityResolved`: counts only for an app that has an item. */
   setIdentity(appId: AppId, identity: AppIdentity): boolean {
-    const changed = JSON.stringify(this.identities.get(appId)) !== JSON.stringify(identity);
-    this.identities.set(appId, identity);
-    return this.apply(changed);
+    return this.input(() => {
+      this.identities.set(appId, identity);
+    });
   }
 
   // --- queries
@@ -1624,11 +1632,6 @@ class Engine {
       badge: null,
     };
   }
-}
-
-/** Equal in everything the snapshot renders: the frame is not part of it. */
-function sameWindow(a: RawWindow, b: RawWindow): boolean {
-  return JSON.stringify({ ...a, rect: null }) === JSON.stringify({ ...b, rect: null });
 }
 
 /** `fallback_display_name` in stem-service. */
@@ -2474,9 +2477,18 @@ export class MockBackend implements Backend {
     }
   }
 
+  /**
+   * The OS theme or accent changed (`ThemeChanged`): `dock://theme` when it
+   * differs from the last one; the snapshot does not carry the theme, so
+   * no `dock://state` (as Rust).
+   */
   setTheme(theme: ThemeInfo): void {
-    if (this.engine.setTheme(theme)) {
+    const changed = JSON.stringify(theme) !== JSON.stringify(this.engine.theme);
+    const stateChanged = this.engine.setTheme(theme);
+    if (changed) {
       this.emit('dock://theme', { ...theme });
+    }
+    if (stateChanged) {
       this.emitState();
     }
   }
