@@ -1217,6 +1217,55 @@ describe('hidden apps (docs/ipc/hidden-apps.md; mirror of hide_app / unhide_app)
     ]);
   });
 
+  it("an aumid: app hidden through its frame host saves neither the frame host's path nor its icon", async () => {
+    // No identity yet, so only the window could name a path.
+    const b = new MockBackend({ latencyMs: [0, 0], identityDelayMs: 60_000, log: false });
+    backends.push(b);
+    const CALCULATOR = 'Microsoft.WindowsCalculator_8wekyb3d8bbwe!App';
+    const FRAME_HOST = 'C:\\Windows\\System32\\ApplicationFrameHost.exe';
+    const TOOL_EXE = 'C:\\Tools\\Tool.exe';
+    const window = (
+      id: number,
+      title: string,
+      className: string,
+      exePath: string,
+      appUserModelId: string | null,
+    ): RawWindow => ({
+      id,
+      title,
+      className,
+      processId: 6000 + id,
+      exePath,
+      appUserModelId,
+      isVisible: true,
+      isMinimized: false,
+      isCloaked: false,
+      onCurrentDesktop: true,
+      monitor: 'mock-primary',
+      rect: null,
+      iconKey: `hwnd:${id}:${6000 + id}`,
+    });
+    // Calculator as Windows shows it: a frame of the frame host's process
+    // that names the app's AppUserModelID.
+    b.pushWindow(window(60, 'Calculator', 'ApplicationFrameWindow', FRAME_HOST, CALCULATOR));
+    // A desktop program with no AppUserModelID of its own: an `exe:` id.
+    b.pushWindow(window(61, 'Tool main', 'ToolClass', TOOL_EXE, null));
+    const calc = `aumid:${CALCULATOR}`;
+    const tool = appIdForExe(TOOL_EXE);
+    const state = await b.getDockState();
+    expect(item(state, app(calc)).iconKey).toBe('hwnd:60:6060');
+    expect(item(state, app(tool)).iconKey).toBe('hwnd:61:6061');
+
+    await b.hideApp(calc);
+    await b.hideApp(tool);
+    expect((await b.getSettings()).hiddenApps).toEqual([
+      // Not `ApplicationFrameHost.exe`, and no `exe:` key made from it.
+      hiddenApp(calc, 'Calculator'),
+      // The desktop program keeps its window's exe and that file's icon.
+      hiddenApp(tool, 'Tool main', TOOL_EXE, `exe:${TOOL_EXE}`),
+    ]);
+  });
+
   it('a pinned or unknown app is refused; pinning a hidden app shows it as a pin', async () => {
     const b = fast();
     await expect(b.hideApp(EXPLORER)).rejects.toMatch(/is pinned/);
