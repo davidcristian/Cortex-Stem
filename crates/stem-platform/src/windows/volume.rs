@@ -20,7 +20,11 @@
 //!   always posts; `OnDefaultDeviceChanged` only for `eRender` / `eConsole`
 //!   (`rules::volume::is_console_render`); `OnDeviceStateChanged`,
 //!   `OnDeviceAdded` and `OnDeviceRemoved` always (the default may have gone
-//!   with the device); `OnPropertyValueChanged` never.
+//!   with the device); `OnPropertyValueChanged` never. A device callback
+//!   also raises a shared flag before it posts, and the thread looks at the
+//!   default device whenever it finds the flag raised after a message, so a
+//!   device message dropped from a full queue (a slider drag during a slow
+//!   COM call) is made up for by the next message the thread takes.
 //! - A device message makes the thread ask for the default endpoint's id
 //!   again and re-bind when it differs from the bound one (or nothing is
 //!   bound): the old endpoint's callback is unregistered and its COM objects
@@ -57,6 +61,8 @@
 //! the Quick Settings slider, a mute from the keyboard, a new default
 //! device and unplugged headphones.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -249,6 +255,16 @@ impl IAudioEndpointVolumeCallback_Impl for VolumeCallback_Impl {
 #[implement(IMMNotificationClient)]
 struct DeviceCallback {
     tx: Sender<Msg>,
+    /// Raised before every post, so a post the full queue drops is not
+    /// lost: the thread checks it after each message.
+    devices_changed: Arc<AtomicBool>,
+}
+
+impl DeviceCallback {
+    fn devices_changed(&self, cause: &'static str) {
+        self.devices_changed.store(true, Ordering::Release);
+        post(&self.tx, Msg::DevicesChanged(cause));
+    }
 }
 
 impl IMMNotificationClient_Impl for DeviceCallback_Impl {
@@ -257,17 +273,17 @@ impl IMMNotificationClient_Impl for DeviceCallback_Impl {
         _device_id: &PCWSTR,
         _new_state: DEVICE_STATE,
     ) -> windows::core::Result<()> {
-        post(&self.tx, Msg::DevicesChanged("OnDeviceStateChanged"));
+        self.devices_changed("OnDeviceStateChanged");
         Ok(())
     }
 
     fn OnDeviceAdded(&self, _device_id: &PCWSTR) -> windows::core::Result<()> {
-        post(&self.tx, Msg::DevicesChanged("OnDeviceAdded"));
+        self.devices_changed("OnDeviceAdded");
         Ok(())
     }
 
     fn OnDeviceRemoved(&self, _device_id: &PCWSTR) -> windows::core::Result<()> {
-        post(&self.tx, Msg::DevicesChanged("OnDeviceRemoved"));
+        self.devices_changed("OnDeviceRemoved");
         Ok(())
     }
 
@@ -278,7 +294,7 @@ impl IMMNotificationClient_Impl for DeviceCallback_Impl {
         _default_device_id: &PCWSTR,
     ) -> windows::core::Result<()> {
         if rules::is_console_render(flow.0, role.0) {
-            post(&self.tx, Msg::DevicesChanged("OnDefaultDeviceChanged"));
+            self.devices_changed("OnDefaultDeviceChanged");
         }
         Ok(())
     }
@@ -304,12 +320,16 @@ struct DeviceWatch {
 }
 
 impl DeviceWatch {
-    fn new(tx: &Sender<Msg>) -> PlatformResult<Self> {
+    fn new(tx: &Sender<Msg>, devices_changed: &Arc<AtomicBool>) -> PlatformResult<Self> {
         // SAFETY: in-process activation of the documented MMDeviceEnumerator
         // class on a thread in the MTA; the result is owned by us.
         let enumerator: IMMDeviceEnumerator =
             unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }?;
-        let client: IMMNotificationClient = DeviceCallback { tx: tx.clone() }.into();
+        let client: IMMNotificationClient = DeviceCallback {
+            tx: tx.clone(),
+            devices_changed: Arc::clone(devices_changed),
+        }
+        .into();
         // SAFETY: `client` is a live COM object that outlives the
         // registration: `Drop` unregisters it before it is released.
         unsafe { enumerator.RegisterEndpointNotificationCallback(&client) }?;
@@ -431,6 +451,9 @@ struct Follower<'a> {
     watch: Option<DeviceWatch>,
     sink: &'a EventSink,
     tx: Sender<Msg>,
+    /// Raised by the device callbacks before they post (see the module
+    /// docs); lowered by [`Follower::devices_changed`].
+    devices_flag: Arc<AtomicBool>,
     epoch: Instant,
     throttle: Throttle,
     filter: ChangeFilter,
@@ -450,6 +473,7 @@ fn thread_main(sink: &EventSink, tx: Sender<Msg>, rx: &Receiver<Msg>) {
         watch: None,
         sink,
         tx,
+        devices_flag: Arc::new(AtomicBool::new(false)),
         epoch: Instant::now(),
         throttle: Throttle::new(),
         filter: ChangeFilter::default(),
@@ -467,10 +491,7 @@ fn thread_main(sink: &EventSink, tx: Sender<Msg>, rx: &Receiver<Msg>) {
         match msg {
             Ok(Msg::Stop) | Err(RecvTimeoutError::Disconnected) => break,
             Ok(Msg::VolumeNotified) => follower.changed("OnNotify"),
-            Ok(Msg::DevicesChanged(cause)) => {
-                follower.follow_default(cause);
-                follower.changed(cause);
-            }
+            Ok(Msg::DevicesChanged(cause)) => follower.devices_changed(cause),
             Ok(Msg::Read(reply)) => {
                 let _ = reply.send(follower.read());
             }
@@ -481,6 +502,10 @@ fn thread_main(sink: &EventSink, tx: Sender<Msg>, rx: &Receiver<Msg>) {
                 let _ = reply.send(follower.set_muted(muted));
             }
             Err(RecvTimeoutError::Timeout) => {}
+        }
+        // A device message the full queue dropped: its flag is still up.
+        if follower.devices_flag.load(Ordering::Acquire) {
+            follower.devices_changed("a device callback whose message was dropped");
         }
         follower.on_time();
     }
@@ -519,6 +544,15 @@ impl Follower<'_> {
         }
     }
 
+    /// A device callback fired: lower its flag, follow the default device
+    /// again and report what it reads. The flag goes down before the look,
+    /// so a callback that fires meanwhile raises it again and is not lost.
+    fn devices_changed(&mut self, cause: &str) {
+        self.devices_flag.store(false, Ordering::Release);
+        self.follow_default(cause);
+        self.changed(cause);
+    }
+
     /// Something may have changed: report now or when the interval ends.
     fn changed(&mut self, cause: &str) {
         if self.throttle.notify(self.now_ms()) {
@@ -540,7 +574,7 @@ impl Follower<'_> {
     /// endpoint is the default one; re-bind when it is not.
     fn follow_default(&mut self, cause: &str) {
         if self.watch.is_none() {
-            match DeviceWatch::new(&self.tx) {
+            match DeviceWatch::new(&self.tx, &self.devices_flag) {
                 Ok(watch) => self.watch = Some(watch),
                 Err(e) => {
                     self.endpoint = None;
