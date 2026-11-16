@@ -4906,8 +4906,8 @@ test.describe('settings window', () => {
       .evaluateAll((els) => els.map((el) => el.id));
     expect(rows.indexOf('item-quick-settings')).toBe(rows.indexOf('item-show-desktop') + 1);
     expect(rows.indexOf('item-notification-center')).toBe(rows.indexOf('item-quick-settings') + 1);
-    // The battery and clock switches come next, then the Recycle Bin.
-    expect(rows.indexOf('item-recycle-bin')).toBe(rows.indexOf('item-notification-center') + 3);
+    // The volume, battery and clock switches come next, then the Recycle Bin.
+    expect(rows.indexOf('item-recycle-bin')).toBe(rows.indexOf('item-notification-center') + 4);
 
     await quickSettings.click();
     await expect.poll(async () => (await saved())?.quickSettings).toBe(true);
@@ -4939,12 +4939,12 @@ test.describe('settings window', () => {
       /only on a PC with a battery/,
     );
     await expect(page.locator('#item-clock-description')).toHaveText(/time and the date/);
-    // In the dock's order: after Notification Center, battery before clock,
-    // then the Recycle Bin.
+    // In the dock's order: after the volume, battery before clock, then the
+    // Recycle Bin.
     const rows = await page
       .locator('section[aria-labelledby="h-items"] [role="switch"]')
       .evaluateAll((els) => els.map((el) => el.id));
-    expect(rows.indexOf('item-battery')).toBe(rows.indexOf('item-notification-center') + 1);
+    expect(rows.indexOf('item-battery')).toBe(rows.indexOf('item-volume') + 1);
     expect(rows.indexOf('item-clock')).toBe(rows.indexOf('item-battery') + 1);
     expect(rows.indexOf('item-recycle-bin')).toBe(rows.indexOf('item-clock') + 1);
 
@@ -4960,6 +4960,34 @@ test.describe('settings window', () => {
     await battery.click();
     await expect.poll(async () => (await saved())?.battery).toBe(false);
     await expect.poll(async () => (await saved())?.clock).toBe(true);
+  });
+
+  test('the volume has a switch, off by default, that applies at once (v1.30)', async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await openSettings(page);
+    const saved = async (): Promise<Settings['items'] | undefined> =>
+      (await page.evaluate(SETTINGS_MOCK))?.items;
+    const volume = page.locator('#item-volume');
+    await expect(volume).not.toBeChecked();
+    await expect(volume).toHaveAccessibleName('Volume');
+    await expect(page.locator('#item-volume-description')).toHaveText(/scroll over it/);
+    // In the dock's order: after Notification Center, before the battery.
+    const rows = await page
+      .locator('section[aria-labelledby="h-items"] [role="switch"]')
+      .evaluateAll((els) => els.map((el) => el.id));
+    expect(rows.indexOf('item-volume')).toBe(rows.indexOf('item-notification-center') + 1);
+    expect(rows.indexOf('item-battery')).toBe(rows.indexOf('item-volume') + 1);
+
+    await volume.click();
+    await expect.poll(async () => (await saved())?.volume).toBe(true);
+    await expect(page.locator('.status')).toHaveText('Saved');
+    await expect(volume).toBeChecked();
+    await volume.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: `${OUT}/settings-items-volume.png` });
+    await volume.click();
+    await expect.poll(async () => (await saved())?.volume).toBe(false);
   });
 
   test('follows a contrast theme and the accent of Windows; forced colours keep switches and sliders readable', async ({
