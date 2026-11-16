@@ -156,7 +156,9 @@ async fn primary_click(
 /// service's 150 ms gate is that dock window's. A notch that activated a
 /// window supersedes the window the focus shortcut would go back to,
 /// as a click does; one that did nothing (the setting is `none`,
-/// no windows, dropped by the gate) leaves it.
+/// no windows, dropped by the gate) leaves it, and so does one that
+/// stepped the volume over the volume item (IPC v1.30), which
+/// brings no window forward.
 #[tauri::command]
 async fn scroll_item(
     app: AppHandle,
