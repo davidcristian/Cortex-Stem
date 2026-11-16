@@ -777,6 +777,46 @@ describe('pins (mirror of stem-service pin/unpin/reorder)', () => {
     expect(b.calls).toHaveLength(2);
   });
 
+  it('unpin and reorder hand on a validated document, like every settings change', async () => {
+    const b = fast();
+    const sent: Settings[] = [];
+    b.on('dock://settings', (s) => {
+      sent.push(s);
+    });
+    // A document no command could have made: an icon size out of range, a
+    // pinned app also listed as hidden, a hidden app listed twice.
+    const unvalidated = (): Settings => {
+      const s = structuredClone(b['engine'].settings);
+      s.iconSize = 300;
+      s.hiddenApps = [
+        { id: EXPLORER, name: 'Explorer' },
+        { id: SPOTIFY, name: 'Spotify' },
+        { id: SPOTIFY, name: 'again' },
+      ];
+      return s;
+    };
+    const valid = (s: Settings | undefined): void => {
+      expect(s?.iconSize).toBe(128);
+      expect(s?.hiddenApps).toEqual([{ id: SPOTIFY, name: 'Spotify' }]);
+      expect(s).toEqual(validateSettings(s!));
+    };
+
+    b['engine'].settings = unvalidated();
+    await b.reorderPinned([FIREFOX, EXPLORER]);
+    valid(sent.at(-1));
+    valid(await b.getSettings());
+    expect((await b.getSettings()).pinned.map((p) => p.id).slice(0, 2)).toEqual([
+      FIREFOX,
+      EXPLORER,
+    ]);
+
+    b['engine'].settings = unvalidated();
+    await b.unpinApp(FIREFOX);
+    valid(sent.at(-1));
+    valid(await b.getSettings());
+    expect((await b.getSettings()).pinned.map((p) => p.id)).not.toContain(FIREFOX);
+  });
+
   it('a pinned app survives its last window closing; an unpinned one disappears', async () => {
     const b = fast();
     await b.windowAction(1, 'close'); // Explorer is pinned

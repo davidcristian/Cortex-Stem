@@ -1705,7 +1705,8 @@ export class MockBackend implements Backend {
     this.mediaQuery?.addEventListener('change', this.onSchemeChange);
 
     // `MockPlatform::start` delivers these in this order.
-    this.engine = new Engine(scenario.settings, DEFAULT_THEME);
+    // Validated as `Settings::from_json` validates the file it loads.
+    this.engine = new Engine(validateSettings(scenario.settings), DEFAULT_THEME);
     this.engine.setMonitors(scenario.monitors);
     this.engine.setTheme(theme);
     this.engine.setRecycleBin(scenario.recycleBin);
@@ -1747,9 +1748,7 @@ export class MockBackend implements Backend {
   updateSettings(settings: Settings): Promise<Settings> {
     return this.command(() => {
       const { pinned, hiddenApps } = this.engine.settings;
-      const validated = validateSettings({ ...settings, pinned, hiddenApps });
-      this.applySettings(validated);
-      return structuredClone(validated);
+      return structuredClone(this.applySettings({ ...settings, pinned, hiddenApps }));
     });
   }
 
@@ -1834,8 +1833,8 @@ export class MockBackend implements Backend {
       }
       const settings = structuredClone(this.engine.settings);
       settings.pinned.push({ id: appId, label: null, launch });
-      // Validated like every change in Rust: a hidden app pinned is shown.
-      this.applySettings(validateSettings(settings));
+      // Validated like every change (`applySettings`): a hidden app pinned is shown.
+      this.applySettings(settings);
     });
   }
 
@@ -1848,7 +1847,7 @@ export class MockBackend implements Backend {
         this.engine.setIdentity(identity.id, identity);
         const settings = structuredClone(this.engine.settings);
         settings.pinned.push({ id: identity.id, label: null, launch: identity.launch ?? target });
-        this.applySettings(validateSettings(settings));
+        this.applySettings(settings);
       }
       return identity.id;
     });
@@ -1889,7 +1888,7 @@ export class MockBackend implements Backend {
         id: appId,
         name: name.trim() === '' ? fallbackDisplayName(appId) : name,
       });
-      this.applySettings(validateSettings(settings));
+      this.applySettings(settings);
     });
   }
 
@@ -1902,8 +1901,7 @@ export class MockBackend implements Backend {
       this.log(`show ${appId}`);
       const settings = structuredClone(this.engine.settings);
       settings.hiddenApps = settings.hiddenApps.filter((h) => h.id !== appId);
-      // Validated like every change in Rust (`mutate_settings`).
-      this.applySettings(validateSettings(settings));
+      this.applySettings(settings);
     });
   }
 
@@ -2091,9 +2089,7 @@ export class MockBackend implements Backend {
   /** `DockService::reset_settings`: the defaults, pins and hidden apps included, validated and applied. */
   resetSettings(): Promise<Settings> {
     return this.command(() => {
-      const defaults = validateSettings(defaultSettings());
-      this.applySettings(defaults);
-      return structuredClone(defaults);
+      return structuredClone(this.applySettings(defaultSettings()));
     });
   }
 
@@ -2315,7 +2311,7 @@ export class MockBackend implements Backend {
    * `updateSettings` keeps the lists (IPC v1.26).
    */
   loadSettings(settings: Settings): void {
-    this.applySettings(validateSettings(settings));
+    this.applySettings(settings);
   }
 
   /**
@@ -2336,7 +2332,7 @@ export class MockBackend implements Backend {
   setPosition(position: DockPosition): void {
     const settings = structuredClone(this.engine.settings);
     settings.position = position;
-    this.applySettings(validateSettings(settings));
+    this.applySettings(settings);
   }
 
   /**
@@ -2519,14 +2515,22 @@ export class MockBackend implements Backend {
     }
   }
 
-  /** `persist_and_apply`: the settings event always, a state event if items changed. */
-  private applySettings(settings: Settings): void {
+  /**
+   * The one way the mock's settings change, as `mutate_settings` is Rust's:
+   * `next` is validated (`validateSettings`, `Settings::validate`), handed
+   * to the engine, and announced: the settings event always, a state event
+   * if items changed. Returns the validated document (the engine's; clone
+   * it before handing it out).
+   */
+  private applySettings(next: Settings): Settings {
+    const settings = validateSettings(next);
     const changed = this.engine.setSettings(settings);
     this.emit('dock://settings', structuredClone(settings));
     if (changed) {
       this.emitState();
     }
     this.scheduleIdentityResolution();
+    return settings;
   }
 
   private launchTargetFor(appId: AppId): LaunchTarget | null {
