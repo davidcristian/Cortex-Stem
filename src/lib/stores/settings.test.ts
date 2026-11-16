@@ -437,6 +437,48 @@ describe('SettingsStore', () => {
     expect(store.settings?.iconSize).toBe(80);
   });
 
+  it('keeps a dock://settings that arrives while the first get_settings is on its way', async () => {
+    const backend = new FakeBackend();
+    const store = new SettingsStore(backend, 150);
+    // `get_settings` is asked at once and answers with the document as it
+    // is now; before the page sees the answer, the dock pins an app and
+    // the tray flips click-through, and Rust announces the result.
+    const starting = store.start();
+    expect(backend.log).toContain('get_settings');
+    const clickThrough = !backend.stored.behavior.clickThrough;
+    backend.stored.pinned.push(pin('d'));
+    backend.stored.behavior.clickThrough = clickThrough;
+    backend.emit('dock://settings', structuredClone(backend.stored));
+    expect(store.settings?.pinned.map((p) => p.id)).toEqual(['a', 'b', 'c', 'd']);
+    await starting;
+    // The older answer does not replace it.
+    expect(store.settings?.pinned.map((p) => p.id)).toEqual(['a', 'b', 'c', 'd']);
+    expect(store.settings?.behavior.clickThrough).toBe(clickThrough);
+    expect(store.status).toBe('saved');
+    expect(backend.log.filter((l) => l === 'get_settings')).toHaveLength(1);
+
+    // Later events still apply, and the next edit starts from the event's document.
+    backend.emit('dock://settings', { ...structuredClone(backend.stored), iconSize: 40 });
+    expect(store.settings?.iconSize).toBe(40);
+    store.edit((s) => {
+      s.iconSize = 50;
+    });
+    expect(store.settings?.pinned.map((p) => p.id)).toEqual(['a', 'b', 'c', 'd']);
+    expect(store.settings?.behavior.clickThrough).toBe(clickThrough);
+  });
+
+  it('takes the first get_settings answer when no dock://settings came before it', async () => {
+    const { backend, store } = await started();
+    backend.emit('dock://settings', { ...structuredClone(backend.stored), iconSize: 40 });
+    expect(store.settings?.iconSize).toBe(40);
+    // An event seen before a restart does not count: the new start asks again.
+    store.stop();
+    backend.stored.iconSize = 72;
+    await store.start();
+    expect(store.settings?.iconSize).toBe(72);
+    expect(store.status).toBe('saved');
+  });
+
   it('fetches the document again after a save during which another change was announced', async () => {
     const { backend, store } = await started();
     store.edit((s) => {

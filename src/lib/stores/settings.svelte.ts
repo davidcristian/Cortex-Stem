@@ -86,6 +86,12 @@ export class SettingsStore {
    * nothing is pending (`catchUp`).
    */
   private missed: Settings | null = null;
+  /**
+   * A `dock://settings` has arrived since `start` subscribed. Until the
+   * first `get_settings` answers, such an event is at least as new as the
+   * answer may be: see `start`.
+   */
+  private sawSettingsEvent = false;
 
   constructor(
     readonly backend: Backend,
@@ -100,8 +106,10 @@ export class SettingsStore {
       return;
     }
     this.started = true;
+    this.sawSettingsEvent = false;
     this.subscriptions = [
       this.backend.on('dock://settings', (s) => {
+        this.sawSettingsEvent = true;
         if (!this.busy) {
           this.missed = null;
           this.settings = s;
@@ -145,7 +153,16 @@ export class SettingsStore {
     ]);
     if (settings.status === 'fulfilled') {
       if (!this.busy) {
-        this.settings = settings.value;
+        // `Settings` carries no revision, so the answer cannot say whether
+        // it is newer than a `dock://settings` that came in while it was
+        // on its way (a pin from the dock, the tray's click-through). The
+        // event is kept: Rust emits one after every change, in
+        // order, and the page subscribed before asking, so the answer can
+        // only be newer than the event if a change came between them,
+        // whose own event is still on its way and puts the page right.
+        if (!this.sawSettingsEvent) {
+          this.settings = settings.value;
+        }
         this.status = 'saved';
       }
     } else {
