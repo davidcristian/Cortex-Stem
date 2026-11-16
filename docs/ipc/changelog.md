@@ -3,6 +3,9 @@
 This file lists every version of the [IPC contract](index.md), newest first. A section name links
 to the file that covers that section now.
 
+- **v1.29 (small fixes):** No command or event was added or renamed. The page's wheel handling
+  over an item ignores an event with `ctrlKey` set: a touchpad pinch, or Ctrl with the wheel
+  ([Scrolling over an item](scrolling-over-an-item.md)).
 - **v1.28 (fitting the edge):** The page draws the dock at a smaller fitted icon size when it
   would not fit its edge. No command, event or payload changed. New section
   [Fitting the edge](sizing-protocol.md#fitting-the-edge-v128).

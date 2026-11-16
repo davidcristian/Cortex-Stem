@@ -16,10 +16,13 @@ This file describes what a notch of the mouse wheel over a dock item does.
     notch is one command whatever that setting is (v1.26).
   - The count starts again over another item, over no item, when the pointer leaves the panel,
     and for an event in the other direction. An event that goes more sideways than up or down
-    counts for nothing.
+    counts for nothing. So does an event with `ctrlKey` set (v1.29): Chromium reports a
+    touchpad's pinch as wheel events with `ctrlKey` set, and Ctrl with the wheel is a zoom. Both
+    leave the count as it was.
   - The page sends nothing while `scrollAction` is `none` or while an item is being dragged, and
-    never for a horizontal wheel. It calls `preventDefault` only when it sends, and only on a
-    cancelable event.
+    never for a horizontal wheel, a pinch or Ctrl with the wheel. It calls `preventDefault` only
+    when it sends, and only on a cancelable event, so an event that sends nothing keeps its
+    default handling.
 - Rust, with `cycleWindows`, on an `app` item that has windows in the calling dock's list
   ([Dock windows per monitor](windows.md#dock-windows-per-monitor)): `next` activates the window
   after the item's foreground window in that list, and `previous` the one before it, wrapping

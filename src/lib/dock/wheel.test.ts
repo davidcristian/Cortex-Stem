@@ -16,9 +16,15 @@ const PIXEL = 0;
 const LINE = 1;
 const PAGE = 2;
 
-/** A wheel event over `key`: `deltaY` in `deltaMode`, nothing sideways, a 240 px viewport. */
-function wheel(key: string | null, deltaY: number, deltaMode = PIXEL, deltaX = 0): WheelInput {
-  return { key, deltaX, deltaY, deltaMode, pageHeight: 240 };
+/** A wheel event over `key`: `deltaY` in `deltaMode`, nothing sideways, no Ctrl, a 240 px viewport. */
+function wheel(
+  key: string | null,
+  deltaY: number,
+  deltaMode = PIXEL,
+  deltaX = 0,
+  ctrlKey = false,
+): WheelInput {
+  return { key, deltaX, deltaY, deltaMode, ctrlKey, pageHeight: 240 };
 }
 
 describe('wheelPixels', () => {
@@ -207,6 +213,31 @@ describe('WheelNotches (docs/ipc/scrolling-over-an-item.md)', () => {
     expect(notches.add(wheel('app:a', 25))).toEqual(['next']);
     // A diagonal that goes as far down as sideways is vertical.
     expect(notches.add(wheel('app:a', 100, PIXEL, -100))).toEqual(['next']);
+  });
+
+  it('ignores a pinch and Ctrl with the wheel (ctrlKey) and keeps the rest across them', () => {
+    const notches = new WheelNotches();
+    const ctrl = (key: string | null, deltaY: number, deltaMode = PIXEL): WheelInput =>
+      wheel(key, deltaY, deltaMode, 0, true);
+    // A whole notch and more with Ctrl held, in every mode: nothing.
+    expect(notches.add(ctrl('app:a', 100))).toEqual([]);
+    expect(notches.add(ctrl('app:a', -300))).toEqual([]);
+    expect(notches.add(ctrl('app:a', 3, LINE))).toEqual([]);
+    expect(notches.add(ctrl('app:a', 1, PAGE))).toEqual([]);
+    // A pinch's small steps, both ways: nothing either, and no rest.
+    for (const step of [2.5, -4, 7, -1.5]) {
+      expect(notches.add(ctrl('app:a', step))).toEqual([]);
+    }
+    expect(notches.add(wheel('app:a', 25))).toEqual([]);
+    expect(notches.add(wheel('app:a', 25))).toEqual([]);
+    // The scroll's rest survives a pinch in its middle, even one the other way.
+    expect(notches.add(ctrl('app:a', -40))).toEqual([]);
+    expect(notches.add(ctrl('app:a', 60))).toEqual([]);
+    expect(notches.add(wheel('app:a', 25))).toEqual([]);
+    expect(notches.add(wheel('app:a', 25))).toEqual(['next']);
+    // Without Ctrl the same event is a notch.
+    expect(notches.add(wheel('app:a', -100))).toEqual(['previous']);
+    expect(notches.add(ctrl('app:a', -100))).toEqual([]);
   });
 
   it('yields at most ten notches per event and keeps only the rest below one', () => {

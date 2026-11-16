@@ -14,6 +14,8 @@ through the app's open windows:
 - A two-finger scroll on a touchpad does the same. The direction that would
   scroll a page down brings the next window. Scrolling about as far as one
   wheel notch would scroll brings one window.
+- A pinch on the touchpad, and the wheel with Ctrl held, do nothing over the
+  dock.
 
 The wheel goes through the windows in the order the icon's menu lists them.
 Only the windows that this dock shows take part, as for a click. With a dock

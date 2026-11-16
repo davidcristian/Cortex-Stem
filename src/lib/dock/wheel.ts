@@ -25,6 +25,11 @@
  * none, or for an event the other way, the count starts again. An event
  * that goes more sideways than up or down (a tilt wheel, Shift and the
  * wheel, a sideways swipe) is not a vertical scroll and counts for nothing.
+ * Nor does one with `ctrlKey` set: Chromium reports a touchpad's
+ * pinch as wheel events with `ctrlKey` set, whether Ctrl is held or not,
+ * and Ctrl and the wheel is a zoom, not a scroll. Both leave the rest as
+ * it was, and the caller leaves such an event alone (it sends nothing, so
+ * it does not prevent its default either).
  */
 
 import type { ScrollDirection } from '$lib/ipc/generated/ScrollDirection';
@@ -63,6 +68,8 @@ export interface WheelInput {
   readonly deltaX: number;
   readonly deltaY: number;
   readonly deltaMode: number;
+  /** `WheelEvent.ctrlKey`: a touchpad pinch, or Ctrl held with the wheel; never a scroll. */
+  readonly ctrlKey: boolean;
   /** The viewport's height in CSS px: one page of `deltaMode` 2. */
   readonly pageHeight: number;
 }
@@ -99,8 +106,8 @@ export class WheelNotches {
   /**
    * The notches `input` completes, oldest first (empty for most of a
    * touchpad's events). Over no item, or for an event that is not a
-   * vertical scroll, none: the first also drops the rest, the second
-   * leaves it.
+   * vertical scroll (more sideways than vertical, or with `ctrlKey` set),
+   * none: the first also drops the rest, the second leaves it.
    */
   add(input: WheelInput): ScrollDirection[] {
     if (input.key === null) {
@@ -111,7 +118,7 @@ export class WheelNotches {
       this.key = input.key;
       this.rest = 0;
     }
-    if (!isVertical(input.deltaX, input.deltaY)) {
+    if (input.ctrlKey || !isVertical(input.deltaX, input.deltaY)) {
       return [];
     }
     const px = wheelPixels(input.deltaY, input.deltaMode, input.pageHeight);

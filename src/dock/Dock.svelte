@@ -1114,8 +1114,9 @@
   // or more, whatever Windows' lines to scroll at a time); each one is a
   // `scroll_item`, and Rust decides what it does (cycle the item's windows,
   // at most once per 150 ms). Nothing is counted or sent while the setting
-  // is `none`, and the page's default handling is only prevented for an
-  // event that sends something.
+  // is `none`, nor for a pinch or Ctrl and the wheel (`ctrlKey`),
+  // and the page's default handling is only prevented for an event that
+  // sends something.
   const wheelNotches = new WheelNotches();
 
   function onpanelwheel(e: WheelEvent): void {
@@ -1131,6 +1132,7 @@
       deltaX: e.deltaX,
       deltaY: e.deltaY,
       deltaMode: e.deltaMode,
+      ctrlKey: e.ctrlKey,
       pageHeight: window.innerHeight,
     });
     if (key === null || notches.length === 0) {
