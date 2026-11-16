@@ -18,7 +18,7 @@ use crate::{
 /// thread; implementations must be cheap and non-blocking (push to a channel).
 pub type EventSink = Arc<dyn Fn(PlatformEvent) + Send + Sync + 'static>;
 
-/// The OS seam. Every method is synchronous and may be called from any
+/// The interface to the OS. Every method is synchronous and may be called from any
 /// thread; implementations must be internally thread-safe and must not block
 /// for long (bounded timeouts, see `docs/development/windows-rules.md`).
 pub trait Platform: Send + Sync + 'static {

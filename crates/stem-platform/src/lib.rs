@@ -1,6 +1,6 @@
-//! `stem-platform` — everything that talks to the operating system.
+//! `stem-platform`: everything that talks to the operating system.
 //!
-//! The [`Platform`] trait is the seam between the pure engine (`stem-core`)
+//! The [`Platform`] trait is the boundary between the pure engine (`stem-core`)
 //! and the OS. Two implementations exist:
 //! - [`mock::MockPlatform`]: scripted, deterministic, runs on every host. Used
 //!   by tests and by the app when `STEM_PLATFORM=mock`.
