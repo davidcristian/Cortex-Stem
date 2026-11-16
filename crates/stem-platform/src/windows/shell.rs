@@ -36,7 +36,8 @@
 //! reports every event cannot be seen here. A short count
 //! above zero means the first events went in and the rest did not, so keys
 //! can be down that no inserted event releases; [`send_chord`] releases them
-//! before it returns the error (see [`held_after`]).
+//! before it returns the error (see `rules::shell::held_after`, which with
+//! the page URIs is pure and unit-tested on every host).
 //!
 //! The events carry only the chord's own keys. A modifier the user holds
 //! while clicking (Ctrl, Shift, Alt) is still down in the system's key
@@ -55,12 +56,7 @@ use windows::Win32::UI::Shell::{IShellDispatch4, Shell};
 
 use super::util;
 use crate::PlatformResult;
-
-/// The Settings app's *Date & time* page.
-const DATE_TIME_SETTINGS: &str = "ms-settings:dateandtime";
-/// The Settings app's power page: *Power & battery* (or *Power* without a
-/// battery) on Windows 11, *Power & sleep* on Windows 10.
-const POWER_SETTINGS: &str = "ms-settings:powersleep";
+use crate::rules::shell::{DATE_TIME_SETTINGS, POWER_SETTINGS, held_after};
 
 pub fn perform(action: ShellAction) -> PlatformResult<()> {
     match action {
@@ -137,15 +133,6 @@ fn send_chord(keys: &[VIRTUAL_KEY]) -> PlatformResult<()> {
     Ok(())
 }
 
-/// The keys of `keys` that are still down when only the first `sent` events
-/// of its chord (every key down in order, then every key up in reverse) were
-/// inserted: the ones pressed and not yet released, in press order.
-fn held_after(keys: &[VIRTUAL_KEY], sent: usize) -> &[VIRTUAL_KEY] {
-    let pressed = sent.min(keys.len());
-    let released = sent.saturating_sub(keys.len()).min(pressed);
-    &keys[..pressed - released]
-}
-
 /// Release `held` (in press order) in reverse, in one `SendInput` call, and
 /// log the outcome; a failure here has nothing left to fall back on.
 fn release(held: &[VIRTUAL_KEY]) {
@@ -186,52 +173,5 @@ fn key_input(key: VIRTUAL_KEY, up: bool) -> INPUT {
                 dwExtraInfo: 0,
             },
         },
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_settings_pages_are_the_documented_ms_settings_uris() {
-        // Microsoft's list of the `ms-settings:` scheme: Time and language >
-        // Date & time, and System > Power & sleep.
-        assert_eq!(DATE_TIME_SETTINGS, "ms-settings:dateandtime");
-        assert_eq!(POWER_SETTINGS, "ms-settings:powersleep");
-    }
-
-    #[test]
-    fn a_short_chord_releases_exactly_the_keys_it_left_down() {
-        let chord = [VK_LWIN, VK_A];
-        // Events: Win down, A down, A up, Win up.
-        assert_eq!(held_after(&chord, 0), &[] as &[VIRTUAL_KEY]);
-        assert_eq!(held_after(&chord, 1), &[VK_LWIN]);
-        assert_eq!(held_after(&chord, 2), &[VK_LWIN, VK_A]);
-        assert_eq!(held_after(&chord, 3), &[VK_LWIN]);
-        assert_eq!(held_after(&chord, 4), &[] as &[VIRTUAL_KEY]);
-        // A count past the chord's length (never returned) holds nothing.
-        assert_eq!(held_after(&chord, 9), &[] as &[VIRTUAL_KEY]);
-
-        // The Start menu's chord: Win down, Win up.
-        assert_eq!(held_after(&[VK_LWIN], 0), &[] as &[VIRTUAL_KEY]);
-        assert_eq!(held_after(&[VK_LWIN], 1), &[VK_LWIN]);
-        assert_eq!(held_after(&[VK_LWIN], 2), &[] as &[VIRTUAL_KEY]);
-
-        // Three keys: every prefix of the six events.
-        let three = [VK_LWIN, VK_N, VK_TAB];
-        let held: Vec<&[VIRTUAL_KEY]> = (0..=6).map(|sent| held_after(&three, sent)).collect();
-        assert_eq!(
-            held,
-            [
-                &[][..],
-                &[VK_LWIN][..],
-                &[VK_LWIN, VK_N][..],
-                &[VK_LWIN, VK_N, VK_TAB][..],
-                &[VK_LWIN, VK_N][..],
-                &[VK_LWIN][..],
-                &[][..],
-            ]
-        );
     }
 }

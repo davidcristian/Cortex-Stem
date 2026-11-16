@@ -20,5 +20,6 @@ pub mod power;
 pub mod process_access;
 pub mod recheck;
 pub mod recycle;
+pub mod shell;
 pub mod taskbar;
 pub mod theme;
