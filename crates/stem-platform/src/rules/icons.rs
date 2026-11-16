@@ -7,7 +7,8 @@
 //! load from it ([`parse_group_icon_dir`], [`select_group_icon_entry`]) live
 //! here too, with the rule for which paths are PE images
 //! ([`is_pe_image_path`]); the Windows side only moves bytes. So does the
-//! rule for which keys the in-memory cache keeps ([`is_cacheable`]).
+//! rule for which keys the in-memory cache keeps ([`is_cacheable`], over
+//! [`is_window_icon_key`]).
 //!
 //! Buffer conventions (what `GetDIBits` produces when asked for a top-down
 //! 32-bit `BITMAPINFOHEADER`):
@@ -22,6 +23,10 @@
 //! upscales, and the Windows side never asks the OS to upscale either);
 //! [`IconImage::encode_png`] produces the bytes the UI receives.
 //! [`convert_icon`] is the unscaled shortcut through the same stages.
+
+use stem_core::IconKey;
+
+use super::identity::is_window_icon_key;
 
 /// Bytes per pixel in every buffer handled here.
 pub const BYTES_PER_PIXEL: usize = 4;
@@ -494,16 +499,12 @@ pub fn select_group_icon_entry(
 
 // ---- The in-memory cache ----
 
-/// The icon-key namespace whose PNGs `windows::icons::IconCache` never
-/// keeps: an `hwnd:` key is tied to a live window, which may change its
-/// icon, and an entry could outlive the window.
-pub const UNCACHED_NAMESPACE: &str = "hwnd";
-
-/// Whether the in-memory cache keeps the PNG of the icon key `key`: every
-/// key but one in [`UNCACHED_NAMESPACE`].
-pub fn is_cacheable(key: &str) -> bool {
-    key.split_once(':')
-        .is_none_or(|(namespace, _)| namespace != UNCACHED_NAMESPACE)
+/// Whether `windows::icons::IconCache` keeps the PNG of the icon key `key`:
+/// every key but a window's own icon ([`is_window_icon_key`], the one
+/// `hwnd:` rule), which is tied to a live window that may change its
+/// icon, so an entry could outlive the window or go stale.
+pub fn is_cacheable(key: &IconKey) -> bool {
+    !is_window_icon_key(key)
 }
 
 #[cfg(test)]
@@ -1056,16 +1057,22 @@ mod tests {
 
     #[test]
     fn only_window_icon_keys_are_left_out_of_the_cache() {
-        assert!(!is_cacheable("hwnd:132456:4242"));
-        assert!(!is_cacheable("hwnd:132456"));
-        assert!(is_cacheable(r"exe:C:\Windows\explorer.exe"));
-        assert!(is_cacheable(r"file:C:\Users\me\notes.txt"));
-        assert!(is_cacheable(
+        let cacheable = |key: &str| is_cacheable(&IconKey(key.to_owned()));
+        assert!(!cacheable("hwnd:132456:4242"));
+        assert!(!cacheable("hwnd:132456"));
+        assert!(cacheable(r"exe:C:\Windows\explorer.exe"));
+        assert!(cacheable(r"file:C:\Users\me\notes.txt"));
+        assert!(cacheable(
             "aumid:Microsoft.WindowsTerminal_8wekyb3d8bbwe!App"
         ));
         // The namespace is compared whole, and a key without one (which
         // loads nothing) is not left out.
-        assert!(is_cacheable("hwndx:1"));
-        assert!(is_cacheable("hwnd"));
+        assert!(cacheable("hwndx:1"));
+        assert!(cacheable("hwnd"));
+        // The same rule as a hidden app's saved icon key.
+        for key in ["hwnd:1:2", "hwnd:1", "hwndx:1", "hwnd", "exe:a", ""] {
+            let key = IconKey(key.to_owned());
+            assert_eq!(is_cacheable(&key), !is_window_icon_key(&key), "{key:?}");
+        }
     }
 }

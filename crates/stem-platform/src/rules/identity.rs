@@ -235,11 +235,14 @@ pub fn aumid_icon_key(aumid: &str) -> IconKey {
     IconKey(format!("aumid:{}", aumid.trim()))
 }
 
+/// The icon-key namespace of a window's own icon ([`hwnd_icon_key`]).
+pub const WINDOW_ICON_NAMESPACE: &str = "hwnd";
+
 /// Key of a window's own icon: `hwnd:<id>:<pid>`. The process id is part of
 /// the key because HWND values are recycled by the OS; a key that outlives
 /// its window must not resolve to a different window's icon.
 pub fn hwnd_icon_key(id: u64, process_id: u32) -> IconKey {
-    IconKey(format!("hwnd:{id}:{process_id}"))
+    IconKey(format!("{WINDOW_ICON_NAMESPACE}:{id}:{process_id}"))
 }
 
 /// The window id inside the value of an `hwnd:` key, accepting both the
@@ -264,11 +267,17 @@ pub fn hwnd_icon_owner_matches(value: &str, process_id: u32) -> bool {
     }
 }
 
-/// Whether `key` names one window's own icon (`hwnd:`, [`hwnd_icon_key`]):
-/// such a key means nothing once that window is gone, so it is never kept
-/// beyond the window's life (a hidden app's saved icon).
+/// Whether `key` names one window's own icon: its namespace, the part
+/// before the first `:`, is [`WINDOW_ICON_NAMESPACE`] ([`hwnd_icon_key`]).
+/// Such a key is tied to a live window, which may change its icon, and
+/// means nothing once that window is gone, so it is never kept beyond the
+/// window's life: not as a hidden app's saved icon, not in the
+/// platform's in-memory icon cache ([`super::icons::is_cacheable`]). The
+/// one statement of the `hwnd:` rule.
 pub fn is_window_icon_key(key: &IconKey) -> bool {
-    key.0.starts_with("hwnd:")
+    key.0
+        .split_once(':')
+        .is_some_and(|(namespace, _)| namespace == WINDOW_ICON_NAMESPACE)
 }
 
 // ----- Packaged executables ---------------------------------------------------
@@ -874,6 +883,12 @@ mod tests {
         assert!(!is_window_icon_key(&aumid_icon_key("X!App")));
         assert!(!is_window_icon_key(&file_icon_key(r"C:\a.lnk")));
         assert!(!is_window_icon_key(&IconKey("mock:exe:c:/a.exe".into())));
+        // An older key without a pid is one too; the namespace is compared
+        // whole, and a key without one is not.
+        assert!(is_window_icon_key(&IconKey("hwnd:66".into())));
+        assert!(!is_window_icon_key(&IconKey("hwndx:1".into())));
+        assert!(!is_window_icon_key(&IconKey("hwnd".into())));
+        assert!(!is_window_icon_key(&IconKey("xhwnd:1".into())));
     }
 
     const TERMINAL_FULL_NAME: &str = "Microsoft.WindowsTerminal_1.24.12741.0_x64__8wekyb3d8bbwe";
