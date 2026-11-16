@@ -3,6 +3,12 @@
 This file lists every version of the [IPC contract](index.md), newest first. A section name links
 to the file that covers that section now.
 
+- **v1.31 (readings no item shows):** No command, event or payload type was added or renamed. A
+  new `power` reading alone changes the snapshot only while the battery item is shown, and a new
+  `volume` reading only while the volume item is shown. Otherwise the reading is stored without a
+  new revision or a `dock://state`, and the next snapshot includes it
+  ([Readings no item shows](state-snapshot.md#readings-no-item-shows-v131), the
+  [`dock://state` row](events.md); `MockBackend` does the same).
 - **v1.30 (the volume item):** Another widget; no command or event was added or renamed. Added:
   `Settings.items.volume` (default `false`); `DockItemKind` `volume` (`fixed:volume`,
   `shell:volume`) between Notification Center and the battery; `DockState.volume: VolumeStatus |

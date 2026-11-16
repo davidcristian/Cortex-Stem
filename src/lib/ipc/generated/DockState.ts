@@ -12,6 +12,8 @@ import type { WindowId } from "./WindowId";
 export type DockState = { 
 /**
  * Monotonic counter; the UI may drop snapshots with a lower revision.
+ * Two snapshots of one revision may differ only in a reading no shown
+ * item uses (`power`, `volume`).
  */
 revision: number, items: Array<DockItem>, 
 /**
@@ -31,7 +33,8 @@ docks: Array<DockFacts>,
  * The power source and the battery: the last
  * `PlatformEvent::PowerChanged`, whatever the settings say; every field
  * `false` and no percent until the first one. The battery item's face
- * is drawn from it.
+ * is drawn from it. A new reading alone bumps the revision only while
+ * the battery item is shown.
  */
 power: PowerStatus, 
 /**
@@ -39,7 +42,8 @@ power: PowerStatus,
  * `PlatformEvent::VolumeChanged`, whatever the settings say; `null`
  * until the first one, and while there is no default output device or
  * its volume cannot be read. The volume item's face and title are drawn
- * from it.
+ * from it. A new reading alone bumps the revision only while the volume
+ * item is shown.
  */
 volume: VolumeStatus | null, 
 /**

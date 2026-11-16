@@ -35,6 +35,7 @@ import {
   rectsIntersect,
   recyclePlan,
   SECOND_MONITOR_ID,
+  shownState,
   USER_CSS_MAX_BYTES,
   validateSettings,
   VOLUME_STEP,
@@ -522,22 +523,32 @@ describe('click semantics (mirror of DockEngine::primary_action)', () => {
       }
     });
 
-    it('setPower emits a state only for a different reading, whatever the settings', async () => {
+    it('setPower emits a state only for a different reading the battery item shows', async () => {
       const b = fast();
       const states = recordStates(b);
-      b.setPower(DEMO_POWER);
-      expect(states).toHaveLength(0);
+      const r0 = (await b.getDockState()).revision;
+      // The battery item is off: the reading is kept, nothing is sent and
+      // the revision stays, as in DockEngine::apply.
       b.setPower({ ...DEMO_POWER, percent: 75 });
-      expect(states).toHaveLength(1);
-      expect(states[0]!.power.percent).toBe(75);
-      // The battery item is off: only `power` changed.
-      expect(keys(states[0]!)).not.toContain('fixed:battery');
+      b.setPower({ ...DEMO_POWER, percent: 74, saver: true });
+      expect(states).toHaveLength(0);
+      const state = await b.getDockState();
+      expect(state.revision).toBe(r0);
+      expect(state.power).toEqual({ ...DEMO_POWER, percent: 74, saver: true });
+      expect(keys(state)).not.toContain('fixed:battery');
 
+      // Switched on, the item shows the reading kept at once.
       await withItems(b, { battery: true });
+      expect(states).toHaveLength(1);
+      expect(item(states[0]!, 'fixed:battery').title).toBe('Battery 74 %, battery saver on');
+      // From then on, only a different reading sends a state.
+      b.setPower({ ...DEMO_POWER, percent: 74, saver: true });
+      expect(states).toHaveLength(1);
       b.setPower({ ...DEMO_POWER, percent: 75, onAc: true, charging: true });
+      expect(states).toHaveLength(2);
       const last = states.at(-1)!;
       expect(item(last, 'fixed:battery').title).toBe('Battery 75 %, charging');
-      expect(last.revision).toBeGreaterThan(states[0]!.revision);
+      expect(last.revision).toBe(states[0]!.revision + 1);
       // The reading is a copy: changing what was passed changes nothing.
       const reading: PowerStatus = { ...DEMO_POWER, saver: true };
       b.setPower(reading);
@@ -772,8 +783,8 @@ describe('the volume item (docs/ipc/widget-items.md §The volume item, v1.30)', 
     expect(item(state, 'fixed:volume').title).toBe('No audio output');
   });
 
-  it('setVolume emits a state only for a different reading, whatever the setting', async () => {
-    const b = fast();
+  it('setVolume emits a state only for a different reading while the item is shown', async () => {
+    const b = await withVolume();
     const states = recordStates(b);
     b.setVolume({ ...DEMO_VOLUME });
     expect(states).toHaveLength(0);
@@ -786,6 +797,53 @@ describe('the volume item (docs/ipc/widget-items.md §The volume item, v1.30)', 
       { percent: 30, muted: true },
       null,
     ]);
+  });
+
+  it('with the item off a reading is kept without a state or a new revision', async () => {
+    const b = fast();
+    const states = recordStates(b);
+    const r0 = (await b.getDockState()).revision;
+    // A slider drag outside Stem: many readings, nothing sent.
+    for (let percent = 31; percent <= 50; percent += 1) {
+      b.setVolume({ percent, muted: false });
+    }
+    b.setVolume({ percent: 50, muted: true });
+    expect(states).toHaveLength(0);
+    expect((await b.getDockState()).revision).toBe(r0);
+    expect((await b.getDockState()).volume).toEqual({ percent: 50, muted: true });
+    // A state sent for another reason carries the latest reading.
+    await b.windowAction(5, 'minimize');
+    expect(states).toHaveLength(1);
+    expect(states[0]!.revision).toBe(r0 + 1);
+    expect(states[0]!.volume).toEqual({ percent: 50, muted: true });
+    // And the item, switched on, shows it at once.
+    const settings = await b.getSettings();
+    settings.items.volume = true;
+    await b.updateSettings(settings);
+    expect(states).toHaveLength(2);
+    expect(item(states[1]!, 'fixed:volume').title).toBe('Volume muted');
+  });
+
+  it('shownState leaves out only the revision and the readings no shown item uses', () => {
+    const b = fast();
+    const off = b['engine'].snapshot();
+    expect(off.items.some((i) => i.kind === 'battery' || i.kind === 'volume')).toBe(false);
+    expect(shownState({ ...off, revision: 99 })).toBe(shownState(off));
+    expect(shownState({ ...off, power: { ...off.power, percent: 1 } })).toBe(shownState(off));
+    expect(shownState({ ...off, volume: null })).toBe(shownState(off));
+    // Anything else counts.
+    expect(shownState({ ...off, foreground: null })).not.toBe(shownState(off));
+    expect(shownState({ ...off, clockFormat: { locale: 'en-GB', hour12: false } })).not.toBe(
+      shownState(off),
+    );
+    // With the items shown, their readings count too.
+    const settings = structuredClone(b['engine'].settings);
+    settings.items.battery = true;
+    settings.items.volume = true;
+    b['engine'].setSettings(settings);
+    const on = b['engine'].snapshot();
+    expect(shownState({ ...on, power: { ...on.power, percent: 1 } })).not.toBe(shownState(on));
+    expect(shownState({ ...on, volume: null })).not.toBe(shownState(on));
   });
 
   it('a click opens Quick Settings', async () => {
@@ -1424,9 +1482,12 @@ describe('revisions and events', () => {
     b.pushRecycleBin({ itemCount: 7, sizeBytes: 123_456 });
     expect(item(await b.getDockState(), 'fixed:recycle-bin').iconKey).toBe(bin);
     b['engine'].setMonitors(structuredClone(b['engine'].monitors).reverse());
-    // Nor a repeat of the foreground or of the power reading.
+    // Nor a repeat of the foreground or of the power reading, nor a new
+    // power or volume reading while its item is off.
     b.pushForeground((await b.getDockState()).foreground);
     b.setPower(DEMO_POWER);
+    b.setPower({ ...DEMO_POWER, percent: 12 });
+    b.setVolume({ percent: 12, muted: true });
     await unchanged();
 
     // Something the snapshot shows: one state, one revision up, and every

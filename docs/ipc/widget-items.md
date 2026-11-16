@@ -14,8 +14,10 @@ Two optional fixed items that are widgets, items that draw live data:
 - `DockState.power: PowerStatus` is `{ hasBattery: boolean, percent: number | null, charging:
   boolean, onAc: boolean, saver: boolean }` (`percent` from 0 to 100, `null` when the system does
   not report it). The engine stores the last `PlatformEvent::PowerChanged(PowerStatus)`; until
-  the first one every field is `false` and `percent` is `null`. The battery item exists only
-  while `items.battery` is on **and** `power.hasBattery` is `true`, so a
+  the first one every field is `false` and `percent` is `null`. A new reading sends a
+  `dock://state` only while the battery item is shown, or when it adds or removes that item
+  (v1.31; see [Readings no item shows](state-snapshot.md#readings-no-item-shows-v131)). The
+  battery item exists only while `items.battery` is on **and** `power.hasBattery` is `true`, so a
   desktop PC never shows it. Rust sets its `title`: `Battery 73 %`, `Battery 73 %, charging`,
   `Battery 73 %, plugged in` (on AC, not charging), with `, battery saver on` appended while
   `saver` is set, and `Battery` when `percent` is `null`. The clock item's `title` is `Clock`.
@@ -47,7 +49,7 @@ Two optional fixed items that are widgets, items that draw live data:
   page is Power & battery, or Power on a PC without a battery). Both end with the entries that
   every item menu ends with ([Context menus](context-menus.md)).
 - `MockBackend`: `MockOptions.power` (default: a laptop at 76 %, on battery) and
-  `setPower(status)`, which emits a new state. The clock follows the page's
+  `setPower(status)`, which emits a new state as Rust does (v1.31). The clock follows the page's
   own clock (Playwright installs a fixed one).
 
 ### The clock's regional format (v1.25)
@@ -99,9 +101,11 @@ Another widget: the default output device's volume as an optional fixed item.
   endpoint's level scalar, 0.0 to 1.0, × 100, rounded half away from zero). The level is kept
   while muted. The value is `null` when there is no default output device or its volume cannot be
   read. The engine stores the last `PlatformEvent::VolumeChanged(Option<VolumeStatus>)` whatever
-  the settings say; it is `null` until the first one. Rust sets the item's `title`:
-  `Volume 45 %`, `Volume muted` while muted (whatever the level), and `No audio output` without a
-  device.
+  the settings say; it is `null` until the first one. A new reading sends a `dock://state` only
+  while the item is shown (v1.31; see
+  [Readings no item shows](state-snapshot.md#readings-no-item-shows-v131)), so a slider drag with
+  the item off sends nothing. Rust sets the item's `title`: `Volume 45 %`, `Volume muted` while
+  muted (whatever the level), and `No audio output` without a device.
 - The platform side:
   - `Platform::volume_status()` returns a reading now.
   - `set_volume(percent)` sets the level (more than 100 counts as 100) and leaves the mute alone.
@@ -164,9 +168,9 @@ Another widget: the default output device's volume as an optional fixed item.
   Microsoft documents as *App volume and device preferences*, and which is *Sound > Volume mixer*
   on Windows 11). The entries that every item menu ends with follow.
 - `MockBackend`: `MockOptions.volume` (default: a device at 60 %, not muted; `null` for none),
-  `setVolume(status | null)` (a change made outside Stem, which emits a new state when it
-  differs) and `chooseVolumeMute(muted)` (what the menu's *Mute* or *Unmute* runs). It records
-  `stepVolume` (one per notch over the item, as the service calls `Platform::step_volume`) and
-  `setVolumeMuted`, and it steps without the 150 ms limit, like Rust.
+  `setVolume(status | null)` (a change made outside Stem, which emits a new state when it differs
+  and the item is shown, v1.31) and `chooseVolumeMute(muted)` (what the menu's *Mute* or *Unmute*
+  runs). It records `stepVolume` (one per notch over the item, as the service calls
+  `Platform::step_volume`) and `setVolumeMuted`, and it steps without the 150 ms limit, like Rust.
   The mock platform's demo has the same device and sends its `VolumeChanged` once at start, after
   `ClockFormatChanged`.

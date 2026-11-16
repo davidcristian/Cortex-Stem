@@ -1,7 +1,24 @@
 # The state snapshot
 
-This file describes a part of `DockState`, the snapshot that `get_dock_state` returns and the
-[`dock://state`](events.md) event sends: the per-dock facts in `DockState.docks`.
+This file describes two parts of `DockState`, the snapshot that `get_dock_state` returns and the
+[`dock://state`](events.md) event sends: the readings that no item shows, and the per-dock facts
+in `DockState.docks`.
+
+## Readings no item shows (v1.31)
+
+`DockState.power` and `DockState.volume` always hold the platform's last reading. A new reading
+alone changes the snapshot only while the item that draws it is shown:
+
+- `power`: the battery item, so not while `items.battery` is off, nor on a PC without a battery;
+- `volume`: the volume item, so not while `items.volume` is off.
+
+Otherwise the engine stores the reading with no new revision and no `dock://state`. The next
+snapshot includes it, whether it is sent for another reason or returned by `get_dock_state`, and
+an item that is switched on shows it at once. A reading that adds or removes the battery item
+(`hasBattery`) changes the items and is sent. Nothing else on the pages reads the two fields: the
+settings page reads only `items`. The app sends every dock window the same snapshot, so there is
+no per-dock comparison. Two snapshots of one revision can therefore differ in a reading that no
+item shows. The page keeps the later one it receives (an equal `revision` is not stale).
 
 ## `DockState.docks`
 

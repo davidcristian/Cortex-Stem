@@ -22,7 +22,10 @@
 //!   foreground and the per-dock facts in
 //!   [`DockState::docks`]), not by what kind of input arrived, so inputs that
 //!   only touch facts outside the snapshot (theme, launch targets, identities
-//!   of apps that are not shown) never bump the revision. The monitor list
+//!   of apps that are not shown) never bump the revision. Nor does a reading
+//!   no shown item uses: `power` counts only while the battery item
+//!   is shown, `volume` only while the volume item is (`renders_differently`).
+//!   The monitor list
 //!   is such a fact too, except that a `MonitorsChanged` bumps the revision
 //!   when it moves a fullscreen verdict that names no monitor to another
 //!   dock (the primary changed, or the list emptied, or it was reordered
@@ -41,11 +44,13 @@
 //!   monitor's dock when the verdict names none;
 //! - `power` is the platform's last reading, stored as is and part
 //!   of the snapshot whatever the settings say; it also decides whether the
-//!   battery item exists (only with a system battery) and its title;
+//!   battery item exists (only with a system battery) and its title. A new
+//!   reading changes the snapshot only while the battery item is shown;
 //! - `volume` is the platform's last reading of the default output
 //!   device's volume, stored as is (`None`: no device) and part of the
 //!   snapshot whatever the settings say; it gives the volume item its
-//!   title. A wheel notch over that item is a volume step
+//!   title, and a new reading changes the snapshot only while that item is
+//!   shown. A wheel notch over that item is a volume step
 //!   ([`ScrollEffect::StepVolume`], [`volume_step`]) whatever
 //!   `behavior.scrollAction` says;
 //! - `clock_format` is the platform's last reading of the user's
@@ -101,7 +106,10 @@ pub struct EngineOutcome {
     /// emit a new `dock://state`. Inputs that only change
     /// [`DockEngine::theme`], settings that do not alter items, or
     /// identities of apps that are not shown leave this `false` and do not
-    /// advance the revision. So does a change of [`DockEngine::monitors`],
+    /// advance the revision. So does a new power reading while the battery
+    /// item is not shown and a new volume reading while the volume item is
+    /// not: the snapshot carries them, but no shown item draws them.
+    /// So does a change of [`DockEngine::monitors`],
     /// unless it moves a fullscreen verdict that names no monitor to another
     /// dock (the primary changed, or the list emptied, or it was reordered
     /// with no monitor flagged primary).
@@ -479,7 +487,7 @@ impl DockEngine {
             self.compute_overlapped();
         }
         let unresolved_apps = self.take_new_unresolved();
-        let changed = self.snapshot() != before;
+        let changed = renders_differently(&before, &self.snapshot());
         if changed {
             self.revision += 1;
         }
@@ -545,11 +553,12 @@ impl DockEngine {
             PlatformEvent::RecycleBinChanged(state) => self.recycle_bin = state,
             // Part of the snapshot (`DockState::power`, and the battery
             // item's presence and title), so `apply` bumps the revision
-            // exactly when the reading differs from the one kept.
+            // when the reading differs from the one kept and the battery
+            // item is shown, or comes or goes (`renders_differently`).
             PlatformEvent::PowerChanged(power) => self.power = power,
             // Part of the snapshot (`DockState::volume`, and the volume
-            // item's title), so `apply` bumps the revision exactly when the
-            // reading differs from the one kept.
+            // item's title), so `apply` bumps the revision when the reading
+            // differs from the one kept and the volume item is shown.
             PlatformEvent::VolumeChanged(volume) => self.volume = volume,
             // Part of the snapshot (`DockState::clock_format`) and nothing
             // else, so `apply` bumps the revision exactly when the reading
@@ -1054,6 +1063,41 @@ impl DockEngine {
     pub fn note_scroll_activation(&mut self, dock: &str, window: WindowId) {
         self.scroll_tried.insert(dock.to_owned(), window);
     }
+}
+
+/// Whether a page would show `after` differently from `before`: what
+/// [`EngineOutcome::changed`] says (docs/ipc/events.md). Every
+/// field counts but the revision and the two readings that only one item
+/// shows: `power` counts while the battery item is shown, `volume` while the
+/// volume item is. Nothing else on the pages reads them (the dock draws the
+/// two faces from them; the settings page reads only `items`), so a new
+/// battery percent with the battery item off, or a slider drag with the
+/// volume item off, sends nothing; the snapshot carries the reading anyway,
+/// so the next state sent for another reason, and the item when it is
+/// switched on, show it at once. Equal `items` show the same items, so a
+/// reading is compared only when both snapshots show its item, and an item
+/// that comes or goes is a change of `items` itself.
+fn renders_differently(before: &DockState, after: &DockState) -> bool {
+    // Destructured, so that a new field of `DockState` has to be placed here.
+    let DockState {
+        revision: _,
+        items,
+        foreground,
+        docks,
+        power,
+        volume,
+        clock_format,
+    } = before;
+    if *items != after.items
+        || *foreground != after.foreground
+        || *docks != after.docks
+        || *clock_format != after.clock_format
+    {
+        return true;
+    }
+    let shows = |kind: DockItemKind| items.iter().any(|i| i.kind == kind);
+    (*power != after.power && shows(DockItemKind::Battery))
+        || (*volume != after.volume && shows(DockItemKind::Volume))
 }
 
 /// The facts of a window the overlap rule reads (`overlap::covers`): when an
@@ -2915,12 +2959,15 @@ mod tests {
         assert_eq!(engine.snapshot().revision, r + 5);
 
         // `DockState::power` is the platform's fact whatever the settings
-        // say: without either item a change still reaches the page.
+        // say, but without the battery item no page shows it: the
+        // snapshot carries each reading and the revision stays.
         let mut engine = DockEngine::new(Settings::default());
-        assert!(engine.apply(power(laptop(40))).changed);
-        assert_eq!(engine.snapshot().power, laptop(40));
+        let r = engine.snapshot().revision;
         assert!(!engine.apply(power(laptop(40))).changed);
-        assert!(engine.apply(power(laptop(39))).changed);
+        assert_eq!(engine.snapshot().power, laptop(40));
+        assert!(!engine.apply(power(laptop(39))).changed);
+        assert_eq!(engine.snapshot().power, laptop(39));
+        assert_eq!(engine.snapshot().revision, r);
         assert_eq!(
             keys(&engine.snapshot()),
             vec!["fixed:launcher", "sep:1", "fixed:recycle-bin"]
@@ -3030,13 +3077,15 @@ mod tests {
             on_ac: true,
             saver: false,
         };
+        // No item shows the reading, so it bumps nothing.
         let r = engine.snapshot().revision;
-        assert!(engine.apply(power(desktop)).changed);
+        assert!(!engine.apply(power(desktop)).changed);
         assert!(item(&engine.snapshot(), "fixed:battery").is_none());
-        assert_eq!(engine.snapshot().revision, r + 1);
+        assert_eq!(engine.snapshot().revision, r);
+        assert_eq!(engine.snapshot().power, desktop);
         // Battery saver can be on without a battery; the item stays away.
         assert!(
-            engine
+            !engine
                 .apply(power(PowerStatus {
                     saver: true,
                     ..desktop
@@ -3044,6 +3093,7 @@ mod tests {
                 .changed
         );
         assert!(item(&engine.snapshot(), "fixed:battery").is_none());
+        assert_eq!(engine.snapshot().revision, r);
 
         // The system sees a battery: the item appears in its place.
         assert!(engine.apply(power(laptop(30))).changed);
@@ -3296,8 +3346,9 @@ mod tests {
         let mut engine = DockEngine::new(Settings::default());
         assert_eq!(engine.volume(), None);
         assert_eq!(engine.snapshot().volume, None);
-        // The first reading reaches the snapshot even with the item off.
-        assert!(engine.apply(volume(Some(level(60, false)))).changed);
+        // The first reading reaches the snapshot even with the item off,
+        // without a new revision, as no item shows it.
+        assert!(!engine.apply(volume(Some(level(60, false)))).changed);
         assert_eq!(engine.volume(), Some(level(60, false)));
         assert_eq!(engine.snapshot().volume, Some(level(60, false)));
         assert!(
@@ -3329,11 +3380,109 @@ mod tests {
         assert!(!engine.apply(volume(None)).changed);
         assert_eq!(engine.snapshot().revision, r + 4);
 
-        // The item off: still part of the snapshot, so still a bump.
+        // The item off: still part of the snapshot, but no item shows it,
+        // so no bump.
         let mut engine = DockEngine::new(Settings::default());
-        assert!(engine.apply(volume(Some(level(10, false)))).changed);
-        assert!(engine.apply(volume(Some(level(10, true)))).changed);
+        let r = engine.snapshot().revision;
+        assert!(!engine.apply(volume(Some(level(10, false)))).changed);
         assert!(!engine.apply(volume(Some(level(10, true)))).changed);
+        assert!(!engine.apply(volume(None)).changed);
+        assert_eq!(engine.snapshot().volume, None);
+        assert_eq!(engine.snapshot().revision, r);
+    }
+
+    #[test]
+    fn a_reading_no_shown_item_uses_is_kept_without_a_new_revision() {
+        // The battery and the volume item off, readings come in.
+        let mut engine = DockEngine::new(Settings::default());
+        let r = engine.snapshot().revision;
+        for percent in [76, 75, 74] {
+            assert!(!engine.apply(power(laptop(percent))).changed);
+        }
+        for percent in [60, 61, 62] {
+            assert!(!engine.apply(volume(Some(level(percent, false)))).changed);
+        }
+        assert_eq!(engine.snapshot().revision, r);
+        // The next state sent for another reason carries the latest of both.
+        assert!(engine.apply(added(win(1, r"C:\a.exe", "A"))).changed);
+        let state = engine.snapshot();
+        assert_eq!(state.revision, r + 1);
+        assert_eq!(state.power, laptop(74));
+        assert_eq!(state.volume, Some(level(62, false)));
+
+        // An item switched on shows the reading kept at once.
+        let mut settings = engine.settings().clone();
+        settings.items.battery = true;
+        settings.items.volume = true;
+        assert!(
+            engine
+                .apply(EngineInput::SettingsChanged(settings.clone()))
+                .changed
+        );
+        let state = engine.snapshot();
+        assert_eq!(item(&state, "fixed:battery").unwrap().title, "Battery 74 %");
+        assert_eq!(item(&state, "fixed:volume").unwrap().title, "Volume 62 %");
+        // While they are shown, every new reading of either is a change.
+        let r = state.revision;
+        assert!(engine.apply(power(laptop(73))).changed);
+        assert!(engine.apply(volume(Some(level(62, true)))).changed);
+        assert_eq!(engine.snapshot().revision, r + 2);
+
+        // Each one counts on its own item only: the volume item off, a new
+        // volume reading is nothing while the battery item still shows the
+        // power, and the other way round.
+        settings.items.volume = false;
+        assert!(
+            engine
+                .apply(EngineInput::SettingsChanged(settings.clone()))
+                .changed
+        );
+        assert!(!engine.apply(volume(Some(level(30, false)))).changed);
+        assert!(engine.apply(power(laptop(72))).changed);
+        settings.items.volume = true;
+        settings.items.battery = false;
+        assert!(
+            engine
+                .apply(EngineInput::SettingsChanged(settings.clone()))
+                .changed
+        );
+        assert_eq!(
+            item(&engine.snapshot(), "fixed:volume").unwrap().title,
+            "Volume 30 %"
+        );
+        assert!(!engine.apply(power(laptop(71))).changed);
+        assert!(engine.apply(volume(Some(level(31, false)))).changed);
+
+        // The battery item on but no system battery: no item shows the
+        // power, so battery saver toggling on a desktop is nothing either,
+        // and a battery that appears is a change (its item comes).
+        settings.items.battery = true;
+        let desktop = PowerStatus {
+            has_battery: false,
+            percent: None,
+            charging: false,
+            on_ac: true,
+            saver: false,
+        };
+        assert!(!engine.apply(power(desktop)).changed);
+        assert!(!engine.apply(EngineInput::SettingsChanged(settings)).changed);
+        assert!(item(&engine.snapshot(), "fixed:battery").is_none());
+        let r = engine.snapshot().revision;
+        assert!(
+            !engine
+                .apply(power(PowerStatus {
+                    saver: true,
+                    ..desktop
+                }))
+                .changed
+        );
+        assert_eq!(engine.snapshot().revision, r);
+        assert!(engine.apply(power(laptop(70))).changed);
+        assert_eq!(engine.snapshot().revision, r + 1);
+        assert!(item(&engine.snapshot(), "fixed:battery").is_some());
+        // And one that goes is a change too (its item goes).
+        assert!(engine.apply(power(desktop)).changed);
+        assert!(item(&engine.snapshot(), "fixed:battery").is_none());
     }
 
     #[test]

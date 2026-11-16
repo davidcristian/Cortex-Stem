@@ -1070,6 +1070,23 @@ export type ItemAction =
   | { type: 'shell'; action: ShellAction }
   | { type: 'none' };
 
+/**
+ * What `DockEngine::apply` compares to tell whether an input changed the
+ * snapshot (`renders_differently` in engine.rs): everything but the
+ * revision, with `power` only while the battery item is shown and `volume`
+ * only while the volume item is, since nothing else on the pages reads them.
+ * Two snapshots that give the same string show the same thing.
+ */
+export function shownState(state: DockState): string {
+  const shows = (kind: DockItemKind): boolean => state.items.some((i) => i.kind === kind);
+  return JSON.stringify({
+    ...state,
+    revision: 0,
+    power: shows('battery') ? state.power : 'not shown',
+    volume: shows('volume') ? state.volume : 'not shown',
+  });
+}
+
 /** `ScrollEffect`: what one wheel notch over an item does. */
 export type ScrollEffect =
   | { type: 'activate'; windowId: WindowId }
@@ -1136,13 +1153,14 @@ class Engine {
    * input that changes nothing the snapshot shows changes nothing: the
    * theme, a monitor list that moves no dock's fact, the identity of an
    * app without an item, a setting no item depends on, a frame that flips
-   * no `overlapped`, the size of the Recycle Bin's contents.
+   * no `overlapped`, the size of the Recycle Bin's contents, and a power
+   * or volume reading while its item is not shown (`shownState`).
    */
   private input(mutate: () => void): boolean {
-    const before = JSON.stringify(this.snapshot());
+    const before = shownState(this.snapshot());
     mutate();
     this.rebuildRunningOrder();
-    const changed = JSON.stringify(this.snapshot()) !== before;
+    const changed = shownState(this.snapshot()) !== before;
     if (changed) {
       this.revision += 1;
     }
@@ -1321,7 +1339,8 @@ class Engine {
 
   /**
    * `PlatformEvent::PowerChanged`: part of the snapshot whatever the
-   * settings say, so only a different reading bumps the revision.
+   * settings say, but only a different reading while the battery item is
+   * shown (or one that brings or takes it) bumps the revision.
    */
   setPower(power: PowerStatus): boolean {
     return this.input(() => {
@@ -1331,8 +1350,8 @@ class Engine {
 
   /**
    * `PlatformEvent::VolumeChanged`: part of the snapshot whatever
-   * the settings say (and the volume item's title), so only a different
-   * reading bumps the revision.
+   * the settings say (and the volume item's title), but only a different
+   * reading while the volume item is shown bumps the revision.
    */
   setVolume(volume: VolumeStatus | null): boolean {
     return this.input(() => {
@@ -2586,7 +2605,8 @@ export class MockBackend implements Backend {
   /**
    * The power source, the battery or battery saver changed: what
    * the events thread reports as `PowerChanged`, only when it differs from
-   * the last reading. One `dock://state` when it does.
+   * the last reading. One `dock://state` when it does and the battery item
+   * shows it (or comes or goes); otherwise it is only kept.
    */
   setPower(status: PowerStatus): void {
     if (this.engine.setPower(status)) {
@@ -2600,7 +2620,8 @@ export class MockBackend implements Backend {
    * (the volume keys, the Quick Settings slider, headphones plugged
    * in; `null`: no output device any more): what the volume thread reports
    * as `VolumeChanged`, only when it differs from the last reading. One
-   * `dock://state` when it does.
+   * `dock://state` when it does and the volume item is shown; otherwise it
+   * is only kept.
    */
   setVolume(status: VolumeStatus | null): void {
     if (this.engine.setVolume(status)) {

@@ -309,6 +309,8 @@ pub struct DockItem {
 #[serde(rename_all = "camelCase")]
 pub struct DockState {
     /// Monotonic counter; the UI may drop snapshots with a lower revision.
+    /// Two snapshots of one revision may differ only in a reading no shown
+    /// item uses (`power`, `volume`).
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub revision: u64,
     pub items: Vec<DockItem>,
@@ -325,14 +327,16 @@ pub struct DockState {
     /// The power source and the battery: the last
     /// `PlatformEvent::PowerChanged`, whatever the settings say; every field
     /// `false` and no percent until the first one. The battery item's face
-    /// is drawn from it.
+    /// is drawn from it. A new reading alone bumps the revision only while
+    /// the battery item is shown.
     #[serde(default)]
     pub power: PowerStatus,
     /// The default output device's volume: the last
     /// `PlatformEvent::VolumeChanged`, whatever the settings say; `null`
     /// until the first one, and while there is no default output device or
     /// its volume cannot be read. The volume item's face and title are drawn
-    /// from it.
+    /// from it. A new reading alone bumps the revision only while the volume
+    /// item is shown.
     #[serde(default)]
     pub volume: Option<VolumeStatus>,
     /// The user's regional format for the clock: the last
