@@ -52,7 +52,15 @@ Scenarios:
   clock timer is left), the clock switched on and off again (none of its
   timers is left), and a timeout set again each minute;
 - auto-hide shown under a resting pointer, slid out, and brought back from
-  the strip.
+  the strip;
+- keyboard focus resting on an item, holding auto-hide past its delay, and
+  released with Escape;
+- reduced motion set before load (at rest and auto-hidden) and switched on
+  at runtime, then a hover and a launch;
+- both docks of the `twoMonitors` scenario, the second with
+  `showOnlyCurrentMonitor` on;
+- a file drop that pins, a drop on the Recycle Bin, and a file drag that
+  leaves the window.
 
 Control scenarios show that the checks detect busy work: a frame loop with
 an interval (it exceeds both time budgets), a 10 s polling chain and an
