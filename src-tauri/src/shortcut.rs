@@ -34,16 +34,20 @@
 //! worker, where that wait could deadlock against a main thread that is
 //! itself waiting on the service, so a change hops to the main thread
 //! without waiting; there the plugin's own hop runs inline.
+//!
+//! [`parse`]: rules::parse
 
-use std::str::FromStr;
+mod rules;
+#[cfg(test)]
+mod tests;
 
 use parking_lot::Mutex;
 use stem_core::Settings;
 use stem_service::DockService;
 use tauri::{AppHandle, Manager, Wry};
-use tauri_plugin_global_shortcut::{
-    Code, GlobalShortcut, Modifiers, Shortcut, ShortcutEvent, ShortcutState,
-};
+use tauri_plugin_global_shortcut::{GlobalShortcut, Shortcut, ShortcutEvent, ShortcutState};
+
+use rules::{Outcome, outcome, plan, steps};
 
 /// The two shortcuts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,17 +84,6 @@ impl Kind {
 
 /// The trimmed accelerators the settings ask for, indexed by [`Kind::index`].
 type Wanted = [String; 2];
-
-/// What became of one shortcut, as it was logged last.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Outcome {
-    /// An empty value: nothing registered, on purpose.
-    None,
-    /// Registered.
-    Active(Shortcut),
-    /// Not registered, and why.
-    Refused(String),
-}
 
 /// Managed state; it exists only while the plugin is registered.
 #[derive(Debug, Default)]
@@ -189,55 +182,6 @@ fn apply(app: &AppHandle, wanted: &Wanted) {
     }
 }
 
-/// What it takes to make the registered shortcuts match their plans: the
-/// shortcuts to unregister, then the ones to register, each with its kind.
-#[derive(Debug, Default, PartialEq, Eq)]
-struct Steps {
-    unregister: Vec<(Kind, Shortcut)>,
-    register: Vec<(Kind, Shortcut)>,
-}
-
-/// The [`Steps`] from `registered` (what is registered now) to `plans`
-/// ([`plan`]), both indexed by [`Kind::index`]. A shortcut that is
-/// registered and still wanted is left alone; one that is no longer wanted
-/// (another chord, none, or refused) is unregistered; a wanted one that is
-/// not registered is registered. [`apply`] runs every unregistering before
-/// any registering, so a chord one shortcut gives up is free for the
-/// other, also when the two trade places in one change. Pure.
-fn steps(
-    registered: &[Option<Shortcut>; 2],
-    plans: &[Result<Option<Shortcut>, String>; 2],
-) -> Steps {
-    let mut steps = Steps::default();
-    for kind in Kind::ALL {
-        let i = kind.index();
-        let desired = plans[i].as_ref().ok().copied().flatten();
-        if registered[i] == desired {
-            continue;
-        }
-        if let Some(old) = registered[i] {
-            steps.unregister.push((kind, old));
-        }
-        if let Some(new) = desired {
-            steps.register.push((kind, new));
-        }
-    }
-    steps
-}
-
-/// What became of a shortcut with this `plan` once [`apply`] ran its
-/// [`Steps`]: `refused` is why Windows refused to register it, if it did.
-/// A planned shortcut that needed no registering was registered already.
-/// Pure.
-fn outcome(plan: &Result<Option<Shortcut>, String>, refused: Option<String>) -> Outcome {
-    match (plan, refused) {
-        (_, Some(reason)) => Outcome::Refused(reason),
-        (Err(reason), None) => Outcome::Refused(reason.clone()),
-        (Ok(None), None) => Outcome::None,
-        (Ok(Some(shortcut)), None) => Outcome::Active(*shortcut),
-    }
-}
-
 fn log_outcome(kind: Kind, wanted: &str, outcome: &Outcome) {
     let name = kind.name();
     match outcome {
@@ -264,263 +208,5 @@ fn on_focus(app: &AppHandle, _shortcut: &Shortcut, event: ShortcutEvent) {
     if event.state == ShortcutState::Pressed {
         log::debug!("focus shortcut pressed");
         crate::windows::on_focus_shortcut(app);
-    }
-}
-
-/// What each shortcut should be for the trimmed settings values `toggle`
-/// and `focus`, indexed by [`Kind::index`]: each one's [`parse`], except
-/// that a focus shortcut naming the toggle's chord (the same modifiers and
-/// key, however written) is refused, so the toggle keeps it. Pure.
-fn plan(toggle: &str, focus: &str) -> [Result<Option<Shortcut>, String>; 2] {
-    let toggle_plan = parse(toggle);
-    let focus_plan = match (parse(focus), &toggle_plan) {
-        (Ok(Some(f)), Ok(Some(t))) if f.mods == t.mods && f.key == t.key => Err(format!(
-            "it is the same shortcut as the toggle shortcut ({toggle})"
-        )),
-        (other, _) => other,
-    };
-    [toggle_plan, focus_plan]
-}
-
-/// The shortcut in `accelerator` (already trimmed): `Ok(None)` when it is
-/// empty, else the parsed shortcut or why it cannot be used. Without `Ctrl`,
-/// `Alt` or `Super` only `F1`..`F24` are accepted: `RegisterHotKey` takes the
-/// combination away from every app, so a plain or shifted letter would stop
-/// typing that letter anywhere.
-fn parse(accelerator: &str) -> Result<Option<Shortcut>, String> {
-    if accelerator.is_empty() {
-        return Ok(None);
-    }
-    let shortcut = Shortcut::from_str(accelerator).map_err(|e| e.to_string())?;
-    let held = Modifiers::CONTROL | Modifiers::ALT | Modifiers::SUPER;
-    if !shortcut.mods.intersects(held) && !is_function_key(shortcut.key) {
-        return Err("it needs Ctrl, Alt or Super (only F1..F24 may go without)".to_owned());
-    }
-    Ok(Some(shortcut))
-}
-
-fn is_function_key(key: Code) -> bool {
-    matches!(
-        key,
-        Code::F1
-            | Code::F2
-            | Code::F3
-            | Code::F4
-            | Code::F5
-            | Code::F6
-            | Code::F7
-            | Code::F8
-            | Code::F9
-            | Code::F10
-            | Code::F11
-            | Code::F12
-            | Code::F13
-            | Code::F14
-            | Code::F15
-            | Code::F16
-            | Code::F17
-            | Code::F18
-            | Code::F19
-            | Code::F20
-            | Code::F21
-            | Code::F22
-            | Code::F23
-            | Code::F24
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn parsed(accelerator: &str) -> Shortcut {
-        match parse(accelerator) {
-            Ok(Some(shortcut)) => shortcut,
-            other => panic!("{accelerator:?} should parse, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn the_default_parses_as_ctrl_alt_d() {
-        let shortcut = parsed(stem_core::settings::DEFAULT_TOGGLE_SHORTCUT);
-        assert_eq!(shortcut.mods, Modifiers::CONTROL | Modifiers::ALT);
-        assert_eq!(shortcut.key, Code::KeyD);
-        // Case and spaces around `+` do not matter.
-        assert_eq!(parsed("ctrl + alt + d"), shortcut);
-        assert_eq!(parsed("CONTROL+Option+KeyD"), shortcut);
-    }
-
-    #[test]
-    fn empty_means_no_shortcut() {
-        assert!(matches!(parse(""), Ok(None)));
-    }
-
-    #[test]
-    fn function_keys_alone_and_held_modifiers_are_accepted() {
-        assert_eq!(parsed("F9").key, Code::F9);
-        assert_eq!(parsed("Shift+F24").mods, Modifiers::SHIFT);
-        assert_eq!(parsed("Super+Space").mods, Modifiers::SUPER);
-        assert_eq!(parsed("Alt+Shift+1").key, Code::Digit1);
-    }
-
-    #[test]
-    fn keys_that_would_take_over_typing_are_refused() {
-        for accelerator in ["D", "Shift+D", "Space", "Shift+/", "Enter"] {
-            assert!(
-                parse(accelerator).is_err(),
-                "{accelerator:?} must need Ctrl, Alt or Super"
-            );
-        }
-    }
-
-    #[test]
-    fn the_focus_default_parses_as_ctrl_alt_shift_d_and_differs_from_the_toggle() {
-        let focus = parsed(stem_core::settings::DEFAULT_FOCUS_SHORTCUT);
-        assert_eq!(
-            focus.mods,
-            Modifiers::CONTROL | Modifiers::ALT | Modifiers::SHIFT
-        );
-        assert_eq!(focus.key, Code::KeyD);
-        let [toggle, focus] = plan(
-            stem_core::settings::DEFAULT_TOGGLE_SHORTCUT,
-            stem_core::settings::DEFAULT_FOCUS_SHORTCUT,
-        );
-        assert_eq!(toggle, Ok(Some(parsed("Ctrl+Alt+D"))));
-        assert_eq!(focus, Ok(Some(parsed("Ctrl+Alt+Shift+D"))));
-    }
-
-    #[test]
-    fn a_focus_shortcut_on_the_toggles_chord_is_refused_and_the_toggle_keeps_it() {
-        // Case and modifier order do not make another chord.
-        for focus in ["Ctrl+Alt+D", "alt+ctrl+d", "CONTROL+Option+KeyD"] {
-            let [toggle, refused] = plan("Ctrl+Alt+D", focus);
-            assert_eq!(toggle, Ok(Some(parsed("Ctrl+Alt+D"))), "{focus:?}");
-            match refused {
-                Err(reason) => assert!(reason.contains("toggle shortcut"), "{reason}"),
-                Ok(other) => panic!("{focus:?} must be refused, got {other:?}"),
-            }
-        }
-        // Another chord is fine, and so is the same text with the toggle off
-        // or unusable.
-        let [_, focus] = plan("Ctrl+Alt+D", "Ctrl+Alt+F");
-        assert_eq!(focus, Ok(Some(parsed("Ctrl+Alt+F"))));
-        let [toggle, focus] = plan("", "Ctrl+Alt+D");
-        assert_eq!(toggle, Ok(None));
-        assert_eq!(focus, Ok(Some(parsed("Ctrl+Alt+D"))));
-        let [toggle, focus] = plan("Shift+D", "Ctrl+Alt+D");
-        assert!(toggle.is_err());
-        assert_eq!(focus, Ok(Some(parsed("Ctrl+Alt+D"))));
-        // Both empty: nothing at all; a bad focus value keeps its own reason.
-        assert_eq!(plan("", ""), [Ok(None), Ok(None)]);
-        match plan("Ctrl+Alt+D", "Shift+D") {
-            [_, Err(reason)] => assert!(!reason.contains("toggle shortcut"), "{reason}"),
-            other => panic!("Shift+D must be refused, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn every_shortcut_given_up_is_unregistered_before_any_is_registered() {
-        let toggle = parsed("Ctrl+Alt+D");
-        let focus = parsed("Ctrl+Alt+Shift+D");
-        let f8 = parsed("Ctrl+Shift+F8");
-        let both = [Some(toggle), Some(focus)];
-        let steps_to =
-            |registered: &[Option<Shortcut>; 2], t: &str, f: &str| steps(registered, &plan(t, f));
-
-        // The first request registers both; the same request again does
-        // nothing.
-        assert_eq!(
-            steps_to(&[None, None], "Ctrl+Alt+D", "Ctrl+Alt+Shift+D"),
-            Steps {
-                unregister: vec![],
-                register: vec![(Kind::Toggle, toggle), (Kind::Focus, focus)],
-            }
-        );
-        assert_eq!(
-            steps_to(&both, "ctrl+alt+d", "Ctrl+Alt+Shift+D"),
-            Steps::default()
-        );
-        // One changes: the other is left alone.
-        assert_eq!(
-            steps_to(&both, "Ctrl+Alt+D", "Ctrl+Shift+F8"),
-            Steps {
-                unregister: vec![(Kind::Focus, focus)],
-                register: vec![(Kind::Focus, f8)],
-            }
-        );
-        // The two trade places in one change: both chords are given up
-        // first, so neither registration collides with the other's old one.
-        assert_eq!(
-            steps_to(&both, "Ctrl+Alt+Shift+D", "Ctrl+Alt+D"),
-            Steps {
-                unregister: vec![(Kind::Toggle, toggle), (Kind::Focus, focus)],
-                register: vec![(Kind::Toggle, focus), (Kind::Focus, toggle)],
-            }
-        );
-        // The toggle is turned off and the focus shortcut takes its chord.
-        assert_eq!(
-            steps_to(&both, "", "Ctrl+Alt+D"),
-            Steps {
-                unregister: vec![(Kind::Toggle, toggle), (Kind::Focus, focus)],
-                register: vec![(Kind::Focus, toggle)],
-            }
-        );
-        // The focus shortcut moves onto the toggle's chord: refused, so it
-        // is only unregistered.
-        assert_eq!(
-            steps_to(&both, "Ctrl+Alt+D", "alt+ctrl+d"),
-            Steps {
-                unregister: vec![(Kind::Focus, focus)],
-                register: vec![],
-            }
-        );
-        // A shortcut Windows refused earlier (not registered) is tried
-        // again; both off unregisters both.
-        assert_eq!(
-            steps_to(&[Some(toggle), None], "Ctrl+Alt+D", "Ctrl+Alt+Shift+D"),
-            Steps {
-                unregister: vec![],
-                register: vec![(Kind::Focus, focus)],
-            }
-        );
-        assert_eq!(
-            steps_to(&both, "", ""),
-            Steps {
-                unregister: vec![(Kind::Toggle, toggle), (Kind::Focus, focus)],
-                register: vec![],
-            }
-        );
-    }
-
-    #[test]
-    fn the_outcome_is_the_plan_unless_windows_refused_the_registration() {
-        let focus = parsed("Ctrl+Alt+Shift+D");
-        assert_eq!(outcome(&Ok(None), None), Outcome::None);
-        assert_eq!(outcome(&Ok(Some(focus)), None), Outcome::Active(focus));
-        assert_eq!(
-            outcome(&Err("it needs Ctrl".to_owned()), None),
-            Outcome::Refused("it needs Ctrl".to_owned())
-        );
-        assert_eq!(
-            outcome(&Ok(Some(focus)), Some("held by another app".to_owned())),
-            Outcome::Refused("held by another app".to_owned())
-        );
-    }
-
-    #[test]
-    fn malformed_accelerators_are_refused() {
-        for accelerator in [
-            "Ctrl+Alt",
-            "Ctrl+Alt+D+E",
-            "Ctrl+D+Alt",
-            "Ctrl++D",
-            "Ctrl+Nope",
-            "Hyper+D",
-        ] {
-            assert!(
-                parse(accelerator).is_err(),
-                "{accelerator:?} must not parse"
-            );
-        }
     }
 }
