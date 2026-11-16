@@ -71,16 +71,21 @@
 
 use std::cell::RefCell;
 use std::marker::PhantomData;
-use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
-use std::time::{Duration, Instant};
+use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::time::Instant;
 
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::{CLSCTX_ALL, CoCreateInstance};
 use windows::Win32::UI::Shell::{IVirtualDesktopManager, VirtualDesktopManager};
 
 use super::util;
-use crate::rules::backoff::{Gate, SlowCallBackoff, Verdict};
+use crate::rules::backoff::Gate;
 use crate::rules::events::DesktopQueryFailures;
+use pause::{backoff, note_duration, now_ms};
+
+mod pause;
+
+pub use pause::is_paused;
 
 /// The calling thread's manager slot. See the module documentation.
 enum Slot {
@@ -101,13 +106,6 @@ thread_local! {
 /// Windows whose refusal has been logged, shared by every thread
 /// that queries windows so the line appears once per window.
 static FAILURES: Mutex<DesktopQueryFailures> = Mutex::new(DesktopQueryFailures::new());
-
-/// The pause after a slow call (see *Not bounded, only paused*), shared by
-/// every thread: a slow Explorer is slow for all of them.
-static BACKOFF: Mutex<SlowCallBackoff> = Mutex::new(SlowCallBackoff::new());
-
-/// The origin of [`BACKOFF`]'s millisecond clock.
-static CLOCK: OnceLock<Instant> = OnceLock::new();
 
 /// Keeps the calling thread's manager slot open while alive. Create it on a
 /// thread that holds a COM apartment (`util::ComApartment`) for longer than
@@ -279,42 +277,4 @@ fn create_manager() -> windows::core::Result<IVirtualDesktopManager> {
 /// nothing here can cause) still yields the set.
 fn failures() -> MutexGuard<'static, DesktopQueryFailures> {
     FAILURES.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-/// The shared pause; a poisoned lock still yields it.
-fn backoff() -> MutexGuard<'static, SlowCallBackoff> {
-    BACKOFF.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-/// Whether the shell is not being asked right now, after a slow call (for
-/// the enumeration's log line).
-pub fn is_paused() -> bool {
-    backoff().is_paused(now_ms())
-}
-
-/// Milliseconds since the first use of [`BACKOFF`]'s clock.
-fn now_ms() -> u64 {
-    let elapsed = CLOCK.get_or_init(Instant::now).elapsed();
-    u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-}
-
-/// Feed one call's duration to the pause and log a pause that it starts.
-fn note_duration(id: u64, elapsed: Duration) {
-    let elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
-    let Verdict::Paused { first, .. } = backoff().record(now_ms(), elapsed_ms) else {
-        return;
-    };
-    let pause = Duration::from_millis(SlowCallBackoff::PAUSE_MS);
-    if first {
-        log::warn!(
-            "IsWindowOnCurrentVirtualDesktop took {elapsed:?} for window {id:#x} (Explorer is \
-             slow to answer); not asking for {pause:?}: windows on other desktops are told \
-             apart by their cloak state meanwhile (logged once at warn; later pauses at debug)"
-        );
-    } else {
-        log::debug!(
-            "IsWindowOnCurrentVirtualDesktop took {elapsed:?} for window {id:#x}; not asking \
-             for {pause:?}"
-        );
-    }
 }
