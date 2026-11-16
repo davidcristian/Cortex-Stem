@@ -139,7 +139,7 @@ pub(super) fn reconcile_docks(
 /// is marked closing ([`DockGeometry::start_closing`]); with its state
 /// gone, every report and every posted relayout for it is dropped, and a
 /// reconcile waits for [`on_dock_destroyed`]. Main thread.
-fn close_dock_window(app: &AppHandle, service: &DockService, label: &str) {
+pub(super) fn close_dock_window(app: &AppHandle, service: &DockService, label: &str) {
     let geometry = app.try_state::<DockGeometry>();
     let monitor = geometry
         .as_ref()

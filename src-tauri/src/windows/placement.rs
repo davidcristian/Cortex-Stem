@@ -118,6 +118,8 @@ pub fn with_min_length(work_area: Rect, edge: DockPosition, length: i32) -> Rect
 /// at [`INITIAL_SIZE`], whose height is the initial thickness on any edge).
 /// What the window keeps when it is laid out before its UI reported a
 /// content size. Pure.
+///
+/// [`INITIAL_SIZE`]: super::create::INITIAL_SIZE
 pub fn thickness_of(size: (u32, u32), placed: Option<DockPosition>) -> i32 {
     let across = match placed {
         Some(edge) if is_vertical(edge) => size.0,
@@ -141,6 +143,8 @@ pub fn thickness_of(size: (u32, u32), placed: Option<DockPosition>) -> i32 {
 ///   DPI change, the size tao gave it to keep its logical size).
 ///
 /// Pure.
+///
+/// [`layout`]: super::layout::layout
 pub fn relayout_rect(
     work_area: Rect,
     monitor_known: bool,
@@ -223,6 +227,8 @@ pub fn placement_steps(current: Option<Rect>, target: Rect) -> Vec<PlaceStep> {
 /// `set_dock_content_size` (CSS px, clamped by [`clamp_content`]), with the
 /// edge in effect when it was reported, kept per window
 /// ([`DockWindowState`]) to lay the window out again.
+///
+/// [`DockWindowState`]: super::state::DockWindowState
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DockContent {
     pub width: f64,

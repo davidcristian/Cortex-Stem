@@ -29,16 +29,22 @@ pub struct FocusSession {
     /// `None` when there was none to go back to (the desktop or the Start
     /// menu was in front) or a click on a dock superseded it, and then
     /// Escape leaves the foreground alone.
+    ///
+    /// [`return_target`]: super::focus_target::return_target
     pub window: Option<ReturnTo>,
 }
 
 /// The window a press of the focus shortcut gives the keyboard focus back
 /// to ([`return_target`]).
+///
+/// [`return_target`]: super::focus_target::return_target
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReturnTo {
     /// An app's window: the engine's active window at the press
     /// (`DockState.foreground`). Brought back with `Activate`
     /// ([`return_focus`]).
+    ///
+    /// [`return_focus`]: super::focus_release::return_focus
     App(WindowId),
     /// One of Stem's own windows other than a dock window (the settings
     /// window), by its label. The engine never takes Stem's own windows for
@@ -88,6 +94,8 @@ impl DockFocus {
     /// A press gives the dock window `dock` the focus; `window` is the
     /// window in front at the press ([`return_target`]). Replaces any
     /// earlier session.
+    ///
+    /// [`return_target`]: super::focus_target::return_target
     pub fn begin(&self, dock: &str, window: Option<ReturnTo>) {
         *self.0.lock() = Some(FocusSession {
             dock: dock.to_owned(),

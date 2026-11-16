@@ -19,7 +19,9 @@ use super::visibility::DockAutoHidden;
 /// ([`thickness_of`] with no edge yet) and keeps until the UI reports its
 /// content; the length is replaced by the work area's as soon as the window
 /// is placed.
-const INITIAL_SIZE: (f64, f64) = (640.0, 96.0);
+///
+/// [`thickness_of`]: super::placement::thickness_of
+pub(super) const INITIAL_SIZE: (f64, f64) = (640.0, 96.0);
 
 /// Create one dock window on `monitor` and show it, unless the set is
 /// hidden ([`show_new_dock_window`]). Main thread (the platform subclasses
@@ -119,6 +121,8 @@ pub(super) fn create_dock_window(
 /// hid the set, and a window shown then would be the one dock on screen,
 /// turning the next press into a Show. `None` (the primary's state could
 /// not be read) leaves it hidden too. Pure.
+///
+/// [`toggle_dock`]: super::visibility::toggle_dock
 pub fn show_new_dock_window(label: &str, primary_visible: Option<bool>) -> bool {
     label == DOCK_LABEL || primary_visible == Some(true)
 }

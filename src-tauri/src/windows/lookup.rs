@@ -54,6 +54,8 @@ pub(super) fn monitor_id_of(app: &AppHandle, label: &str) -> Option<MonitorId> {
 /// [`DockGeometry`] (a window [`close_dock_window`] destroyed keeps its
 /// label in Tauri until its `Destroyed`, without state here). Work posted
 /// for a dock window looks it up through this.
+///
+/// [`close_dock_window`]: super::reconcile::close_dock_window
 pub(super) fn live_dock_window(app: &AppHandle, label: &str) -> Option<WebviewWindow> {
     let live = app
         .try_state::<DockGeometry>()

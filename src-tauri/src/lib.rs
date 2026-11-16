@@ -72,7 +72,7 @@ pub mod events {
     /// To every dock window: `dock.css` was read again.
     pub const USER_CSS: &str = "dock://user-css";
     /// To the settings window: it is closing; send any edit still held
-    /// back now (`windows::on_settings_close_requested`).
+    /// back now (`windows::settings_window::on_settings_close_requested`).
     pub const SETTINGS_CLOSING: &str = "dock://settings-closing";
 }
 

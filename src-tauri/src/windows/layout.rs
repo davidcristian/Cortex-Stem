@@ -25,6 +25,8 @@ use super::state::{DockGeometry, log_closing, log_stale};
 /// sends one after every position change), before its hit region and panel
 /// rect, so those are taken once this layout placed the window. Called from
 /// the `set_dock_content_size` command, on the main thread.
+///
+/// [`DockWindowState::take_content`]: super::state::DockWindowState::take_content
 pub fn apply_content_size(
     app: &AppHandle,
     window: &WebviewWindow,
@@ -76,6 +78,8 @@ pub fn apply_content_size(
 /// (`stem_platform::rules::appbar::window_rect`). Every path that sizes or
 /// moves a dock window comes here (creation, the content size,
 /// [`relayout_dock`]); [`place`] applies the rect.
+///
+/// [`relayout_dock`]: super::relayout::relayout_dock
 pub(super) fn layout(
     window: &WebviewWindow,
     monitor: Option<&MonitorInfo>,
@@ -162,7 +166,7 @@ fn window_scale(window: &WebviewWindow, monitor: Option<&MonitorInfo>) -> f64 {
 /// and let `appbar` follow (a new monitor or scale changes the
 /// band). Every
 /// placement of a dock window ends here.
-fn place(window: &WebviewWindow, edge: DockPosition, rect: Rect) -> tauri::Result<()> {
+pub(super) fn place(window: &WebviewWindow, edge: DockPosition, rect: Rect) -> tauri::Result<()> {
     let current = current_rect(window);
     let target = (rect.width, rect.height);
     let mut size = current.map(|r| (r.width, r.height));

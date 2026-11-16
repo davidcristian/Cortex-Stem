@@ -49,6 +49,9 @@ pub fn validate_hit_region(panel: Rect, envelope: Rect) -> Result<(), String> {
 /// edge. A platform without the feature (mock, non-Windows hosts) leaves
 /// the window fully clickable; that is logged once at debug and is not an
 /// error for the UI. Runs on the main thread.
+///
+/// [`on_settings_changed`]: super::changes::on_settings_changed
+/// [`DockWindowState::take_hit_region`]: super::state::DockWindowState::take_hit_region
 pub fn apply_hit_region(
     app: &AppHandle,
     window: &WebviewWindow,

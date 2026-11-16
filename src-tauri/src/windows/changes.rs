@@ -41,10 +41,12 @@ pub fn on_settings_changed(app: &AppHandle, settings: &Settings) {
 /// dropped first ([`forget_edge_layout`]), and the primary's backdrop and
 /// every band go with it (`backdrop::on_panel`, `appbar::sync`) until the
 /// page reports its panel on the new edge. The pages get `dock://settings`
-/// before this runs (`lib.rs`, `forward_events`), so a page usually lays
+/// before this runs (`app/forward.rs`, `forward_events`), so a page usually lays
 /// itself out for the new edge before its window moves. Any thread; the
 /// window work hops to the main thread.
-fn on_position_setting(app: &AppHandle, edge: DockPosition) {
+///
+/// [`DockContent::on_edge`]: super::placement::DockContent::on_edge
+pub(super) fn on_position_setting(app: &AppHandle, edge: DockPosition) {
     let Some(geometry) = app.try_state::<DockGeometry>() else {
         return;
     };
@@ -105,7 +107,9 @@ fn on_position_setting(app: &AppHandle, edge: DockPosition) {
 /// measured for the old edge that is handled after this is dropped
 /// ([`DockWindowState::stale_for`]): the window is placed on the new edge
 /// in the same turn of the main thread. Main thread.
-fn forget_edge_layout(app: &AppHandle, service: &DockService, label: &str) {
+///
+/// [`DockWindowState::stale_for`]: super::state::DockWindowState::stale_for
+pub(super) fn forget_edge_layout(app: &AppHandle, service: &DockService, label: &str) {
     let Some(geometry) = app.try_state::<DockGeometry>() else {
         return;
     };

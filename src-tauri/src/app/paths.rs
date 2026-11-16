@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use stem_core::AppFolder;
 
 /// Where this installation keeps its files, resolved once in
-/// `setup` and kept in Tauri's managed state for `commands::get_app_info`
-/// and `commands::open_app_folder`: the settings page's About section shows
+/// `setup` and kept in Tauri's managed state for `commands::app::get_app_info`
+/// and `commands::app::open_app_folder`: the settings page's About section shows
 /// the paths and opens the folders.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AppPaths {

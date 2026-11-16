@@ -31,6 +31,8 @@ pub fn validate_panel_rect(rect: Rect) -> Result<(), String> {
 /// handled after the resize the page sent its content size for (the same
 /// tick, applied first) says what it said when the page measured it. Runs
 /// on the main thread.
+///
+/// [`DockWindowState::take_panel`]: super::state::DockWindowState::take_panel
 pub fn apply_dock_panel(
     app: &AppHandle,
     window: &WebviewWindow,

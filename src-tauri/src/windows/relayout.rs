@@ -149,6 +149,9 @@ pub(super) fn relayout_dock(
 /// The screen edge the dock windows are laid out on: `settings.position` as
 /// this module last took it ([`create_dock_windows`], then
 /// [`on_position_setting`]), else the service's, else the bottom.
+///
+/// [`create_dock_windows`]: super::reconcile::create_dock_windows
+/// [`on_position_setting`]: super::changes::on_position_setting
 pub(super) fn dock_edge(app: &AppHandle) -> DockPosition {
     app.try_state::<DockGeometry>()
         .and_then(|geometry| *geometry.position.lock())

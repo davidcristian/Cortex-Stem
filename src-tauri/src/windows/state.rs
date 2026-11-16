@@ -29,6 +29,9 @@ pub struct DockWindowState {
     /// has its size for that edge ([`place`]); `None` before its first
     /// placement. Says which side of the window is its thickness when no
     /// content was reported yet ([`thickness_of`]).
+    ///
+    /// [`place`]: super::layout::place
+    /// [`thickness_of`]: super::placement::thickness_of
     pub(super) edge: Option<DockPosition>,
     /// `(panel, envelope)` of the latest `set_dock_hit_region`; applied
     /// while `behavior.clickThrough` is on and replayed when it is turned
@@ -81,6 +84,10 @@ impl DockWindowState {
     /// in effect would be dropped until an unrelated placement (a monitor or
     /// DPI change) moved the window. `Ok(None)` for a report on the window's
     /// edge.
+    ///
+    /// [`dock_edge`]: super::relayout::dock_edge
+    /// [`on_position_setting`]: super::changes::on_position_setting
+    /// [`layout`]: super::layout::layout
     pub(super) fn take_content(
         &mut self,
         content: DockContent,
@@ -145,16 +152,22 @@ pub struct DockGeometry {
     /// `settings.position` as the windows are laid out for, so a
     /// settings event only moves them on a change; [`dock_edge`] reads it
     /// for every placement.
+    ///
+    /// [`dock_edge`]: super::relayout::dock_edge
     pub(super) position: Mutex<Option<DockPosition>>,
     /// The labels of the dock windows [`close_dock_window`] destroyed whose
     /// `WindowEvent::Destroyed` has not arrived yet. Tauri only posts the
     /// destroy, and keeps the label (and `get_webview_window`) until then,
     /// so such a window is neither live (it has no state in `docks`) nor
     /// gone (its label cannot be built again) until that event.
+    ///
+    /// [`close_dock_window`]: super::reconcile::close_dock_window
     pub(super) closing: Mutex<HashSet<String>>,
     /// The closing labels a reconcile wanted again while they were closing
     /// ([`reconcile_docks`]): their `Destroyed` runs the reconcile again,
     /// which creates them anew.
+    ///
+    /// [`reconcile_docks`]: super::reconcile::reconcile_docks
     pub(super) wanted_again: Mutex<HashSet<String>>,
 }
 
@@ -183,6 +196,8 @@ impl DockGeometry {
 
     /// The dock window `label` was just destroyed ([`close_dock_window`]);
     /// its `Destroyed` is still to come ([`Self::closing`]).
+    ///
+    /// [`close_dock_window`]: super::reconcile::close_dock_window
     pub(super) fn start_closing(&self, label: &str) {
         self.closing.lock().insert(label.to_owned());
     }
@@ -222,6 +237,8 @@ pub(super) fn log_stale(label: &str, report: &str, edge: DockPosition, placed: D
 /// is closing ([`close_dock_window`] forgot it; Tauri destroys it at the
 /// next turn of the event loop), so the report is dropped. A window gets
 /// its state right after it is built, before its page loads.
+///
+/// [`close_dock_window`]: super::reconcile::close_dock_window
 pub(super) fn log_closing(label: &str, report: &str) {
     log::debug!("dock window {label:?}: {report} dropped; the window is closing");
 }

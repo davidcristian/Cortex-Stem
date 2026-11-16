@@ -142,6 +142,28 @@
 //! created on demand and destroyed when closed. Its native title bar follows
 //! the *Theme* setting (`settings.theme`): set when the window is
 //! created and again whenever the setting changes ([`on_settings_changed`]).
+//!
+//! [`dock_label`]: plan::dock_label
+//! [`plan_docks`]: plan::plan_docks
+//! [`reconcile_docks`]: reconcile::reconcile_docks
+//! [`plan_dock_rect`]: placement::plan_dock_rect
+//! [`edge_rect`]: placement::edge_rect
+//! [`DockContent::on_edge`]: placement::DockContent::on_edge
+//! [`relayout_rect`]: placement::relayout_rect
+//! [`place`]: layout::place
+//! [`placement_steps`]: placement::placement_steps
+//! [`on_scale_factor_changed`]: relayout::on_scale_factor_changed
+//! [`show_new_dock_window`]: create::show_new_dock_window
+//! [`panel_on_screen`]: panel::panel_on_screen
+//! [`forget_edge_layout`]: changes::forget_edge_layout
+//! [`DockWindowState::stale_for`]: state::DockWindowState::stale_for
+//! [`DockWindowState::take_content`]: state::DockWindowState::take_content
+//! [`reanchor_panel`]: viewport::reanchor_panel
+//! [`layout`]: layout::layout
+//! [`return_target`]: focus_target::return_target
+//! [`focus_target`]: focus_target::focus_target
+//! [`give_focus_back`]: focus_release::give_focus_back
+//! [`on_dock_blurred`]: focus_release::on_dock_blurred
 
 mod changes;
 mod create;

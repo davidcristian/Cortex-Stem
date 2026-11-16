@@ -60,6 +60,8 @@ impl CssViewport {
 
 /// One `set_dock_panel_rect` with its provenance, kept per
 /// window ([`DockWindowState`]).
+///
+/// [`DockWindowState`]: super::state::DockWindowState
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PanelReport {
     /// The panel at rest, whole CSS px relative to `viewport`.
