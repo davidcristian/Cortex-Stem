@@ -129,9 +129,12 @@ Another widget: the default output device's volume as an optional fixed item.
   per 50 ms. A change after 50 ms without changes goes out at once. The rest of a burst (a
   slider drag) goes out once at the end of the interval, with the value read then, so the last
   value always arrives. A failure reads `null` and is logged at `warn` once, then at `debug`
-  while the failures continue. With no device the thread waits for a device notification; any
-  other failure is tried again after 2 s, doubling up to 60 s. A failure other than "no device"
-  drops the enumerator and its notification client at once, so the retry builds them again.
+  while the failures continue. It is always tried again on a timer, never left to a
+  notification alone: with no device every 60 s (a device notification ends the wait sooner),
+  for anything else after 2 s, doubling up to 60 s (v1.31). Every timed retry builds the
+  enumerator and its notification client again, because a restart of the audio service may leave
+  the old registration without callbacks. A failure other than "no device" drops them at once.
+  While a device is bound and reads, the thread has no timer.
 
   Each method is one request to the thread and waits at most 250 ms for it
   (`PlatformError::Timeout`). A set or a step that the thread takes only after its caller's wait

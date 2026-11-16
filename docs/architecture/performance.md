@@ -5,7 +5,7 @@ times measured on one test PC.
 
 | Metric                                  | Target |
 |-----------------------------------------|--------|
-| Idle CPU (no window changes)            | ≈ 0 % (nothing polls except the Recycle Bin query every 5 s on `dock-recycle-bin` and the hit-test thread's 4 Hz `GetCursorPos` safety poll; the dock page, in the dev build, does no work once settled, which `e2e/idle.spec.ts` checks, see "The dock page at idle") |
+| Idle CPU (no window changes)            | ≈ 0 % (nothing polls except the Recycle Bin query every 5 s on `dock-recycle-bin`, the hit-test thread's 4 Hz `GetCursorPos` safety poll and, with no audio output device, the volume thread's retry once a minute; the dock page, in the dev build, does no work once settled, which `e2e/idle.spec.ts` checks, see "The dock page at idle") |
 | Event → UI update                       | < 50 ms |
 | Startup to dock visible                 | < 1 s |
 | Memory (Rust side)                      | < 30 MB; WebView2 uses far more |

@@ -29,17 +29,21 @@
 //!   communications) is not this thread's business. A device's state
 //!   change, arrival or removal always makes the thread look at the default
 //!   again (`windows::volume` re-binds only when the default's id differs).
-//! - **Retry.** A bind that failed because there is no output device
-//!   (`E_NOTFOUND`) is not retried on a timer: the device notifications say
-//!   when one comes. Any other failure (the enumerator or its notification
-//!   client could not be set up, the audio service is not running) is
-//!   retried after 2 s, then 4 s, 8 s and so on, at most every 60 s, until a
-//!   bind succeeds; the thread logs the first failure of a streak at `warn`
-//!   and the rest at `debug`. Such a failure also drops the enumerator and
-//!   its notification client ([`rebuilds_watch`]): a restart of the audio
-//!   service under Stem may leave them dead, and a retry that kept them
-//!   would never recover. No device keeps them, since they are what says
-//!   when one comes.
+//! - **Retry.** Every failed bind is tried again on a timer, so recovery
+//!   never depends on a notification alone. One that failed because there
+//!   is no output device (`E_NOTFOUND`) is tried again every 60 s (one
+//!   wake-up a minute while there is no device; a device notification ends
+//!   the wait sooner). Any other failure (the enumerator or its
+//!   notification client could not be set up, the audio service is not
+//!   running) is retried after 2 s, then 4 s, 8 s and so on, at most every
+//!   60 s, until a bind succeeds; the thread logs the first failure of a
+//!   streak at `warn` and the rest at `debug`. Every timed retry builds the
+//!   enumerator and its notification client again before it binds: a
+//!   restart of the audio service under Stem may leave them dead, and a
+//!   dead registration never calls back. A failure other than no device
+//!   drops them at once ([`drops_watch_at_once`]); no device keeps them
+//!   until the retry, so a device that comes meanwhile is noticed at once.
+//!   While a device is bound and reads, there is no timer at all.
 //!
 //! Time is an opaque millisecond counter supplied by the caller, as for
 //! `rules::backoff`. Plain numbers, so it is unit-tested on every host. The
@@ -174,7 +178,7 @@ impl ChangeFilter {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BindFailure {
     /// There is no output device (`E_NOTFOUND`), and the device
-    /// notifications are registered, so they say when one comes.
+    /// notifications are registered, so they may say when one comes.
     NoDevice,
     /// Anything else, or no device while the notifications are not
     /// registered.
@@ -183,32 +187,34 @@ pub enum BindFailure {
 
 /// The first delay before a failed bind is tried again.
 pub const RETRY_FIRST_MS: u64 = 2_000;
-/// The longest delay between two tries.
+/// The longest delay between two tries, and the delay after no device.
 pub const RETRY_MAX_MS: u64 = 60_000;
 
 /// How long after the `failures`-th failure in a row (1 for the first) the
-/// thread tries to bind again: never on a timer for
-/// [`BindFailure::NoDevice`], else [`RETRY_FIRST_MS`] doubled for each
-/// failure before this one, at most [`RETRY_MAX_MS`].
-pub fn retry_after_ms(failure: BindFailure, failures: u32) -> Option<u64> {
+/// thread tries to bind again, building the enumerator and its client
+/// afresh: [`RETRY_MAX_MS`] for [`BindFailure::NoDevice`] (a slow look for
+/// a device no notification announced, the registration perhaps dead),
+/// else [`RETRY_FIRST_MS`] doubled for each failure before this one, at
+/// most [`RETRY_MAX_MS`]. Never "wait for a callback": every failure has a
+/// delay.
+pub fn retry_after_ms(failure: BindFailure, failures: u32) -> u64 {
     match failure {
-        BindFailure::NoDevice => None,
+        BindFailure::NoDevice => RETRY_MAX_MS,
         BindFailure::Other => {
             let doublings = failures.saturating_sub(1).min(16);
-            Some(
-                RETRY_FIRST_MS
-                    .saturating_mul(1 << doublings)
-                    .min(RETRY_MAX_MS),
-            )
+            RETRY_FIRST_MS
+                .saturating_mul(1 << doublings)
+                .min(RETRY_MAX_MS)
         }
     }
 }
 
 /// Whether a failed bind drops the enumerator and its notification client
-/// too, so the retry creates them again: for every failure but
-/// [`BindFailure::NoDevice`], whose notifications are what the thread waits
-/// for.
-pub fn rebuilds_watch(failure: BindFailure) -> bool {
+/// at once rather than at the retry: for every failure but
+/// [`BindFailure::NoDevice`], whose client is kept until the retry so a
+/// device that comes meanwhile is noticed at once. Either way the retry
+/// builds them again.
+pub fn drops_watch_at_once(failure: BindFailure) -> bool {
     failure == BindFailure::Other
 }
 
@@ -377,32 +383,39 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_device_waits_for_a_notification_and_other_failures_back_off() {
-        assert_eq!(retry_after_ms(BindFailure::NoDevice, 1), None);
-        assert_eq!(retry_after_ms(BindFailure::NoDevice, 9), None);
+    fn a_missing_device_is_looked_for_every_minute_and_other_failures_back_off() {
+        // No device: one try a minute, however long the streak, so a
+        // registration the audio service's restart left dead (which never
+        // calls back) cannot leave the thread waiting for good.
+        for failures in [0, 1, 2, 9, u32::MAX] {
+            assert_eq!(retry_after_ms(BindFailure::NoDevice, failures), 60_000);
+        }
         let delays: Vec<u64> = (1..=8)
-            .map(|n| retry_after_ms(BindFailure::Other, n).unwrap())
+            .map(|n| retry_after_ms(BindFailure::Other, n))
             .collect();
         assert_eq!(
             delays,
             [2_000, 4_000, 8_000, 16_000, 32_000, 60_000, 60_000, 60_000]
         );
         // A count of 0 is read as the first; a huge one stays at the cap.
-        assert_eq!(retry_after_ms(BindFailure::Other, 0), Some(2_000));
-        assert_eq!(retry_after_ms(BindFailure::Other, u32::MAX), Some(60_000));
+        assert_eq!(retry_after_ms(BindFailure::Other, 0), 2_000);
+        assert_eq!(retry_after_ms(BindFailure::Other, u32::MAX), 60_000);
+        // Never sooner than the first delay nor later than the cap.
+        for failure in [BindFailure::NoDevice, BindFailure::Other] {
+            for failures in 0..=20 {
+                let delay = retry_after_ms(failure, failures);
+                assert!((RETRY_FIRST_MS..=RETRY_MAX_MS).contains(&delay));
+            }
+        }
     }
 
     #[test]
-    fn a_failure_other_than_no_device_rebuilds_the_enumerator_on_the_retry() {
+    fn only_a_failure_other_than_no_device_drops_the_enumerator_at_once() {
         // The audio service restarted: the old enumerator and client may be
-        // dead, so the retry starts from scratch.
-        assert!(rebuilds_watch(BindFailure::Other));
-        // No device: the client stays, to say when one comes.
-        assert!(!rebuilds_watch(BindFailure::NoDevice));
-        // Every failure that rebuilds is also one that retries on a timer,
-        // so a dropped client never leaves the thread waiting for nothing.
-        for failures in 1..=10 {
-            assert!(retry_after_ms(BindFailure::Other, failures).is_some());
-        }
+        // dead, so they go now and the retry starts from scratch.
+        assert!(drops_watch_at_once(BindFailure::Other));
+        // No device: the client stays until the retry (which builds it
+        // again), so a device that comes meanwhile is noticed at once.
+        assert!(!drops_watch_at_once(BindFailure::NoDevice));
     }
 }

@@ -12,8 +12,8 @@
 //!   `IAudioEndpointVolumeCallback` on that. It then reports the first
 //!   reading (`PlatformEvent::VolumeChanged`; `None` without a device) and
 //!   waits on one channel for the callbacks, the callers' requests and its
-//!   two timers. It never polls: with nothing happening it sleeps in
-//!   `recv`.
+//!   two timers. It never polls a bound device: with nothing happening it
+//!   sleeps in `recv` (without a device, one retry a minute, below).
 //! - The callbacks do the minimum: post a message (`try_send` on a bounded
 //!   channel; a full channel already holds a notification that reads the
 //!   latest value) and return `S_OK`. `OnNotify` (the level or the mute)
@@ -41,14 +41,17 @@
 //!   (`rules::volume::status_of`). Debug line per report: `volume:
 //!   <reading> (<cause>)`.
 //! - A failed bind is logged once per streak (`warn`, then `debug`) and
-//!   yields `None`. No device (`E_NOTFOUND`) waits for a device
-//!   notification; anything else is tried again after a growing delay, at
-//!   most every 60 s (`rules::volume::retry_after_ms`): the audio service
-//!   stopped at start or restarted under Stem, an enumerator that could not
-//!   be created. Such a failure also drops the enumerator and its
-//!   notification client (`rules::volume::rebuilds_watch`), which a restart
-//!   of the audio service may have left dead, so the retry builds
-//!   everything again.
+//!   yields `None`, and is always tried again on a timer
+//!   (`rules::volume::retry_after_ms`): no device (`E_NOTFOUND`) every
+//!   60 s, unless a device notification comes first; anything else (the
+//!   audio service stopped at start or restarted under Stem, an enumerator
+//!   that could not be created) after a growing delay, at most every 60 s.
+//!   Every timed retry drops the enumerator and its notification client,
+//!   which a restart of the audio service may have left dead (a dead
+//!   registration never calls back), and builds everything again; a
+//!   failure other than no device drops them at once
+//!   (`rules::volume::drops_watch_at_once`). While a device is bound and
+//!   reads there is no timer, so the thread never wakes on its own.
 //! - [`VolumeHandle`] answers [`crate::Platform::volume_status`] (a live
 //!   read on the thread), `set_volume` (`SetMasterVolumeLevelScalar`),
 //!   `set_volume_muted` (`SetMute`) and `step_volume` (one wheel notch:
@@ -594,6 +597,12 @@ impl Follower<'_> {
         let now = self.now_ms();
         if self.retry_at.is_some_and(|at| now >= at) {
             self.retry_at = None;
+            // Start from a fresh enumerator and client: one a restart of the
+            // audio service left dead would never call back. The endpoint's
+            // callback goes before the client (there is no binding while a
+            // retry is pending; `None` is only the drop order made sure).
+            self.endpoint = None;
+            self.watch = None;
             self.follow_default("retry");
             self.changed("retry");
         }
@@ -680,16 +689,18 @@ impl Follower<'_> {
         } else {
             BindFailure::Other
         };
-        if rules::rebuilds_watch(failure) {
+        if rules::drops_watch_at_once(failure) {
             // The endpoint's callback goes before the enumerator's client.
             self.endpoint = None;
             self.watch = None;
         }
-        let retry = rules::retry_after_ms(failure, self.failures);
-        self.retry_at = retry.map(|delay| self.now_ms().saturating_add(delay));
-        let next = match retry {
-            Some(delay) => format!("trying again in {} s", delay / 1000),
-            None => "waiting for a device".to_owned(),
+        let delay = rules::retry_after_ms(failure, self.failures);
+        self.retry_at = Some(self.now_ms().saturating_add(delay));
+        let next = match failure {
+            BindFailure::NoDevice => {
+                format!("waiting for a device, looking again in {} s", delay / 1000)
+            }
+            BindFailure::Other => format!("trying again in {} s", delay / 1000),
         };
         if self.failures == 1 {
             log::warn!(
