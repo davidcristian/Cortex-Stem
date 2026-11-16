@@ -50,8 +50,9 @@ instead.
   (headphones plugged in or taken out).
 - The mouse wheel over it changes the volume by 2 for each notch, from 0 to
   100, as the volume keys do. A notch up also unmutes. This works whatever
-  _Scrolling over an app_ is set to. Each notch counts, however fast the
-  wheel turns.
+  _Scrolling over an app_ is set to. There is no pause between notches as
+  there is for an app's windows: each notch counts, but one very fast flick
+  of the wheel counts as ten notches at most.
 - A click opens quick settings, as Win+A does, where the volume slider is.
 - Its menu has _Mute_ (or _Unmute_ while muted; greyed out without an output
   device), _Sound settings_ and _Volume mixer_. The last two open those pages
