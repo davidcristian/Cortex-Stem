@@ -1,0 +1,209 @@
+/* The settings window's own stylesheet, global to settings.html: the Windows 11
+   settings tokens on `.page`, and the classes several section cards share (the
+   rows of the app lists, the buttons). */
+
+/* Opaque window: the Tauri settings window has native chrome (unlike the
+   dock), so the page paints its own background edge to edge. */
+html,
+body {
+  background: var(--page-bg, #202020);
+}
+
+html[data-theme='light'] {
+  --page-bg: #f3f3f3;
+}
+
+html[data-theme='dark'] {
+  --page-bg: #202020;
+}
+
+.page {
+  /* Windows 11 settings tokens, dark. */
+  --card-bg: #2b2b2b;
+  --card-border: rgba(255, 255, 255, 0.08);
+  --divider: rgba(255, 255, 255, 0.08);
+  --text-secondary: rgba(255, 255, 255, 0.78);
+  --text-disabled: rgba(255, 255, 255, 0.36);
+  --control-bg: rgba(255, 255, 255, 0.06);
+  --control-bg-hover: rgba(255, 255, 255, 0.09);
+  --control-bg-disabled: rgba(255, 255, 255, 0.04);
+  --control-border: rgba(255, 255, 255, 0.07);
+  --control-border-bottom: rgba(255, 255, 255, 0.16);
+  --switch-bg: transparent;
+  --switch-border: rgba(255, 255, 255, 0.55);
+  --switch-knob: rgba(255, 255, 255, 0.79);
+  --track: rgba(255, 255, 255, 0.54);
+  --thumb-bg: #454545;
+  --scrollbar: rgba(255, 255, 255, 0.35);
+  --error-text: #ff99a4;
+  --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2 4.5 6 8.5 10 4.5' fill='none' stroke='%23ffffff' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  color: var(--text);
+  background: var(--page-bg);
+  font-size: 14px;
+  line-height: 20px;
+}
+
+html[data-theme='light'] .page {
+  --card-bg: #fbfbfb;
+  --card-border: rgba(0, 0, 0, 0.06);
+  --divider: rgba(0, 0, 0, 0.06);
+  --text-secondary: rgba(0, 0, 0, 0.62);
+  --text-disabled: rgba(0, 0, 0, 0.36);
+  --control-bg: rgba(255, 255, 255, 0.7);
+  --control-bg-hover: rgba(249, 249, 249, 0.5);
+  --control-bg-disabled: rgba(249, 249, 249, 0.3);
+  --control-border: rgba(0, 0, 0, 0.06);
+  --control-border-bottom: rgba(0, 0, 0, 0.16);
+  --switch-border: rgba(0, 0, 0, 0.45);
+  --switch-knob: rgba(0, 0, 0, 0.61);
+  --track: rgba(0, 0, 0, 0.45);
+  --thumb-bg: #ffffff;
+  --scrollbar: rgba(0, 0, 0, 0.3);
+  --error-text: #c42b1c;
+  --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2 4.5 6 8.5 10 4.5' fill='none' stroke='%231b1b1b' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+
+/* Windows contrast themes (`data-high-contrast`): solid black or
+   white surfaces, every line, outline and secondary text in the text
+   colour. Under forced colours the browser swaps in the theme's own
+   colours on top; the switches and sliders keep their parts visible
+   through their own `forced-colors` rules. */
+html[data-high-contrast][data-theme='dark'] {
+  --page-bg: #000000;
+}
+
+html[data-high-contrast][data-theme='light'] {
+  --page-bg: #ffffff;
+}
+
+html[data-high-contrast] .page {
+  --card-bg: var(--page-bg);
+  --card-border: var(--text);
+  --divider: var(--text);
+  --text-secondary: var(--text);
+  --control-bg: var(--page-bg);
+  --control-border: var(--text);
+  --control-border-bottom: var(--text);
+  --switch-border: var(--text);
+  --switch-knob: var(--text);
+  --track: var(--text);
+  --thumb-bg: var(--page-bg);
+  --scrollbar: var(--text);
+  --error-text: var(--text);
+}
+
+.pin-icon {
+  display: block;
+  width: 24px;
+  height: 24px;
+}
+
+.pin-icon img,
+.pin-icon .placeholder {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* Same tile as the dock draws while an icon loads (`--placeholder` from app.css). */
+.pin-icon .placeholder {
+  border-radius: 22%;
+  background: var(--placeholder);
+}
+
+html[data-high-contrast] .pin-icon .placeholder {
+  outline: 1px solid var(--text);
+  outline-offset: -1px;
+}
+
+@media (forced-colors: active) {
+  .pin-icon .placeholder {
+    outline: 1px solid CanvasText;
+    outline-offset: -1px;
+  }
+}
+
+.pin-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.pin-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pin-launch {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.empty,
+.about-pending {
+  margin: 0;
+  padding: 18px 16px;
+  color: var(--text-secondary);
+}
+
+code {
+  font-family: 'Cascadia Mono', 'Cascadia Code', Consolas, monospace;
+  font-size: 11.5px;
+}
+
+.actions {
+  flex: none;
+  display: flex;
+  gap: 8px;
+}
+
+.button {
+  box-sizing: border-box;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--control-border);
+  border-bottom-color: var(--control-border-bottom);
+  border-radius: 4px;
+  background: var(--control-bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  cursor: default;
+}
+
+.button:hover:not(:disabled) {
+  background: var(--control-bg-hover);
+}
+
+.button:active:not(:disabled) {
+  color: var(--text-secondary);
+}
+
+.button:disabled {
+  color: var(--text-disabled);
+  background: var(--control-bg-disabled);
+}
+
+.button.accent {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.button.accent:hover:not(:disabled) {
+  filter: brightness(0.92);
+}
+
+.button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
