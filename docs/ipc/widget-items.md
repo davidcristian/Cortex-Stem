@@ -1,6 +1,6 @@
 # Widget items
 
-This file describes the clock and battery items, and the clock's regional format.
+This file describes the clock, battery and volume items, and the clock's regional format.
 
 ## Clock and battery items (v1.22)
 
@@ -84,3 +84,79 @@ regional format. With an English display language and a 24-hour region, the page
 - `MockBackend`: `MockOptions.clockFormat` (default: both fields `null`) and
   `setClockFormat(format)`, which emits a new state. The mock platform sends `ClockFormatChanged`
   once at start, after its `PowerChanged`; its demo reading also has both fields `null`.
+
+## The volume item (v1.30)
+
+Another widget: the default output device's volume as an optional fixed item.
+
+- `Settings.items.volume`, `false` by default. `DockItemKind` has `volume`, with item key
+  `fixed:volume` and icon key `shell:volume` (drawn by the page, like the other `shell:` keys).
+  It is in the trailing group after `notificationCenter` and before the battery, in the order of
+  the Windows taskbar's corner: volume, battery, clock. It is shown whenever the setting is on,
+  with or without an output device.
+- `DockState.volume: VolumeStatus | null` is `{ percent: number, muted: boolean }`: the default
+  output device's master volume and whether it is muted. `percent` is from 0 to 100 (the
+  endpoint's level scalar, 0.0 to 1.0, × 100, rounded half away from zero). The level is kept
+  while muted. The value is `null` when there is no default output device or its volume cannot be
+  read. The engine stores the last `PlatformEvent::VolumeChanged(Option<VolumeStatus>)` whatever
+  the settings say; it is `null` until the first one. Rust sets the item's `title`:
+  `Volume 45 %`, `Volume muted` while muted (whatever the level), and `No audio output` without a
+  device.
+- The platform side:
+  - `Platform::volume_status()` returns a reading now.
+  - `set_volume(percent)` sets the level (more than 100 counts as 100) and leaves the mute alone.
+  - `set_volume_muted(muted)` sets the mute and leaves the level alone. Both setters fail without
+    an output device.
+
+  On Windows a dedicated thread of the platform layer (`stem-volume`, in the multithreaded
+  apartment) follows the default console render endpoint
+  (`IMMDeviceEnumerator::GetDefaultAudioEndpoint(eRender, eConsole)` → `IAudioEndpointVolume`:
+  `GetMasterVolumeLevelScalar`, `GetMute`, `SetMasterVolumeLevelScalar`, `SetMute`). An
+  `IAudioEndpointVolumeCallback` on the endpoint and an `IMMNotificationClient` on the
+  enumerator only post to the thread. The endpoint callback posts for every level or mute change.
+  The notification client posts for a new default of `eRender`/`eConsole` and for any device's
+  state change, arrival or removal; the thread then binds again when the default's id differs.
+
+  The thread reports a reading only when it differs from the last one reported, and at most one
+  per 50 ms. A change after 50 ms without changes goes out at once. The rest of a burst (a
+  slider drag) goes out once at the end of the interval, with the value read then, so the last
+  value always arrives. A failure reads `null` and is logged at `warn` once, then at `debug`
+  while the failures continue. With no device the thread waits for a device notification; any
+  other failure is tried again after 2 s, doubling up to 60 s.
+
+  The three methods wait at most 250 ms for the thread (`PlatformError::Timeout`). The first
+  reading is reported once the thread has bound the device at start.
+- The page draws the face: a speaker with no wave at 0 %, one wave from 1 % to 33 %, two from
+  34 % to 66 % and three from 67 % (Windows' three steps), with the level below as text in the
+  page's locale. While `muted`, a cross replaces the waves and the level is still written. For
+  `null` it draws a dimmed, struck-out speaker and a dash. The title pill and accessible name are
+  the `title`.
+- Click (and Enter or Space): `ShellAction` `openQuickSettings` (Win+A), which has Windows'
+  volume slider, as Windows' own volume icon does.
+- The wheel: the page sends `scroll_item` for every notch over the volume item, whatever
+  `behavior.scrollAction` says. It counts notches as in
+  [Scrolling over an item](scrolling-over-an-item.md); over every other item it still sends only
+  while the setting is not `none`. Rust (`ScrollEffect::StepVolume`) reads the volume now, not
+  from the snapshot, which falls behind during a quick run of notches, and sets what
+  `stem_core::engine::volume_step` makes of it. `previous` (the wheel turned away from the user,
+  up) raises the volume by 2, up to 100, and unmutes, as the volume-up key does. `next` lowers it
+  by 2, down to 0, and keeps the mute. The level is set first, then the mute. The service runs
+  the notches one after the other, so notches that arrive together add up.
+
+  The 150 ms limit of [Scrolling over an item](scrolling-over-an-item.md) does **not** apply:
+  every notch counts (one page event sends at most ten), as each press of a volume key does.
+  Without an output device, or at the end of the range, a notch does nothing and resolves. With
+  the item off, its key is unknown and the command rejects, as for a click. No window comes to
+  the front, so the focus shortcut's stored window stays.
+- Menu (built by Rust): *Mute*, or *Unmute* while the engine's last reading says muted
+  (`set_volume_muted`; disabled without an output device; it does not supersede the focus
+  shortcut's stored window), *Sound settings* (`ShellAction` `openSoundSettings`, which launches
+  `ms-settings:sound`) and *Volume mixer* (`openVolumeMixer`: `ms-settings:apps-volume`, which
+  Microsoft documents as *App volume and device preferences*, and which is *Sound > Volume mixer*
+  on Windows 11). The entries that every item menu ends with follow.
+- `MockBackend`: `MockOptions.volume` (default: a device at 60 %, not muted; `null` for none),
+  `setVolume(status | null)` (a change made outside Stem, which emits a new state when it
+  differs) and `chooseVolumeMute(muted)` (what the menu's *Mute* or *Unmute* runs). It records
+  `setVolume` and `setVolumeMuted`, and it steps without the 150 ms limit, like Rust.
+  The mock platform's demo has the same device and sends its `VolumeChanged` once at start, after
+  `ClockFormatChanged`.

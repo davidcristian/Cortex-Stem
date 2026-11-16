@@ -3,6 +3,17 @@
 This file lists every version of the [IPC contract](index.md), newest first. A section name links
 to the file that covers that section now.
 
+- **v1.30 (the volume item):** Another widget; no command or event was added or renamed. Added:
+  `Settings.items.volume` (default `false`); `DockItemKind` `volume` (`fixed:volume`,
+  `shell:volume`) between Notification Center and the battery; `DockState.volume: VolumeStatus |
+  null` (`{ percent, muted }`, `null` without an output device) from the new
+  `PlatformEvent::VolumeChanged`; and `ShellAction` `openSoundSettings` and `openVolumeMixer` for
+  the item's menu, which also has *Mute* / *Unmute*. `scroll_item` over the volume item steps the
+  volume by 2 per notch whatever `behavior.scrollAction` says, without the 150 ms limit, and
+  unmutes going up. The page sends it there even while the setting is `none`. *Mute* and *Unmute*
+  do not supersede the focus shortcut's stored window. Also added: `MockOptions.volume`,
+  `MockBackend.setVolume` and `chooseVolumeMute`. New section
+  [The volume item](widget-items.md#the-volume-item-v130).
 - **v1.29 (small fixes):** No command or event was added or renamed. The settings page keeps a
   `dock://settings` that arrives before its first `get_settings` result
   ([Startup sequence](events.md#startup-sequence-ui-side)). The page's wheel handling over an

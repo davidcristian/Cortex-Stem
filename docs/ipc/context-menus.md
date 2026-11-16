@@ -26,6 +26,9 @@ settings window opening.
   - `launcher`: *Open Start menu*; `taskView`: *Open Task View*; `showDesktop`: *Show desktop*;
     `quickSettings`: *Open Quick Settings*; `notificationCenter`: *Open Notification Center*;
     `recycleBin`: *Open*, *Empty Recycle Bin…* (all through `shell_action`).
+  - `volume` (v1.30): *Mute* or *Unmute*, *Sound settings*, *Volume mixer* (see
+    [The volume item](widget-items.md#the-volume-item-v130)). `battery` and `clock`: see
+    [Clock and battery items](widget-items.md#clock-and-battery-items-v122).
   - Every item menu ends with a separator, *Stem settings…* (`open_settings`) and *Quit Stem*
     (`quit`).
 - `show_dock_menu`: *Stem settings…*, a separator, *Quit Stem*.

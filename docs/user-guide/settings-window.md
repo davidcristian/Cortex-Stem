@@ -103,8 +103,8 @@ and _Auto-hide delay_ are the [`autoHide`](../SETTINGS.md#autohide) keys.
 ## Items
 
 _Start_, _Task View_, _Show Desktop_, _Quick Settings_, _Notification Center_,
-_Battery_, _Clock_, _Recycle Bin_ and _Separators_ are the
-[`items`](../SETTINGS.md#items) keys. The first eight are the fixed items (see
+_Volume_, _Battery_, _Clock_, _Recycle Bin_ and _Separators_ are the
+[`items`](../SETTINGS.md#items) keys. The first nine are the fixed items (see
 [Fixed items](fixed-items.md)). _Separators_ draws thin lines between the fixed
 items, the pinned apps and the other running apps. _Start_, _Recycle Bin_
 and _Separators_ are on by default. The others are off.

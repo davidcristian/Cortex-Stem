@@ -28,9 +28,11 @@ does not let Stem bring a window forward (an app running as administrator
 can cause this). A notice then appears next to the dock, and the next notch
 goes on to the window after it.
 
-Scrolling over a fixed item, or over a pinned app without windows, does
-nothing. Scrolling never starts an app. With the default, _Does nothing_, the
-wheel does nothing anywhere on the dock.
+Scrolling over a fixed item other than the volume item, or over a pinned app
+without windows, does nothing. Scrolling never starts an app. With the
+default, _Does nothing_, the wheel does nothing anywhere on the dock. The one
+exception is the volume item: the wheel over it always changes the volume,
+whatever this setting is (see [The volume item](fixed-items.md#the-volume-item)).
 
 Windows sends the wheel to the window under the pointer, and so to the dock,
 only while Settings → Bluetooth & devices → Mouse → _Scroll inactive windows

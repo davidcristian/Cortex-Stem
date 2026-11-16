@@ -22,7 +22,8 @@ This file describes what a notch of the mouse wheel over a dock item does.
   - The page sends nothing while `scrollAction` is `none` or while an item is being dragged, and
     never for a horizontal wheel, a pinch or Ctrl with the wheel. It calls `preventDefault` only
     when it sends, and only on a cancelable event, so an event that sends nothing keeps its
-    default handling.
+    default handling. Over the volume item it sends whatever `scrollAction` is (v1.30, see
+    [The volume item](widget-items.md#the-volume-item-v130)).
 - Rust, with `cycleWindows`, on an `app` item that has windows in the calling dock's list
   ([Dock windows per monitor](windows.md#dock-windows-per-monitor)): `next` activates the window
   after the item's foreground window in that list, and `previous` the one before it, wrapping
@@ -33,9 +34,11 @@ This file describes what a notch of the mouse wheel over a dock item does.
     is passed over, and a late foreground report does not activate the same window twice.
   - When neither window is in the list, `next` activates the first window and `previous` the
     last. The activation is `WindowAction::Activate`, which restores a minimised window.
-  - Anything else (no windows, a fixed item, a separator, `none`) does nothing and resolves. An
-    unknown key (one the snapshot has no item for, including a hidden app's) rejects as
-    `primary_click` does, whatever `scrollAction` is.
+  - The volume item steps the volume whatever the setting, without the limit below (see
+    [The volume item](widget-items.md#the-volume-item-v130), v1.30). Anything else (no windows,
+    another fixed item, a separator, `none`) does nothing and resolves. An unknown key (one the
+    snapshot has no item for, including a hidden app's) rejects as `primary_click` does, whatever
+    `scrollAction` is.
   - Rust lets at most one activation per dock window through every 150 ms
     (`stem_service::SCROLL_INTERVAL`). A scroll that comes sooner is dropped, so a fast spin of
     the wheel moves one window, not ten.

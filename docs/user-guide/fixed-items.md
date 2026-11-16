@@ -10,6 +10,9 @@ or off under Settings → [Items](settings-window.md#items).
   and the other quick toggles), as Win+A does.
 - **Notification Center** opens your notifications and the calendar, as
   Win+N does.
+- **Volume** shows the volume of your speakers or headphones (the default
+  output device in Windows' sound settings). See
+  [The volume item](#the-volume-item).
 - **Battery** shows the battery's charge. See
   [The battery item](#the-battery-item).
 - **Clock** shows the time and the date. See
@@ -22,8 +25,8 @@ _Open Task View_, _Show desktop_, _Open Quick Settings_ and _Open
 Notification Center_. Like every menu, they end with _Stem settings…_ and
 _Quit Stem_.
 
-Quick Settings, Notification Center, Battery and Clock come just before
-the Recycle Bin, in that order. For a click on any of the four, Stem
+Quick Settings, Notification Center, Volume, Battery and Clock come just
+before the Recycle Bin, in that order. For a click on any of the five, Stem
 sends Windows the keyboard shortcut (Win+A or Win+N). Windows then opens its
 panel where it always does, in the corner of the screen, not beside the
 dock. While a window that runs as administrator is in front, Windows may
@@ -31,6 +34,28 @@ ignore the shortcut, as it ignores keys that Stem sends to such a window.
 Click these items without holding Ctrl, Shift or Alt. Windows may add a key
 you hold to the shortcut: Win+Ctrl+N, for example, opens Narrator's settings
 instead.
+
+## The volume item
+
+- The icon is a speaker with no wave at 0 %, one wave up to 33 %, two waves
+  up to 66 % and three waves above. The level is written below it.
+- While the sound is muted, a cross replaces the waves, and the level is
+  kept.
+- While Windows has no output device, the icon is a struck-out speaker with
+  a dash.
+- Its name says the same in words: `Volume 45 %`, `Volume muted` or
+  `No audio output`.
+- It updates within moments when the volume keys or the Quick Settings
+  slider change the volume, and when the default device changes
+  (headphones plugged in or taken out).
+- The mouse wheel over it changes the volume by 2 for each notch, from 0 to
+  100, as the volume keys do. A notch up also unmutes. This works whatever
+  _Scrolling over an app_ is set to. Each notch counts, however fast the
+  wheel turns.
+- A click opens quick settings, as Win+A does, where the volume slider is.
+- Its menu has _Mute_ (or _Unmute_ while muted; greyed out without an output
+  device), _Sound settings_ and _Volume mixer_. The last two open those pages
+  of the Windows Settings app.
 
 ## The battery item
 
