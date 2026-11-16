@@ -597,31 +597,49 @@ describe('click semantics (mirror of DockEngine::primary_action)', () => {
         expect(keys(state)).toEqual(keys(await fast().getDockState()));
       });
 
-      it('setClockFormat emits a state only for a different reading, whatever the settings', async () => {
+      it('setClockFormat emits a state only for a different reading while the clock is shown', async () => {
         const b = fast();
         const states = recordStates(b);
         b.setClockFormat({ locale: null, hour12: null });
         expect(states).toHaveLength(0);
 
+        // The clock is off: the snapshot keeps the reading, nothing is sent.
+        const revision = (await b.getDockState()).revision;
+        b.setClockFormat({ locale: 'en-US', hour12: true });
         b.setClockFormat(BRITISH);
+        expect(states).toHaveLength(0);
+        const kept = await b.getDockState();
+        expect(kept.clockFormat).toEqual(BRITISH);
+        expect(kept.revision).toBe(revision);
+        expect(keys(kept)).not.toContain('fixed:clock');
+
+        // The clock switched on: the state that brings it carries the
+        // reading kept, so its face is in that format at once.
+        const clock = item(await withItems(b, { clock: true }), 'fixed:clock');
         expect(states).toHaveLength(1);
         expect(states[0]!.clockFormat).toEqual(BRITISH);
-        // The clock is off: only `clockFormat` changed.
-        expect(keys(states[0]!)).not.toContain('fixed:clock');
+        expect(item(states[0]!, 'fixed:clock')).toEqual(clock);
         b.setClockFormat({ ...BRITISH });
         expect(states).toHaveLength(1);
 
-        // Each field on its own is a change.
+        // While it is shown, each field on its own is a change.
         b.setClockFormat({ ...BRITISH, hour12: true });
         b.setClockFormat({ locale: 'en-US', hour12: true });
         b.setClockFormat({ locale: 'en-US', hour12: null });
         expect(states).toHaveLength(4);
         expect(states[3]!.revision).toBeGreaterThan(states[0]!.revision);
 
-        // With the clock on, its item is Rust's whatever the format.
-        const clock = item(await withItems(b, { clock: true }), 'fixed:clock');
+        // Its item is Rust's whatever the format.
         b.setClockFormat({ locale: 'ko-KR', hour12: true });
+        expect(states).toHaveLength(5);
         expect(item(states.at(-1)!, 'fixed:clock')).toEqual(clock);
+
+        // Switched off again, a reading is kept and not sent.
+        await withItems(b, { clock: false });
+        const sent = states.length;
+        b.setClockFormat({ locale: 'fr-FR', hour12: false });
+        expect(states).toHaveLength(sent);
+        expect((await b.getDockState()).clockFormat).toEqual({ locale: 'fr-FR', hour12: false });
 
         // The reading is a copy: changing what was passed changes nothing.
         const reading: ClockFormat = { locale: 'de-DE', hour12: false };
@@ -831,19 +849,22 @@ describe('the volume item (docs/ipc/widget-items.md §The volume item, v1.30)', 
     expect(shownState({ ...off, revision: 99 })).toBe(shownState(off));
     expect(shownState({ ...off, power: { ...off.power, percent: 1 } })).toBe(shownState(off));
     expect(shownState({ ...off, volume: null })).toBe(shownState(off));
+    // The clock is off too.
+    const british = { locale: 'en-GB', hour12: false };
+    expect(off.items.some((i) => i.kind === 'clock')).toBe(false);
+    expect(shownState({ ...off, clockFormat: british })).toBe(shownState(off));
     // Anything else counts.
     expect(shownState({ ...off, foreground: null })).not.toBe(shownState(off));
-    expect(shownState({ ...off, clockFormat: { locale: 'en-GB', hour12: false } })).not.toBe(
-      shownState(off),
-    );
     // With the items shown, their readings count too.
     const settings = structuredClone(b['engine'].settings);
     settings.items.battery = true;
     settings.items.volume = true;
+    settings.items.clock = true;
     b['engine'].setSettings(settings);
     const on = b['engine'].snapshot();
     expect(shownState({ ...on, power: { ...on.power, percent: 1 } })).not.toBe(shownState(on));
     expect(shownState({ ...on, volume: null })).not.toBe(shownState(on));
+    expect(shownState({ ...on, clockFormat: british })).not.toBe(shownState(on));
   });
 
   it('a click opens Quick Settings', async () => {

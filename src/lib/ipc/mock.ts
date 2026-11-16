@@ -1083,9 +1083,10 @@ export type ItemAction =
 /**
  * What `DockEngine::apply` compares to tell whether an input changed the
  * snapshot (`renders_differently` in engine.rs): everything but the
- * revision, with `power` only while the battery item is shown and `volume`
- * only while the volume item is, since nothing else on the pages reads them.
- * Two snapshots that give the same string show the same thing.
+ * revision, with `power` only while the battery item is shown, `volume`
+ * only while the volume item is and `clockFormat` only while the clock item
+ * is, since nothing else on the pages reads them. Two snapshots
+ * that give the same string show the same thing.
  */
 export function shownState(state: DockState): string {
   const shows = (kind: DockItemKind): boolean => state.items.some((i) => i.kind === kind);
@@ -1094,6 +1095,7 @@ export function shownState(state: DockState): string {
     revision: 0,
     power: shows('battery') ? state.power : 'not shown',
     volume: shows('volume') ? state.volume : 'not shown',
+    clockFormat: shows('clock') ? state.clockFormat : 'not shown',
   });
 }
 
@@ -1163,8 +1165,9 @@ class Engine {
    * input that changes nothing the snapshot shows changes nothing: the
    * theme, a monitor list that moves no dock's fact, the identity of an
    * app without an item, a setting no item depends on, a frame that flips
-   * no `overlapped`, the size of the Recycle Bin's contents, and a power
-   * or volume reading while its item is not shown (`shownState`).
+   * no `overlapped`, the size of the Recycle Bin's contents, and a power,
+   * volume or regional-format reading while its item is not shown
+   * (`shownState`).
    */
   private input(mutate: () => void): boolean {
     const before = shownState(this.snapshot());
@@ -1382,7 +1385,7 @@ class Engine {
   /**
    * `PlatformEvent::ClockFormatChanged`: part of the snapshot
    * whatever the settings say and nothing else, so only a different reading
-   * bumps the revision.
+   * bumps the revision, and only while the clock item is shown.
    */
   setClockFormat(format: ClockFormat): boolean {
     return this.input(() => {
@@ -2666,7 +2669,8 @@ export class MockBackend implements Backend {
    * The user changed the regional format or the short time format:
    * what the events thread reports as `ClockFormatChanged` after a
    * `WM_SETTINGCHANGE` for `intl`, only when it differs from the last
-   * reading. One `dock://state` when it does.
+   * reading. One `dock://state` when it does and the clock item is shown;
+   * without it the snapshot keeps the reading for later.
    */
   setClockFormat(format: ClockFormat): void {
     if (this.engine.setClockFormat(format)) {

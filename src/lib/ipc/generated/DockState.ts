@@ -13,7 +13,7 @@ export type DockState = {
 /**
  * Monotonic counter; the UI may drop snapshots with a lower revision.
  * Two snapshots of one revision may differ only in a reading no shown
- * item uses (`power`, `volume`).
+ * item uses (`power`, `volume`, `clockFormat`).
  */
 revision: number, items: Array<DockItem>, 
 /**
@@ -51,6 +51,7 @@ volume: VolumeStatus | null,
  * The user's regional format for the clock: the last
  * `PlatformEvent::ClockFormatChanged`, whatever the settings say; both
  * fields `null` until the first one. The clock item's face, title pill
- * and accessible name are formatted with it.
+ * and accessible name are formatted with it. A new reading alone bumps
+ * the revision only while the clock item is shown.
  */
 clockFormat: ClockFormat, };

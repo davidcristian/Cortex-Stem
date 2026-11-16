@@ -25,7 +25,8 @@
 //!   of apps that are not shown) never bump the revision. Nor does a reading
 //!   no shown item uses: `power` counts only while the battery item
 //!   is shown, or when it brings or takes that item, `volume` only while the
-//!   volume item is (`renders_differently`).
+//!   volume item is, `clock_format` only while the clock item is
+//!   (`renders_differently`).
 //!   The monitor list
 //!   is such a fact too, except that a `MonitorsChanged` bumps the revision
 //!   when it moves a fullscreen verdict that names no monitor to another
@@ -60,7 +61,7 @@
 //!   regional format, stored as is and part of the snapshot whatever the
 //!   settings say; the engine draws nothing from it (the page formats the
 //!   clock with it), so a different reading bumps the revision and nothing
-//!   else;
+//!   else, and only while the clock item is shown;
 //! - a hidden app (`Settings::hidden_apps`) only loses its item: its
 //!   windows are tracked as before, so the foreground, fullscreen and
 //!   overlap facts and its identity are unchanged, and a click on its key
@@ -120,10 +121,11 @@ pub struct EngineOutcome {
     /// identities of apps that are not shown leave this `false` and do not
     /// advance the revision. So does a new power reading while the battery
     /// item is not shown, unless it brings that item (`has_battery` turning
-    /// on with `items.battery` on), and a new volume reading while the volume
-    /// item is not: the snapshot carries them, but no shown item
-    /// draws them. (The volume item is shown whenever its setting is on, so
-    /// no reading brings or takes it.)
+    /// on with `items.battery` on), a new volume reading while the volume
+    /// item is not, and a new regional format while the clock item
+    /// is not: the snapshot carries them, but no shown item draws
+    /// them. (The volume and the clock item are shown whenever their setting
+    /// is on, so no reading brings or takes them.)
     /// So does a change of [`DockEngine::monitors`],
     /// unless it moves a fullscreen verdict that names no monitor to another
     /// dock (the primary changed, or the list emptied, or it was reordered
@@ -577,8 +579,8 @@ impl DockEngine {
             // differs from the one kept and the volume item is shown.
             PlatformEvent::VolumeChanged(volume) => self.volume = volume,
             // Part of the snapshot (`DockState::clock_format`) and nothing
-            // else, so `apply` bumps the revision exactly when the reading
-            // differs from the one kept.
+            // else, so `apply` bumps the revision when the reading differs
+            // from the one kept and the clock item is shown.
             PlatformEvent::ClockFormatChanged(format) => self.clock_format = format,
             // Part of the snapshot (through the docks' facts), so `apply`
             // bumps the revision only when some dock's fact changes.
@@ -1088,16 +1090,17 @@ impl DockEngine {
 
 /// Whether a page would show `after` differently from `before`: what
 /// [`EngineOutcome::changed`] says (docs/ipc/events.md). Every
-/// field counts but the revision and the two readings that only one item
+/// field counts but the revision and the three readings that only one item
 /// shows: `power` counts while the battery item is shown, `volume` while the
-/// volume item is. Nothing else on the pages reads them (the dock draws the
-/// two faces from them; the settings page reads only `items`), so a new
-/// battery percent with the battery item off, or a slider drag with the
-/// volume item off, sends nothing; the snapshot carries the reading anyway,
-/// so the next state sent for another reason, and the item when it is
-/// switched on, show it at once. Equal `items` show the same items, so a
-/// reading is compared only when both snapshots show its item, and an item
-/// that comes or goes is a change of `items` itself.
+/// volume item is, `clock_format` while the clock item is. Nothing
+/// else on the pages reads them (the dock draws the three faces from them;
+/// the settings page reads only `items`), so a new battery percent with the
+/// battery item off, a slider drag with the volume item off, or a new
+/// regional format with the clock off, sends nothing; the snapshot carries
+/// the reading anyway, so the next state sent for another reason, and the
+/// item when it is switched on, show it at once. Equal `items` show the
+/// same items, so a reading is compared only when both snapshots show its
+/// item, and an item that comes or goes is a change of `items` itself.
 fn renders_differently(before: &DockState, after: &DockState) -> bool {
     // Destructured, so that a new field of `DockState` has to be placed here.
     let DockState {
@@ -1109,16 +1112,13 @@ fn renders_differently(before: &DockState, after: &DockState) -> bool {
         volume,
         clock_format,
     } = before;
-    if *items != after.items
-        || *foreground != after.foreground
-        || *docks != after.docks
-        || *clock_format != after.clock_format
-    {
+    if *items != after.items || *foreground != after.foreground || *docks != after.docks {
         return true;
     }
     let shows = |kind: DockItemKind| items.iter().any(|i| i.kind == kind);
     (*power != after.power && shows(DockItemKind::Battery))
         || (*volume != after.volume && shows(DockItemKind::Volume))
+        || (*clock_format != after.clock_format && shows(DockItemKind::Clock))
 }
 
 /// The facts of a window the overlap rule reads (`overlap::covers`): when an
@@ -3765,12 +3765,12 @@ mod tests {
         assert_eq!(engine.snapshot().revision, r + 4);
 
         // `DockState::clock_format` is the platform's fact whatever the
-        // settings say: without the clock a change still reaches the page,
-        // and no item moves.
+        // settings say: without the clock the snapshot keeps it, but no item
+        // shows it, so it bumps nothing, and no item moves.
         let mut engine = DockEngine::new(Settings::default());
-        let before = engine.snapshot().items;
+        let before = engine.snapshot();
         assert!(
-            engine
+            !engine
                 .apply(format_changed(clock_format(Some("fr-FR"), Some(false))))
                 .changed
         );
@@ -3778,7 +3778,82 @@ mod tests {
             engine.snapshot().clock_format.locale.as_deref(),
             Some("fr-FR")
         );
-        assert_eq!(engine.snapshot().items, before);
+        assert_eq!(engine.snapshot().revision, before.revision);
+        assert_eq!(engine.snapshot().items, before.items);
+    }
+
+    #[test]
+    fn a_regional_format_is_kept_without_a_new_revision_while_no_clock_is_shown() {
+        // The clock off, readings come in (the region changed twice).
+        let mut settings = with_clock_and_battery(false, false);
+        let mut engine = DockEngine::new(settings.clone());
+        let r = engine.snapshot().revision;
+        let german = clock_format(Some("de-DE"), Some(false));
+        assert!(
+            !engine
+                .apply(format_changed(clock_format(Some("en-US"), Some(true))))
+                .changed
+        );
+        assert!(!engine.apply(format_changed(german.clone())).changed);
+        assert_eq!(engine.snapshot().revision, r);
+        assert_eq!(engine.clock_format(), &german);
+
+        // The next state sent for another reason carries the latest one.
+        assert!(engine.apply(added(win(1, r"C:\a.exe", "A"))).changed);
+        let state = engine.snapshot();
+        assert_eq!(state.revision, r + 1);
+        assert_eq!(state.clock_format, german);
+
+        // The clock switched on shows the reading kept at once: the state
+        // that brings the item carries it.
+        settings.items.clock = true;
+        assert!(
+            engine
+                .apply(EngineInput::SettingsChanged(settings.clone()))
+                .changed
+        );
+        let state = engine.snapshot();
+        assert!(item(&state, "fixed:clock").is_some());
+        assert_eq!(state.clock_format, german);
+        // While it is shown, every new reading is a change.
+        let r = state.revision;
+        assert!(
+            engine
+                .apply(format_changed(clock_format(Some("de-DE"), Some(true))))
+                .changed
+        );
+        assert_eq!(engine.snapshot().revision, r + 1);
+
+        // It counts on the clock only: the battery item shown does not make
+        // a format change count, and the clock shown does not make a power
+        // reading count while the battery item is off.
+        settings.items.clock = false;
+        settings.items.battery = true;
+        assert!(
+            engine
+                .apply(EngineInput::SettingsChanged(settings.clone()))
+                .changed
+        );
+        engine.apply(power(laptop(50)));
+        assert!(item(&engine.snapshot(), "fixed:battery").is_some());
+        assert!(
+            !engine
+                .apply(format_changed(clock_format(Some("fr-FR"), None)))
+                .changed
+        );
+        settings.items.clock = true;
+        settings.items.battery = false;
+        assert!(engine.apply(EngineInput::SettingsChanged(settings)).changed);
+        assert_eq!(
+            engine.snapshot().clock_format,
+            clock_format(Some("fr-FR"), None)
+        );
+        assert!(!engine.apply(power(laptop(49))).changed);
+        assert!(
+            engine
+                .apply(format_changed(clock_format(Some("fr-FR"), Some(false))))
+                .changed
+        );
     }
 
     #[test]

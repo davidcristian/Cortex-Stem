@@ -16,7 +16,7 @@ Two optional fixed items that are widgets, items that draw live data:
   not report it). The engine stores the last `PlatformEvent::PowerChanged(PowerStatus)`; until
   the first one every field is `false` and `percent` is `null`. A new reading sends a
   `dock://state` only while the battery item is shown, or when it adds or removes that item
-  (v1.31; see [Readings no item shows](state-snapshot.md#readings-no-item-shows-v131)). The
+  (v1.31; see [Readings no item shows](state-snapshot.md#readings-no-item-shows-v131-v132)). The
   battery item exists only while `items.battery` is on **and** `power.hasBattery` is `true`, so a
   desktop PC never shows it. Rust sets its `title`: `Battery 73 %`, `Battery 73 %, charging`,
   `Battery 73 %, plugged in` (on AC, not charging), with `, battery saver on` appended while
@@ -71,7 +71,10 @@ regional format. With an English display language and a 24-hour region, the page
     pattern has no hour letter.
 
   The engine stores the last `PlatformEvent::ClockFormatChanged(ClockFormat)`; until the first
-  one both fields are `null`.
+  one both fields are `null`. A new reading sends a `dock://state` only while the clock item is
+  shown (v1.32; see [Readings no item shows](state-snapshot.md#readings-no-item-shows-v131-v132)).
+  With `items.clock` off the reading is stored, and the state that adds the clock includes it,
+  so the face uses that format from its first draw.
 - The platform side is `Platform::clock_format()`. The events thread reads it after the start
   snapshot (after the power reading). On a `WM_SETTINGCHANGE` whose `lParam` is the string
   `intl`, it reads it at once and again 500 ms later. It sends `ClockFormatChanged` only when the
@@ -84,8 +87,9 @@ regional format. With an English display language and a 24-hour region, the page
   field, the hour's digits, Windows' AM/PM symbols) is not copied; only the hour cycle and the
   locale's order are used.
 - `MockBackend`: `MockOptions.clockFormat` (default: both fields `null`) and
-  `setClockFormat(format)`, which emits a new state. The mock platform sends `ClockFormatChanged`
-  once at start, after its `PowerChanged`; its demo reading also has both fields `null`.
+  `setClockFormat(format)`, which emits a new state while the clock item is shown and only stores
+  the reading while it is not (v1.32). The mock platform sends `ClockFormatChanged` once at start,
+  after its `PowerChanged`; its demo reading also has both fields `null`.
 
 ## The volume item (v1.30)
 
@@ -103,9 +107,9 @@ Another widget: the default output device's volume as an optional fixed item.
   read. The engine stores the last `PlatformEvent::VolumeChanged(Option<VolumeStatus>)` whatever
   the settings say; it is `null` until the first one. A new reading sends a `dock://state` only
   while the item is shown (v1.31; see
-  [Readings no item shows](state-snapshot.md#readings-no-item-shows-v131)), so a slider drag with
-  the item off sends nothing. Rust sets the item's `title`: `Volume 45 %`, `Volume muted` while
-  muted (whatever the level), and `No audio output` without a device.
+  [Readings no item shows](state-snapshot.md#readings-no-item-shows-v131-v132)), so a slider drag
+  with the item off sends nothing. Rust sets the item's `title`: `Volume 45 %`, `Volume muted`
+  while muted (whatever the level), and `No audio output` without a device.
 - The platform side:
   - `Platform::volume_status()` returns a reading now.
   - `set_volume(percent)` sets the level (more than 100 counts as 100) and leaves the mute alone.

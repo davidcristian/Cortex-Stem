@@ -3,11 +3,20 @@
 This file lists every version of the [IPC contract](index.md), newest first. A section name links
 to the file that covers that section now.
 
+- **v1.32 (the clock format while no clock is shown):** No command, event or payload type was
+  added or renamed. A new `clockFormat` reading alone changes the snapshot only while the clock
+  item is shown, as `power` and `volume` do since v1.31. With `items.clock` off the reading is
+  stored without a new revision or a `dock://state`, and the next snapshot includes it, also the
+  one that adds the clock
+  ([Readings no item shows](state-snapshot.md#readings-no-item-shows-v131-v132),
+  [The clock's regional format](widget-items.md#the-clocks-regional-format-v125), the
+  [`dock://state` row](events.md); `MockBackend` does the same). Only the clock item reads the
+  field.
 - **v1.31 (readings no item shows):** No command, event or payload type was added or renamed. A
   new `power` reading alone changes the snapshot only while the battery item is shown, and a new
   `volume` reading only while the volume item is shown. Otherwise the reading is stored without a
   new revision or a `dock://state`, and the next snapshot includes it
-  ([Readings no item shows](state-snapshot.md#readings-no-item-shows-v131), the
+  ([Readings no item shows](state-snapshot.md#readings-no-item-shows-v131-v132), the
   [`dock://state` row](events.md); `MockBackend` does the same). A dock window's memory of the
   window its last notch tried lasts at most 2 s (`SCROLL_MEMORY`), so a window that Windows did
   not bring forward is tried again on a later notch
