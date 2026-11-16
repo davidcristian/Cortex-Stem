@@ -16,9 +16,13 @@
 //!
 //! The paths kept are handed on with `\` separators, no doubled or trailing
 //! separator, in drop order.
+//!
+//! [`bin_state`] turns what `SHQueryRecycleBinW` reports into the bin's state.
 
 use std::collections::HashSet;
 use std::fmt;
+
+use stem_core::RecycleBinState;
 
 /// Why a dropped path does not go to the bin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,6 +191,15 @@ fn shell_path(raw: &str) -> Result<String, SkipReason> {
 /// A path component that names a file or folder: not `.` or `..`, no `:`.
 fn plain_component(component: &str) -> bool {
     component != "." && component != ".." && !component.contains(':')
+}
+
+/// The bin's state from `SHQueryRecycleBinW`'s `i64NumItems` and
+/// `i64Size` (every drive's bin); a negative value reads as 0.
+pub fn bin_state(item_count: i64, size_bytes: i64) -> RecycleBinState {
+    RecycleBinState {
+        item_count: u64::try_from(item_count).unwrap_or(0),
+        size_bytes: u64::try_from(size_bytes).unwrap_or(0),
+    }
 }
 
 #[cfg(test)]
@@ -379,5 +392,21 @@ mod tests {
             none(&[r"C:\a.txt", "b.txt"], false),
             "none of the 2 paths can be moved to the Recycle Bin"
         );
+    }
+
+    #[test]
+    fn the_bin_state_is_the_shells_count_and_size_and_never_negative() {
+        let state = |item_count, size_bytes| RecycleBinState {
+            item_count,
+            size_bytes,
+        };
+        assert_eq!(bin_state(0, 0), state(0, 0));
+        assert_eq!(bin_state(3, 4096), state(3, 4096));
+        assert_eq!(
+            bin_state(i64::MAX, i64::MAX),
+            state(i64::MAX as u64, i64::MAX as u64)
+        );
+        assert_eq!(bin_state(-1, 4096), state(0, 4096));
+        assert_eq!(bin_state(3, i64::MIN), state(3, 0));
     }
 }

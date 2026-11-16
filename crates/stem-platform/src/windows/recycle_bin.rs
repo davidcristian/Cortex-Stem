@@ -51,7 +51,7 @@ use windows::Win32::UI::Shell::{
 use windows::core::PCWSTR;
 
 use super::util;
-use crate::rules::recycle::{nothing_to_recycle, plan_recycle};
+use crate::rules::recycle::{bin_state, nothing_to_recycle, plan_recycle};
 use crate::{PlatformError, PlatformResult};
 
 pub fn query() -> PlatformResult<RecycleBinState> {
@@ -62,10 +62,7 @@ pub fn query() -> PlatformResult<RecycleBinState> {
     // SAFETY: `info` is a valid out-structure with `cbSize` set; a NULL root
     // path queries every drive's bin.
     unsafe { SHQueryRecycleBinW(PCWSTR::null(), &mut info) }?;
-    Ok(RecycleBinState {
-        item_count: u64::try_from(info.i64NumItems).unwrap_or(0),
-        size_bytes: u64::try_from(info.i64Size).unwrap_or(0),
-    })
+    Ok(bin_state(info.i64NumItems, info.i64Size))
 }
 
 pub fn open() -> PlatformResult<()> {
