@@ -44,7 +44,11 @@
 //!   yields `None`. No device (`E_NOTFOUND`) waits for a device
 //!   notification; anything else is tried again after a growing delay, at
 //!   most every 60 s (`rules::volume::retry_after_ms`): the audio service
-//!   stopped at start, an enumerator that could not be created.
+//!   stopped at start or restarted under Stem, an enumerator that could not
+//!   be created. Such a failure also drops the enumerator and its
+//!   notification client (`rules::volume::rebuilds_watch`), which a restart
+//!   of the audio service may have left dead, so the retry builds
+//!   everything again.
 //! - [`VolumeHandle`] answers [`crate::Platform::volume_status`] (a live
 //!   read on the thread), `set_volume` (`SetMasterVolumeLevelScalar`) and
 //!   `set_volume_muted` (`SetMute`), each waiting at most
@@ -622,6 +626,11 @@ impl Follower<'_> {
         } else {
             BindFailure::Other
         };
+        if rules::rebuilds_watch(failure) {
+            // The endpoint's callback goes before the enumerator's client.
+            self.endpoint = None;
+            self.watch = None;
+        }
         let retry = rules::retry_after_ms(failure, self.failures);
         self.retry_at = retry.map(|delay| self.now_ms().saturating_add(delay));
         let next = match retry {

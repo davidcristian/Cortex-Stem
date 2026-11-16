@@ -35,7 +35,11 @@
 //!   client could not be set up, the audio service is not running) is
 //!   retried after 2 s, then 4 s, 8 s and so on, at most every 60 s, until a
 //!   bind succeeds; the thread logs the first failure of a streak at `warn`
-//!   and the rest at `debug`.
+//!   and the rest at `debug`. Such a failure also drops the enumerator and
+//!   its notification client ([`rebuilds_watch`]): a restart of the audio
+//!   service under Stem may leave them dead, and a retry that kept them
+//!   would never recover. No device keeps them, since they are what says
+//!   when one comes.
 //!
 //! Time is an opaque millisecond counter supplied by the caller, as for
 //! `rules::backoff`. Plain numbers, so it is unit-tested on every host. The
@@ -198,6 +202,14 @@ pub fn retry_after_ms(failure: BindFailure, failures: u32) -> Option<u64> {
             )
         }
     }
+}
+
+/// Whether a failed bind drops the enumerator and its notification client
+/// too, so the retry creates them again: for every failure but
+/// [`BindFailure::NoDevice`], whose notifications are what the thread waits
+/// for.
+pub fn rebuilds_watch(failure: BindFailure) -> bool {
+    failure == BindFailure::Other
 }
 
 #[cfg(test)]
@@ -378,5 +390,19 @@ mod tests {
         // A count of 0 is read as the first; a huge one stays at the cap.
         assert_eq!(retry_after_ms(BindFailure::Other, 0), Some(2_000));
         assert_eq!(retry_after_ms(BindFailure::Other, u32::MAX), Some(60_000));
+    }
+
+    #[test]
+    fn a_failure_other_than_no_device_rebuilds_the_enumerator_on_the_retry() {
+        // The audio service restarted: the old enumerator and client may be
+        // dead, so the retry starts from scratch.
+        assert!(rebuilds_watch(BindFailure::Other));
+        // No device: the client stays, to say when one comes.
+        assert!(!rebuilds_watch(BindFailure::NoDevice));
+        // Every failure that rebuilds is also one that retries on a timer,
+        // so a dropped client never leaves the thread waiting for nothing.
+        for failures in 1..=10 {
+            assert!(retry_after_ms(BindFailure::Other, failures).is_some());
+        }
     }
 }
