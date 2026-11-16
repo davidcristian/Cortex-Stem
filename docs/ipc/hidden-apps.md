@@ -14,7 +14,9 @@ This file describes how a running app is hidden from every dock and shown again.
     window's title (the id's file name when that is blank).
   - `path` (v1.29) is the program's path, in its original case: as the platform reported it for
     the app's first shown window, else for its first-seen window (`DockEngine::app_window`), else
-    the file its identity launches (an `exe` or a `shortcut` target).
+    the file its identity launches (an `exe` or a `shortcut` target). For an `aumid:` id it is
+    only that file, never a window's process, because a Store app in an `ApplicationFrameHost`
+    frame would give the frame host. So a Store app's `path` is `null` (v1.31).
   - `iconKey` is the icon its item shows: the identity's, else that window's. It is never a key
     tied to one window (`hwnd:`), because Windows reuses the handle once the window is gone. The
     program file's own icon (`exe:` or `file:` of `path`) is used instead when `path` is known,

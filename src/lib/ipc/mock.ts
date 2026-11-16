@@ -1457,7 +1457,9 @@ class Engine {
    * `exe` or a `shortcut`); the icon key its item shows, the identity's
    * else that window's, but never one bound to a window (`hwnd:`), for
    * which the file's own key (`exe:` / `file:`) stands in when the path is
-   * known.
+   * known. An `aumid:` app's window is never asked for the path (a Store
+   * app's frame is the `ApplicationFrameHost` process): only its identity's
+   * file counts.
    */
   hiddenAppFacts(appId: AppId): Pick<HiddenApp, 'path' | 'iconKey'> {
     const window = this.appWindow(appId);
@@ -1465,7 +1467,7 @@ class Engine {
     const launch = identity?.launch ?? null;
     let path: string | null = null;
     let fileIcon: IconKey | null = null;
-    const exePath = window?.exePath ?? null;
+    const exePath = appId.startsWith('aumid:') ? null : (window?.exePath ?? null);
     if (exePath !== null) {
       path = exePath;
       fileIcon = `exe:${path}`;

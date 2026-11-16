@@ -1204,11 +1204,23 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
 /// `rules::identity::is_window_icon_key`), which is never kept: it is saved
 /// for good, and once the window is gone its handle may be another
 /// process's. That file's own icon (`exe:` / `file:`) stands in when the
-/// path is known; else there is none. Pure.
+/// path is known; else there is none.
+///
+/// An `aumid:` app's window is never asked for the path: a Store app shown
+/// through an `ApplicationFrameHost` frame (Calculator, Settings) has the
+/// frame host's process, so its path would be
+/// `C:\Windows\System32\ApplicationFrameHost.exe` and its stand-in icon the
+/// frame host's. Such an app keeps only what its identity launches (none
+/// for a Store app's `storeApp` target). Pure.
 fn hidden_app_facts(engine: &DockEngine, app_id: &AppId) -> (Option<String>, Option<IconKey>) {
     let window = engine.app_window(app_id);
     let identity = engine.identity(app_id);
-    let (path, file_icon) = match window.and_then(|w| w.exe_path.as_deref()) {
+    let window_path = if app_id.as_str().starts_with("aumid:") {
+        None
+    } else {
+        window.and_then(|w| w.exe_path.as_deref())
+    };
+    let (path, file_icon) = match window_path {
         Some(exe) => {
             let exe = exe.to_string_lossy().into_owned();
             let icon = exe_icon_key(&exe);
@@ -2890,28 +2902,47 @@ mod tests {
         }
     }
 
+    /// Visual Studio Code's exe, in the case Windows reports it.
+    const CODE_EXE: &str = r"C:\Users\Owner\AppData\Local\Programs\Microsoft VS Code\Code.exe";
+    /// Its Start-menu shortcut.
+    const CODE_LNK: &str = r"C:\Users\Owner\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Visual Studio Code\Visual Studio Code.lnk";
+
+    /// A running Code window: no AppUserModelID of its own, so an `exe:` id.
+    fn code_window() -> RawWindow {
+        RawWindow {
+            id: WindowId(50),
+            title: "lib.rs - Stem".into(),
+            class_name: "Chrome_WidgetWin_1".into(),
+            process_id: 5050,
+            exe_path: Some(PathBuf::from(CODE_EXE)),
+            app_user_model_id: None,
+            icon_key: None,
+            ..terminal_window()
+        }
+    }
+
     #[test]
     fn a_hidden_apps_path_and_icon_come_from_its_window_else_its_identity() {
         let mut engine = DockEngine::new(Settings::default());
-        let exe = TERMINAL_EXE;
-        let id = AppId::for_app_user_model_id(TERMINAL_AUMID);
+        let id = stem_core::app_id_for(&code_window());
+        assert_eq!(id, AppId::for_exe(Path::new(CODE_EXE)));
         assert_eq!(hidden_app_facts(&engine, &id), (None, None));
 
         // A window without an icon of its own and no identity yet: its
         // path, and the program's own icon.
-        let program_icon = Some(IconKey(format!("exe:{TERMINAL_EXE}")));
+        let program_icon = Some(IconKey(format!("exe:{CODE_EXE}")));
         engine.apply(EngineInput::Platform(PlatformEvent::WindowAdded(
-            terminal_window(),
+            code_window(),
         )));
         assert_eq!(
             hidden_app_facts(&engine, &id),
-            (Some(exe.into()), program_icon.clone())
+            (Some(CODE_EXE.into()), program_icon.clone())
         );
         // A window icon (`hwnd:`) is never kept: its handle outlives the
         // window and may be another process's later.
         let with_icon = RawWindow {
             icon_key: Some(IconKey("hwnd:50:5050".into())),
-            ..terminal_window()
+            ..code_window()
         };
         engine.apply(EngineInput::Platform(PlatformEvent::WindowUpdated(
             with_icon.clone(),
@@ -2941,24 +2972,29 @@ mod tests {
         });
         assert_eq!(hidden_app_facts(&engine, &protected), (None, None));
         // The identity's icon wins, as on the item; the path stays the window's.
+        let shortcut_icon = Some(IconKey(format!("file:{CODE_LNK}")));
         engine.apply(EngineInput::IdentityResolved {
             app_id: id.clone(),
-            identity: terminal_identity(),
+            identity: AppIdentity {
+                id: id.clone(),
+                display_name: "Visual Studio Code".into(),
+                icon_key: shortcut_icon.clone(),
+                launch: Some(LaunchTarget::Shortcut {
+                    path: PathBuf::from(CODE_LNK),
+                }),
+            },
         });
         assert_eq!(
             hidden_app_facts(&engine, &id),
-            (
-                Some(exe.into()),
-                Some(IconKey(format!("aumid:{TERMINAL_AUMID}")))
-            )
+            (Some(CODE_EXE.into()), shortcut_icon.clone())
         );
-        // No window left: a Store app's identity names no file.
+        // No window left: the file the identity launches.
         engine.apply(EngineInput::Platform(PlatformEvent::WindowRemoved(
             WindowId(50),
         )));
         assert_eq!(
             hidden_app_facts(&engine, &id),
-            (None, Some(IconKey(format!("aumid:{TERMINAL_AUMID}"))))
+            (Some(CODE_LNK.into()), shortcut_icon)
         );
 
         // An app known only by its identity, which launches a program: that
@@ -2983,6 +3019,96 @@ mod tests {
             (
                 Some(r"C:\Tools\Foo.EXE".into()),
                 Some(IconKey(r"exe:C:\Tools\Foo.EXE".into()))
+            )
+        );
+    }
+
+    #[test]
+    fn an_aumid_apps_path_comes_from_its_identity_never_from_its_window() {
+        const CALCULATOR: &str = "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App";
+        const FRAME_HOST: &str = r"C:\Windows\System32\ApplicationFrameHost.exe";
+        let mut engine = DockEngine::new(Settings::default());
+        // Calculator as Windows shows it: a frame of the frame host's
+        // process that names the app's AppUserModelID.
+        let frame = RawWindow {
+            id: WindowId(60),
+            title: "Calculator".into(),
+            class_name: "ApplicationFrameWindow".into(),
+            process_id: 6060,
+            exe_path: Some(PathBuf::from(FRAME_HOST)),
+            app_user_model_id: Some(CALCULATOR.into()),
+            icon_key: Some(IconKey("hwnd:60:6060".into())),
+            ..terminal_window()
+        };
+        let calc = AppId::for_app_user_model_id(CALCULATOR);
+        assert_eq!(stem_core::app_id_for(&frame), calc);
+        engine.apply(EngineInput::Platform(PlatformEvent::WindowAdded(frame)));
+        // No identity yet: neither the frame host's path nor an icon made
+        // from it (the window's own `hwnd:` key is never kept either).
+        assert_eq!(hidden_app_facts(&engine, &calc), (None, None));
+        // The identity's logo; a Store app's identity names no file.
+        let logo = Some(IconKey(format!("aumid:{CALCULATOR}")));
+        engine.apply(EngineInput::IdentityResolved {
+            app_id: calc.clone(),
+            identity: AppIdentity {
+                id: calc.clone(),
+                display_name: "Calculator".into(),
+                icon_key: logo.clone(),
+                launch: Some(LaunchTarget::StoreApp {
+                    app_user_model_id: CALCULATOR.into(),
+                }),
+            },
+        });
+        assert_eq!(hidden_app_facts(&engine, &calc), (None, logo.clone()));
+
+        // The Terminal: an `aumid:` id too, so its window's exe under
+        // WindowsApps is not asked either.
+        let terminal = AppId::for_app_user_model_id(TERMINAL_AUMID);
+        engine.apply(EngineInput::Platform(PlatformEvent::WindowAdded(
+            terminal_window(),
+        )));
+        assert_eq!(hidden_app_facts(&engine, &terminal), (None, None));
+        engine.apply(EngineInput::IdentityResolved {
+            app_id: terminal.clone(),
+            identity: terminal_identity(),
+        });
+        assert_eq!(
+            hidden_app_facts(&engine, &terminal),
+            (None, Some(IconKey(format!("aumid:{TERMINAL_AUMID}"))))
+        );
+
+        // A desktop program whose windows name their own AppUserModelID and
+        // whose identity launches its exe: the identity's path, with its
+        // file's icon standing in for the window's `hwnd:` key.
+        const BROWSER: &str = r"C:\Program Files\Mozilla Firefox\firefox.exe";
+        let browser = AppId::for_app_user_model_id("308046B0AF4A39CB");
+        engine.apply(EngineInput::Platform(PlatformEvent::WindowAdded(
+            RawWindow {
+                id: WindowId(70),
+                title: "Mozilla Firefox".into(),
+                class_name: "MozillaWindowClass".into(),
+                process_id: 7070,
+                exe_path: Some(PathBuf::from(BROWSER)),
+                app_user_model_id: Some("308046B0AF4A39CB".into()),
+                icon_key: Some(IconKey("hwnd:70:7070".into())),
+                ..terminal_window()
+            },
+        )));
+        assert_eq!(hidden_app_facts(&engine, &browser), (None, None));
+        engine.apply(EngineInput::IdentityResolved {
+            app_id: browser.clone(),
+            identity: AppIdentity {
+                id: browser.clone(),
+                display_name: "Firefox".into(),
+                icon_key: None,
+                launch: Some(exe_target(BROWSER)),
+            },
+        });
+        assert_eq!(
+            hidden_app_facts(&engine, &browser),
+            (
+                Some(BROWSER.into()),
+                Some(IconKey(format!("exe:{BROWSER}")))
             )
         );
     }

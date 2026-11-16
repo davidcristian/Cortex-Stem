@@ -16,7 +16,9 @@ to the file that covers that section now.
   does, and a resync of its windows clears a foreground window that is gone, as the engine does.
   Behaviour fix: the volume thread retries "no device" every 60 s with a new enumerator and
   client instead of waiting for a notification alone
-  ([The volume item](widget-items.md#the-volume-item-v130)).
+  ([The volume item](widget-items.md#the-volume-item-v130)). Behaviour fix: `hide_app` takes an
+  `aumid:` app's `path` only from its identity, never from a window's process
+  ([Hidden apps](hidden-apps.md); `MockBackend` does the same).
 - **v1.30 (the volume item):** Another widget; no command or event was added or renamed. Added:
   `Settings.items.volume` (default `false`); `DockItemKind` `volume` (`fixed:volume`,
   `shell:volume`) between Notification Center and the battery; `DockState.volume: VolumeStatus |
