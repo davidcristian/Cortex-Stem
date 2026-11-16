@@ -10,7 +10,8 @@ These rules apply to the Win32 code in `crates/stem-platform/src/windows/`
 - **Cross-process messages** use `SendMessageTimeoutW` with `SMTO_ABORTIFHUNG` and a timeout of at
   most 200 ms, never `SendMessageW`.
 - **COM** is initialised per thread through the `util::ComApartment` guard: `sta()` for shell
-  interfaces. Do not call `CoInitializeEx` anywhere else.
+  interfaces, `mta()` for interfaces that call back on their own threads (Core Audio). Do not call
+  `CoInitializeEx` anywhere else.
 - **Handles are closed.** `HICON`, `HBITMAP`, `HDC` and process handles are wrapped in RAII guards;
   no GDI object leaks.
 - **UIPI and elevation.** `WM_GETICON` and some queries fail against an elevated window, so every

@@ -390,3 +390,20 @@ mod pe_resources {
         }
     }
 }
+
+impl ComApartment {
+    /// [`ComApartment::sta`] for the process's multithreaded apartment
+    /// (`COINIT_MULTITHREADED`): for a thread whose COM objects call back
+    /// on threads of their own and need no message loop, such as the Core
+    /// Audio interfaces of `volume` (`IMMDeviceEnumerator`,
+    /// `IAudioEndpointVolume` and their notification callbacks).
+    pub fn mta() -> Self {
+        // SAFETY: as for `sta`: no preconditions beyond being called on the
+        // thread that will use COM; a failure (RPC_E_CHANGED_MODE on a
+        // thread already in an STA) leaves nothing to balance.
+        let hr = unsafe { CoInitializeEx(None, windows::Win32::System::Com::COINIT_MULTITHREADED) };
+        Self {
+            initialised: hr.is_ok(),
+        }
+    }
+}

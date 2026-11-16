@@ -19,6 +19,7 @@
 //! - `shell`       Start menu, Task View, Show Desktop; Settings pages
 //! - `power`       power source, battery, battery saver
 //! - `locale`      the regional format the clock follows
+//! - `volume`      the default output device's volume (a thread)
 //! - `dock_window` extended styles + subclass of our own windows
 //! - `hit_test`    cursor-tracking thread for the hit region
 //! - `taskbar`     the stock taskbar's auto-hide state
@@ -50,13 +51,14 @@ pub mod taskbar;
 pub mod theme;
 pub mod util;
 pub mod virtual_desktop;
+pub mod volume;
 
 use std::time::Duration;
 
 use parking_lot::Mutex;
 use stem_core::{
     AppIdentity, ClockFormat, IconKey, LaunchTarget, MonitorInfo, PowerStatus, RawWindow,
-    RecycleBinState, ShellAction, ThemeInfo, WindowAction, WindowId,
+    RecycleBinState, ShellAction, ThemeInfo, VolumeStatus, WindowAction, WindowId,
 };
 
 use crate::{
@@ -64,13 +66,16 @@ use crate::{
     NativeWindowHandle, Platform, PlatformError, PlatformResult,
 };
 
-/// The real platform. Cheap to construct; `start` spins up the event thread;
-/// the hit-test thread starts lazily on the first `set_dock_hit_region`, the
+/// The real platform. Cheap to construct; `start` spins up the event thread
+/// and the volume thread; the hit-test thread starts lazily on the first
+/// `set_dock_hit_region`, the
 /// AppBar thread on the first `set_dock_app_bar` that asks for a band, the
 /// backdrop thread on the first `set_dock_backdrop` with a backdrop.
 #[derive(Debug, Default)]
 pub struct WindowsPlatform {
     hook: Mutex<Option<events::EventHookThread>>,
+    /// The volume thread, started with the events thread.
+    volume: Mutex<Option<volume::VolumeThread>>,
     hit_test: Mutex<Option<hit_test::HitTestThread>>,
     app_bars: Mutex<Option<appbar::AppBarThread>>,
     backdrop: Mutex<Option<backdrop::BackdropThread>>,
@@ -80,6 +85,15 @@ pub struct WindowsPlatform {
 impl WindowsPlatform {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The running volume thread's handle, taken out of the lock.
+    fn volume_handle(&self) -> PlatformResult<volume::VolumeHandle> {
+        self.volume
+            .lock()
+            .as_ref()
+            .map(volume::VolumeThread::handle)
+            .ok_or_else(|| PlatformError::Other("the volume thread is not running".into()))
     }
 }
 
@@ -93,13 +107,23 @@ impl Platform for WindowsPlatform {
         if guard.is_some() {
             return Err(PlatformError::Other("platform already started".into()));
         }
-        *guard = Some(events::EventHookThread::start(sink)?);
+        *guard = Some(events::EventHookThread::start(sink.clone())?);
+        // The dock works without it: the volume reads as unavailable.
+        match volume::VolumeThread::start(sink) {
+            Ok(thread) => *self.volume.lock() = Some(thread),
+            Err(e) => log::warn!("volume thread unavailable: {e}"),
+        }
         Ok(())
     }
 
     fn stop(&self) {
         if let Some(thread) = self.hook.lock().take() {
             thread.stop();
+        }
+        // Out of the lock first: the stop waits (bounded) for the thread.
+        let volume = self.volume.lock().take();
+        if let Some(volume) = volume {
+            volume.stop();
         }
         if let Some(tracker) = self.hit_test.lock().take() {
             tracker.stop();
@@ -173,6 +197,20 @@ impl Platform for WindowsPlatform {
 
     fn clock_format(&self) -> PlatformResult<ClockFormat> {
         Ok(locale::current())
+    }
+
+    /// A live read on the volume thread; it waits outside the platform's
+    /// lock, at most `volume::REQUEST_TIMEOUT`.
+    fn volume_status(&self) -> PlatformResult<Option<VolumeStatus>> {
+        self.volume_handle()?.read()
+    }
+
+    fn set_volume(&self, percent: u8) -> PlatformResult<()> {
+        self.volume_handle()?.set_level(percent)
+    }
+
+    fn set_volume_muted(&self, muted: bool) -> PlatformResult<()> {
+        self.volume_handle()?.set_muted(muted)
     }
 
     fn taskbar_auto_hide(&self) -> PlatformResult<bool> {

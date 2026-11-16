@@ -39,6 +39,10 @@ tauri-plugin-global-shortcut = "2.4"
 window-vibrancy = "0.8"
 
 windows = "0.62"
+# The `#[implement]` macro of `windows` (re-exported as `windows::core::implement`)
+# generates code that names `::windows_core`, so the crate that uses it needs
+# this one directly: the same 0.62 that `windows` itself depends on.
+windows-core = "0.62"
 
 # Lints apply to every member crate that opts in with `[lints] workspace = true`.
 [workspace.lints.rust]
