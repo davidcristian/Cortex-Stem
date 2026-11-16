@@ -1436,6 +1436,28 @@ describe('the Recycle Bin drop (mirror of rules::recycle and the service)', () =
 });
 
 describe('revisions and events', () => {
+  it('a resync forgets a foreground window that is gone, as WindowsSnapshot does in Rust', async () => {
+    const b = fast();
+    const before = await b.getDockState();
+    const front = before.foreground;
+    expect(front).not.toBeNull();
+    const engine = b['engine'];
+    const others = [...engine.windows.values()].map((t) => t.raw).filter((w) => w.id !== front);
+    expect(engine.snapshotWindows(others)).toBe(true);
+    expect(engine.foreground).toBeNull();
+    const after = engine.snapshot();
+    expect(after.foreground).toBeNull();
+    expect(after.revision).toBe(before.revision + 1);
+    expect(after.items.some((i) => i.windows.some((w) => w.id === front))).toBe(false);
+    expect(after.items.some((i) => i.isActive)).toBe(false);
+
+    // A resync that keeps the foreground window keeps it.
+    const kept = [...engine.windows.values()].map((t) => t.raw);
+    engine.setForeground(kept[0]!.id);
+    expect(engine.snapshotWindows(kept)).toBe(false);
+    expect(engine.foreground).toBe(kept[0]!.id);
+  });
+
   it('bumps the revision on every change and emits one state event per mutation', async () => {
     const b = fast();
     const states = recordStates(b);
@@ -2862,6 +2884,28 @@ describe('helpers mirrored from stem-core', () => {
     // Idempotent and non-mutating.
     expect(validateSettings(v)).toEqual(v);
     expect(s.iconSize).toBe(999);
+  });
+
+  it('validateSettings replaces non-finite floats with their defaults, as finite_or does', () => {
+    const defaults = defaultSettings();
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      const s = defaultSettings();
+      s.magnification.maxScale = bad;
+      s.appearance.opacity = bad;
+      const v = validateSettings(s);
+      // The default, not a clamp to an end of the range (Infinity would
+      // give 2.5 and 1) and not NaN.
+      expect(v.magnification.maxScale).toBe(defaults.magnification.maxScale);
+      expect(v.appearance.opacity).toBe(defaults.appearance.opacity);
+      expect(validateSettings(v)).toEqual(v);
+    }
+    // A finite value out of range is still clamped.
+    const s = defaultSettings();
+    s.magnification.maxScale = 1e9;
+    s.appearance.opacity = -1e9;
+    const v = validateSettings(s);
+    expect(v.magnification.maxScale).toBe(2.5);
+    expect(v.appearance.opacity).toBe(0);
   });
 });
 

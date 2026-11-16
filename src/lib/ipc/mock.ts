@@ -441,24 +441,34 @@ export function defaultSettings(): Settings {
 
 const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
 
+/** `finite_or` in settings.rs: `value` unless it is NaN or ±Infinity, then `fallback`. */
+const finiteOr = (value: number, fallback: number): number =>
+  Number.isFinite(value) ? value : fallback;
+
 /**
- * `Settings::validate`: clamp numeric fields, drop empty/duplicate pins, and
- * drop hidden apps that are pinned, have a blank id or repeat one.
- * Returns a copy.
+ * `Settings::validate`: replace a non-finite float (`maxScale`, `opacity`,
+ * the two Rust passes through `finite_or`) with its default, clamp numeric
+ * fields, drop empty/duplicate pins, and drop hidden apps that are pinned,
+ * have a blank id or repeat one. Returns a copy.
  */
 export function validateSettings(input: Settings): Settings {
   const s: Settings = structuredClone(input);
+  const defaults = defaultSettings();
   s.version = 1;
   s.iconSize = clamp(Math.round(s.iconSize), 24, 128);
-  s.magnification.maxScale = clamp(s.magnification.maxScale, 1, 2.5);
+  s.magnification.maxScale = clamp(
+    finiteOr(s.magnification.maxScale, defaults.magnification.maxScale),
+    1,
+    2.5,
+  );
   s.magnification.rangeIcons = clamp(Math.round(s.magnification.rangeIcons), 1, 6);
   s.autoHide.delayMs = clamp(Math.round(s.autoHide.delayMs), 0, 5000);
-  s.appearance.opacity = clamp(s.appearance.opacity, 0, 1);
+  s.appearance.opacity = clamp(finiteOr(s.appearance.opacity, defaults.appearance.opacity), 0, 1);
   s.appearance.cornerRadius = clamp(Math.round(s.appearance.cornerRadius), 0, 64);
   // A document written before an item existed (the volume item, v1.30) has
   // no flag for it: serde's `default` on `FixedItems` gives each missing
   // one its default.
-  const items = defaultSettings().items;
+  const items = defaults.items;
   for (const key of Object.keys(items) as Array<keyof typeof items>) {
     if (typeof s.items[key] !== 'boolean') {
       s.items[key] = items[key];
@@ -1167,6 +1177,11 @@ class Engine {
     return changed;
   }
 
+  /**
+   * `WindowsSnapshot`: the list replaces the tracked windows, each one seen
+   * before keeping its first-seen order and its attention flag; a foreground
+   * window that is not in it any more is forgotten, as in Rust.
+   */
   snapshotWindows(list: RawWindow[]): boolean {
     return this.input(() => {
       const next = new Map<WindowId, Tracked>();
@@ -1181,6 +1196,11 @@ class Engine {
       this.windows.clear();
       for (const [id, t] of next) {
         this.windows.set(id, t);
+      }
+      // A resync can reveal that the foreground window is gone, as in
+      // `DockEngine::apply_platform`.
+      if (this.foreground !== null && !this.windows.has(this.foreground)) {
+        this.foreground = null;
       }
       this.recomputeOverlap();
     });
