@@ -30,8 +30,15 @@ quickSettings: boolean,
  */
 notificationCenter: boolean, 
 /**
- * The battery item at the right, after Notification Center. It appears
- * only on a PC with a battery. A click opens what Win+A opens.
+ * The volume item at the right, after Notification Center. It shows
+ * the volume of the default output device. A click opens what Win+A
+ * opens, and the mouse wheel over it changes the volume, whatever
+ * `behavior.scrollAction` is set to.
+ */
+volume: boolean, 
+/**
+ * The battery item at the right, after the volume. It appears only on
+ * a PC with a battery. A click opens what Win+A opens.
  */
 battery: boolean, 
 /**

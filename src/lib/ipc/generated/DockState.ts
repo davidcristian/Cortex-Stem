@@ -3,6 +3,7 @@ import type { ClockFormat } from "./ClockFormat";
 import type { DockFacts } from "./DockFacts";
 import type { DockItem } from "./DockItem";
 import type { PowerStatus } from "./PowerStatus";
+import type { VolumeStatus } from "./VolumeStatus";
 import type { WindowId } from "./WindowId";
 
 /**
@@ -33,6 +34,14 @@ docks: Array<DockFacts>,
  * is drawn from it.
  */
 power: PowerStatus, 
+/**
+ * The default output device's volume: the last
+ * `PlatformEvent::VolumeChanged`, whatever the settings say; `null`
+ * until the first one, and while there is no default output device or
+ * its volume cannot be read. The volume item's face and title are drawn
+ * from it.
+ */
+volume: VolumeStatus | null, 
 /**
  * The user's regional format for the clock: the last
  * `PlatformEvent::ClockFormatChanged`, whatever the settings say; both

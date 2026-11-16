@@ -120,8 +120,10 @@ export interface Backend {
    * turned towards the user, `previous` away. Rust decides what it does:
    * with `behavior.scrollAction = cycleWindows` it brings the item's next
    * or previous window to the front, at most once per dock window every
-   * 150 ms; otherwise nothing. The page sends it only while the setting is
-   * not `none`. An unknown key rejects, as for `primaryClick`.
+   * 150 ms; otherwise nothing. Over the volume item (v1.30) every
+   * notch steps the volume by 2 points, whatever the setting. The page
+   * sends it only while the setting is not `none`, and over the volume item
+   * always. An unknown key rejects, as for `primaryClick`.
    */
   scrollItem(itemKey: string, direction: ScrollDirection): Promise<void>;
   windowAction(windowId: WindowId, action: WindowAction): Promise<void>;

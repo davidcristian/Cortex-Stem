@@ -111,17 +111,18 @@ How the dock looks.
 
 Which fixed items (the items that are not apps) the dock shows. The items at the left come before the apps and the items at the right come after them; on a dock at the left or right edge, left means the top and right means the bottom.
 
-| Key                        | Type    | Default | Description                                                                                                                              |
-| -------------------------- | ------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `items.launcher`           | boolean | `true`  | The Start item at the left, which opens the Start menu.                                                                                  |
-| `items.taskView`           | boolean | `false` | The Task View item at the left.                                                                                                          |
-| `items.showDesktop`        | boolean | `false` | The Show Desktop item at the left.                                                                                                       |
-| `items.quickSettings`      | boolean | `false` | The Quick Settings item at the right, before the Recycle Bin. A click opens what Win+A opens.                                            |
-| `items.notificationCenter` | boolean | `false` | The Notification Center item at the right, before the Recycle Bin. A click opens what Win+N opens.                                       |
-| `items.battery`            | boolean | `false` | The battery item at the right, after Notification Center. It appears only on a PC with a battery. A click opens what Win+A opens.        |
-| `items.clock`              | boolean | `false` | The clock item at the right, after the battery. A click opens what Win+N opens.                                                          |
-| `items.recycleBin`         | boolean | `true`  | The Recycle Bin item, last at the right.                                                                                                 |
-| `items.separators`         | boolean | `true`  | Draw thin separators between the item groups: the items at the left, the pinned apps, the other running apps and the items at the right. |
+| Key                        | Type    | Default | Description                                                                                                                                                                                                                            |
+| -------------------------- | ------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `items.launcher`           | boolean | `true`  | The Start item at the left, which opens the Start menu.                                                                                                                                                                                |
+| `items.taskView`           | boolean | `false` | The Task View item at the left.                                                                                                                                                                                                        |
+| `items.showDesktop`        | boolean | `false` | The Show Desktop item at the left.                                                                                                                                                                                                     |
+| `items.quickSettings`      | boolean | `false` | The Quick Settings item at the right, before the Recycle Bin. A click opens what Win+A opens.                                                                                                                                          |
+| `items.notificationCenter` | boolean | `false` | The Notification Center item at the right, before the Recycle Bin. A click opens what Win+N opens.                                                                                                                                     |
+| `items.volume`             | boolean | `false` | The volume item at the right, after Notification Center. It shows the volume of the default output device. A click opens what Win+A opens, and the mouse wheel over it changes the volume, whatever `behavior.scrollAction` is set to. |
+| `items.battery`            | boolean | `false` | The battery item at the right, after the volume. It appears only on a PC with a battery. A click opens what Win+A opens.                                                                                                               |
+| `items.clock`              | boolean | `false` | The clock item at the right, after the battery. A click opens what Win+N opens.                                                                                                                                                        |
+| `items.recycleBin`         | boolean | `true`  | The Recycle Bin item, last at the right.                                                                                                                                                                                               |
+| `items.separators`         | boolean | `true`  | Draw thin separators between the item groups: the items at the left, the pinned apps, the other running apps and the items at the right.                                                                                               |
 
 ## `behavior`
 

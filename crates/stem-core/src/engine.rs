@@ -10,7 +10,7 @@
 //! 3. a separator, then running apps that are not pinned, in first-seen order,
 //!    except the ones `Settings::hidden_apps` lists;
 //! 4. a separator, then the fixed trailing items (quick settings,
-//!    notification center, battery, clock, the Recycle Bin last).
+//!    notification center, volume, battery, clock, the Recycle Bin last).
 //!
 //! Separators are only emitted between non-empty groups.
 //!
@@ -42,6 +42,12 @@
 //! - `power` is the platform's last reading, stored as is and part
 //!   of the snapshot whatever the settings say; it also decides whether the
 //!   battery item exists (only with a system battery) and its title;
+//! - `volume` is the platform's last reading of the default output
+//!   device's volume, stored as is (`None`: no device) and part of the
+//!   snapshot whatever the settings say; it gives the volume item its
+//!   title. A wheel notch over that item is a volume step
+//!   ([`ScrollEffect::StepVolume`], [`volume_step`]) whatever
+//!   `behavior.scrollAction` says;
 //! - `clock_format` is the platform's last reading of the user's
 //!   regional format, stored as is and part of the snapshot whatever the
 //!   settings say; the engine draws nothing from it (the page formats the
@@ -66,7 +72,7 @@ use crate::events::{EngineInput, PlatformEvent};
 use crate::model::{
     AppId, AppIdentity, ClockFormat, DockFacts, DockItem, DockItemKind, DockState, IconKey,
     MonitorId, MonitorInfo, PowerStatus, RawWindow, Rect, RecycleBinState, ScrollDirection,
-    ShellAction, ThemeInfo, WindowId, WindowInfo,
+    ShellAction, ThemeInfo, VolumeStatus, WindowId, WindowInfo,
 };
 use crate::overlap;
 use crate::settings::{MonitorMode, ScrollAction, Settings};
@@ -126,9 +132,15 @@ pub enum ScrollEffect {
     /// Bring this window to the front (`WindowAction::Activate`, which also
     /// restores a minimised one).
     Activate(WindowId),
+    /// Step the default output device's volume by one notch: the
+    /// item is the volume item, which the wheel drives whatever
+    /// `behavior.scrollAction` says. The caller reads the volume as it is
+    /// now and sets what [`volume_step`] makes of it; the 150 ms gate does
+    /// not apply, every notch counts.
+    StepVolume(ScrollDirection),
     /// Nothing to do: `behavior.scrollAction` is `none`, the item is not an
-    /// app (a fixed item, a separator), or the dock lists none of its
-    /// windows.
+    /// app (a fixed item other than the volume, a separator), or the dock
+    /// lists none of its windows.
     Nothing,
     /// The key names no item of the snapshot: a key the page made up, an
     /// item that has gone, or a hidden app's. The caller rejects it
@@ -192,6 +204,8 @@ pub struct DockEngine {
     recycle_bin: RecycleBinState,
     /// The platform's last power reading; `DockState::power`.
     power: PowerStatus,
+    /// The platform's last volume reading; `DockState::volume`.
+    volume: Option<VolumeStatus>,
     /// The platform's last reading of the regional format;
     /// `DockState::clock_format`.
     clock_format: ClockFormat,
@@ -218,6 +232,7 @@ impl DockEngine {
             theme: ThemeInfo::default(),
             recycle_bin: RecycleBinState::default(),
             power: PowerStatus::default(),
+            volume: None,
             clock_format: ClockFormat::default(),
             next_seq: 1,
             revision: 0,
@@ -254,6 +269,13 @@ impl DockEngine {
     /// no percent until the first `PlatformEvent::PowerChanged`.
     pub fn power(&self) -> PowerStatus {
         self.power
+    }
+
+    /// The platform's last reading of the default output device's volume:
+    /// `None` until the first `PlatformEvent::VolumeChanged`, and
+    /// while the platform knows no default output device.
+    pub fn volume(&self) -> Option<VolumeStatus> {
+        self.volume
     }
 
     /// The platform's last reading of the user's regional format:
@@ -525,6 +547,10 @@ impl DockEngine {
             // item's presence and title), so `apply` bumps the revision
             // exactly when the reading differs from the one kept.
             PlatformEvent::PowerChanged(power) => self.power = power,
+            // Part of the snapshot (`DockState::volume`, and the volume
+            // item's title), so `apply` bumps the revision exactly when the
+            // reading differs from the one kept.
+            PlatformEvent::VolumeChanged(volume) => self.volume = volume,
             // Part of the snapshot (`DockState::clock_format`) and nothing
             // else, so `apply` bumps the revision exactly when the reading
             // differs from the one kept.
@@ -761,8 +787,9 @@ impl DockEngine {
         items.extend(running_items);
 
         // 4. Fixed trailing group: Quick Settings, Notification Center,
-        // battery, clock, and the Recycle Bin last, with one separator before
-        // the group and none inside it (like the left group).
+        // volume, battery, clock, and the Recycle Bin last (Windows' corner
+        // order for the volume, battery and clock), with one separator
+        // before the group and none inside it (like the left group).
         let mut trailing = Vec::new();
         if s.items.quick_settings {
             trailing.push(fixed_item(
@@ -778,6 +805,16 @@ impl DockEngine {
                 "fixed:notification-center".into(),
                 "Notification Center",
                 Some(IconKey::shell("notification-center")),
+            ));
+        }
+        // Shown whenever the setting is on: without an output device its
+        // face and title say so.
+        if s.items.volume {
+            trailing.push(fixed_item(
+                DockItemKind::Volume,
+                "fixed:volume".into(),
+                &volume_title(self.volume.as_ref()),
+                Some(IconKey::shell("volume")),
             ));
         }
         // A machine without a system battery (a desktop PC) never shows the
@@ -822,6 +859,7 @@ impl DockEngine {
             foreground: self.foreground,
             docks: self.dock_facts(),
             power: self.power,
+            volume: self.volume,
             clock_format: self.clock_format.clone(),
         }
     }
@@ -872,8 +910,9 @@ impl DockEngine {
     /// Decide what a primary click on `item_key` in the dock window `dock`
     /// should do.
     ///
-    /// - fixed items map to their shell action (the battery item to quick
-    ///   settings, the clock to the notification center and calendar);
+    /// - fixed items map to their shell action (the volume and battery
+    ///   items to quick settings, the clock to the notification center and
+    ///   calendar);
     /// - an app with none of the windows that dock lists
     ///   ([`Self::windows_on_dock`]) is launched (if it can be): a pinned app
     ///   whose windows are all on other monitors starts a new one, as that
@@ -893,7 +932,9 @@ impl DockEngine {
             "fixed:notification-center" | "fixed:clock" => {
                 return ItemAction::Shell(ShellAction::OpenNotificationCenter);
             }
-            "fixed:battery" => return ItemAction::Shell(ShellAction::OpenQuickSettings),
+            "fixed:volume" | "fixed:battery" => {
+                return ItemAction::Shell(ShellAction::OpenQuickSettings);
+            }
             "fixed:recycle-bin" => return ItemAction::Shell(ShellAction::OpenRecycleBin),
             _ => {}
         }
@@ -937,6 +978,10 @@ impl DockEngine {
     ///
     /// - a key the snapshot has no item for is [`ScrollEffect::UnknownItem`],
     ///   whatever the setting;
+    /// - the volume item is [`ScrollEffect::StepVolume`] in that
+    ///   direction, whatever the setting and whatever the engine's last
+    ///   reading (the caller reads the volume now; without an output device
+    ///   it does nothing);
     /// - with `behavior.scrollAction = cycleWindows`, an app item whose app
     ///   has windows that dock lists ([`Self::windows_on_dock`], first-seen
     ///   order, as its menu lists them) activates, for
@@ -949,8 +994,8 @@ impl DockEngine {
     ///   one of them, `Next` activates the first and `Previous` the last.
     ///   A lone window in front is its own neighbour: activated again,
     ///   which changes nothing;
-    /// - anything else ([`ScrollAction::None`], a fixed item, a separator,
-    ///   an app item with no window on that dock) is
+    /// - anything else ([`ScrollAction::None`], another fixed item, a
+    ///   separator, an app item with no window on that dock) is
     ///   [`ScrollEffect::Nothing`].
     pub fn scroll_action(
         &self,
@@ -966,6 +1011,9 @@ impl DockEngine {
         else {
             return ScrollEffect::UnknownItem;
         };
+        if item.kind == DockItemKind::Volume {
+            return ScrollEffect::StepVolume(direction);
+        }
         if self.settings.behavior.scroll_action == ScrollAction::None {
             return ScrollEffect::Nothing;
         }
@@ -1039,6 +1087,44 @@ fn battery_title(power: &PowerStatus) -> String {
         title.push_str(", battery saver on");
     }
     title
+}
+
+/// How far one wheel notch over the volume item moves the volume, in
+/// percentage points: Windows' own step for its volume keys.
+pub const VOLUME_STEP: u8 = 2;
+
+/// What one wheel notch `direction` over the volume item makes of the
+/// volume `current` (docs/ipc/widget-items.md "The volume item"):
+/// [`ScrollDirection::Previous`] (the wheel turned away from the user, up)
+/// raises it by [`VOLUME_STEP`], up to 100, and unmutes, as Windows'
+/// volume-up key does, at 100 too; [`ScrollDirection::Next`] (towards the
+/// user, down) lowers it by [`VOLUME_STEP`], down to 0, and leaves the
+/// mute as it is. The level moves by the step from where it is, without
+/// snapping to even numbers; a level above 100 (never sent) counts as 100.
+pub fn volume_step(current: VolumeStatus, direction: ScrollDirection) -> VolumeStatus {
+    let percent = current.percent.min(100);
+    match direction {
+        ScrollDirection::Previous => VolumeStatus {
+            percent: percent.saturating_add(VOLUME_STEP).min(100),
+            muted: false,
+        },
+        ScrollDirection::Next => VolumeStatus {
+            percent: percent.saturating_sub(VOLUME_STEP),
+            muted: current.muted,
+        },
+    }
+}
+
+/// The volume item's title and accessible name (docs/ipc/widget-items.md
+/// "The volume item"): `Volume 45 %`, `Volume muted` while muted
+/// (whatever the level), `No audio output` without a default output
+/// device.
+fn volume_title(volume: Option<&VolumeStatus>) -> String {
+    match volume {
+        None => "No audio output".to_owned(),
+        Some(v) if v.muted => "Volume muted".to_owned(),
+        Some(v) => format!("Volume {} %", v.percent),
+    }
 }
 
 fn fixed_item(kind: DockItemKind, key: String, title: &str, icon_key: Option<IconKey>) -> DockItem {
@@ -3187,6 +3273,253 @@ mod tests {
         // Without a battery there is no battery item to build a menu from.
         engine.apply(power(PowerStatus::default()));
         assert!(engine.dock_item("fixed:battery", DOCK).is_none());
+    }
+
+    // ----- the volume item --------------------------------------------------------
+
+    fn with_volume(on: bool) -> Settings {
+        let mut s = Settings::default();
+        s.items.volume = on;
+        s
+    }
+
+    fn level(percent: u8, muted: bool) -> VolumeStatus {
+        VolumeStatus { percent, muted }
+    }
+
+    fn volume(status: Option<VolumeStatus>) -> EngineInput {
+        PlatformEvent::VolumeChanged(status).into()
+    }
+
+    #[test]
+    fn the_volume_item_is_off_by_default_and_its_reading_is_kept_whatever_the_settings() {
+        let mut engine = DockEngine::new(Settings::default());
+        assert_eq!(engine.volume(), None);
+        assert_eq!(engine.snapshot().volume, None);
+        // The first reading reaches the snapshot even with the item off.
+        assert!(engine.apply(volume(Some(level(60, false)))).changed);
+        assert_eq!(engine.volume(), Some(level(60, false)));
+        assert_eq!(engine.snapshot().volume, Some(level(60, false)));
+        assert!(
+            engine
+                .snapshot()
+                .items
+                .iter()
+                .all(|i| i.kind != DockItemKind::Volume)
+        );
+        assert_eq!(
+            keys(&engine.snapshot()),
+            vec!["fixed:launcher", "sep:1", "fixed:recycle-bin"]
+        );
+    }
+
+    #[test]
+    fn volume_changed_bumps_the_revision_only_when_the_reading_differs() {
+        let mut engine = DockEngine::new(with_volume(true));
+        let r = engine.snapshot().revision;
+        // "No device" before the first reading: the same again is nothing.
+        assert!(!engine.apply(volume(None)).changed);
+        assert_eq!(engine.snapshot().revision, r);
+
+        assert!(engine.apply(volume(Some(level(60, false)))).changed);
+        assert!(!engine.apply(volume(Some(level(60, false)))).changed);
+        assert!(engine.apply(volume(Some(level(62, false)))).changed);
+        assert!(engine.apply(volume(Some(level(62, true)))).changed);
+        assert!(engine.apply(volume(None)).changed);
+        assert!(!engine.apply(volume(None)).changed);
+        assert_eq!(engine.snapshot().revision, r + 4);
+
+        // The item off: still part of the snapshot, so still a bump.
+        let mut engine = DockEngine::new(Settings::default());
+        assert!(engine.apply(volume(Some(level(10, false)))).changed);
+        assert!(engine.apply(volume(Some(level(10, true)))).changed);
+        assert!(!engine.apply(volume(Some(level(10, true)))).changed);
+    }
+
+    #[test]
+    fn the_volume_item_comes_after_notification_center_and_before_the_battery() {
+        let mut settings = with_clock_and_battery(true, true);
+        settings.items.quick_settings = true;
+        settings.items.notification_center = true;
+        settings.items.volume = true;
+        let mut engine = DockEngine::new(settings);
+        engine.apply(added(win(1, r"C:\a.exe", "A")));
+        engine.apply(power(laptop(76)));
+        engine.apply(volume(Some(level(45, false))));
+        let state = engine.snapshot();
+        assert_eq!(
+            keys(&state),
+            vec![
+                "fixed:launcher",
+                "sep:1",
+                "app:exe:c:/a.exe",
+                "sep:2",
+                "fixed:quick-settings",
+                "fixed:notification-center",
+                "fixed:volume",
+                "fixed:battery",
+                "fixed:clock",
+                "fixed:recycle-bin",
+            ]
+        );
+        let volume_item = item(&state, "fixed:volume").unwrap();
+        assert_eq!(volume_item.kind, DockItemKind::Volume);
+        assert_eq!(volume_item.title, "Volume 45 %");
+        assert_eq!(volume_item.icon_key, Some(IconKey("shell:volume".into())));
+        assert_eq!(volume_item.app_id, None);
+        assert!(!volume_item.pinned && volume_item.windows.is_empty());
+        assert!(!volume_item.is_active && !volume_item.needs_attention);
+
+        // Shown without a device too (its face says so), alone in its
+        // group after one separator, and closing the dock without the bin.
+        let mut alone = with_volume(true);
+        alone.items.recycle_bin = false;
+        assert_eq!(
+            keys(&DockEngine::new(alone).snapshot()),
+            vec!["fixed:launcher", "sep:1", "fixed:volume"]
+        );
+        let mut only = minimal_settings();
+        only.items.volume = true;
+        assert_eq!(
+            keys(&DockEngine::new(only).snapshot()),
+            vec!["fixed:volume"]
+        );
+    }
+
+    #[test]
+    fn the_volume_title_says_the_level_muted_or_no_output() {
+        for (reading, expected) in [
+            (Some(level(45, false)), "Volume 45 %"),
+            (Some(level(0, false)), "Volume 0 %"),
+            (Some(level(100, false)), "Volume 100 %"),
+            (Some(level(45, true)), "Volume muted"),
+            (Some(level(0, true)), "Volume muted"),
+            (None, "No audio output"),
+        ] {
+            assert_eq!(volume_title(reading.as_ref()), expected, "{reading:?}");
+            let mut engine = DockEngine::new(with_volume(true));
+            engine.apply(volume(reading));
+            assert_eq!(
+                item(&engine.snapshot(), "fixed:volume").map(|i| i.title.as_str()),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn switching_the_volume_item_bumps_the_revision_and_keeps_the_reading() {
+        let mut settings = Settings::default();
+        let mut engine = DockEngine::new(settings.clone());
+        engine.apply(volume(Some(level(30, false))));
+        let r = engine.snapshot().revision;
+        settings.items.volume = true;
+        assert!(
+            engine
+                .apply(EngineInput::SettingsChanged(settings.clone()))
+                .changed
+        );
+        assert_eq!(engine.snapshot().revision, r + 1);
+        settings.items.volume = false;
+        assert!(engine.apply(EngineInput::SettingsChanged(settings)).changed);
+        assert_eq!(engine.volume(), Some(level(30, false)));
+    }
+
+    #[test]
+    fn a_click_on_the_volume_item_opens_quick_settings() {
+        let mut engine = DockEngine::new(with_volume(true));
+        for dock in [DOCK, "dock-DISPLAY2"] {
+            assert_eq!(
+                engine.primary_action("fixed:volume", dock),
+                ItemAction::Shell(ShellAction::OpenQuickSettings)
+            );
+        }
+        engine.apply(volume(Some(level(20, true))));
+        assert_eq!(
+            engine.primary_action("fixed:volume", DOCK),
+            ItemAction::Shell(ShellAction::OpenQuickSettings)
+        );
+        assert_eq!(
+            engine.primary_action("shell:volume", DOCK),
+            ItemAction::None
+        );
+        // Its menu is built from the item as the dock lists it.
+        let menu_item = engine.dock_item("fixed:volume", DOCK).unwrap();
+        assert_eq!(menu_item.kind, DockItemKind::Volume);
+        assert_eq!(menu_item.title, "Volume muted");
+    }
+
+    #[test]
+    fn a_scroll_over_the_volume_item_steps_the_volume_whatever_the_scroll_action() {
+        use ScrollDirection::{Next, Previous};
+        let mut settings = with_volume(true);
+        let mut engine = DockEngine::new(settings.clone());
+        engine.apply(volume(Some(level(60, false))));
+        // `none`, the default: the volume still steps, other items do not.
+        assert_eq!(settings.behavior.scroll_action, ScrollAction::None);
+        for direction in [Next, Previous] {
+            assert_eq!(
+                engine.scroll_action("fixed:volume", DOCK, direction),
+                ScrollEffect::StepVolume(direction)
+            );
+            assert_eq!(
+                engine.scroll_action("fixed:launcher", DOCK, direction),
+                ScrollEffect::Nothing
+            );
+        }
+        // `cycleWindows`: the same, on any dock window.
+        settings = cycling(settings);
+        engine.apply(EngineInput::SettingsChanged(settings.clone()));
+        assert_eq!(
+            engine.scroll_action("fixed:volume", "dock-DISPLAY2", Previous),
+            ScrollEffect::StepVolume(Previous)
+        );
+        // Without a device the caller finds out when it reads the volume.
+        engine.apply(volume(None));
+        assert_eq!(
+            engine.scroll_action("fixed:volume", DOCK, Next),
+            ScrollEffect::StepVolume(Next)
+        );
+        // The item off: its key is unknown.
+        settings.items.volume = false;
+        engine.apply(EngineInput::SettingsChanged(settings));
+        assert_eq!(
+            engine.scroll_action("fixed:volume", DOCK, Next),
+            ScrollEffect::UnknownItem
+        );
+    }
+
+    #[test]
+    fn a_volume_step_moves_two_points_clamps_and_unmutes_going_up() {
+        use ScrollDirection::{Next, Previous};
+        assert_eq!(VOLUME_STEP, 2);
+        for (from, direction, to) in [
+            // Up: two points, unmuted, never past 100.
+            (level(45, false), Previous, level(47, false)),
+            (level(98, false), Previous, level(100, false)),
+            (level(99, false), Previous, level(100, false)),
+            (level(100, false), Previous, level(100, false)),
+            (level(45, true), Previous, level(47, false)),
+            (level(100, true), Previous, level(100, false)),
+            (level(0, true), Previous, level(2, false)),
+            // Down: two points, the mute kept, never below 0.
+            (level(45, false), Next, level(43, false)),
+            (level(2, false), Next, level(0, false)),
+            (level(1, false), Next, level(0, false)),
+            (level(0, false), Next, level(0, false)),
+            (level(45, true), Next, level(43, true)),
+            (level(0, true), Next, level(0, true)),
+            // A reading out of range (never sent) counts as 100.
+            (level(250, false), Next, level(98, false)),
+            (level(250, false), Previous, level(100, false)),
+        ] {
+            assert_eq!(volume_step(from, direction), to, "{from:?} {direction:?}");
+        }
+        // Notches up from 0 reach 100 and stay there.
+        let mut v = level(0, false);
+        for _ in 0..60 {
+            v = volume_step(v, Previous);
+        }
+        assert_eq!(v, level(100, false));
     }
 
     // ----- the clock's regional format ----------------------------------------

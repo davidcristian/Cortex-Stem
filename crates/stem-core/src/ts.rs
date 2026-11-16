@@ -26,7 +26,7 @@ use crate::model::{
     AppFolder, AppId, AppIdentity, AppInfo, ClockFormat, DockFacts, DockItem, DockItemKind,
     DockState, IconKey, LaunchTarget, MonitorId, MonitorInfo, PowerStatus, RawWindow, Rect,
     RecycleBinState, ScrollDirection, ShellAction, ThemeInfo, UserCss, UserCssProblem,
-    WindowAction, WindowId, WindowInfo,
+    VolumeStatus, WindowAction, WindowId, WindowInfo,
 };
 use crate::settings::{
     Appearance, AutoHide, AutoHideMode, Backdrop, Behavior, DockPosition, FixedItems, HiddenApp,
@@ -93,6 +93,7 @@ exported_types! {
     ThemeInfo,
     UserCss,
     UserCssProblem,
+    VolumeStatus,
     WindowAction,
     WindowId,
     WindowInfo,
@@ -121,6 +122,7 @@ const IPC_PAYLOAD_TYPES: &[&str] = &[
     "DockState",
     "DockFacts",
     "PowerStatus",
+    "VolumeStatus",
     "ClockFormat",
     "Settings",
     "ThemeInfo",

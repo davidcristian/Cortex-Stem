@@ -19,7 +19,7 @@ use std::time::Duration;
 use stem_core::settings::DockPosition;
 use stem_core::{
     AppIdentity, ClockFormat, IconKey, LaunchTarget, MonitorInfo, PlatformEvent, PowerStatus,
-    RawWindow, Rect, RecycleBinState, ShellAction, ThemeInfo, WindowAction, WindowId,
+    RawWindow, Rect, RecycleBinState, ShellAction, ThemeInfo, VolumeStatus, WindowAction, WindowId,
 };
 
 pub mod mock;
@@ -250,6 +250,36 @@ pub trait Platform: Send + Sync + 'static {
     /// callers need this only for a reading of their own. Optional; the
     /// default reports it unsupported.
     fn clock_format(&self) -> PlatformResult<ClockFormat> {
+        Err(PlatformError::Unsupported("widget support"))
+    }
+
+    /// The default output device's volume right now: `None` when
+    /// there is no default output device or its volume cannot be read.
+    /// Changes also arrive as `PlatformEvent::VolumeChanged` once the
+    /// platform is started. On Windows the platform's volume thread reads
+    /// it live (`IAudioEndpointVolume`) and this waits for its answer,
+    /// bounded (about 250 ms, then [`PlatformError::Timeout`]); it fails
+    /// before `start` and after `stop`. Never call it on the UI thread.
+    /// Optional; the default reports it unsupported.
+    fn volume_status(&self) -> PlatformResult<Option<VolumeStatus>> {
+        Err(PlatformError::Unsupported("widget support"))
+    }
+
+    /// Set the default output device's master volume to `percent` (0 to
+    /// 100; more is taken as 100), leaving the mute as it is. The
+    /// change is reported as `PlatformEvent::VolumeChanged` like any other.
+    /// Fails without an output device, before `start` and after `stop`;
+    /// bounded like [`Platform::volume_status`], whose answer reflects the
+    /// new level once this returns. Never call it on the UI thread.
+    /// Optional; the default reports it unsupported.
+    fn set_volume(&self, _percent: u8) -> PlatformResult<()> {
+        Err(PlatformError::Unsupported("widget support"))
+    }
+
+    /// Mute (`true`) or unmute the default output device, leaving its level
+    /// as it is; otherwise as [`Platform::set_volume`]. Optional;
+    /// the default reports it unsupported.
+    fn set_volume_muted(&self, _muted: bool) -> PlatformResult<()> {
         Err(PlatformError::Unsupported("widget support"))
     }
 
@@ -514,6 +544,19 @@ mod tests {
         // And for the regional format.
         assert!(matches!(
             Real.clock_format(),
+            Err(PlatformError::Unsupported("widget support"))
+        ));
+        // And for the volume and its two actions.
+        assert!(matches!(
+            Real.volume_status(),
+            Err(PlatformError::Unsupported("widget support"))
+        ));
+        assert!(matches!(
+            Real.set_volume(50),
+            Err(PlatformError::Unsupported("widget support"))
+        ));
+        assert!(matches!(
+            Real.set_volume_muted(true),
             Err(PlatformError::Unsupported("widget support"))
         ));
     }

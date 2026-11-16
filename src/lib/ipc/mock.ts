@@ -1,5 +1,5 @@
 /**
- * `MockBackend`: the whole IPC contract (docs/ipc/ v1.26) without Rust, for
+ * `MockBackend`: the whole IPC contract (docs/ipc/ v1.30) without Rust, for
  * browser runs and Playwright screenshots.
  *
  * It mirrors, deliberately in this one file so the two sides can be compared,
@@ -42,6 +42,7 @@ import type { MonitorId } from '$lib/ipc/generated/MonitorId';
 import type { MonitorInfo } from '$lib/ipc/generated/MonitorInfo';
 import type { PinnedApp } from '$lib/ipc/generated/PinnedApp';
 import type { PowerStatus } from '$lib/ipc/generated/PowerStatus';
+import type { VolumeStatus } from '$lib/ipc/generated/VolumeStatus';
 import type { RawWindow } from '$lib/ipc/generated/RawWindow';
 import type { Rect } from '$lib/ipc/generated/Rect';
 import type { RecycleBinState } from '$lib/ipc/generated/RecycleBinState';
@@ -148,6 +149,14 @@ export interface MockOptions {
    * `setClockFormat` changes it afterwards.
    */
   clockFormat?: ClockFormat;
+  /**
+   * The default output device's volume when the backend starts
+   * (`PlatformEvent::VolumeChanged`); `null` for no output device.
+   * Absent: the demo's device at 60 %, not muted (`DEMO_VOLUME`, as
+   * `MockPlatform::with_demo_scenario`); `setVolume` changes it afterwards,
+   * as the volume keys or another device would.
+   */
+  volume?: VolumeStatus | null;
 }
 
 /**
@@ -170,6 +179,43 @@ const NO_POWER: Readonly<PowerStatus> = Object.freeze({
   onAc: false,
   saver: false,
 });
+
+/**
+ * The demo's output device: at 60 %, not muted; the same as
+ * `demo_volume` in `crates/stem-platform/src/mock.rs`.
+ */
+export const DEMO_VOLUME: Readonly<VolumeStatus> = Object.freeze({ percent: 60, muted: false });
+
+/**
+ * How far one wheel notch over the volume item moves the volume, in
+ * percentage points (`VOLUME_STEP` in engine.rs).
+ */
+export const VOLUME_STEP = 2;
+
+/**
+ * What one wheel notch over the volume item makes of `current`
+ * (`volume_step` in engine.rs): `previous` (the wheel turned away
+ * from the user, up) raises it by `VOLUME_STEP` up to 100 and unmutes;
+ * `next` lowers it by `VOLUME_STEP` down to 0 and keeps the mute.
+ */
+export function volumeStep(current: VolumeStatus, direction: ScrollDirection): VolumeStatus {
+  const percent = Math.min(100, current.percent);
+  return direction === 'previous'
+    ? { percent: Math.min(100, percent + VOLUME_STEP), muted: false }
+    : { percent: Math.max(0, percent - VOLUME_STEP), muted: current.muted };
+}
+
+/**
+ * The volume item's title (`volume_title` in engine.rs):
+ * `Volume 45 %`, `Volume muted` while muted, `No audio output` without a
+ * default output device.
+ */
+export function volumeTitle(volume: VolumeStatus | null): string {
+  if (volume === null) {
+    return 'No audio output';
+  }
+  return volume.muted ? 'Volume muted' : `Volume ${volume.percent} %`;
+}
 
 /** What the engine knows before the first regional-format reading: nothing. */
 const NO_CLOCK_FORMAT: Readonly<ClockFormat> = Object.freeze({ locale: null, hour12: null });
@@ -211,6 +257,8 @@ export type MockCall =
   | { type: 'launch'; target: LaunchTarget }
   | { type: 'deleteToRecycleBin'; paths: string[] }
   | { type: 'shell'; action: ShellAction }
+  | { type: 'setVolume'; percent: number }
+  | { type: 'setVolumeMuted'; muted: boolean }
   | { type: 'setDockContentSize'; width: number; height: number; edge: DockPosition }
   | { type: 'setDockHitRegion'; panel: Rect; envelope: Rect; edge: DockPosition }
   | { type: 'setDockPanelRect'; rect: Rect; edge: DockPosition; viewport: Viewport }
@@ -364,6 +412,7 @@ export function defaultSettings(): Settings {
       showDesktop: false,
       quickSettings: false,
       notificationCenter: false,
+      volume: false,
       battery: false,
       clock: false,
       recycleBin: true,
@@ -406,6 +455,15 @@ export function validateSettings(input: Settings): Settings {
   s.autoHide.delayMs = clamp(Math.round(s.autoHide.delayMs), 0, 5000);
   s.appearance.opacity = clamp(s.appearance.opacity, 0, 1);
   s.appearance.cornerRadius = clamp(Math.round(s.appearance.cornerRadius), 0, 64);
+  // A document written before an item existed (the volume item, v1.30) has
+  // no flag for it: serde's `default` on `FixedItems` gives each missing
+  // one its default.
+  const items = defaultSettings().items;
+  for (const key of Object.keys(items) as Array<keyof typeof items>) {
+    if (typeof s.items[key] !== 'boolean') {
+      s.items[key] = items[key];
+    }
+  }
   const seen = new Set<AppId>();
   s.pinned = s.pinned.filter((p) => {
     if (p.id === '' || seen.has(p.id)) {
@@ -1014,7 +1072,10 @@ export type ItemAction =
 
 /** `ScrollEffect`: what one wheel notch over an item does. */
 export type ScrollEffect =
-  { type: 'activate'; windowId: WindowId } | { type: 'nothing' } | { type: 'unknownItem' };
+  | { type: 'activate'; windowId: WindowId }
+  | { type: 'stepVolume'; direction: ScrollDirection }
+  | { type: 'nothing' }
+  | { type: 'unknownItem' };
 
 function fixedItem(
   kind: DockItemKind,
@@ -1053,6 +1114,8 @@ class Engine {
   recycleBin: RecycleBinState = { itemCount: 0, sizeBytes: 0 };
   /** The last power reading, `DockState.power`; nothing known at first. */
   power: PowerStatus = { ...NO_POWER };
+  /** The last volume reading, `DockState.volume`; no device known at first. */
+  volume: VolumeStatus | null = null;
   /** The last regional-format reading, `DockState.clockFormat`; nothing known at first. */
   clockFormat: ClockFormat = { ...NO_CLOCK_FORMAT };
   private nextSeq = 1;
@@ -1267,6 +1330,17 @@ class Engine {
   }
 
   /**
+   * `PlatformEvent::VolumeChanged`: part of the snapshot whatever
+   * the settings say (and the volume item's title), so only a different
+   * reading bumps the revision.
+   */
+  setVolume(volume: VolumeStatus | null): boolean {
+    return this.input(() => {
+      this.volume = volume === null ? null : { percent: volume.percent, muted: volume.muted };
+    });
+  }
+
+  /**
    * `PlatformEvent::ClockFormatChanged`: part of the snapshot
    * whatever the settings say and nothing else, so only a different reading
    * bumps the revision.
@@ -1442,9 +1516,9 @@ class Engine {
     }
     items.push(...runningItems);
 
-    // 4. Fixed trailing group: Quick Settings, Notification Center, battery,
-    // clock, and the Recycle Bin last, with one separator before the group
-    // and none inside.
+    // 4. Fixed trailing group: Quick Settings, Notification Center, volume,
+    // battery, clock, and the Recycle Bin last, with one separator before
+    // the group and none inside.
     const trailing: DockItem[] = [];
     if (s.items.quickSettings) {
       trailing.push(
@@ -1465,6 +1539,10 @@ class Engine {
           'shell:notification-center',
         ),
       );
+    }
+    // The volume item whenever it is on: without a device its title says so.
+    if (s.items.volume) {
+      trailing.push(fixedItem('volume', 'fixed:volume', volumeTitle(this.volume), 'shell:volume'));
     }
     // No battery item on a machine without a battery.
     if (s.items.battery && this.power.hasBattery) {
@@ -1490,6 +1568,7 @@ class Engine {
       foreground: this.foreground,
       docks: this.dockFacts(),
       power: { ...this.power },
+      volume: this.volume === null ? null : { ...this.volume },
       clockFormat: { ...this.clockFormat },
     };
   }
@@ -1526,6 +1605,7 @@ class Engine {
       case 'fixed:notification-center':
       case 'fixed:clock':
         return { type: 'shell', action: 'openNotificationCenter' };
+      case 'fixed:volume':
       case 'fixed:battery':
         return { type: 'shell', action: 'openQuickSettings' };
       case 'fixed:recycle-bin':
@@ -1562,7 +1642,8 @@ class Engine {
   /**
    * `DockEngine::scroll_action`: one wheel notch `direction` over
    * `itemKey` in the dock window `dock`. A key with no item is
-   * `unknownItem`, whatever the setting; with `cycleWindows`, an app item
+   * `unknownItem`, whatever the setting; the volume item is `stepVolume`
+   * whatever the setting; with `cycleWindows`, an app item
    * with windows on that dock activates the window after (`next`) or
    * before (`previous`) the one in front, wrapping around, or the first
    * (`next`) or the last (`previous`) when none of them is in front;
@@ -1576,6 +1657,9 @@ class Engine {
     const item = this.snapshot().items.find((i) => i.key === itemKey);
     if (item === undefined) {
       return { type: 'unknownItem' };
+    }
+    if (item.kind === 'volume') {
+      return { type: 'stepVolume', direction };
     }
     if (this.settings.behavior.scrollAction === 'none') {
       return { type: 'nothing' };
@@ -1794,6 +1878,7 @@ export class MockBackend implements Backend {
     this.engine.setForeground(scenario.foreground);
     this.engine.setPower(options.power ?? DEMO_POWER);
     this.engine.setClockFormat(options.clockFormat ?? NO_CLOCK_FORMAT);
+    this.engine.setVolume(options.volume === undefined ? DEMO_VOLUME : options.volume);
 
     this.scheduleIdentityResolution();
   }
@@ -1873,7 +1958,9 @@ export class MockBackend implements Backend {
    * `scroll_item`, in this page's dock window (`pageLabel`):
    * recorded, then what the engine decides (`Engine.scrollAction`): with
    * `cycleWindows` the chosen demo window is activated and becomes the
-   * foreground one; otherwise nothing. An unknown key rejects with the
+   * foreground one; otherwise nothing. Over the volume item, whatever the
+   * setting, every notch steps the volume (`stepVolume`), as the
+   * service has no gate for it either. An unknown key rejects with the
    * Rust error's words. The service's 150 ms gate is not mirrored: every
    * notch the page sends acts, so a test does not depend on its timing.
    */
@@ -1885,6 +1972,9 @@ export class MockBackend implements Backend {
         case 'activate':
           this.log(`scroll ${direction} over ${itemKey}: activate ${effect.windowId}`);
           this.doWindowAction(effect.windowId, 'activate');
+          return;
+        case 'stepVolume':
+          this.doVolumeStep(effect.direction);
           return;
         case 'nothing':
           return;
@@ -2506,6 +2596,30 @@ export class MockBackend implements Backend {
   }
 
   /**
+   * The volume, the mute or the default output device changed outside Stem
+   * (the volume keys, the Quick Settings slider, headphones plugged
+   * in; `null`: no output device any more): what the volume thread reports
+   * as `VolumeChanged`, only when it differs from the last reading. One
+   * `dock://state` when it does.
+   */
+  setVolume(status: VolumeStatus | null): void {
+    if (this.engine.setVolume(status)) {
+      this.log(`volume ${volumeTitle(status)}`);
+      this.emitState();
+    }
+  }
+
+  /**
+   * The volume item's *Mute* (`true`) or *Unmute* (`false`) menu entry:
+   * what Rust runs from its native menu (`set_volume_muted`),
+   * which the mock has none of. Recorded; rejects without an output
+   * device, with the platform's words.
+   */
+  chooseVolumeMute(muted: boolean): Promise<void> {
+    return this.command(() => this.platformSetVolume({ muted }));
+  }
+
+  /**
    * The user changed the regional format or the short time format:
    * what the events thread reports as `ClockFormatChanged` after a
    * `WM_SETTINGCHANGE` for `intl`, only when it differs from the last
@@ -2684,6 +2798,48 @@ export class MockBackend implements Backend {
     if (changed) {
       this.emitState();
     }
+  }
+
+  /**
+   * `DockService::step_volume`: the reading now, then what
+   * `volumeStep` makes of it, the level first and then the mute, each
+   * recorded only when it changes; nothing without an output device or at
+   * the end of the range.
+   */
+  private doVolumeStep(direction: ScrollDirection): void {
+    const current = this.engine.volume;
+    if (current === null) {
+      return;
+    }
+    const next = volumeStep(current, direction);
+    if (next.percent !== current.percent) {
+      this.platformSetVolume({ percent: next.percent });
+    }
+    if (next.muted !== current.muted) {
+      this.platformSetVolume({ muted: next.muted });
+    }
+  }
+
+  /**
+   * `MockPlatform::set_volume` / `set_volume_muted`: recorded, then applied
+   * to the scripted device and reported like an outside change; an error
+   * without a device.
+   */
+  private platformSetVolume(change: { percent: number } | { muted: boolean }): void {
+    this.record(
+      'percent' in change
+        ? { type: 'setVolume', percent: change.percent }
+        : { type: 'setVolumeMuted', muted: change.muted },
+    );
+    const current = this.engine.volume;
+    if (current === null) {
+      throw 'no audio output device';
+    }
+    const next =
+      'percent' in change
+        ? { ...current, percent: Math.min(100, Math.max(0, Math.round(change.percent))) }
+        : { ...current, muted: change.muted };
+    this.setVolume(next);
   }
 
   private doShellAction(action: ShellAction): void {

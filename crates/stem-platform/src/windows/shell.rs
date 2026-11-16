@@ -24,6 +24,10 @@
 //!   without. The documented battery pages
 //!   (`ms-settings:batterysaver*`) exist only with a battery; `powersleep`
 //!   exists on every machine.
+//! - `OpenSoundSettings` / `OpenVolumeMixer` (the volume item's
+//!   menu): the same way, `ms-settings:sound` (*System > Sound*) and
+//!   `ms-settings:apps-volume`, which the same list documents as *App volume
+//!   and device preferences* and Windows 11 shows as *Sound > Volume mixer*.
 //!
 //! `SendInput` injects into the foreground thread's queue; it needs no window
 //! of our own and works from a `WS_EX_NOACTIVATE` dock as long as this
@@ -56,12 +60,16 @@ use windows::Win32::UI::Shell::{IShellDispatch4, Shell};
 
 use super::util;
 use crate::PlatformResult;
-use crate::rules::shell::{DATE_TIME_SETTINGS, POWER_SETTINGS, held_after};
+use crate::rules::shell::{
+    DATE_TIME_SETTINGS, POWER_SETTINGS, SOUND_SETTINGS, VOLUME_MIXER, held_after,
+};
 
 pub fn perform(action: ShellAction) -> PlatformResult<()> {
     match action {
         ShellAction::OpenDateTimeSettings => open_settings_page(DATE_TIME_SETTINGS),
         ShellAction::OpenPowerSettings => open_settings_page(POWER_SETTINGS),
+        ShellAction::OpenSoundSettings => open_settings_page(SOUND_SETTINGS),
+        ShellAction::OpenVolumeMixer => open_settings_page(VOLUME_MIXER),
         ShellAction::OpenRecycleBin => super::recycle_bin::open(),
         ShellAction::EmptyRecycleBin => super::recycle_bin::empty(),
         ShellAction::OpenStartMenu => send_chord(&[VK_LWIN]),

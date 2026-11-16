@@ -64,8 +64,9 @@ pub fn normalize_path(path: &Path) -> String {
 /// Keys starting with `shell:` are rendered by the frontend from built-in
 /// vector art (`shell:start`, `shell:task-view`, `shell:show-desktop`,
 /// `shell:quick-settings`, `shell:notification-center`,
-/// `shell:recycle-bin-empty`, `shell:recycle-bin-full`; the clock and battery
-/// faces `shell:clock` and `shell:battery` are drawn from live data).
+/// `shell:recycle-bin-empty`, `shell:recycle-bin-full`; the clock, battery
+/// and volume faces `shell:clock`, `shell:battery` and `shell:volume` are
+/// drawn from live data).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(transparent)]
@@ -265,6 +266,9 @@ pub enum DockItemKind {
     QuickSettings,
     /// Opens Windows' notification center and calendar.
     NotificationCenter,
+    /// Shows the default output device's volume from [`DockState::volume`];
+    /// the wheel over it changes the volume.
+    Volume,
     /// Shows the battery's charge from [`DockState::power`]; present only on
     /// a machine with a system battery.
     Battery,
@@ -324,6 +328,13 @@ pub struct DockState {
     /// is drawn from it.
     #[serde(default)]
     pub power: PowerStatus,
+    /// The default output device's volume: the last
+    /// `PlatformEvent::VolumeChanged`, whatever the settings say; `null`
+    /// until the first one, and while there is no default output device or
+    /// its volume cannot be read. The volume item's face and title are drawn
+    /// from it.
+    #[serde(default)]
+    pub volume: Option<VolumeStatus>,
     /// The user's regional format for the clock: the last
     /// `PlatformEvent::ClockFormatChanged`, whatever the settings say; both
     /// fields `null` until the first one. The clock item's face, title pill
@@ -352,6 +363,22 @@ pub struct PowerStatus {
     pub on_ac: bool,
     /// Battery saver (energy saver) is on.
     pub saver: bool,
+}
+
+/// The default output device's master volume, part of
+/// [`DockState`]. The platform reads it (`Platform::volume_status`; on
+/// Windows the default console render endpoint's `IAudioEndpointVolume`)
+/// and reports changes with `PlatformEvent::VolumeChanged`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub struct VolumeStatus {
+    /// The master volume, 0 to 100: the endpoint's level (0.0 to 1.0, the
+    /// scale Windows' own slider shows) × 100, rounded.
+    pub percent: u8,
+    /// The output is muted. The level is kept while muted, as Windows keeps
+    /// it.
+    pub muted: bool,
 }
 
 /// The user's regional format as Windows has it, for the clock,
@@ -484,6 +511,12 @@ pub enum ShellAction {
     OpenDateTimeSettings,
     /// The Settings app's power and battery page (`ms-settings:powersleep`).
     OpenPowerSettings,
+    /// The Settings app's sound page (`ms-settings:sound`, the volume
+    /// item's menu).
+    OpenSoundSettings,
+    /// The Settings app's volume mixer (`ms-settings:apps-volume`,
+    /// the volume item's menu).
+    OpenVolumeMixer,
 }
 
 /// Facts about this installation for the settings page's *About* section:
@@ -676,6 +709,61 @@ mod tests {
             assert_eq!(json, format!("{name:?}"));
             assert_eq!(serde_json::from_str::<ShellAction>(&json).unwrap(), action);
         }
+    }
+
+    #[test]
+    fn the_volume_item_its_status_and_its_settings_pages_serialise_in_camel_case() {
+        let json = serde_json::to_string(&DockItemKind::Volume).unwrap();
+        assert_eq!(json, r#""volume""#);
+        assert_eq!(
+            serde_json::from_str::<DockItemKind>(&json).unwrap(),
+            DockItemKind::Volume
+        );
+        for (action, name) in [
+            (ShellAction::OpenSoundSettings, "openSoundSettings"),
+            (ShellAction::OpenVolumeMixer, "openVolumeMixer"),
+        ] {
+            let json = serde_json::to_string(&action).unwrap();
+            assert_eq!(json, format!("{name:?}"));
+            assert_eq!(serde_json::from_str::<ShellAction>(&json).unwrap(), action);
+        }
+        let status = VolumeStatus {
+            percent: 45,
+            muted: true,
+        };
+        let json = serde_json::to_value(status).unwrap();
+        assert_eq!(json, serde_json::json!({ "percent": 45, "muted": true }));
+        assert_eq!(
+            serde_json::from_value::<VolumeStatus>(json).unwrap(),
+            status
+        );
+        // In the snapshot under its own name, `null` without a device.
+        let state = DockState {
+            volume: Some(status),
+            ..DockState::default()
+        };
+        assert_eq!(
+            serde_json::to_value(&state).unwrap()["volume"],
+            serde_json::json!({ "percent": 45, "muted": true })
+        );
+        assert_eq!(
+            serde_json::to_value(DockState::default()).unwrap()["volume"],
+            serde_json::Value::Null
+        );
+    }
+
+    #[test]
+    fn dock_state_without_a_volume_still_deserialises() {
+        // `volume` arrived with IPC v1.30; a document written before
+        // it reads as the engine's "nothing known yet".
+        let state: DockState = serde_json::from_str(
+            r#"{"revision":5,"items":[],"foreground":null,"docks":[],
+                "power":{"hasBattery":false,"percent":null,"charging":false,"onAc":false,"saver":false},
+                "clockFormat":{"locale":null,"hour12":null}}"#,
+        )
+        .unwrap();
+        assert_eq!(state.revision, 5);
+        assert_eq!(state.volume, None);
     }
 
     #[test]

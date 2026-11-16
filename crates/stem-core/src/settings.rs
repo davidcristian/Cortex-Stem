@@ -510,8 +510,13 @@ pub struct FixedItems {
     /// The Notification Center item at the right, before the Recycle Bin.
     /// A click opens what Win+N opens.
     pub notification_center: bool,
-    /// The battery item at the right, after Notification Center. It appears
-    /// only on a PC with a battery. A click opens what Win+A opens.
+    /// The volume item at the right, after Notification Center. It shows
+    /// the volume of the default output device. A click opens what Win+A
+    /// opens, and the mouse wheel over it changes the volume, whatever
+    /// `behavior.scrollAction` is set to.
+    pub volume: bool,
+    /// The battery item at the right, after the volume. It appears only on
+    /// a PC with a battery. A click opens what Win+A opens.
     pub battery: bool,
     /// The clock item at the right, after the battery. A click opens what
     /// Win+N opens.
@@ -532,6 +537,7 @@ impl Default for FixedItems {
             show_desktop: false,
             quick_settings: false,
             notification_center: false,
+            volume: false,
             battery: false,
             clock: false,
             recycle_bin: true,
@@ -823,6 +829,7 @@ mod tests {
                 show_desktop: rng.bool(),
                 quick_settings: rng.bool(),
                 notification_center: rng.bool(),
+                volume: rng.bool(),
                 battery: rng.bool(),
                 clock: rng.bool(),
                 recycle_bin: rng.bool(),
@@ -1111,6 +1118,27 @@ mod tests {
             validated.validate();
             assert_eq!(validated, on);
         }
+    }
+
+    #[test]
+    fn the_volume_item_is_off_unless_written() {
+        assert!(!FixedItems::default().volume);
+        // A file written before the field existed (IPC v1.30) keeps
+        // its other items and gets it off.
+        let old = Settings::from_json(r#"{"items": {"battery": true, "clock": true}}"#).unwrap();
+        assert!(old.items.battery && old.items.clock);
+        assert!(!old.items.volume);
+        // A camelCase key of `items`, independent of the others, that
+        // survives a round trip and `validate`.
+        let on = Settings::from_json(r#"{"items": {"volume": true}}"#).unwrap();
+        assert!(on.items.volume);
+        assert!(!on.items.battery && !on.items.clock);
+        let json = on.to_json_pretty();
+        assert!(json.contains(r#""volume": true"#), "{json}");
+        assert_eq!(Settings::from_json(&json).unwrap(), on);
+        let mut validated = on.clone();
+        validated.validate();
+        assert_eq!(validated, on);
     }
 
     #[test]

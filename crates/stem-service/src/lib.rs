@@ -67,11 +67,11 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use parking_lot::Mutex;
-use stem_core::engine::ScrollEffect;
+use stem_core::engine::{ScrollEffect, volume_step};
 use stem_core::{
     AppId, AppIdentity, DockEngine, DockItem, DockState, EngineInput, IconKey, ItemAction,
     LaunchTarget, MonitorId, MonitorInfo, PlatformEvent, Rect, ScrollDirection, Settings,
-    SettingsError, ShellAction, ThemeInfo, WindowAction, WindowId,
+    SettingsError, ShellAction, ThemeInfo, VolumeStatus, WindowAction, WindowId,
 };
 use stem_platform::rules::identity::{exe_icon_key, file_icon_key, is_window_icon_key};
 use stem_platform::{Platform, PlatformError};
@@ -220,6 +220,11 @@ struct Inner {
     icon_cache: Option<DiskIconCache>,
     /// `scroll_item`'s 150 ms gate per dock window.
     scroll_gate: Mutex<ScrollGate>,
+    /// Held across each volume change's read and set, so two
+    /// notches that arrive together (the page sends one command per notch,
+    /// and Tauri runs them on several threads) step from each other's
+    /// result instead of both from the same reading.
+    volume: Mutex<()>,
 }
 
 impl std::fmt::Debug for Inner {
@@ -297,6 +302,7 @@ impl DockService {
             stopping: AtomicBool::new(false),
             icon_cache,
             scroll_gate: Mutex::new(ScrollGate::new()),
+            volume: Mutex::new(()),
         });
 
         let worker = {
@@ -482,6 +488,11 @@ impl DockService {
     /// [`ServiceError::UnknownItem`], as for [`Self::primary_click`]; a
     /// failed activation is the platform's error, and still counts for the
     /// gate and as the window tried.
+    ///
+    /// Over the volume item a notch steps the volume, whatever
+    /// `behavior.scrollAction` says and without the gate: every notch
+    /// counts ([`Self::step_volume`]); it returns `None` (no window was
+    /// activated), and a platform that cannot reach the volume is its error.
     pub fn scroll_item(
         &self,
         item_key: &str,
@@ -506,6 +517,10 @@ impl DockService {
             .scroll_action(item_key, dock, direction);
         let id = match effect {
             ScrollEffect::Activate(id) => id,
+            ScrollEffect::StepVolume(direction) => {
+                self.step_volume(direction)?;
+                return Ok(None);
+            }
             ScrollEffect::Nothing => {
                 log::debug!("scroll {direction:?} over {item_key} in {dock:?}: nothing to do");
                 return Ok(None);
@@ -531,6 +546,50 @@ impl DockService {
             .platform
             .window_action(id, WindowAction::Activate)?;
         Ok(Some(id))
+    }
+
+    /// One wheel notch over the volume item (docs/ipc/widget-items.md "The volume
+    /// item"): the volume as the platform reads it now (not the engine's
+    /// last reading, which a burst of notches outruns), then what
+    /// `stem_core::engine::volume_step` makes of it: the level first, then
+    /// the mute when that changes too (a notch up unmutes). Nothing to do
+    /// without an output device, or at the end of the range. Serialised with
+    /// every other volume change, so notches that arrive together add up.
+    /// Returns the volume it asked for, or `None` when it asked for nothing.
+    pub fn step_volume(&self, direction: ScrollDirection) -> ServiceResult<Option<VolumeStatus>> {
+        let _serial = self.inner.volume.lock();
+        let platform = &self.inner.platform;
+        let Some(current) = platform.volume_status()? else {
+            log::debug!("volume step {direction:?}: no audio output device");
+            return Ok(None);
+        };
+        let next = volume_step(current, direction);
+        if next == current {
+            log::debug!("volume step {direction:?}: already at {current:?}");
+            return Ok(None);
+        }
+        log::debug!("volume step {direction:?}: {current:?} -> {next:?}");
+        if next.percent != current.percent {
+            platform.set_volume(next.percent)?;
+        }
+        if next.muted != current.muted {
+            platform.set_volume_muted(next.muted)?;
+        }
+        Ok(Some(next))
+    }
+
+    /// Mute or unmute the default output device (the volume item's
+    /// *Mute* and *Unmute* menu entries), serialised with the wheel's
+    /// steps. Fails without an output device.
+    pub fn set_volume_muted(&self, muted: bool) -> ServiceResult<()> {
+        let _serial = self.inner.volume.lock();
+        Ok(self.inner.platform.set_volume_muted(muted)?)
+    }
+
+    /// The engine's last volume reading (`DockState::volume`): what
+    /// the volume item's menu is built from (*Mute* or *Unmute*).
+    pub fn volume(&self) -> Option<VolumeStatus> {
+        self.inner.engine.lock().volume()
     }
 
     /// The item `item_key` as the dock window `dock` lists it, which its
@@ -3257,6 +3316,123 @@ mod tests {
                 MockCall::WindowAction(WindowId(4), WindowAction::Activate),
             ]
         );
+        service.shutdown();
+    }
+
+    // ----- the volume item ----------------------------------------------------------
+
+    /// The demo with the volume item on, once the engine shows it.
+    fn start_with_volume() -> (DockService, Arc<MockPlatform>, Receiver<ServiceEvent>) {
+        let (service, platform, rx) = start();
+        let mut settings = service.settings();
+        settings.items.volume = true;
+        service.update_settings(settings).unwrap();
+        wait_state(&rx, |s| s.items.iter().any(|i| i.key == "fixed:volume"));
+        (service, platform, rx)
+    }
+
+    fn level(percent: u8, muted: bool) -> Option<VolumeStatus> {
+        Some(VolumeStatus { percent, muted })
+    }
+
+    #[test]
+    fn a_scroll_over_the_volume_item_steps_it_two_points_a_notch_without_the_gate() {
+        use ScrollDirection::{Next, Previous};
+        let (service, platform, rx) = start_with_volume();
+        assert_eq!(
+            service.settings().behavior.scroll_action,
+            stem_core::settings::ScrollAction::None
+        );
+        assert_eq!(service.volume(), level(60, false));
+        let t0 = Instant::now();
+        // Five notches up at the same instant: each counts, from the last.
+        for _ in 0..5 {
+            assert_eq!(
+                service
+                    .scroll_item_at("fixed:volume", DOCK, Previous, t0)
+                    .unwrap(),
+                None
+            );
+        }
+        assert_eq!(platform.volume_status().unwrap(), level(70, false));
+        let state = wait_state(&rx, |s| s.volume == level(70, false));
+        assert_eq!(
+            state
+                .items
+                .iter()
+                .find(|i| i.key == "fixed:volume")
+                .map(|i| i.title.as_str()),
+            Some("Volume 70 %")
+        );
+        // Down, on another dock window too, and the gate of app items is
+        // left alone.
+        service
+            .scroll_item_at("fixed:volume", "dock-DISPLAY3", Next, t0)
+            .unwrap();
+        assert_eq!(platform.volume_status().unwrap(), level(68, false));
+        assert_eq!(
+            platform.calls(),
+            [62, 64, 66, 68, 70, 68]
+                .into_iter()
+                .map(MockCall::SetVolume)
+                .collect::<Vec<_>>()
+        );
+        assert!(service.inner.scroll_gate.lock().last.is_empty());
+        service.shutdown();
+    }
+
+    #[test]
+    fn a_volume_step_unmutes_going_up_clamps_and_does_nothing_without_a_device() {
+        use ScrollDirection::{Next, Previous};
+        let (service, platform, _rx) = start_with_volume();
+        // Muted at 99: up raises to 100 and unmutes, in that order.
+        platform.change_volume(level(99, true));
+        assert_eq!(service.step_volume(Previous).unwrap(), level(100, false));
+        assert_eq!(
+            platform.calls(),
+            vec![MockCall::SetVolume(100), MockCall::SetVolumeMuted(false)]
+        );
+        // At the top already: nothing is asked.
+        platform.clear_calls();
+        assert_eq!(service.step_volume(Previous).unwrap(), None);
+        assert_eq!(platform.calls(), vec![]);
+        // Muted at 1: down lowers to 0 and stays muted; then nothing more.
+        platform.change_volume(level(1, true));
+        assert_eq!(service.step_volume(Next).unwrap(), level(0, true));
+        assert_eq!(service.step_volume(Next).unwrap(), None);
+        assert_eq!(platform.calls(), vec![MockCall::SetVolume(0)]);
+        // Unmuted at 100: up does nothing at all.
+        platform.change_volume(level(100, false));
+        platform.clear_calls();
+        assert_eq!(service.step_volume(Previous).unwrap(), None);
+        assert_eq!(platform.calls(), vec![]);
+
+        // No output device: the notch resolves and nothing is asked.
+        platform.change_volume(None);
+        assert_eq!(
+            service
+                .scroll_item_at("fixed:volume", DOCK, Previous, Instant::now())
+                .unwrap(),
+            None
+        );
+        assert_eq!(platform.calls(), vec![]);
+        // The menu's Mute fails without a device; with one it is recorded.
+        assert!(service.set_volume_muted(true).is_err());
+        platform.change_volume(level(30, false));
+        service.set_volume_muted(true).unwrap();
+        assert_eq!(platform.volume_status().unwrap(), level(30, true));
+        service.shutdown();
+    }
+
+    #[test]
+    fn a_scroll_over_the_volume_item_with_its_setting_off_is_an_unknown_item() {
+        let (service, platform, rx) = start();
+        wait_state(&rx, resolved);
+        assert!(matches!(
+            service.scroll_item_at("fixed:volume", DOCK, ScrollDirection::Next, Instant::now()),
+            Err(ServiceError::UnknownItem(_))
+        ));
+        assert_eq!(platform.calls(), vec![]);
         service.shutdown();
     }
 

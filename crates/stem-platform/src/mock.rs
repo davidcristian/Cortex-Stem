@@ -9,7 +9,8 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use stem_core::{
     AppId, AppIdentity, ClockFormat, IconKey, LaunchTarget, MonitorId, MonitorInfo, PlatformEvent,
-    PowerStatus, RawWindow, Rect, RecycleBinState, ShellAction, ThemeInfo, WindowAction, WindowId,
+    PowerStatus, RawWindow, Rect, RecycleBinState, ShellAction, ThemeInfo, VolumeStatus,
+    WindowAction, WindowId,
 };
 
 use crate::{
@@ -31,6 +32,10 @@ struct State {
     /// demo too (the TS mirror's `MockOptions.clockFormat` defaults to the
     /// same), so the page's own locale formats the clock.
     clock_format: ClockFormat,
+    /// The default output device's volume: no device unless
+    /// scripted (the demo has one at 60 %, as the TS mirror's
+    /// `MockOptions.volume` defaults to).
+    volume: Option<VolumeStatus>,
     /// When set, `delete_to_recycle_bin` fails with this message.
     recycle_failure: Option<String>,
     /// Windows' own *Automatically hide the taskbar*; off unless
@@ -56,6 +61,7 @@ impl std::fmt::Debug for State {
             .field("recycle_bin", &self.recycle_bin)
             .field("power", &self.power)
             .field("clock_format", &self.clock_format)
+            .field("volume", &self.volume)
             .field("recycle_failure", &self.recycle_failure)
             .field("taskbar_auto_hide", &self.taskbar_auto_hide)
             .field("yes_no_answer", &self.yes_no_answer)
@@ -95,6 +101,10 @@ pub enum MockCall {
     ReleaseAppBars,
     /// `focus_dock_window` with this window.
     FocusDockWindow(NativeWindowHandle),
+    /// `set_volume` with this percent, as given.
+    SetVolume(u8),
+    /// `set_volume_muted` with this value.
+    SetVolumeMuted(bool),
 }
 
 #[derive(Debug, Default)]
@@ -110,8 +120,9 @@ impl MockPlatform {
         this
     }
 
-    /// A platform pre-populated with a handful of fake apps and windows, and
-    /// a laptop's battery ([`demo_power`]).
+    /// A platform pre-populated with a handful of fake apps and windows, a
+    /// laptop's battery ([`demo_power`]) and an output device at 60 %
+    /// ([`demo_volume`]).
     pub fn with_demo_scenario() -> Self {
         let this = Self::new();
         {
@@ -123,6 +134,7 @@ impl MockPlatform {
                 size_bytes: 1_234_567,
             };
             s.power = demo_power();
+            s.volume = Some(demo_volume());
         }
         this
     }
@@ -147,6 +159,7 @@ impl MockPlatform {
                 PlatformEvent::RecycleBinChanged(r) => s.recycle_bin = *r,
                 PlatformEvent::PowerChanged(p) => s.power = *p,
                 PlatformEvent::ClockFormatChanged(f) => s.clock_format = f.clone(),
+                PlatformEvent::VolumeChanged(v) => s.volume = *v,
                 PlatformEvent::WindowAttention { .. } | PlatformEvent::FullscreenChanged { .. } => {
                 }
             }
@@ -208,6 +221,39 @@ impl MockPlatform {
         }
         self.push(PlatformEvent::ClockFormatChanged(format));
         true
+    }
+
+    /// The volume, the mute or the default output device changed outside
+    /// Stem (the volume keys, the Quick Settings slider, headphones
+    /// plugged in; `None`: no output device any more): report `status` the
+    /// way the volume thread does, with one `VolumeChanged`, and only when
+    /// it differs from the reading before (the real thread's change filter).
+    /// Returns whether it was reported; nothing is recorded.
+    pub fn change_volume(&self, status: Option<VolumeStatus>) -> bool {
+        if self.state.lock().volume == status {
+            return false;
+        }
+        self.push(PlatformEvent::VolumeChanged(status));
+        true
+    }
+
+    /// Apply `change` to the scripted device's volume, as the volume thread
+    /// sets it: an error without a device, else the new reading, reported
+    /// with one `VolumeChanged` when it differs.
+    fn change_output(&self, change: impl FnOnce(&mut VolumeStatus)) -> PlatformResult<()> {
+        let changed = {
+            let s = self.state.lock();
+            let Some(current) = s.volume else {
+                return Err(PlatformError::Other("no audio output device".into()));
+            };
+            let mut next = current;
+            change(&mut next);
+            (next != current).then_some(next)
+        };
+        if let Some(next) = changed {
+            self.push(PlatformEvent::VolumeChanged(Some(next)));
+        }
+        Ok(())
     }
 
     /// A window moved or resized: give it a new frame (`None` for a
@@ -275,6 +321,8 @@ impl Platform for MockPlatform {
                 // Once after the snapshot, as the real events thread does.
                 PlatformEvent::PowerChanged(s.power),
                 PlatformEvent::ClockFormatChanged(s.clock_format.clone()),
+                // The volume thread's first reading, last.
+                PlatformEvent::VolumeChanged(s.volume),
             ]
         };
         for ev in initial {
@@ -432,6 +480,27 @@ impl Platform for MockPlatform {
     /// nothing is recorded.
     fn clock_format(&self) -> PlatformResult<ClockFormat> {
         Ok(self.state.lock().clock_format.clone())
+    }
+
+    /// The scripted device's volume (none unless the demo,
+    /// [`MockPlatform::change_volume`] or a pushed event gave one); nothing
+    /// is recorded. Answers before `start` too.
+    fn volume_status(&self) -> PlatformResult<Option<VolumeStatus>> {
+        Ok(self.state.lock().volume)
+    }
+
+    /// Recorded; then the scripted level becomes `percent` (at most 100),
+    /// reported like an outside change. Fails without a scripted device.
+    fn set_volume(&self, percent: u8) -> PlatformResult<()> {
+        self.record(MockCall::SetVolume(percent));
+        self.change_output(|v| v.percent = percent.min(100))
+    }
+
+    /// Recorded; then the scripted mute becomes `muted`, reported like an
+    /// outside change. Fails without a scripted device.
+    fn set_volume_muted(&self, muted: bool) -> PlatformResult<()> {
+        self.record(MockCall::SetVolumeMuted(muted));
+        self.change_output(|v| v.muted = muted)
     }
 
     fn shell_action(&self, action: ShellAction) -> PlatformResult<()> {
@@ -670,6 +739,15 @@ fn demo_power() -> PowerStatus {
     }
 }
 
+/// The demo's output device: at 60 %, not muted. The TS mirror
+/// (`MockOptions.volume` in `src/lib/ipc/mock.ts`) defaults to the same.
+fn demo_volume() -> VolumeStatus {
+    VolumeStatus {
+        percent: 60,
+        muted: false,
+    }
+}
+
 fn demo_window(id: u64, exe: &str, title: &str, minimized: bool, rect: Rect) -> RawWindow {
     RawWindow {
         id: WindowId(id),
@@ -767,7 +845,8 @@ mod tests {
             seen[6],
             PlatformEvent::ClockFormatChanged(ClockFormat::default())
         );
-        assert_eq!(seen.len(), 7);
+        assert_eq!(seen[7], PlatformEvent::VolumeChanged(Some(demo_volume())));
+        assert_eq!(seen.len(), 8);
         assert!(p.start(Arc::new(|_| {})).is_err());
     }
 
@@ -790,13 +869,15 @@ mod tests {
         empty
             .start(Arc::new(move |ev| sink_seen.lock().push(ev)))
             .unwrap();
-        // The power reading, then the regional format last.
+        // The power reading, then the regional format and the volume last:
+        // no device on an empty platform.
         let seen = seen.lock();
         assert_eq!(
-            seen[seen.len() - 2..],
+            seen[seen.len() - 3..],
             [
                 PlatformEvent::PowerChanged(PowerStatus::default()),
                 PlatformEvent::ClockFormatChanged(ClockFormat::default()),
+                PlatformEvent::VolumeChanged(None),
             ]
         );
     }
@@ -846,15 +927,17 @@ mod tests {
             locale: Some("en-GB".into()),
             hour12: Some(false),
         };
-        // Scripted before the start: the start sequence ends with it.
+        // Scripted before the start: the start sequence ends with it, and
+        // the volume after it.
         assert!(p.set_clock_format(british.clone()));
         let seen: Arc<Mutex<Vec<PlatformEvent>>> = Arc::default();
         let sink_seen = Arc::clone(&seen);
         p.start(Arc::new(move |ev| sink_seen.lock().push(ev)))
             .unwrap();
+        let seen = seen.lock();
         assert_eq!(
-            seen.lock().last(),
-            Some(&PlatformEvent::ClockFormatChanged(british.clone()))
+            seen[seen.len() - 2],
+            PlatformEvent::ClockFormatChanged(british.clone())
         );
         assert_eq!(p.clock_format().unwrap(), british);
     }
@@ -896,6 +979,69 @@ mod tests {
         assert_eq!(p.clock_format().unwrap(), custom);
         assert!(!p.set_clock_format(custom));
         assert!(p.calls().is_empty());
+    }
+
+    #[test]
+    fn the_volume_is_scripted_set_and_reported_only_when_it_changes() {
+        let level = |percent, muted| Some(VolumeStatus { percent, muted });
+        assert_eq!(MockPlatform::new().volume_status().unwrap(), None);
+        let p = MockPlatform::with_demo_scenario();
+        assert_eq!(p.volume_status().unwrap(), level(60, false));
+        let seen: Arc<Mutex<Vec<PlatformEvent>>> = Arc::default();
+        let sink_seen = Arc::clone(&seen);
+        p.start(Arc::new(move |ev| sink_seen.lock().push(ev)))
+            .unwrap();
+        seen.lock().clear();
+
+        // An outside change: one event when it differs, none otherwise,
+        // and no call recorded.
+        assert!(!p.change_volume(level(60, false)));
+        assert!(p.change_volume(level(44, false)));
+        assert_eq!(
+            *seen.lock(),
+            vec![PlatformEvent::VolumeChanged(level(44, false))]
+        );
+        assert!(p.calls().is_empty());
+        seen.lock().clear();
+
+        // Stem's own changes: recorded, applied, reported like any other.
+        p.set_volume(46).unwrap();
+        p.set_volume_muted(true).unwrap();
+        assert_eq!(p.volume_status().unwrap(), level(46, true));
+        // The same again changes nothing and reports nothing; a level past
+        // 100 is 100.
+        p.set_volume(46).unwrap();
+        p.set_volume_muted(true).unwrap();
+        p.set_volume(250).unwrap();
+        assert_eq!(
+            *seen.lock(),
+            vec![
+                PlatformEvent::VolumeChanged(level(46, false)),
+                PlatformEvent::VolumeChanged(level(46, true)),
+                PlatformEvent::VolumeChanged(level(100, true)),
+            ]
+        );
+        assert_eq!(
+            p.calls(),
+            vec![
+                MockCall::SetVolume(46),
+                MockCall::SetVolumeMuted(true),
+                MockCall::SetVolume(46),
+                MockCall::SetVolumeMuted(true),
+                MockCall::SetVolume(250),
+            ]
+        );
+
+        // The device goes away: the actions fail (still recorded), the
+        // reading is none.
+        assert!(p.change_volume(None));
+        assert_eq!(p.volume_status().unwrap(), None);
+        assert!(p.set_volume(10).is_err());
+        assert!(p.set_volume_muted(false).is_err());
+        assert_eq!(p.calls().len(), 7);
+        // A pushed reading is kept as well.
+        p.push(PlatformEvent::VolumeChanged(level(5, false)));
+        assert_eq!(p.volume_status().unwrap(), level(5, false));
     }
 
     #[test]

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::{
     AppId, AppIdentity, ClockFormat, MonitorId, MonitorInfo, PowerStatus, RawWindow, Rect,
-    RecycleBinState, ThemeInfo, WindowId,
+    RecycleBinState, ThemeInfo, VolumeStatus, WindowId,
 };
 use crate::settings::Settings;
 
@@ -54,6 +54,13 @@ pub enum PlatformEvent {
     /// only when it differs from the last one sent (plus once after the
     /// start snapshot). The engine keeps it as `DockState::clock_format`.
     ClockFormatChanged(ClockFormat),
+    /// The default output device's volume or mute changed, or the default
+    /// device itself did: the platform's fresh reading, `None` when
+    /// there is no default output device or its volume cannot be read. Sent
+    /// only when it differs from the last one sent (plus once at start), at
+    /// most once per 50 ms on Windows, the last value of a burst always
+    /// included. The engine keeps it as `DockState::volume`.
+    VolumeChanged(Option<VolumeStatus>),
 }
 
 /// Everything the engine can be fed.

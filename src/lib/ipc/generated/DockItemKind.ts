@@ -3,4 +3,4 @@
 /**
  * Kind of a dock item. Everything that is not `App` is a fixed item.
  */
-export type DockItemKind = "app" | "launcher" | "taskView" | "showDesktop" | "quickSettings" | "notificationCenter" | "battery" | "clock" | "recycleBin" | "separator";
+export type DockItemKind = "app" | "launcher" | "taskView" | "showDesktop" | "quickSettings" | "notificationCenter" | "volume" | "battery" | "clock" | "recycleBin" | "separator";

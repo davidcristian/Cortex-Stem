@@ -12,6 +12,11 @@ pub const DATE_TIME_SETTINGS: &str = "ms-settings:dateandtime";
 /// The Settings app's power page: *Power & battery* (or *Power* without a
 /// battery) on Windows 11, *Power & sleep* on Windows 10.
 pub const POWER_SETTINGS: &str = "ms-settings:powersleep";
+/// The Settings app's *Sound* page (the volume item's menu).
+pub const SOUND_SETTINGS: &str = "ms-settings:sound";
+/// The Settings app's volume mixer, *Sound > Volume mixer* (the
+/// volume item's menu).
+pub const VOLUME_MIXER: &str = "ms-settings:apps-volume";
 
 /// The keys of `keys` that are still down when only the first `sent` events
 /// of its chord (every key down in order, then every key up in reverse) were
@@ -35,9 +40,12 @@ mod tests {
     #[test]
     fn the_settings_pages_are_the_documented_ms_settings_uris() {
         // Microsoft's list of the `ms-settings:` scheme: Time and language >
-        // Date & time, and System > Power & sleep.
+        // Date & time, System > Power & sleep, System > Sound, and its app
+        // volume and device preferences (the volume mixer).
         assert_eq!(DATE_TIME_SETTINGS, "ms-settings:dateandtime");
         assert_eq!(POWER_SETTINGS, "ms-settings:powersleep");
+        assert_eq!(SOUND_SETTINGS, "ms-settings:sound");
+        assert_eq!(VOLUME_MIXER, "ms-settings:apps-volume");
     }
 
     #[test]

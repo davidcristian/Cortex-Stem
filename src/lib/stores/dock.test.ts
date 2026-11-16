@@ -24,6 +24,7 @@ const snapshot = (revision: number): DockState => ({
   foreground: null,
   docks: [],
   power: { hasBattery: false, percent: null, charging: false, onAc: false, saver: false },
+  volume: null,
   clockFormat: { locale: null, hour12: null },
 });
 

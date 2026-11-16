@@ -21,6 +21,7 @@ import {
   defaultSettings,
   DEMO_POWER,
   DEMO_USER_CSS_PATH,
+  DEMO_VOLUME,
   demoAppInfo,
   dockLabel,
   fileStem,
@@ -36,6 +37,9 @@ import {
   SECOND_MONITOR_ID,
   USER_CSS_MAX_BYTES,
   validateSettings,
+  VOLUME_STEP,
+  volumeStep,
+  volumeTitle,
   type MockOptions,
 } from './mock';
 
@@ -706,6 +710,186 @@ describe('scrolling over an item (docs/ipc/scrolling-over-an-item.md; mirror of 
     await b.hideApp(CODE);
     await expect(b.scrollItem(app(CODE), 'next')).rejects.toMatch(/unknown dock item/);
     expect(activations(b)).toEqual([]);
+  });
+});
+
+describe('the volume item (docs/ipc/widget-items.md §The volume item, v1.30)', () => {
+  /** A fast backend with the volume item on (and `options`). */
+  async function withVolume(options: MockOptions = {}): Promise<MockBackend> {
+    const b = fast(options);
+    const settings = await b.getSettings();
+    settings.items.volume = true;
+    await b.updateSettings(settings);
+    return b;
+  }
+  const volumeCalls = (b: MockBackend) =>
+    b.calls.filter((c) => c.type === 'setVolume' || c.type === 'setVolumeMuted');
+
+  it('is off by default; the demo has a device at 60 %; on, it sits after Notification Center and before the battery', async () => {
+    expect(defaultSettings().items.volume).toBe(false);
+    const b = fast();
+    let state = await b.getDockState();
+    expect(state.items.map((i) => i.kind)).not.toContain('volume');
+    expect(state.volume).toEqual(DEMO_VOLUME);
+    expect(DEMO_VOLUME).toEqual({ percent: 60, muted: false });
+
+    const settings = await b.getSettings();
+    settings.items = {
+      ...settings.items,
+      quickSettings: true,
+      notificationCenter: true,
+      volume: true,
+      battery: true,
+      clock: true,
+    };
+    await b.updateSettings(settings);
+    state = await b.getDockState();
+    expect(keys(state).slice(-6)).toEqual([
+      'fixed:quick-settings',
+      'fixed:notification-center',
+      'fixed:volume',
+      'fixed:battery',
+      'fixed:clock',
+      'fixed:recycle-bin',
+    ]);
+    expect(item(state, 'fixed:volume')).toMatchObject({
+      kind: 'volume',
+      title: 'Volume 60 %',
+      iconKey: 'shell:volume',
+      appId: null,
+      pinned: false,
+      windows: [],
+    });
+  });
+
+  it('titles the item by level, mute and device, and shows it without a device too', async () => {
+    expect(volumeTitle({ percent: 45, muted: false })).toBe('Volume 45 %');
+    expect(volumeTitle({ percent: 45, muted: true })).toBe('Volume muted');
+    expect(volumeTitle(null)).toBe('No audio output');
+    const b = await withVolume({ volume: null });
+    const state = await b.getDockState();
+    expect(state.volume).toBeNull();
+    expect(item(state, 'fixed:volume').title).toBe('No audio output');
+  });
+
+  it('setVolume emits a state only for a different reading, whatever the setting', async () => {
+    const b = fast();
+    const states = recordStates(b);
+    b.setVolume({ ...DEMO_VOLUME });
+    expect(states).toHaveLength(0);
+    b.setVolume({ percent: 30, muted: false });
+    b.setVolume({ percent: 30, muted: true });
+    b.setVolume(null);
+    b.setVolume(null);
+    expect(states.map((s) => s.volume)).toEqual([
+      { percent: 30, muted: false },
+      { percent: 30, muted: true },
+      null,
+    ]);
+  });
+
+  it('a click opens Quick Settings', async () => {
+    const b = await withVolume();
+    await b.primaryClick('fixed:volume');
+    expect(b.calls).toEqual([{ type: 'shell', action: 'openQuickSettings' }]);
+  });
+
+  it('every notch over it steps the volume by 2, with scrollAction none or cycleWindows', async () => {
+    const b = await withVolume();
+    expect((await b.getSettings()).behavior.scrollAction).toBe('none');
+    expect(VOLUME_STEP).toBe(2);
+    for (let n = 0; n < 3; n += 1) {
+      await b.scrollItem('fixed:volume', 'previous');
+    }
+    expect((await b.getDockState()).volume).toEqual({ percent: 66, muted: false });
+    await b.scrollItem('fixed:volume', 'next');
+    let state = await b.getDockState();
+    expect(state.volume).toEqual({ percent: 64, muted: false });
+    expect(item(state, 'fixed:volume').title).toBe('Volume 64 %');
+    expect(volumeCalls(b)).toEqual([
+      { type: 'setVolume', percent: 62 },
+      { type: 'setVolume', percent: 64 },
+      { type: 'setVolume', percent: 66 },
+      { type: 'setVolume', percent: 64 },
+    ]);
+
+    const settings = await b.getSettings();
+    settings.behavior.scrollAction = 'cycleWindows';
+    await b.updateSettings(settings);
+    await b.scrollItem('fixed:volume', 'next');
+    state = await b.getDockState();
+    expect(state.volume).toEqual({ percent: 62, muted: false });
+    // No window was brought forward by any of it.
+    expect(b.calls.some((c) => c.type === 'windowAction')).toBe(false);
+  });
+
+  it('a notch up unmutes, the range is clamped, and nothing happens without a device', async () => {
+    expect(volumeStep({ percent: 99, muted: true }, 'previous')).toEqual({
+      percent: 100,
+      muted: false,
+    });
+    expect(volumeStep({ percent: 1, muted: true }, 'next')).toEqual({ percent: 0, muted: true });
+    expect(volumeStep({ percent: 0, muted: false }, 'next')).toEqual({ percent: 0, muted: false });
+
+    const b = await withVolume({ volume: { percent: 99, muted: true } });
+    await b.scrollItem('fixed:volume', 'previous');
+    expect((await b.getDockState()).volume).toEqual({ percent: 100, muted: false });
+    // At the top: nothing more is asked.
+    await b.scrollItem('fixed:volume', 'previous');
+    expect(volumeCalls(b)).toEqual([
+      { type: 'setVolume', percent: 100 },
+      { type: 'setVolumeMuted', muted: false },
+    ]);
+    // Muted near the bottom: down keeps the mute.
+    b.setVolume({ percent: 1, muted: true });
+    await b.scrollItem('fixed:volume', 'next');
+    await b.scrollItem('fixed:volume', 'next');
+    expect((await b.getDockState()).volume).toEqual({ percent: 0, muted: true });
+    expect(volumeCalls(b)).toHaveLength(3);
+
+    // No device: the notch resolves and asks nothing.
+    b.setVolume(null);
+    await b.scrollItem('fixed:volume', 'previous');
+    expect(volumeCalls(b)).toHaveLength(3);
+    expect((await b.getDockState()).volume).toBeNull();
+    // The item off: its key is unknown, as for a click.
+    const settings = await b.getSettings();
+    settings.items.volume = false;
+    await b.updateSettings(settings);
+    await expect(b.scrollItem('fixed:volume', 'next')).rejects.toBe(
+      'unknown dock item: fixed:volume',
+    );
+  });
+
+  it('the menu’s Mute and Unmute change the mute; without a device they reject', async () => {
+    const b = await withVolume();
+    const states = recordStates(b);
+    await b.chooseVolumeMute(true);
+    expect(states.at(-1)?.volume).toEqual({ percent: 60, muted: true });
+    expect(item(states.at(-1)!, 'fixed:volume').title).toBe('Volume muted');
+    await b.chooseVolumeMute(false);
+    expect((await b.getDockState()).volume).toEqual({ percent: 60, muted: false });
+    b.setVolume(null);
+    await expect(b.chooseVolumeMute(true)).rejects.toBe('no audio output device');
+    expect(volumeCalls(b)).toEqual([
+      { type: 'setVolumeMuted', muted: true },
+      { type: 'setVolumeMuted', muted: false },
+      { type: 'setVolumeMuted', muted: true },
+    ]);
+  });
+
+  it('validateSettings gives a document without the flag its default, as serde does', () => {
+    const old = defaultSettings();
+    old.items.volume = true;
+    const { volume: _dropped, ...withoutVolume } = old.items;
+    expect(_dropped).toBe(true);
+    const validated = validateSettings({
+      ...old,
+      items: withoutVolume as Settings['items'],
+    });
+    expect(validated.items.volume).toBe(false);
+    expect(validated.items.launcher).toBe(true);
+    expect(validateSettings(old).items.volume).toBe(true);
   });
 });
 

@@ -16,8 +16,9 @@
 //! `ctx:launch:<appId>`, `ctx:pin:<appId>`, `ctx:unpin:<appId>`,
 //! `ctx:hide:<appId>`, `ctx:close-all:<dockLabel>:<appId>` (the
 //! dock whose windows it closes; dock labels have no `:`, app ids may),
-//! `ctx:shell:<shellAction>` (camelCase, as serialised), `ctx:settings`,
-//! `ctx:quit`. Everything starts with `ctx:` because the tray's items
+//! `ctx:shell:<shellAction>` (camelCase, as serialised), `ctx:mute:on` and
+//! `ctx:mute:off` (the volume item's *Mute* and *Unmute*),
+//! `ctx:settings`, `ctx:quit`. Everything starts with `ctx:` because the tray's items
 //! (`tray.rs`) share the same global event stream and must not collide; ids
 //! without the prefix are not ours and are ignored.
 //!
@@ -41,7 +42,9 @@
 
 use std::sync::Arc;
 
-use stem_core::{AppId, DockItem, DockItemKind, Settings, ShellAction, WindowAction, WindowId};
+use stem_core::{
+    AppId, DockItem, DockItemKind, Settings, ShellAction, VolumeStatus, WindowAction, WindowId,
+};
 use stem_service::{DockService, ServiceResult};
 use tauri::menu::{ContextMenu, Menu, MenuBuilder, MenuEvent, MenuItemBuilder};
 use tauri::{AppHandle, Manager, PhysicalPosition, State, WebviewWindow, Wry};
@@ -90,7 +93,8 @@ pub(crate) fn show_item_menu(
             .dock_item(&item_key, dock)
             .ok_or_else(|| format!("unknown dock item: {item_key}"))?;
         let settings = service.0.settings();
-        let Some(menu) = item_menu(&app, &item, &settings, dock)? else {
+        let volume = service.0.volume();
+        let Some(menu) = item_menu(&app, &item, &settings, dock, volume)? else {
             log::debug!("no context menu for {item_key}");
             return Ok(());
         };
@@ -185,12 +189,14 @@ fn popup(
 // ---------------------------------------------------------------------------
 
 /// The menu for `item` as the dock window `dock` lists it, or `None` for
-/// items that have none (separators).
+/// items that have none (separators). `volume` is the engine's last volume
+/// reading, for the volume item's *Mute* or *Unmute*.
 fn item_menu(
     app: &AppHandle,
     item: &DockItem,
     settings: &Settings,
     dock: &str,
+    volume: Option<VolumeStatus>,
 ) -> Result<Option<Menu<Wry>>, String> {
     let menu = MenuBuilder::new(app);
     let menu = match item.kind {
@@ -209,6 +215,7 @@ fn item_menu(
             ShellAction::OpenNotificationCenter,
             "Open Notification Center",
         ),
+        DockItemKind::Volume => volume_entries(app, menu, volume)?,
         // The panel a click opens, then the Settings page behind it.
         DockItemKind::Battery => {
             let menu = shell_entry(menu, ShellAction::OpenQuickSettings, "Open Quick Settings");
@@ -259,6 +266,38 @@ fn tail(menu: Builder<'_>) -> Builder<'_> {
 
 fn shell_entry<'a>(menu: Builder<'a>, action: ShellAction, text: &str) -> Builder<'a> {
     menu.text(MenuAction::Shell(action).id(), text)
+}
+
+/// The volume item: *Mute*, or *Unmute* while the engine's last
+/// reading says muted (disabled without an output device, to show the
+/// entry is not missing), then the Settings app's sound page and its volume
+/// mixer.
+fn volume_entries<'a>(
+    app: &AppHandle,
+    menu: Builder<'a>,
+    volume: Option<VolumeStatus>,
+) -> Result<Builder<'a>, String> {
+    let menu = match volume {
+        Some(v) => menu.text(MenuAction::Mute(!v.muted).id(), mute_text(!v.muted)),
+        None => {
+            let mute = MenuItemBuilder::with_id(MenuAction::Mute(true).id(), mute_text(true))
+                .enabled(false)
+                .build(app)
+                .map_err(|e| e.to_string())?;
+            menu.item(&mute)
+        }
+    };
+    let menu = shell_entry(menu, ShellAction::OpenSoundSettings, "Sound settings");
+    Ok(shell_entry(
+        menu,
+        ShellAction::OpenVolumeMixer,
+        "Volume mixer",
+    ))
+}
+
+/// The text of the entry that mutes (`true`) or unmutes the output.
+fn mute_text(mute: bool) -> &'static str {
+    if mute { "Mute" } else { "Unmute" }
 }
 
 /// An app item: its windows (activate), *New window*, *Pin* / *Unpin*,
@@ -372,6 +411,9 @@ enum MenuAction {
         app: AppId,
     },
     Shell(ShellAction),
+    /// Mute (`true`) or unmute the default output device (the
+    /// volume item).
+    Mute(bool),
     Settings,
     Quit,
 }
@@ -388,6 +430,8 @@ impl MenuAction {
                 format!("{ID_PREFIX}close-all:{dock}:{}", app.as_str())
             }
             Self::Shell(action) => format!("{ID_PREFIX}shell:{}", shell_action_name(*action)),
+            Self::Mute(true) => format!("{ID_PREFIX}mute:on"),
+            Self::Mute(false) => format!("{ID_PREFIX}mute:off"),
             Self::Settings => format!("{ID_PREFIX}settings"),
             Self::Quit => format!("{ID_PREFIX}quit"),
         }
@@ -418,6 +462,11 @@ impl MenuAction {
                 })
             }),
             "shell" => parse_shell_action(arg).map(Self::Shell),
+            "mute" => match arg {
+                "on" => Some(Self::Mute(true)),
+                "off" => Some(Self::Mute(false)),
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -480,9 +529,10 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
 /// Whether choosing `action` supersedes the window the focus shortcut would
 /// go back to (docs/ipc/keyboard-entry.md), as a click does: an
 /// entry that activates, launches or acts on windows does; pinning,
-/// unpinning and hiding only edit the settings, and the settings
-/// and quit entries act on Stem itself, so those do not. Exhaustive, so
-/// that a new entry has to be decided here.
+/// unpinning and hiding only edit the settings, muting
+/// touches no window, and the settings and quit entries act on Stem
+/// itself, so those do not. Exhaustive, so that a new entry has to be
+/// decided here.
 fn supersedes_focus(action: &MenuAction) -> bool {
     match action {
         MenuAction::Activate(_)
@@ -492,6 +542,7 @@ fn supersedes_focus(action: &MenuAction) -> bool {
         MenuAction::Pin(_)
         | MenuAction::Unpin(_)
         | MenuAction::Hide(_)
+        | MenuAction::Mute(_)
         | MenuAction::Settings
         | MenuAction::Quit => false,
     }
@@ -506,6 +557,7 @@ fn perform(service: &DockService, action: &MenuAction) -> ServiceResult<()> {
         MenuAction::Hide(app) => service.hide_app(app),
         MenuAction::CloseAll { dock, app } => close_all(service, dock, app),
         MenuAction::Shell(shell) => service.shell_action(*shell),
+        MenuAction::Mute(muted) => service.set_volume_muted(*muted),
         // Handled on the main thread by `on_menu_event`.
         MenuAction::Settings | MenuAction::Quit => Ok(()),
     }
@@ -558,6 +610,10 @@ mod tests {
             MenuAction::Shell(ShellAction::OpenNotificationCenter),
             MenuAction::Shell(ShellAction::OpenDateTimeSettings),
             MenuAction::Shell(ShellAction::OpenPowerSettings),
+            MenuAction::Shell(ShellAction::OpenSoundSettings),
+            MenuAction::Shell(ShellAction::OpenVolumeMixer),
+            MenuAction::Mute(true),
+            MenuAction::Mute(false),
             MenuAction::Settings,
             MenuAction::Quit,
         ];
@@ -586,6 +642,18 @@ mod tests {
             MenuAction::Shell(ShellAction::OpenPowerSettings).id(),
             "ctx:shell:openPowerSettings"
         );
+        assert_eq!(
+            MenuAction::Shell(ShellAction::OpenSoundSettings).id(),
+            "ctx:shell:openSoundSettings"
+        );
+        assert_eq!(
+            MenuAction::Shell(ShellAction::OpenVolumeMixer).id(),
+            "ctx:shell:openVolumeMixer"
+        );
+        assert_eq!(MenuAction::Mute(true).id(), "ctx:mute:on");
+        assert_eq!(MenuAction::Mute(false).id(), "ctx:mute:off");
+        assert_eq!(mute_text(true), "Mute");
+        assert_eq!(mute_text(false), "Unmute");
         assert_eq!(MenuAction::Activate(WindowId(7)).id(), "ctx:activate:7");
         assert_eq!(
             MenuAction::Hide(AppId("exe:c:/windows/notepad.exe".into())).id(),
@@ -619,6 +687,10 @@ mod tests {
             "ctx:close-all:dock",
             "ctx:close-all:dock:",
             "ctx:close-all::exe:c:/a.exe",
+            "ctx:mute",
+            "ctx:mute:",
+            "ctx:mute:true",
+            "ctx:mute:On",
         ] {
             assert_eq!(MenuAction::parse(id), None, "{id}");
         }
@@ -637,6 +709,8 @@ mod tests {
             },
             MenuAction::Shell(ShellAction::OpenStartMenu),
             MenuAction::Shell(ShellAction::EmptyRecycleBin),
+            MenuAction::Shell(ShellAction::OpenSoundSettings),
+            MenuAction::Shell(ShellAction::OpenVolumeMixer),
         ] {
             assert!(supersedes_focus(&action), "{action:?}");
         }
@@ -646,6 +720,9 @@ mod tests {
             MenuAction::Pin(notepad()),
             MenuAction::Unpin(notepad()),
             MenuAction::Hide(notepad()),
+            // The volume's mute touches no window.
+            MenuAction::Mute(true),
+            MenuAction::Mute(false),
             MenuAction::Settings,
             MenuAction::Quit,
         ] {
