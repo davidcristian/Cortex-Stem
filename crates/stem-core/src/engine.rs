@@ -24,7 +24,8 @@
 //!   only touch facts outside the snapshot (theme, launch targets, identities
 //!   of apps that are not shown) never bump the revision. Nor does a reading
 //!   no shown item uses: `power` counts only while the battery item
-//!   is shown, `volume` only while the volume item is (`renders_differently`).
+//!   is shown, or when it brings or takes that item, `volume` only while the
+//!   volume item is (`renders_differently`).
 //!   The monitor list
 //!   is such a fact too, except that a `MonitorsChanged` bumps the revision
 //!   when it moves a fullscreen verdict that names no monitor to another
@@ -45,7 +46,9 @@
 //! - `power` is the platform's last reading, stored as is and part
 //!   of the snapshot whatever the settings say; it also decides whether the
 //!   battery item exists (only with a system battery) and its title. A new
-//!   reading changes the snapshot only while the battery item is shown;
+//!   reading changes the snapshot only while the battery item is shown, or
+//!   when it brings or takes that item (`has_battery` flipping with
+//!   `items.battery` on);
 //! - `volume` is the platform's last reading of the default output
 //!   device's volume, stored as is (`None`: no device) and part of the
 //!   snapshot whatever the settings say; it gives the volume item its
@@ -116,8 +119,11 @@ pub struct EngineOutcome {
     /// [`DockEngine::theme`], settings that do not alter items, or
     /// identities of apps that are not shown leave this `false` and do not
     /// advance the revision. So does a new power reading while the battery
-    /// item is not shown and a new volume reading while the volume item is
-    /// not: the snapshot carries them, but no shown item draws them.
+    /// item is not shown, unless it brings that item (`has_battery` turning
+    /// on with `items.battery` on), and a new volume reading while the volume
+    /// item is not: the snapshot carries them, but no shown item
+    /// draws them. (The volume item is shown whenever its setting is on, so
+    /// no reading brings or takes it.)
     /// So does a change of [`DockEngine::monitors`],
     /// unless it moves a fullscreen verdict that names no monitor to another
     /// dock (the primary changed, or the list emptied, or it was reordered

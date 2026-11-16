@@ -34,7 +34,8 @@ docks: Array<DockFacts>,
  * `PlatformEvent::PowerChanged`, whatever the settings say; every field
  * `false` and no percent until the first one. The battery item's face
  * is drawn from it. A new reading alone bumps the revision only while
- * the battery item is shown.
+ * the battery item is shown, or when it brings or takes that item
+ * (`hasBattery` flipping with `items.battery` on).
  */
 power: PowerStatus, 
 /**
