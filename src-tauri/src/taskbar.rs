@@ -44,15 +44,18 @@
 //! Not tracked: the user flipping Windows' own setting while Stem runs; the
 //! restore puts back the marker's state.
 
-use std::fmt;
-use std::path::{Path, PathBuf};
+mod marker;
+#[cfg(test)]
+mod tests;
 
 use parking_lot::Mutex;
 use stem_core::Settings;
-use stem_platform::rules::taskbar::{Marker, Plan, plan, plan_exit};
+use stem_platform::rules::taskbar::{Plan, plan, plan_exit};
 use stem_platform::{Platform, is_mock};
 use stem_service::DockService;
 use tauri::{AppHandle, Manager};
+
+use marker::MarkerStore;
 
 use crate::{AppService, on_off};
 
@@ -68,21 +71,6 @@ struct TaskbarSync {
     /// overlap.
     running: Mutex<()>,
     marker: MarkerStore,
-}
-
-/// Where the marker is kept.
-#[derive(Debug)]
-enum MarkerStore {
-    File(PathBuf),
-    /// The mock platform: in memory, so demo runs leave the disk alone.
-    Memory(Mutex<Option<Marker>>),
-}
-
-/// The marker file's document.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct MarkerFile {
-    previous_auto_hide: bool,
 }
 
 /// Find where the marker lives and bring the taskbar in line with the
@@ -228,158 +216,5 @@ impl TaskbarSync {
                 ),
             }
         }
-    }
-}
-
-impl MarkerStore {
-    /// The marker as it is; a file that cannot be read or parsed counts as
-    /// absent, after a warning (the next write replaces it).
-    fn read(&self) -> Option<Marker> {
-        match self {
-            Self::File(path) => read_marker(path),
-            Self::Memory(marker) => *marker.lock(),
-        }
-    }
-
-    fn write(&self, marker: Marker) -> std::io::Result<()> {
-        match self {
-            Self::File(path) => write_marker(path, marker),
-            Self::Memory(slot) => {
-                *slot.lock() = Some(marker);
-                Ok(())
-            }
-        }
-    }
-
-    /// Idempotent: a marker that is already gone is fine.
-    fn delete(&self) -> std::io::Result<()> {
-        match self {
-            Self::File(path) => match std::fs::remove_file(path) {
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                result => result,
-            },
-            Self::Memory(slot) => {
-                *slot.lock() = None;
-                Ok(())
-            }
-        }
-    }
-}
-
-impl fmt::Display for MarkerStore {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::File(path) => write!(f, "{}", path.display()),
-            Self::Memory(_) => f.write_str("<memory>"),
-        }
-    }
-}
-
-fn read_marker(path: &Path) -> Option<Marker> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
-        Err(e) => {
-            log::warn!(
-                "taskbar: could not read the marker {} ({e}); counting it as absent",
-                path.display()
-            );
-            return None;
-        }
-    };
-    match serde_json::from_str::<MarkerFile>(&text) {
-        Ok(file) => Some(Marker {
-            previous_auto_hide: file.previous_auto_hide,
-        }),
-        Err(e) => {
-            log::warn!(
-                "taskbar: the marker {} is not valid ({e}); counting it as absent",
-                path.display()
-            );
-            None
-        }
-    }
-}
-
-/// Atomic (temp file + rename), like the settings file: a crash in the
-/// middle must not leave a half-written marker that reads as absent.
-fn write_marker(path: &Path, marker: Marker) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let json = serde_json::to_string_pretty(&MarkerFile {
-        previous_auto_hide: marker.previous_auto_hide,
-    })?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, json)?;
-    std::fs::rename(&tmp, path)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn scratch_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("stem-taskbar-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        dir
-    }
-
-    #[test]
-    fn the_marker_file_round_trips_in_the_documented_shape() {
-        let dir = scratch_dir("round-trip");
-        let store = MarkerStore::File(dir.join("nested").join(MARKER_FILE_NAME));
-        assert_eq!(store.read(), None);
-        store
-            .write(Marker {
-                previous_auto_hide: true,
-            })
-            .unwrap();
-        let text = std::fs::read_to_string(dir.join("nested").join(MARKER_FILE_NAME)).unwrap();
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&text).unwrap(),
-            serde_json::json!({ "previousAutoHide": true })
-        );
-        assert!(!dir.join("nested").join("taskbar.json.tmp").exists());
-        assert_eq!(
-            store.read(),
-            Some(Marker {
-                previous_auto_hide: true,
-            })
-        );
-        store.delete().unwrap();
-        assert_eq!(store.read(), None);
-        store.delete().unwrap();
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn an_invalid_marker_file_counts_as_absent() {
-        let dir = scratch_dir("invalid");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(MARKER_FILE_NAME);
-        std::fs::write(&path, "{ not json").unwrap();
-        assert_eq!(MarkerStore::File(path).read(), None);
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn the_memory_store_holds_one_marker_and_touches_no_file() {
-        let store = MarkerStore::Memory(Mutex::new(None));
-        assert_eq!(store.read(), None);
-        store
-            .write(Marker {
-                previous_auto_hide: false,
-            })
-            .unwrap();
-        assert_eq!(
-            store.read(),
-            Some(Marker {
-                previous_auto_hide: false,
-            })
-        );
-        store.delete().unwrap();
-        assert_eq!(store.read(), None);
-        assert_eq!(store.to_string(), "<memory>");
     }
 }
