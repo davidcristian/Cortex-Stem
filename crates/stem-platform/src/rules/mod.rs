@@ -23,3 +23,4 @@ pub mod recycle;
 pub mod shell;
 pub mod taskbar;
 pub mod theme;
+pub mod wide;

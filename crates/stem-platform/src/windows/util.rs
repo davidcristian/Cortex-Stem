@@ -8,6 +8,9 @@ use windows::Win32::System::Com::{
 use windows::core::PCWSTR;
 
 use crate::PlatformError;
+/// `to_wide` and `from_wide` are pure (`rules::wide`, unit-tested on every
+/// host); they are re-exported here, where the Windows code looks for them.
+pub use crate::rules::wide::{from_wide, to_wide};
 
 /// `WindowId` -> `HWND`. The id is the raw handle value.
 pub fn hwnd(id: WindowId) -> HWND {
@@ -33,21 +36,9 @@ impl From<windows::core::Error> for PlatformError {
     }
 }
 
-/// Build a NUL-terminated UTF-16 buffer for a `PCWSTR` argument.
-/// Keep the returned `Vec` alive for as long as the pointer is used.
-pub fn to_wide(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain(std::iter::once(0)).collect()
-}
-
 /// Pointer into a buffer produced by [`to_wide`].
 pub fn pcwstr(buf: &[u16]) -> PCWSTR {
     PCWSTR(buf.as_ptr())
-}
-
-/// Decode a UTF-16 buffer up to the first NUL (or its end).
-pub fn from_wide(buf: &[u16]) -> String {
-    let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-    String::from_utf16_lossy(&buf[..end])
 }
 
 /// RAII guard for a COM single-threaded apartment on the current thread.
@@ -82,14 +73,6 @@ impl Drop for ComApartment {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn wide_round_trip() {
-        let w = to_wide("Stem ✓");
-        assert_eq!(w.last(), Some(&0));
-        assert_eq!(from_wide(&w), "Stem ✓");
-        assert_eq!(from_wide(&[0x44, 0x6f, 0x00, 0x63]), "Do");
-    }
 
     #[test]
     fn window_id_round_trip() {
