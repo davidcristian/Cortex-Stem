@@ -29,12 +29,12 @@
 //! - `WM_SETTINGCHANGE` ("ImmersiveColorSet") and `WM_DWMCOLORIZATIONCOLORCHANGED`
 //!   -> `ThemeChanged` (via `theme::current_theme`).
 //! - Clock format: `WM_SETTINGCHANGE` whose `lParam` names the
-//!   `intl` area (`locale::is_intl_area`; the window procedure copies at
+//!   `intl` area (`rules::locale::is_intl_area`; the window procedure copies at
 //!   most [`SETTING_AREA_MAX`] units of the string out while it is valid)
 //!   re-reads `locale::current` at once and once more
 //!   [`CLOCK_FORMAT_RECHECK`] later (one one-shot timer, re-armed by each
 //!   such broadcast), and emits `ClockFormatChanged` only when the reading
-//!   differs from the last one emitted (`locale::ChangeFilter`); the first
+//!   differs from the last one emitted (`rules::locale::ChangeFilter`); the first
 //!   reading is emitted right after the start snapshot, after the power
 //!   reading. The second read is there because Microsoft does not document
 //!   that the process's copy of the user's locale data is current when the
@@ -281,6 +281,7 @@ use super::{
 use crate::rules::events::{
     self as rules, DesktopSwitchDetector, Intent, TitleDebouncer, TopLevel,
 };
+use crate::rules::locale as locale_rules;
 use crate::rules::recheck::{self, Check, RecheckSchedule, Scheduled};
 use crate::{EventSink, PlatformError, PlatformResult};
 
@@ -870,7 +871,7 @@ struct ThreadState {
     /// notification; `None` before the first.
     notified_saver: Option<bool>,
     /// The regional-format readings already emitted.
-    clock_format: locale::ChangeFilter,
+    clock_format: locale_rules::ChangeFilter,
     _hooks: Vec<WinEventHook>,
     /// Before `_window`: unregistered while the window still exists.
     _power_notifications: Vec<PowerNotification>,
@@ -922,7 +923,7 @@ impl ThreadState {
             last_theme: None,
             power: power::ChangeFilter::default(),
             notified_saver: None,
-            clock_format: locale::ChangeFilter::default(),
+            clock_format: locale_rules::ChangeFilter::default(),
             _hooks: hooks,
             _power_notifications: power_notifications,
             _window: window,
@@ -1644,7 +1645,7 @@ unsafe fn power_setting_saver(lparam: LPARAM) -> Option<bool> {
 }
 
 /// Whether the area a `WM_SETTINGCHANGE` names is `intl`:
-/// `locale::is_intl_area` of the string behind `lparam`, read while the
+/// `rules::locale::is_intl_area` of the string behind `lparam`, read while the
 /// window procedure runs, unit by unit up to its NUL and at most
 /// [`SETTING_AREA_MAX`] units, without assuming alignment; `false` for a
 /// NULL `lparam` and for a name not ended within the bound.
@@ -1666,7 +1667,7 @@ unsafe fn setting_is_intl(lparam: LPARAM) -> bool {
         // most its terminator) and readable. Read unaligned.
         let unit = unsafe { at.read_unaligned() };
         if unit == 0 {
-            return locale::is_intl_area(&area[..i]);
+            return locale_rules::is_intl_area(&area[..i]);
         }
         *slot = unit;
     }
