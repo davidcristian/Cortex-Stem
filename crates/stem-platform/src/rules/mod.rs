@@ -15,6 +15,7 @@ pub mod hit_region;
 pub mod icons;
 pub mod identity;
 pub mod locale;
+pub mod power;
 pub mod process_access;
 pub mod recheck;
 pub mod recycle;

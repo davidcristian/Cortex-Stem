@@ -29,14 +29,14 @@
 //! - `WM_SETTINGCHANGE` ("ImmersiveColorSet") and `WM_DWMCOLORIZATIONCOLORCHANGED`
 //!   -> `ThemeChanged` (via `theme::current_theme`).
 //! - Clock format: `WM_SETTINGCHANGE` whose `lParam` names the
-//!   `intl` area (`rules::locale::is_intl_area`; the window procedure copies at
-//!   most [`SETTING_AREA_MAX`] units of the string out while it is valid)
-//!   re-reads `locale::current` at once and once more
+//!   `intl` area (`rules::locale::is_intl_area`; the window procedure
+//!   copies at most [`SETTING_AREA_MAX`] units of the string out while it
+//!   is valid) re-reads `locale::current` at once and once more
 //!   [`CLOCK_FORMAT_RECHECK`] later (one one-shot timer, re-armed by each
 //!   such broadcast), and emits `ClockFormatChanged` only when the reading
-//!   differs from the last one emitted (`rules::locale::ChangeFilter`); the first
-//!   reading is emitted right after the start snapshot, after the power
-//!   reading. The second read is there because Microsoft does not document
+//!   differs from the last one emitted (`rules::locale::ChangeFilter`); the
+//!   first reading is emitted right after the start snapshot, after the
+//!   power reading. The second read is there because Microsoft does not document
 //!   that the process's copy of the user's locale data is current when the
 //!   broadcast arrives: a stale first read would equal the last reading and
 //!   be dropped. Debug line per emission: `clock format: <reading>
@@ -95,15 +95,16 @@
 //!   still arrives). `WM_POWERBROADCAST` with `PBT_POWERSETTINGCHANGE`,
 //!   `PBT_APMPOWERSTATUSCHANGE` or `PBT_APMRESUMEAUTOMATIC` re-reads
 //!   `power::current` and emits `PowerChanged` only when the reading differs
-//!   from the last one emitted (`power::ChangeFilter`); the first reading is
-//!   emitted right after the start snapshot. The procedure answers `TRUE`.
+//!   from the last one emitted (`rules::power::ChangeFilter`); the first
+//!   reading is emitted right after the start snapshot. The procedure
+//!   answers `TRUE`.
 //!   For a `PBT_POWERSETTINGCHANGE` it copies one value out of `lParam` (a
 //!   `POWERBROADCAST_SETTING`, valid only during the call; at most
 //!   [`POWER_SETTING_DATA_MAX`] bytes of data are looked at): the battery
 //!   saver state of a `GUID_POWER_SAVING_STATUS` notification
-//!   (`power::notified_saver`), posted with the code. From then on the last
-//!   such value takes the place of `SystemStatusFlag` in every reading
-//!   (`power::with_notified_saver`): Microsoft documents
+//!   (`rules::power::notified_saver`), posted with the code. From then on
+//!   the last such value takes the place of `SystemStatusFlag` in every reading
+//!   (`rules::power::with_notified_saver`): Microsoft documents
 //!   `PBT_APMPOWERSTATUSCHANGE` for power-source and battery-level changes
 //!   only, so nothing is known to follow a saver toggle that would correct
 //!   a `SystemStatusFlag` read too early. Debug lines:
@@ -266,10 +267,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     HSHELL_APPCOMMAND, HSHELL_ENDTASK, HSHELL_GETMINRECT, HSHELL_HIGHBIT, HSHELL_LANGUAGE,
     HSHELL_MONITORCHANGED, HSHELL_REDRAW, HSHELL_SYSMENU, HSHELL_TASKMAN, HSHELL_WINDOWACTIVATED,
     HSHELL_WINDOWCREATED, HSHELL_WINDOWDESTROYED, HSHELL_WINDOWREPLACED, HSHELL_WINDOWREPLACING,
-    KillTimer, MSG, OBJID_WINDOW, PBT_APMPOWERSTATUSCHANGE, PBT_APMRESUMEAUTOMATIC,
-    PBT_POWERSETTINGCHANGE, PostThreadMessageW, RegisterClassExW, RegisterShellHookWindow,
-    RegisterWindowMessageW, SPI_SETWORKAREA, SetTimer, TranslateMessage, UnregisterClassW,
-    WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_APP, WM_DISPLAYCHANGE,
+    KillTimer, MSG, OBJID_WINDOW, PBT_POWERSETTINGCHANGE, PostThreadMessageW, RegisterClassExW,
+    RegisterShellHookWindow, RegisterWindowMessageW, SPI_SETWORKAREA, SetTimer, TranslateMessage,
+    UnregisterClassW, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_APP, WM_DISPLAYCHANGE,
     WM_DWMCOLORIZATIONCOLORCHANGED, WM_POWERBROADCAST, WM_QUIT, WM_SETTINGCHANGE, WM_THEMECHANGED,
     WM_TIMER, WNDCLASSEXW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
 };
@@ -282,6 +282,7 @@ use crate::rules::events::{
     self as rules, DesktopSwitchDetector, Intent, TitleDebouncer, TopLevel,
 };
 use crate::rules::locale as locale_rules;
+use crate::rules::power as power_rules;
 use crate::rules::recheck::{self, Check, RecheckSchedule, Scheduled};
 use crate::{EventSink, PlatformError, PlatformResult};
 
@@ -335,7 +336,8 @@ const MSG_DISPLAYCHANGE: u32 = WM_APP + 5;
 const MSG_LOCATIONCHANGE: u32 = WM_APP + 6;
 /// A `WM_POWERBROADCAST` that may change the power reading;
 /// `wParam` = the `PBT_*` code, `lParam` = the battery-saver state a
-/// `GUID_POWER_SAVING_STATUS` notification carried ([`saver_to_lparam`]).
+/// `GUID_POWER_SAVING_STATUS` notification carried
+/// (`rules::power::saver_to_lparam`).
 const MSG_POWERCHANGE: u32 = WM_APP + 7;
 
 /// `MSG_SETTINGCHANGE`'s `lParam` for a `WM_SETTINGCHANGE` that named the
@@ -349,8 +351,8 @@ const SETTING_AREA_MAX: usize = 32;
 
 /// The most bytes of a `POWERBROADCAST_SETTING`'s data the window procedure
 /// looks at. The one value it reads is a `DWORD`; a larger
-/// `DataLength` is cut to this, which [`power::notified_saver`] then rejects
-/// as not a `DWORD`.
+/// `DataLength` is cut to this, which `rules::power::notified_saver` then
+/// rejects as not a `DWORD`.
 const POWER_SETTING_DATA_MAX: usize = 16;
 
 /// The power settings the hidden window is registered for, with
@@ -866,7 +868,7 @@ struct ThreadState {
     clock_format_timer: Option<ThreadTimer>,
     last_theme: Option<ThemeInfo>,
     /// The power readings already emitted.
-    power: power::ChangeFilter,
+    power: power_rules::ChangeFilter,
     /// The battery-saver state of the last `GUID_POWER_SAVING_STATUS`
     /// notification; `None` before the first.
     notified_saver: Option<bool>,
@@ -921,7 +923,7 @@ impl ThreadState {
             switch_timer: None,
             clock_format_timer: None,
             last_theme: None,
-            power: power::ChangeFilter::default(),
+            power: power_rules::ChangeFilter::default(),
             notified_saver: None,
             clock_format: locale_rules::ChangeFilter::default(),
             _hooks: hooks,
@@ -1008,14 +1010,14 @@ impl ThreadState {
             }
             MSG_LOCATIONCHANGE => self.on_location_change(hwnd),
             MSG_POWERCHANGE => {
-                if let Some(on) = saver_from_lparam(msg.lParam) {
+                if let Some(on) = power_rules::saver_from_lparam(msg.lParam.0) {
                     log::debug!(
                         "GUID_POWER_SAVING_STATUS: battery saver {}",
                         if on { "on" } else { "off" }
                     );
                     self.notified_saver = Some(on);
                 }
-                self.refresh_power(power_broadcast_name(msg.wParam.0 as u32));
+                self.refresh_power(power_rules::power_broadcast_name(msg.wParam.0 as u32));
             }
             WM_TIMER => self.on_timer(msg.wParam.0),
             _ => {}
@@ -1514,7 +1516,7 @@ impl ThreadState {
     fn refresh_power(&mut self, cause: &str) {
         match power::current() {
             Ok(read) => {
-                let status = power::with_notified_saver(read, self.notified_saver);
+                let status = power_rules::with_notified_saver(read, self.notified_saver);
                 if status.saver != read.saver {
                     log::debug!(
                         "SystemStatusFlag says battery saver {}, the last \
@@ -1572,46 +1574,10 @@ impl ThreadState {
     }
 }
 
-/// The `PBT_*` codes of `WM_POWERBROADCAST` that re-read the power status,
-/// by name; `None` for the others (suspend, the older APM codes).
-fn power_broadcast_cause(code: u32) -> Option<&'static str> {
-    match code {
-        PBT_POWERSETTINGCHANGE => Some("PBT_POWERSETTINGCHANGE"),
-        PBT_APMPOWERSTATUSCHANGE => Some("PBT_APMPOWERSTATUSCHANGE"),
-        PBT_APMRESUMEAUTOMATIC => Some("PBT_APMRESUMEAUTOMATIC"),
-        _ => None,
-    }
-}
-
-/// [`power_broadcast_cause`] for a code the window procedure posted.
-fn power_broadcast_name(code: u32) -> &'static str {
-    power_broadcast_cause(code).unwrap_or("WM_POWERBROADCAST")
-}
-
-/// `MSG_POWERCHANGE`'s `lParam` for the battery-saver state a notification
-/// carried: 0 for none (every other broadcast and setting), 1 for
-/// off, 2 for on.
-fn saver_to_lparam(saver: Option<bool>) -> LPARAM {
-    LPARAM(match saver {
-        None => 0,
-        Some(false) => 1,
-        Some(true) => 2,
-    })
-}
-
-/// The inverse of [`saver_to_lparam`]; any other value is none.
-fn saver_from_lparam(lparam: LPARAM) -> Option<bool> {
-    match lparam.0 {
-        1 => Some(false),
-        2 => Some(true),
-        _ => None,
-    }
-}
-
 /// The battery-saver state a `PBT_POWERSETTINGCHANGE` carries:
-/// `power::notified_saver` of the `POWERBROADCAST_SETTING` behind `lparam`,
-/// copied out while the window procedure runs; `None` for a NULL `lparam`
-/// and for every other setting. Reads the header and at most
+/// `rules::power::notified_saver` of the `POWERBROADCAST_SETTING` behind
+/// `lparam`, copied out while the window procedure runs; `None` for a NULL
+/// `lparam` and for every other setting. Reads the header and at most
 /// [`POWER_SETTING_DATA_MAX`] bytes of the data, without assuming alignment.
 ///
 /// # Safety
@@ -1641,7 +1607,7 @@ unsafe fn power_setting_saver(lparam: LPARAM) -> Option<bool> {
     // `length` is no more than that, the bytes are `u8` (no alignment), and
     // the slice is dropped before this function returns.
     let data = unsafe { core::slice::from_raw_parts(data, length) };
-    power::notified_saver(&guid, data)
+    power_rules::notified_saver(guid.to_u128(), data)
 }
 
 /// Whether the area a `WM_SETTINGCHANGE` names is `intl`:
@@ -1789,7 +1755,7 @@ unsafe extern "system" fn event_wndproc(
         // this call, so the one value taken from it, battery saver's new
         // state, is copied out here and posted with the code. TRUE is the
         // documented answer to a processed broadcast.
-        WM_POWERBROADCAST if power_broadcast_cause(wparam.0 as u32).is_some() => {
+        WM_POWERBROADCAST if power_rules::power_broadcast_cause(wparam.0 as u32).is_some() => {
             let saver = if wparam.0 as u32 == PBT_POWERSETTINGCHANGE {
                 // SAFETY: for PBT_POWERSETTINGCHANGE, lParam is the
                 // POWERBROADCAST_SETTING the system passes with this call
@@ -1798,7 +1764,11 @@ unsafe extern "system" fn event_wndproc(
             } else {
                 None
             };
-            post_to_self(MSG_POWERCHANGE, wparam, saver_to_lparam(saver));
+            post_to_self(
+                MSG_POWERCHANGE,
+                wparam,
+                LPARAM(power_rules::saver_to_lparam(saver)),
+            );
             LRESULT(1)
         }
         m if SHELL_HOOK_MESSAGE.get() == Some(&m) => {
@@ -1812,10 +1782,6 @@ unsafe extern "system" fn event_wndproc(
 
 #[cfg(test)]
 mod tests {
-    use windows::Win32::UI::WindowsAndMessaging::{
-        PBT_APMQUERYSUSPEND, PBT_APMRESUMECRITICAL, PBT_APMRESUMESUSPEND, PBT_APMSUSPEND,
-    };
-
     use super::*;
 
     /// `s` as UTF-16 with its NUL, one byte into a buffer, so the string is
@@ -1855,33 +1821,6 @@ mod tests {
     }
 
     #[test]
-    fn the_power_broadcasts_that_re_read_the_status_are_the_contracts_three() {
-        assert_eq!(
-            power_broadcast_cause(PBT_POWERSETTINGCHANGE),
-            Some("PBT_POWERSETTINGCHANGE")
-        );
-        assert_eq!(
-            power_broadcast_cause(PBT_APMPOWERSTATUSCHANGE),
-            Some("PBT_APMPOWERSTATUSCHANGE")
-        );
-        assert_eq!(
-            power_broadcast_cause(PBT_APMRESUMEAUTOMATIC),
-            Some("PBT_APMRESUMEAUTOMATIC")
-        );
-        // Going to sleep, and the resume codes that follow the automatic
-        // one, re-read nothing; the window procedure default-handles them.
-        for code in [
-            PBT_APMSUSPEND,
-            PBT_APMQUERYSUSPEND,
-            PBT_APMRESUMESUSPEND,
-            PBT_APMRESUMECRITICAL,
-        ] {
-            assert_eq!(power_broadcast_cause(code), None, "{code:#x}");
-            assert_eq!(power_broadcast_name(code), "WM_POWERBROADCAST");
-        }
-    }
-
-    #[test]
     fn the_power_settings_are_the_three_the_contract_names() {
         let names: Vec<&str> = POWER_SETTINGS.iter().map(|(_, name)| *name).collect();
         assert_eq!(
@@ -1895,17 +1834,6 @@ mod tests {
         assert_eq!(*POWER_SETTINGS[0].0, GUID_BATTERY_PERCENTAGE_REMAINING);
         assert_eq!(*POWER_SETTINGS[1].0, GUID_ACDC_POWER_SOURCE);
         assert_eq!(*POWER_SETTINGS[2].0, GUID_POWER_SAVING_STATUS);
-    }
-
-    #[test]
-    fn the_posted_battery_saver_state_survives_the_lparam() {
-        for saver in [None, Some(false), Some(true)] {
-            assert_eq!(saver_from_lparam(saver_to_lparam(saver)), saver);
-        }
-        // What every other post carries, and anything unexpected, is none.
-        assert_eq!(saver_from_lparam(LPARAM(0)), None);
-        assert_eq!(saver_from_lparam(LPARAM(3)), None);
-        assert_eq!(saver_from_lparam(LPARAM(-1)), None);
     }
 
     /// A `POWERBROADCAST_SETTING` for `setting` with `length` in its
