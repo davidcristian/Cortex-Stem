@@ -774,6 +774,30 @@ describe('pins (mirror of stem-service pin/unpin/reorder)', () => {
     expect((await b.getSettings()).pinned.filter((p) => p.id === id)).toHaveLength(1);
   });
 
+  it('an order or an unpin that changes nothing saves and sends nothing, as Rust', async () => {
+    const b = fast();
+    const sent: Settings[] = [];
+    b.on('dock://settings', (s) => {
+      sent.push(s);
+    });
+    const states = recordStates(b);
+    const pins = (await b.getSettings()).pinned.map((p) => p.id);
+    // The current order, all of it or a prefix of it, or ids not pinned.
+    await b.reorderPinned(pins);
+    await b.reorderPinned(pins.slice(0, 2));
+    await b.reorderPinned(['exe:c:/nope.exe']);
+    await b.reorderPinned([]);
+    // An unpin of an app that is not pinned is refused and changes nothing.
+    await expect(b.unpinApp(SPOTIFY)).rejects.toMatch(/not pinned/);
+    expect(sent).toHaveLength(0);
+    expect(states).toHaveLength(0);
+    expect(b.calls.filter((c) => c.type === 'reorderPinned')).toHaveLength(4);
+    // A new order is saved and sent once.
+    await b.reorderPinned([pins[1]!, pins[0]!]);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.pinned.map((p) => p.id).slice(0, 2)).toEqual([pins[1], pins[0]]);
+  });
+
   it('records each pin request and each new order, the way the UI asked for them', async () => {
     const b = fast();
     const target = { kind: 'shortcut' as const, path: 'C:\\Links\\Foo.lnk' };

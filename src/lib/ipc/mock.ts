@@ -1988,11 +1988,19 @@ export class MockBackend implements Backend {
     });
   }
 
+  /**
+   * `reorder_pinned`: recorded; an order that changes nothing saves and
+   * sends nothing, as `mutate_settings` does when its edit says it changed
+   * nothing.
+   */
   reorderPinned(order: AppId[]): Promise<void> {
     return this.command(() => {
       this.record({ type: 'reorderPinned', order: [...order] });
       const settings = structuredClone(this.engine.settings);
       settings.pinned = reorderPinned(settings.pinned, order);
+      if (JSON.stringify(settings.pinned) === JSON.stringify(this.engine.settings.pinned)) {
+        return;
+      }
       this.applySettings(settings);
     });
   }
