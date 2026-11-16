@@ -73,6 +73,7 @@ use stem_core::{
     LaunchTarget, MonitorId, MonitorInfo, PlatformEvent, Rect, ScrollDirection, Settings,
     SettingsError, ShellAction, ThemeInfo, WindowAction, WindowId,
 };
+use stem_platform::rules::identity::{exe_icon_key, file_icon_key, is_window_icon_key};
 use stem_platform::{Platform, PlatformError};
 use thiserror::Error;
 
@@ -1128,22 +1129,42 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
 /// the window that stands for the app (`DockEngine::app_window`), else the
 /// file its identity launches (an `exe` or a shortcut); and the icon its
 /// item showed, its identity's else that window's, as the engine picks it
-/// for the item. Pure.
+/// for the item, except a key bound to one window (`hwnd:`,
+/// `rules::identity::is_window_icon_key`), which is never kept: it is saved
+/// for good, and once the window is gone its handle may be another
+/// process's. That file's own icon (`exe:` / `file:`) stands in when the
+/// path is known; else there is none. Pure.
 fn hidden_app_facts(engine: &DockEngine, app_id: &AppId) -> (Option<String>, Option<IconKey>) {
     let window = engine.app_window(app_id);
     let identity = engine.identity(app_id);
-    let path = window
-        .and_then(|w| w.exe_path.as_deref())
-        .or_else(|| match identity.and_then(|i| i.launch.as_ref()) {
-            Some(LaunchTarget::Exe { path, .. } | LaunchTarget::Shortcut { path }) => {
-                Some(path.as_path())
+    let (path, file_icon) = match window.and_then(|w| w.exe_path.as_deref()) {
+        Some(exe) => {
+            let exe = exe.to_string_lossy().into_owned();
+            let icon = exe_icon_key(&exe);
+            (Some(exe), Some(icon))
+        }
+        None => match identity.and_then(|i| i.launch.as_ref()) {
+            Some(LaunchTarget::Exe { path, .. }) => {
+                let path = path.to_string_lossy().into_owned();
+                let icon = exe_icon_key(&path);
+                (Some(path), Some(icon))
             }
-            _ => None,
-        })
-        .map(|path| path.to_string_lossy().into_owned());
-    let icon_key = identity
-        .and_then(|i| i.icon_key.clone())
-        .or_else(|| window.and_then(|w| w.icon_key.clone()));
+            Some(LaunchTarget::Shortcut { path }) => {
+                let path = path.to_string_lossy().into_owned();
+                let icon = file_icon_key(&path);
+                (Some(path), Some(icon))
+            }
+            _ => (None, None),
+        },
+    };
+    let icon_key = [
+        identity.and_then(|i| i.icon_key.clone()),
+        window.and_then(|w| w.icon_key.clone()),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|key| !is_window_icon_key(key))
+    .or(file_icon);
     (path, icon_key)
 }
 
@@ -2800,23 +2821,49 @@ mod tests {
         let id = AppId::for_app_user_model_id(TERMINAL_AUMID);
         assert_eq!(hidden_app_facts(&engine, &id), (None, None));
 
-        // A window without an icon of its own and no identity yet: its path.
+        // A window without an icon of its own and no identity yet: its
+        // path, and the program's own icon.
+        let program_icon = Some(IconKey(format!("exe:{TERMINAL_EXE}")));
         engine.apply(EngineInput::Platform(PlatformEvent::WindowAdded(
             terminal_window(),
         )));
-        assert_eq!(hidden_app_facts(&engine, &id), (Some(exe.into()), None));
-        // With a window icon: that icon.
+        assert_eq!(
+            hidden_app_facts(&engine, &id),
+            (Some(exe.into()), program_icon.clone())
+        );
+        // A window icon (`hwnd:`) is never kept: its handle outlives the
+        // window and may be another process's later.
         let with_icon = RawWindow {
             icon_key: Some(IconKey("hwnd:50:5050".into())),
             ..terminal_window()
         };
         engine.apply(EngineInput::Platform(PlatformEvent::WindowUpdated(
-            with_icon,
+            with_icon.clone(),
         )));
-        assert_eq!(
-            hidden_app_facts(&engine, &id).1,
-            Some(IconKey("hwnd:50:5050".into()))
-        );
+        assert_eq!(hidden_app_facts(&engine, &id).1, program_icon);
+        // Nor is it without a path to stand in: no icon then.
+        let unreadable = RawWindow {
+            id: WindowId(51),
+            exe_path: None,
+            app_user_model_id: None,
+            class_name: "ProtectedClass".into(),
+            icon_key: Some(IconKey("hwnd:51:5151".into())),
+            ..with_icon
+        };
+        let protected = stem_core::app_id_for(&unreadable);
+        engine.apply(EngineInput::Platform(PlatformEvent::WindowAdded(
+            unreadable,
+        )));
+        engine.apply(EngineInput::IdentityResolved {
+            app_id: protected.clone(),
+            identity: AppIdentity {
+                id: protected.clone(),
+                display_name: "Protected".into(),
+                icon_key: Some(IconKey("hwnd:51:5151".into())),
+                launch: None,
+            },
+        });
+        assert_eq!(hidden_app_facts(&engine, &protected), (None, None));
         // The identity's icon wins, as on the item; the path stays the window's.
         engine.apply(EngineInput::IdentityResolved {
             app_id: id.clone(),
@@ -2857,7 +2904,10 @@ mod tests {
         });
         assert_eq!(
             hidden_app_facts(&engine, &foo),
-            (Some(r"C:\Tools\Foo.EXE".into()), None)
+            (
+                Some(r"C:\Tools\Foo.EXE".into()),
+                Some(IconKey(r"exe:C:\Tools\Foo.EXE".into()))
+            )
         );
     }
 

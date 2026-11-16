@@ -237,6 +237,28 @@ pub fn parse_hwnd_icon_value(value: &str) -> Option<u64> {
     id.trim().parse().ok()
 }
 
+/// Whether the window that now has the handle of an `hwnd:` key's `value`
+/// is the one the key was made for: its process (`process_id`, from
+/// `GetWindowThreadProcessId`; 0 when that failed) is the key's. HWND
+/// values are recycled, so a key that outlived its window must not
+/// resolve to another process's window. An older key without a
+/// pid (`<id>` alone) cannot tell and is taken as it is; a pid that does
+/// not parse never matches.
+pub fn hwnd_icon_owner_matches(value: &str, process_id: u32) -> bool {
+    match value.split_once(':') {
+        None => true,
+        Some((_, pid)) if pid.trim().is_empty() => true,
+        Some((_, pid)) => pid.trim().parse::<u32>().is_ok_and(|pid| pid == process_id),
+    }
+}
+
+/// Whether `key` names one window's own icon (`hwnd:`, [`hwnd_icon_key`]):
+/// such a key means nothing once that window is gone, so it is never kept
+/// beyond the window's life (a hidden app's saved icon).
+pub fn is_window_icon_key(key: &IconKey) -> bool {
+    key.0.starts_with("hwnd:")
+}
+
 // ----- Packaged executables ---------------------------------------------------
 
 /// The directory that holds installed packages (`%ProgramFiles%\WindowsApps`,
@@ -819,6 +841,27 @@ mod tests {
         assert_eq!(parse_hwnd_icon_value(""), None);
         assert_eq!(parse_hwnd_icon_value(":4242"), None);
         assert_eq!(parse_hwnd_icon_value("x:1"), None);
+    }
+
+    #[test]
+    fn a_recycled_handle_of_another_process_is_not_the_keys_window() {
+        assert!(hwnd_icon_owner_matches("66:4242", 4242));
+        assert!(!hwnd_icon_owner_matches("66:4242", 777));
+        // GetWindowThreadProcessId failed: no process, no match.
+        assert!(!hwnd_icon_owner_matches("66:4242", 0));
+        // An older key without a pid cannot tell.
+        assert!(hwnd_icon_owner_matches("66", 777));
+        assert!(hwnd_icon_owner_matches("66:", 777));
+        assert!(!hwnd_icon_owner_matches("66:x", 777));
+    }
+
+    #[test]
+    fn only_hwnd_keys_are_bound_to_a_window() {
+        assert!(is_window_icon_key(&hwnd_icon_key(66, 4242)));
+        assert!(!is_window_icon_key(&exe_icon_key(r"C:\a.exe")));
+        assert!(!is_window_icon_key(&aumid_icon_key("X!App")));
+        assert!(!is_window_icon_key(&file_icon_key(r"C:\a.lnk")));
+        assert!(!is_window_icon_key(&IconKey("mock:exe:c:/a.exe".into())));
     }
 
     const TERMINAL_FULL_NAME: &str = "Microsoft.WindowsTerminal_1.24.12741.0_x64__8wekyb3d8bbwe";

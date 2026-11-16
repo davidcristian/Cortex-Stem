@@ -1342,18 +1342,31 @@ class Engine {
    * `hidden_app_facts` in stem-service: the program's path from the
    * app's window (`appWindow`), else the file its identity launches (an
    * `exe` or a `shortcut`); the icon key its item shows, the identity's
-   * else that window's.
+   * else that window's, but never one bound to a window (`hwnd:`), for
+   * which the file's own key (`exe:` / `file:`) stands in when the path is
+   * known.
    */
   hiddenAppFacts(appId: AppId): Pick<HiddenApp, 'path' | 'iconKey'> {
     const window = this.appWindow(appId);
     const identity = this.identities.get(appId);
     const launch = identity?.launch ?? null;
-    const launched =
-      launch !== null && (launch.kind === 'exe' || launch.kind === 'shortcut') ? launch.path : null;
-    return {
-      path: window?.exePath ?? launched,
-      iconKey: identity?.iconKey ?? window?.iconKey ?? null,
-    };
+    let path: string | null = null;
+    let fileIcon: IconKey | null = null;
+    const exePath = window?.exePath ?? null;
+    if (exePath !== null) {
+      path = exePath;
+      fileIcon = `exe:${path}`;
+    } else if (launch?.kind === 'exe') {
+      path = launch.path;
+      fileIcon = `exe:${path}`;
+    } else if (launch?.kind === 'shortcut') {
+      path = launch.path;
+      fileIcon = `file:${path}`;
+    }
+    const kept = [identity?.iconKey ?? null, window?.iconKey ?? null].find(
+      (key): key is IconKey => key !== null && !key.startsWith('hwnd:'),
+    );
+    return { path, iconKey: kept ?? fileIcon };
   }
 
   firstWindowOf(appId: AppId): RawWindow | undefined {

@@ -920,6 +920,37 @@ describe('hidden apps (docs/ipc/hidden-apps.md; mirror of hide_app / unhide_app)
     expect(settingsEvents).toHaveLength(sent);
   });
 
+  it('a window-bound icon key (hwnd:) is never saved: the file icon stands in, else none', async () => {
+    const b = new MockBackend({ latencyMs: [0, 0], identityDelayMs: 60_000, log: false });
+    backends.push(b);
+    const window = (id: number, exePath: string | null, className: string): RawWindow => ({
+      id,
+      title: `${className} main`,
+      className,
+      processId: 7000 + id,
+      exePath,
+      appUserModelId: null,
+      isVisible: true,
+      isMinimized: false,
+      isCloaked: false,
+      onCurrentDesktop: true,
+      monitor: 'mock-primary',
+      rect: null,
+      iconKey: `hwnd:${id}:${7000 + id}`,
+    });
+    b.pushWindow(window(70, 'C:\\Tools\\Seen.exe', 'SeenClass'));
+    b.pushWindow(window(71, null, 'ProtectedClass'));
+    const seen = 'exe:c:/tools/seen.exe';
+    const hiddenClass = 'class:protectedclass';
+    expect(item(await b.getDockState(), app(seen)).iconKey).toBe('hwnd:70:7070');
+    await b.hideApp(seen);
+    await b.hideApp(hiddenClass);
+    expect((await b.getSettings()).hiddenApps).toEqual([
+      hiddenApp(seen, 'SeenClass main', 'C:\\Tools\\Seen.exe', 'exe:C:\\Tools\\Seen.exe'),
+      hiddenApp(hiddenClass, 'ProtectedClass main'),
+    ]);
+  });
+
   it('a pinned or unknown app is refused; pinning a hidden app shows it as a pin', async () => {
     const b = fast();
     await expect(b.hideApp(EXPLORER)).rejects.toMatch(/is pinned/);
@@ -938,9 +969,10 @@ describe('hidden apps (docs/ipc/hidden-apps.md; mirror of hide_app / unhide_app)
     const b = new MockBackend({ latencyMs: [0, 0], identityDelayMs: 60_000, log: false });
     backends.push(b);
     await b.hideApp(CODE);
-    // No identity yet: no icon key either (the demo's windows have none).
+    // No identity yet, and the demo's windows have no icon of their own:
+    // the program's own icon stands in.
     expect((await b.getSettings()).hiddenApps).toEqual([
-      hiddenApp(CODE, 'lib.rs — Stem', CODE_EXE),
+      hiddenApp(CODE, 'lib.rs — Stem', CODE_EXE, `exe:${CODE_EXE}`),
     ]);
   });
 
@@ -970,7 +1002,7 @@ describe('hidden apps (docs/ipc/hidden-apps.md; mirror of hide_app / unhide_app)
     await b.hideApp(tool);
     // The path of the item's window; the cloaked one's would be the same.
     expect((await b.getSettings()).hiddenApps).toEqual([
-      hiddenApp(tool, 'Tool main', 'C:\\Tools\\tool.exe'),
+      hiddenApp(tool, 'Tool main', 'C:\\Tools\\tool.exe', 'exe:C:\\Tools\\tool.exe'),
     ]);
   });
 

@@ -29,9 +29,11 @@ name: string,
 path: string | null, 
 /**
  * The icon the app's item showed when it was hidden. The settings page
- * draws it beside the name. `null` when the item had no icon, or when
- * the entry has no `iconKey` key. The icon of a single window (which an
- * item shows when Windows does not let Stem read the app's own icon)
- * means nothing once that window is gone.
+ * draws it beside the name. Stem never stores the icon of a single
+ * window (which an item shows when Windows does not let Stem read the
+ * app's own icon), because that icon means nothing once the window is
+ * gone; it stores the icon of the file in `path` instead, when `path`
+ * is known. `null` when Stem knew neither an icon of the app nor a
+ * path, or when the entry has no `iconKey` key.
  */
 iconKey: IconKey | null, };

@@ -8,8 +8,10 @@
 //!   dimensions) wins; when it is smaller than the requested size and the
 //!   window's exe is known, the exe chain is tried and its result is used
 //!   if it is larger than the window icon. The process id is part of the
-//!   key because HWND values are recycled; the older two-part `hwnd:<id>`
-//!   form is still accepted (the pid is ignored when loading).
+//!   key because HWND values are recycled: a handle whose window now
+//!   belongs to another process (`GetWindowThreadProcessId`) gives no icon
+//!   (`rules::identity::hwnd_icon_owner_matches`); the older
+//!   two-part `hwnd:<id>` form is still accepted and cannot be checked.
 //! - `exe:<path>` / `file:<path>`: the file's icon. A PE image (`.exe`,
 //!   `.dll`, `.scr`; `rules::icons::is_pe_image_path`) is mapped as a data
 //!   file and its first `RT_GROUP_ICON` (what `ExtractIconW(.., 0)` and the
@@ -113,15 +115,17 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateIconFromResourceEx, GCLP_HICON, GCLP_HICONSM, GET_CLASS_LONG_INDEX, GetClassLongPtrW,
-    GetIconInfo, HICON, ICON_BIG, ICON_SMALL, ICONINFO, IsWindow, LR_DEFAULTCOLOR,
-    PrivateExtractIconsW, RT_GROUP_ICON, RT_ICON, SMTO_ABORTIFHUNG, SendMessageTimeoutW,
-    WM_GETICON,
+    GetIconInfo, GetWindowThreadProcessId, HICON, ICON_BIG, ICON_SMALL, ICONINFO, IsWindow,
+    LR_DEFAULTCOLOR, PrivateExtractIconsW, RT_GROUP_ICON, RT_ICON, SMTO_ABORTIFHUNG,
+    SendMessageTimeoutW, WM_GETICON,
 };
 use windows::core::{BOOL, HRESULT, PCWSTR};
 
 use super::util::{self, LoadedLibrary, OwnedBitmap, OwnedIcon, ScreenDc};
 use crate::rules::icons::{self as pixels, AlphaMode, IconConvertError, IconImage};
-use crate::rules::identity::{apps_folder_parsing_name, parse_hwnd_icon_value};
+use crate::rules::identity::{
+    apps_folder_parsing_name, hwnd_icon_owner_matches, parse_hwnd_icon_value,
+};
 use crate::{PlatformError, PlatformResult};
 
 /// Cross-process `WM_GETICON` budget (`docs/development/windows-rules.md`: ≤ 200 ms).
@@ -235,6 +239,18 @@ fn load_window_icon(value: &str, size: u32) -> PlatformResult<Option<Loaded>> {
     // SAFETY: IsWindow accepts any handle value and only reads.
     if !unsafe { IsWindow(Some(hwnd)) }.as_bool() {
         log::debug!("hwnd:{id}: window is gone");
+        return Ok(None);
+    }
+    // HWND values are recycled: a key that outlived its window may name
+    // another process's window now.
+    let mut process_id = 0u32;
+    // SAFETY: `process_id` is a live out-pointer for the duration of the call;
+    // a handle that went away meanwhile makes it return 0 and leaves it 0.
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut process_id)) };
+    if !hwnd_icon_owner_matches(value, process_id) {
+        log::debug!(
+            "hwnd:{value}: the handle belongs to another process ({process_id}) now; no icon"
+        );
         return Ok(None);
     }
     let window =
