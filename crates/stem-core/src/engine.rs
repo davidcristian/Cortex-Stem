@@ -72,6 +72,7 @@
 //!   when a flag flips.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 use crate::events::{EngineInput, PlatformEvent};
 use crate::model::{
@@ -81,6 +82,14 @@ use crate::model::{
 };
 use crate::overlap;
 use crate::settings::{MonitorMode, ScrollAction, Settings};
+
+/// How long a dock window remembers the window its last admitted wheel
+/// notch tried to activate ([`DockEngine::note_scroll_activation`];
+/// the foreground changing ends it sooner). 2 s: far longer than a late
+/// foreground report (tens of milliseconds) or a pause within one spin of
+/// the wheel, and short enough that a notch turned later steps from the
+/// window in front again, so a window Windows refused is tried once more.
+pub const SCROLL_MEMORY: Duration = Duration::from_secs(2);
 
 /// Derive the grouping identity of a window from what the platform reported.
 pub fn app_id_for(raw: &RawWindow) -> AppId {
@@ -197,10 +206,11 @@ pub struct DockEngine {
     /// The dock windows the app layer registered, by label.
     panels: BTreeMap<String, DockPanel>,
     /// The window each dock window's last admitted wheel notch asked the
-    /// platform to activate, by label (see
+    /// platform to activate, and when, by label (see
     /// [`Self::note_scroll_activation`]). Emptied whenever `foreground`
-    /// changes; a label also leaves with its panel.
-    scroll_tried: BTreeMap<String, WindowId>,
+    /// changes; a label also leaves with its panel; an entry older than
+    /// [`SCROLL_MEMORY`] counts for nothing.
+    scroll_tried: BTreeMap<String, (WindowId, Instant)>,
     /// Our own process id, whose windows never count as overlapping. `None`
     /// when unknown (every window counts then).
     own_process_id: Option<u32>,
@@ -998,7 +1008,8 @@ impl DockEngine {
     ///   and, for [`ScrollDirection::Previous`], the one before it,
     ///   wrapping around at either end. It steps from the window that
     ///   dock's last notch tried ([`Self::note_scroll_activation`]) while
-    ///   the foreground has not changed since and that window is still
+    ///   the foreground has not changed since, that notch is less than
+    ///   [`SCROLL_MEMORY`] before `now` and that window is still
     ///   one of them, else from the one in the foreground; when neither is
     ///   one of them, `Next` activates the first and `Previous` the last.
     ///   A lone window in front is its own neighbour: activated again,
@@ -1011,6 +1022,7 @@ impl DockEngine {
         item_key: &str,
         dock: &str,
         direction: ScrollDirection,
+        now: Instant,
     ) -> ScrollEffect {
         let Some(item) = self
             .snapshot()
@@ -1038,7 +1050,8 @@ impl DockEngine {
         let from = self
             .scroll_tried
             .get(dock)
-            .and_then(|tried| position(*tried))
+            .filter(|(_, at)| now.saturating_duration_since(*at) < SCROLL_MEMORY)
+            .and_then(|(tried, _)| position(*tried))
             .or_else(|| self.foreground.and_then(position));
         let index = match (from, direction) {
             (Some(pos), ScrollDirection::Next) => (pos + 1) % count,
@@ -1049,19 +1062,21 @@ impl DockEngine {
         ScrollEffect::Activate(windows[index])
     }
 
-    /// The caller let a wheel notch in the dock window `dock` through and
-    /// asks the platform to activate `window`. Until the
-    /// foreground changes, that dock's next notch steps from `window`
-    /// rather than from the window in front ([`Self::scroll_action`]): an
-    /// activation Windows refuses (an elevated window, the foreground
-    /// lock, a hung window) leaves the foreground where it was, and
-    /// stepping from it would choose the refused window again at every
-    /// notch; an activation whose foreground report has not arrived yet
-    /// would be chosen twice. Call it before the platform call, so the
-    /// report of this very activation, or any other foreground change,
-    /// ends it. Not part of the snapshot.
-    pub fn note_scroll_activation(&mut self, dock: &str, window: WindowId) {
-        self.scroll_tried.insert(dock.to_owned(), window);
+    /// The caller let a wheel notch in the dock window `dock` through at
+    /// `now` and asks the platform to activate `window`. Until the
+    /// foreground changes, and for at most [`SCROLL_MEMORY`] after `now`,
+    /// that dock's next notch steps from `window` rather than
+    /// from the window in front ([`Self::scroll_action`]): an activation
+    /// Windows refuses (an elevated window, the foreground lock, a hung
+    /// window) leaves the foreground where it was, and stepping from it
+    /// would choose the refused window again at every notch; an
+    /// activation whose foreground report has not arrived yet would be
+    /// chosen twice. A notch after the limit steps from the foreground
+    /// again, so it tries a refused window once more. Call it before the
+    /// platform call, so the report of this very activation, or any other
+    /// foreground change, ends it. Not part of the snapshot.
+    pub fn note_scroll_activation(&mut self, dock: &str, window: WindowId, now: Instant) {
+        self.scroll_tried.insert(dock.to_owned(), (window, now));
     }
 }
 
@@ -3607,11 +3622,11 @@ mod tests {
         assert_eq!(settings.behavior.scroll_action, ScrollAction::None);
         for direction in [Next, Previous] {
             assert_eq!(
-                engine.scroll_action("fixed:volume", DOCK, direction),
+                engine.scroll_action("fixed:volume", DOCK, direction, t0()),
                 ScrollEffect::StepVolume(direction)
             );
             assert_eq!(
-                engine.scroll_action("fixed:launcher", DOCK, direction),
+                engine.scroll_action("fixed:launcher", DOCK, direction, t0()),
                 ScrollEffect::Nothing
             );
         }
@@ -3619,20 +3634,20 @@ mod tests {
         settings = cycling(settings);
         engine.apply(EngineInput::SettingsChanged(settings.clone()));
         assert_eq!(
-            engine.scroll_action("fixed:volume", "dock-DISPLAY2", Previous),
+            engine.scroll_action("fixed:volume", "dock-DISPLAY2", Previous, t0()),
             ScrollEffect::StepVolume(Previous)
         );
         // Without a device the caller finds out when it reads the volume.
         engine.apply(volume(None));
         assert_eq!(
-            engine.scroll_action("fixed:volume", DOCK, Next),
+            engine.scroll_action("fixed:volume", DOCK, Next, t0()),
             ScrollEffect::StepVolume(Next)
         );
         // The item off: its key is unknown.
         settings.items.volume = false;
         engine.apply(EngineInput::SettingsChanged(settings));
         assert_eq!(
-            engine.scroll_action("fixed:volume", DOCK, Next),
+            engine.scroll_action("fixed:volume", DOCK, Next, t0()),
             ScrollEffect::UnknownItem
         );
     }
@@ -4439,6 +4454,13 @@ mod tests {
         ScrollEffect::Activate(WindowId(id))
     }
 
+    /// One instant for every scroll test that does not look at the time:
+    /// a memory noted at it never runs out at it.
+    fn t0() -> Instant {
+        static T0: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instant::now);
+        *T0
+    }
+
     #[test]
     fn a_scroll_cycles_the_items_windows_from_the_one_in_front_and_wraps() {
         use ScrollDirection::{Next, Previous};
@@ -4452,23 +4474,29 @@ mod tests {
         engine.apply(added(win(4, r"C:\b.exe", "B")));
 
         // None of A's windows in front: next is the first, previous the last.
-        assert_eq!(engine.scroll_action(A_KEY, DOCK, Next), activates(1));
-        assert_eq!(engine.scroll_action(A_KEY, DOCK, Previous), activates(3));
+        assert_eq!(engine.scroll_action(A_KEY, DOCK, Next, t0()), activates(1));
+        assert_eq!(
+            engine.scroll_action(A_KEY, DOCK, Previous, t0()),
+            activates(3)
+        );
         engine.apply(foreground(Some(4)));
-        assert_eq!(engine.scroll_action(A_KEY, DOCK, Next), activates(1));
-        assert_eq!(engine.scroll_action(A_KEY, DOCK, Previous), activates(3));
+        assert_eq!(engine.scroll_action(A_KEY, DOCK, Next, t0()), activates(1));
+        assert_eq!(
+            engine.scroll_action(A_KEY, DOCK, Previous, t0()),
+            activates(3)
+        );
 
         // From each window in front, its neighbours in first-seen order; the
         // minimised one takes part, the cloaked one does not.
         for (front, next, previous) in [(1, 2, 3), (2, 3, 1), (3, 1, 2)] {
             engine.apply(foreground(Some(front)));
             assert_eq!(
-                engine.scroll_action(A_KEY, DOCK, Next),
+                engine.scroll_action(A_KEY, DOCK, Next, t0()),
                 activates(next),
                 "next from {front}"
             );
             assert_eq!(
-                engine.scroll_action(A_KEY, DOCK, Previous),
+                engine.scroll_action(A_KEY, DOCK, Previous, t0()),
                 activates(previous),
                 "previous from {front}"
             );
@@ -4478,7 +4506,7 @@ mod tests {
         engine.apply(foreground(Some(4)));
         for direction in [Next, Previous] {
             assert_eq!(
-                engine.scroll_action("app:exe:c:/b.exe", DOCK, direction),
+                engine.scroll_action("app:exe:c:/b.exe", DOCK, direction, t0()),
                 activates(4)
             );
         }
@@ -4497,56 +4525,131 @@ mod tests {
         // Windows refuses 2 (an elevated window, say): the foreground stays
         // on 1, and the next notch goes on to 3 instead of trying 2 again;
         // back from 2 is 1.
-        assert_eq!(engine.scroll_action(A_KEY, DOCK, Next), activates(2));
-        engine.note_scroll_activation(DOCK, WindowId(2));
-        assert_eq!(engine.scroll_action(A_KEY, DOCK, Next), activates(3));
-        assert_eq!(engine.scroll_action(A_KEY, DOCK, Previous), activates(1));
+        assert_eq!(engine.scroll_action(A_KEY, DOCK, Next, t0()), activates(2));
+        engine.note_scroll_activation(DOCK, WindowId(2), t0());
+        assert_eq!(engine.scroll_action(A_KEY, DOCK, Next, t0()), activates(3));
+        assert_eq!(
+            engine.scroll_action(A_KEY, DOCK, Previous, t0()),
+            activates(1)
+        );
         // 3 is being activated and its report is not in yet: from 3.
-        engine.note_scroll_activation(DOCK, WindowId(3));
-        assert_eq!(engine.scroll_action(A_KEY, DOCK, Next), activates(1));
-        assert_eq!(engine.scroll_action(A_KEY, DOCK, Previous), activates(2));
+        engine.note_scroll_activation(DOCK, WindowId(3), t0());
+        assert_eq!(engine.scroll_action(A_KEY, DOCK, Next, t0()), activates(1));
+        assert_eq!(
+            engine.scroll_action(A_KEY, DOCK, Previous, t0()),
+            activates(2)
+        );
         // Each dock window has its own: another steps from the foreground.
-        assert_eq!(engine.scroll_action(A_KEY, SECOND_DOCK, Next), activates(2));
+        assert_eq!(
+            engine.scroll_action(A_KEY, SECOND_DOCK, Next, t0()),
+            activates(2)
+        );
         // A report of the window that already was in front changes nothing.
         engine.apply(foreground(Some(1)));
-        assert_eq!(engine.scroll_action(A_KEY, DOCK, Next), activates(1));
+        assert_eq!(engine.scroll_action(A_KEY, DOCK, Next, t0()), activates(1));
         // 3's report: from the foreground again, which is 3.
         engine.apply(foreground(Some(3)));
-        assert_eq!(engine.scroll_action(A_KEY, DOCK, Next), activates(1));
-        assert_eq!(engine.scroll_action(A_KEY, DOCK, Previous), activates(2));
+        assert_eq!(engine.scroll_action(A_KEY, DOCK, Next, t0()), activates(1));
+        assert_eq!(
+            engine.scroll_action(A_KEY, DOCK, Previous, t0()),
+            activates(2)
+        );
 
         // Any change of the foreground ends it, a change and a change back
         // too (the user clicked elsewhere and returned).
-        engine.note_scroll_activation(DOCK, WindowId(1));
+        engine.note_scroll_activation(DOCK, WindowId(1), t0());
         engine.apply(foreground(Some(4)));
         engine.apply(foreground(Some(3)));
-        assert_eq!(engine.scroll_action(A_KEY, DOCK, Next), activates(1));
+        assert_eq!(engine.scroll_action(A_KEY, DOCK, Next, t0()), activates(1));
         // So does the foreground window's going away.
-        engine.note_scroll_activation(DOCK, WindowId(1));
+        engine.note_scroll_activation(DOCK, WindowId(1), t0());
         engine.apply(removed(3));
         assert_eq!(engine.foreground(), None);
-        assert_eq!(engine.scroll_action(A_KEY, DOCK, Next), activates(1));
+        assert_eq!(engine.scroll_action(A_KEY, DOCK, Next, t0()), activates(1));
 
         // A tried window that is not one of the item's windows on that dock
         // (another app's, or one closed since) is passed over: from the
         // foreground, or the first when none is in front.
         engine.apply(added(win(5, r"C:\a.exe", "A5")));
         engine.apply(foreground(Some(2)));
-        engine.note_scroll_activation(DOCK, WindowId(4));
-        assert_eq!(engine.scroll_action(A_KEY, DOCK, Next), activates(5));
-        engine.note_scroll_activation(DOCK, WindowId(1));
+        engine.note_scroll_activation(DOCK, WindowId(4), t0());
+        assert_eq!(engine.scroll_action(A_KEY, DOCK, Next, t0()), activates(5));
+        engine.note_scroll_activation(DOCK, WindowId(1), t0());
         engine.apply(removed(1));
-        assert_eq!(engine.scroll_action(A_KEY, DOCK, Next), activates(5));
-        assert_eq!(engine.scroll_action(A_KEY, DOCK, Previous), activates(5));
+        assert_eq!(engine.scroll_action(A_KEY, DOCK, Next, t0()), activates(5));
+        assert_eq!(
+            engine.scroll_action(A_KEY, DOCK, Previous, t0()),
+            activates(5)
+        );
 
         // A dock window that goes takes its entry with it.
         engine.apply(panel_of(DOCK, Some(PRIMARY), None));
-        engine.note_scroll_activation(DOCK, WindowId(5));
-        engine.note_scroll_activation(SECOND_DOCK, WindowId(5));
+        engine.note_scroll_activation(DOCK, WindowId(5), t0());
+        engine.note_scroll_activation(SECOND_DOCK, WindowId(5), t0());
         engine.apply(panel_of(DOCK, None, None));
         assert_eq!(
             engine.scroll_tried.keys().collect::<Vec<_>>(),
             [SECOND_DOCK]
+        );
+    }
+
+    #[test]
+    fn the_window_a_scroll_tried_is_forgotten_after_the_scroll_memory() {
+        use ScrollDirection::{Next, Previous};
+        assert_eq!(SCROLL_MEMORY, Duration::from_secs(2));
+        let mut engine = DockEngine::new(cycling(minimal_settings()));
+        for id in 1..=3 {
+            engine.apply(added(win(id, r"C:\a.exe", &format!("A{id}"))));
+        }
+        engine.apply(foreground(Some(1)));
+        let at = |ms: u64| t0() + Duration::from_millis(ms);
+
+        // Windows refuses 2: the foreground stays on 1. Within the memory
+        // the dock's next notches step from 2, so 2 is passed over.
+        engine.note_scroll_activation(DOCK, WindowId(2), at(0));
+        assert_eq!(
+            engine.scroll_action(A_KEY, DOCK, Next, at(150)),
+            activates(3)
+        );
+        assert_eq!(
+            engine.scroll_action(A_KEY, DOCK, Previous, at(1_999)),
+            activates(1)
+        );
+        // A notch at the limit or later steps from the foreground again and
+        // tries 2 once more.
+        assert_eq!(
+            engine.scroll_action(A_KEY, DOCK, Next, at(2_000)),
+            activates(2)
+        );
+        assert_eq!(
+            engine.scroll_action(A_KEY, DOCK, Previous, at(60_000)),
+            activates(3)
+        );
+        // The memory runs from the last admitted notch: a new one starts it
+        // again.
+        engine.note_scroll_activation(DOCK, WindowId(2), at(2_000));
+        assert_eq!(
+            engine.scroll_action(A_KEY, DOCK, Next, at(3_999)),
+            activates(3)
+        );
+        assert_eq!(
+            engine.scroll_action(A_KEY, DOCK, Next, at(4_000)),
+            activates(2)
+        );
+        // A time before the notch (never sent) counts as within it.
+        assert_eq!(
+            engine.scroll_action(A_KEY, DOCK, Next, at(1_000)),
+            activates(3)
+        );
+        // Each dock window's memory runs on its own.
+        engine.note_scroll_activation(SECOND_DOCK, WindowId(3), at(3_000));
+        assert_eq!(
+            engine.scroll_action(A_KEY, SECOND_DOCK, Next, at(4_500)),
+            activates(1)
+        );
+        assert_eq!(
+            engine.scroll_action(A_KEY, DOCK, Next, at(4_500)),
+            activates(2)
         );
     }
 
@@ -4569,35 +4672,35 @@ mod tests {
         assert_eq!(settings.behavior.scroll_action, ScrollAction::None);
         for direction in [Next, Previous] {
             assert_eq!(
-                engine.scroll_action(A_KEY, DOCK, direction),
+                engine.scroll_action(A_KEY, DOCK, direction, t0()),
                 ScrollEffect::Nothing
             );
             assert_eq!(
-                engine.scroll_action("nonsense", DOCK, direction),
+                engine.scroll_action("nonsense", DOCK, direction, t0()),
                 ScrollEffect::UnknownItem
             );
         }
 
         engine.apply(EngineInput::SettingsChanged(cycling(settings.clone())));
-        assert_eq!(engine.scroll_action(A_KEY, DOCK, Next), activates(1));
+        assert_eq!(engine.scroll_action(A_KEY, DOCK, Next, t0()), activates(1));
         for direction in [Next, Previous] {
             // Fixed items and separators have no windows to cycle.
             for key in ["fixed:launcher", "fixed:recycle-bin", "sep:1"] {
                 assert_eq!(
-                    engine.scroll_action(key, DOCK, direction),
+                    engine.scroll_action(key, DOCK, direction, t0()),
                     ScrollEffect::Nothing,
                     "{key}"
                 );
             }
             // A pinned app without windows is not launched.
             assert_eq!(
-                engine.scroll_action("app:exe:c:/p.exe", DOCK, direction),
+                engine.scroll_action("app:exe:c:/p.exe", DOCK, direction, t0()),
                 ScrollEffect::Nothing
             );
             // Keys of items the dock does not show.
             for key in ["nonsense", "fixed:task-view", "app:exe:c:/gone.exe"] {
                 assert_eq!(
-                    engine.scroll_action(key, DOCK, direction),
+                    engine.scroll_action(key, DOCK, direction, t0()),
                     ScrollEffect::UnknownItem,
                     "{key}"
                 );
@@ -4609,7 +4712,7 @@ mod tests {
         hiding.hidden_apps = vec![hidden(r"C:\a.exe", "A")];
         engine.apply(EngineInput::SettingsChanged(hiding));
         assert_eq!(
-            engine.scroll_action(A_KEY, DOCK, Next),
+            engine.scroll_action(A_KEY, DOCK, Next, t0()),
             ScrollEffect::UnknownItem
         );
         assert_eq!(engine.primary_action(A_KEY, DOCK), ItemAction::None);
@@ -4619,7 +4722,7 @@ mod tests {
         engine.apply(removed(1));
         engine.apply(removed(2));
         assert_eq!(
-            engine.scroll_action(A_KEY, DOCK, Next),
+            engine.scroll_action(A_KEY, DOCK, Next, t0()),
             ScrollEffect::UnknownItem
         );
     }
@@ -4637,35 +4740,44 @@ mod tests {
 
         // A in front: the second dock has none of its windows in front.
         engine.apply(foreground(Some(1)));
-        assert_eq!(engine.scroll_action(NOTEPAD_KEY, DOCK, Next), activates(4));
         assert_eq!(
-            engine.scroll_action(NOTEPAD_KEY, DOCK, Previous),
+            engine.scroll_action(NOTEPAD_KEY, DOCK, Next, t0()),
             activates(4)
         );
         assert_eq!(
-            engine.scroll_action(NOTEPAD_KEY, SECOND_DOCK, Next),
+            engine.scroll_action(NOTEPAD_KEY, DOCK, Previous, t0()),
+            activates(4)
+        );
+        assert_eq!(
+            engine.scroll_action(NOTEPAD_KEY, SECOND_DOCK, Next, t0()),
             activates(2)
         );
         assert_eq!(
-            engine.scroll_action(NOTEPAD_KEY, SECOND_DOCK, Previous),
+            engine.scroll_action(NOTEPAD_KEY, SECOND_DOCK, Previous, t0()),
             activates(3)
         );
         engine.apply(foreground(Some(3)));
         assert_eq!(
-            engine.scroll_action(NOTEPAD_KEY, SECOND_DOCK, Next),
+            engine.scroll_action(NOTEPAD_KEY, SECOND_DOCK, Next, t0()),
             activates(2)
         );
-        assert_eq!(engine.scroll_action(NOTEPAD_KEY, DOCK, Next), activates(1));
+        assert_eq!(
+            engine.scroll_action(NOTEPAD_KEY, DOCK, Next, t0()),
+            activates(1)
+        );
 
         // A dock with no window of the app on its monitor: nothing, and no
         // launch of the pinned app.
         engine.apply(updated(on_monitor(win(2, NOTEPAD, "B"), PRIMARY)));
         engine.apply(updated(on_monitor(win(3, NOTEPAD, "C"), PRIMARY)));
         assert_eq!(
-            engine.scroll_action(NOTEPAD_KEY, SECOND_DOCK, Next),
+            engine.scroll_action(NOTEPAD_KEY, SECOND_DOCK, Next, t0()),
             ScrollEffect::Nothing
         );
-        assert_eq!(engine.scroll_action(NOTEPAD_KEY, DOCK, Next), activates(4));
+        assert_eq!(
+            engine.scroll_action(NOTEPAD_KEY, DOCK, Next, t0()),
+            activates(4)
+        );
 
         // The setting off: every dock cycles every window, in first-seen
         // order.
@@ -4673,12 +4785,12 @@ mod tests {
         engine.apply(EngineInput::SettingsChanged(settings));
         for dock in [DOCK, SECOND_DOCK] {
             assert_eq!(
-                engine.scroll_action(NOTEPAD_KEY, dock, Next),
+                engine.scroll_action(NOTEPAD_KEY, dock, Next, t0()),
                 activates(4),
                 "{dock}"
             );
             assert_eq!(
-                engine.scroll_action(NOTEPAD_KEY, dock, Previous),
+                engine.scroll_action(NOTEPAD_KEY, dock, Previous, t0()),
                 activates(2),
                 "{dock}"
             );

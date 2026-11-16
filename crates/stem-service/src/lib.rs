@@ -480,10 +480,11 @@ impl DockService {
     /// [`SCROLL_INTERVAL`] ago: then the notch is dropped. The engine is
     /// told which window the notch tried (`note_scroll_activation`), so
     /// the dock's next notch goes on from it even when Windows refused it
-    /// or its foreground report is late. Returns the window activated, or
-    /// `None` when the notch did nothing (the setting is `none`, a fixed
-    /// item, a separator, no windows there, dropped by the gate). An
-    /// unknown key, a hidden app's among them, is
+    /// or its foreground report is late, if it comes within
+    /// `stem_core::engine::SCROLL_MEMORY`. Returns the window
+    /// activated, or `None` when the notch did nothing (the setting is
+    /// `none`, a fixed item, a separator, no windows there, dropped by the
+    /// gate). An unknown key, a hidden app's among them, is
     /// [`ServiceError::UnknownItem`], as for [`Self::primary_click`]; a
     /// failed activation is the platform's error, and still counts for the
     /// gate and as the window tried.
@@ -514,7 +515,7 @@ impl DockService {
             .inner
             .engine
             .lock()
-            .scroll_action(item_key, dock, direction);
+            .scroll_action(item_key, dock, direction, now);
         let id = match effect {
             ScrollEffect::Activate(id) => id,
             ScrollEffect::StepVolume(direction) => {
@@ -541,7 +542,10 @@ impl DockService {
         // foreground report ends it: a refused activation leaves the
         // foreground where it was, and the dock's next notch must still
         // go on from `id`.
-        self.inner.engine.lock().note_scroll_activation(dock, id);
+        self.inner
+            .engine
+            .lock()
+            .note_scroll_activation(dock, id, now);
         self.inner
             .platform
             .window_action(id, WindowAction::Activate)?;
@@ -3534,6 +3538,20 @@ mod tests {
                 MockCall::WindowAction(WindowId(2), WindowAction::Activate),
             ]
         );
+
+        // 2 in front, 3 refused once more. A notch that comes only after
+        // the scroll memory has run out steps from the window in front again
+        // and tries 3 anew, instead of passing it over for good.
+        assert!(matches!(
+            service.scroll_item_at(&firefox, DOCK, Next, at(600)),
+            Err(ServiceError::Platform(_))
+        ));
+        let later = 600 + u64::try_from(stem_core::engine::SCROLL_MEMORY.as_millis()).unwrap();
+        assert!(matches!(
+            service.scroll_item_at(&firefox, DOCK, Next, at(later)),
+            Err(ServiceError::Platform(_))
+        ));
+        assert_eq!(service.state().foreground, Some(WindowId(2)));
         service.shutdown();
     }
 

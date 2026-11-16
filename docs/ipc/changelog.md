@@ -8,7 +8,10 @@ to the file that covers that section now.
   `volume` reading only while the volume item is shown. Otherwise the reading is stored without a
   new revision or a `dock://state`, and the next snapshot includes it
   ([Readings no item shows](state-snapshot.md#readings-no-item-shows-v131), the
-  [`dock://state` row](events.md); `MockBackend` does the same).
+  [`dock://state` row](events.md); `MockBackend` does the same). A dock window's memory of the
+  window its last notch tried lasts at most 2 s (`SCROLL_MEMORY`), so a window that Windows did
+  not bring forward is tried again on a later notch
+  ([Scrolling over an item](scrolling-over-an-item.md)).
 - **v1.30 (the volume item):** Another widget; no command or event was added or renamed. Added:
   `Settings.items.volume` (default `false`); `DockItemKind` `volume` (`fixed:volume`,
   `shell:volume`) between Notification Center and the battery; `DockState.volume: VolumeStatus |
