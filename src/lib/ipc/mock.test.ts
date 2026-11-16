@@ -723,7 +723,7 @@ describe('the volume item (docs/ipc/widget-items.md §The volume item, v1.30)', 
     return b;
   }
   const volumeCalls = (b: MockBackend) =>
-    b.calls.filter((c) => c.type === 'setVolume' || c.type === 'setVolumeMuted');
+    b.calls.filter((c) => c.type === 'stepVolume' || c.type === 'setVolumeMuted');
 
   it('is off by default; the demo has a device at 60 %; on, it sits after Notification Center and before the battery', async () => {
     expect(defaultSettings().items.volume).toBe(false);
@@ -806,11 +806,12 @@ describe('the volume item (docs/ipc/widget-items.md §The volume item, v1.30)', 
     let state = await b.getDockState();
     expect(state.volume).toEqual({ percent: 64, muted: false });
     expect(item(state, 'fixed:volume').title).toBe('Volume 64 %');
+    // One platform step per notch, as the service asks for them.
     expect(volumeCalls(b)).toEqual([
-      { type: 'setVolume', percent: 62 },
-      { type: 'setVolume', percent: 64 },
-      { type: 'setVolume', percent: 66 },
-      { type: 'setVolume', percent: 64 },
+      { type: 'stepVolume', direction: 'previous' },
+      { type: 'stepVolume', direction: 'previous' },
+      { type: 'stepVolume', direction: 'previous' },
+      { type: 'stepVolume', direction: 'next' },
     ]);
 
     const settings = await b.getSettings();
@@ -834,23 +835,22 @@ describe('the volume item (docs/ipc/widget-items.md §The volume item, v1.30)', 
     const b = await withVolume({ volume: { percent: 99, muted: true } });
     await b.scrollItem('fixed:volume', 'previous');
     expect((await b.getDockState()).volume).toEqual({ percent: 100, muted: false });
-    // At the top: nothing more is asked.
+    // At the top: the step changes nothing and sends no state.
+    const states = recordStates(b);
     await b.scrollItem('fixed:volume', 'previous');
-    expect(volumeCalls(b)).toEqual([
-      { type: 'setVolume', percent: 100 },
-      { type: 'setVolumeMuted', muted: false },
-    ]);
+    expect(states).toHaveLength(0);
+    expect(volumeCalls(b)).toHaveLength(2);
     // Muted near the bottom: down keeps the mute.
     b.setVolume({ percent: 1, muted: true });
     await b.scrollItem('fixed:volume', 'next');
     await b.scrollItem('fixed:volume', 'next');
     expect((await b.getDockState()).volume).toEqual({ percent: 0, muted: true });
-    expect(volumeCalls(b)).toHaveLength(3);
+    expect(volumeCalls(b)).toHaveLength(4);
 
-    // No device: the notch resolves and asks nothing.
+    // No device: the notch resolves and changes nothing.
     b.setVolume(null);
     await b.scrollItem('fixed:volume', 'previous');
-    expect(volumeCalls(b)).toHaveLength(3);
+    expect(volumeCalls(b)).toHaveLength(5);
     expect((await b.getDockState()).volume).toBeNull();
     // The item off: its key is unknown, as for a click.
     const settings = await b.getSettings();

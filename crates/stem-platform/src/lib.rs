@@ -19,7 +19,8 @@ use std::time::Duration;
 use stem_core::settings::DockPosition;
 use stem_core::{
     AppIdentity, ClockFormat, IconKey, LaunchTarget, MonitorInfo, PlatformEvent, PowerStatus,
-    RawWindow, Rect, RecycleBinState, ShellAction, ThemeInfo, VolumeStatus, WindowAction, WindowId,
+    RawWindow, Rect, RecycleBinState, ScrollDirection, ShellAction, ThemeInfo, VolumeStatus,
+    WindowAction, WindowId,
 };
 
 pub mod mock;
@@ -280,6 +281,20 @@ pub trait Platform: Send + Sync + 'static {
     /// as it is; otherwise as [`Platform::set_volume`]. Optional;
     /// the default reports it unsupported.
     fn set_volume_muted(&self, _muted: bool) -> PlatformResult<()> {
+        Err(PlatformError::Unsupported("widget support"))
+    }
+
+    /// One wheel notch over the volume item: read the volume now,
+    /// apply `stem_core::engine::volume_step` and set the level, then the
+    /// mute, where they change, as one operation that no other volume
+    /// request interleaves with. Returns the volume it set, or `None` when
+    /// there was nothing to do (no output device, the end of the range). On
+    /// Windows it is one request to the volume thread, bounded like
+    /// [`Platform::volume_status`]; a request the thread takes only after
+    /// its caller timed out is dropped, not done late. Never call it on the
+    /// UI thread or on an async runtime's worker. Optional; the default
+    /// reports it unsupported.
+    fn step_volume(&self, _direction: ScrollDirection) -> PlatformResult<Option<VolumeStatus>> {
         Err(PlatformError::Unsupported("widget support"))
     }
 
@@ -557,6 +572,10 @@ mod tests {
         ));
         assert!(matches!(
             Real.set_volume_muted(true),
+            Err(PlatformError::Unsupported("widget support"))
+        ));
+        assert!(matches!(
+            Real.step_volume(ScrollDirection::Previous),
             Err(PlatformError::Unsupported("widget support"))
         ));
     }

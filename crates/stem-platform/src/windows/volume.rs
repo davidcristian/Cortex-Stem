@@ -50,10 +50,16 @@
 //!   of the audio service may have left dead, so the retry builds
 //!   everything again.
 //! - [`VolumeHandle`] answers [`crate::Platform::volume_status`] (a live
-//!   read on the thread), `set_volume` (`SetMasterVolumeLevelScalar`) and
-//!   `set_volume_muted` (`SetMute`), each waiting at most
-//!   [`REQUEST_TIMEOUT`] for the thread. The sets pass no event context, so
-//!   their own notification is reported like any other.
+//!   read on the thread), `set_volume` (`SetMasterVolumeLevelScalar`),
+//!   `set_volume_muted` (`SetMute`) and `step_volume` (one wheel notch:
+//!   a live read, `stem_core::engine::volume_step`, then the level and the
+//!   mute it changes, all in one message, so the read and the sets cannot
+//!   interleave with another request), each waiting at most
+//!   [`REQUEST_TIMEOUT`] for the thread. A set or a step carries its
+//!   caller's deadline: one the thread takes after it (the thread was
+//!   busy) is dropped, not done late, since its caller has already given
+//!   up. The sets pass no event context, so their own notification is
+//!   reported like any other.
 //! - [`VolumeThread::stop`] asks the thread to quit and waits at most
 //!   [`STOP_TIMEOUT`]; the thread unregisters the endpoint callback, then
 //!   the notification client, releases every COM object and leaves the
@@ -71,7 +77,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, SendTimeoutError, Sender, bounded};
-use stem_core::{PlatformEvent, VolumeStatus};
+use stem_core::engine::volume_step;
+use stem_core::{PlatformEvent, ScrollDirection, VolumeStatus};
 use windows::Win32::Foundation::{ERROR_NOT_FOUND, PROPERTYKEY};
 use windows::Win32::Media::Audio::Endpoints::{
     IAudioEndpointVolume, IAudioEndpointVolumeCallback, IAudioEndpointVolumeCallback_Impl,
@@ -114,10 +121,16 @@ enum Msg {
     DevicesChanged(&'static str),
     /// A live reading for `volume_status`.
     Read(Sender<Option<VolumeStatus>>),
-    /// `set_volume` with this percent.
-    SetLevel(u8, Sender<PlatformResult<()>>),
-    /// `set_volume_muted` with this value.
-    SetMuted(bool, Sender<PlatformResult<()>>),
+    /// `set_volume` with this percent, before this deadline.
+    SetLevel(u8, Instant, Sender<PlatformResult<()>>),
+    /// `set_volume_muted` with this value, before this deadline.
+    SetMuted(bool, Instant, Sender<PlatformResult<()>>),
+    /// `step_volume` in this direction, before this deadline.
+    Step(
+        ScrollDirection,
+        Instant,
+        Sender<PlatformResult<Option<VolumeStatus>>>,
+    ),
     Stop,
 }
 
@@ -197,24 +210,30 @@ impl Drop for VolumeThread {
 impl VolumeHandle {
     /// The reading now, `None` without a device or when it cannot be read.
     pub fn read(&self) -> PlatformResult<Option<VolumeStatus>> {
-        self.request(Msg::Read)
+        self.request(|_, reply| Msg::Read(reply))
     }
 
     pub fn set_level(&self, percent: u8) -> PlatformResult<()> {
-        self.request(|reply| Msg::SetLevel(percent, reply))?
+        self.request(|deadline, reply| Msg::SetLevel(percent, deadline, reply))?
     }
 
     pub fn set_muted(&self, muted: bool) -> PlatformResult<()> {
-        self.request(|reply| Msg::SetMuted(muted, reply))?
+        self.request(|deadline, reply| Msg::SetMuted(muted, deadline, reply))?
     }
 
-    /// Send the request `make` builds around a reply channel and wait for
-    /// the answer, both within [`REQUEST_TIMEOUT`].
-    fn request<T>(&self, make: impl FnOnce(Sender<T>) -> Msg) -> PlatformResult<T> {
+    /// One wheel notch over the volume item: the volume it set, or `None`
+    /// when there was nothing to do (no device, the end of the range).
+    pub fn step(&self, direction: ScrollDirection) -> PlatformResult<Option<VolumeStatus>> {
+        self.request(|deadline, reply| Msg::Step(direction, deadline, reply))?
+    }
+
+    /// Send the request `make` builds around its deadline and a reply
+    /// channel, and wait for the answer, both within [`REQUEST_TIMEOUT`].
+    fn request<T>(&self, make: impl FnOnce(Instant, Sender<T>) -> Msg) -> PlatformResult<T> {
         let deadline = Instant::now() + REQUEST_TIMEOUT;
         let (reply_tx, reply_rx) = bounded::<T>(1);
         self.tx
-            .send_deadline(make(reply_tx), deadline)
+            .send_deadline(make(deadline, reply_tx), deadline)
             .map_err(|e| match e {
                 SendTimeoutError::Timeout(_) => PlatformError::Timeout,
                 SendTimeoutError::Disconnected(_) => {
@@ -499,11 +518,20 @@ fn thread_main(sink: &EventSink, tx: Sender<Msg>, rx: &Receiver<Msg>) {
             Ok(Msg::Read(reply)) => {
                 let _ = reply.send(follower.read());
             }
-            Ok(Msg::SetLevel(percent, reply)) => {
-                let _ = reply.send(follower.set_level(percent));
+            Ok(Msg::SetLevel(percent, deadline, reply)) => {
+                if !too_late(deadline, "set_volume") {
+                    let _ = reply.send(follower.set_level(percent));
+                }
             }
-            Ok(Msg::SetMuted(muted, reply)) => {
-                let _ = reply.send(follower.set_muted(muted));
+            Ok(Msg::SetMuted(muted, deadline, reply)) => {
+                if !too_late(deadline, "set_volume_muted") {
+                    let _ = reply.send(follower.set_muted(muted));
+                }
+            }
+            Ok(Msg::Step(direction, deadline, reply)) => {
+                if !too_late(deadline, "step_volume") {
+                    let _ = reply.send(follower.step(direction));
+                }
             }
             Err(RecvTimeoutError::Timeout) => {}
         }
@@ -515,6 +543,17 @@ fn thread_main(sink: &EventSink, tx: Sender<Msg>, rx: &Receiver<Msg>) {
     }
     // Unregister and release in order before the apartment goes.
     drop(follower);
+}
+
+/// Whether a request the thread takes now came after its caller's
+/// `deadline` (the caller has given up with a timeout): then it is dropped
+/// rather than done late, with a debug line.
+fn too_late(deadline: Instant, what: &str) -> bool {
+    let late = Instant::now() > deadline;
+    if late {
+        log::debug!("volume: {what} reached the thread after its caller gave up; not done");
+    }
+    late
 }
 
 impl Follower<'_> {
@@ -703,6 +742,27 @@ impl Follower<'_> {
                 .SetMasterVolumeLevelScalar(rules::scalar_of(percent), std::ptr::null())
         }?;
         Ok(())
+    }
+
+    /// One wheel notch: the reading now, then what `volume_step` makes of
+    /// it, the level first and then the mute, each only when it changes.
+    /// `None` without a device or when nothing changes.
+    fn step(&mut self, direction: ScrollDirection) -> PlatformResult<Option<VolumeStatus>> {
+        let Some(current) = self.read() else {
+            return Ok(None);
+        };
+        let next = volume_step(current, direction);
+        if next == current {
+            return Ok(None);
+        }
+        if next.percent != current.percent {
+            self.set_level(next.percent)?;
+        }
+        if next.muted != current.muted {
+            self.set_muted(next.muted)?;
+        }
+        log::debug!("volume: step {direction:?}: {current:?} -> {next:?}");
+        Ok(Some(next))
     }
 
     fn set_muted(&self, muted: bool) -> PlatformResult<()> {

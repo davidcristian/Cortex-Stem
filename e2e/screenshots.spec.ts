@@ -2747,7 +2747,8 @@ test.describe('the volume item (v1.30)', () => {
     await page.mouse.wheel(0, -100);
     await expect.poll(async () => (await scrolls(page)).length).toBe(11);
     expect(await volumeNow(page)).toBeNull();
-    expect(await callsOfType(page, 'setVolume')).toBe(8);
+    // One platform step per notch over the item, whatever it did.
+    expect(await callsOfType(page, 'stepVolume')).toBe(11);
   });
 
   test('in the light theme, muted', async ({ page }) => {

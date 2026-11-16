@@ -67,7 +67,7 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use parking_lot::Mutex;
-use stem_core::engine::{ScrollEffect, volume_step};
+use stem_core::engine::ScrollEffect;
 use stem_core::{
     AppId, AppIdentity, DockEngine, DockItem, DockState, EngineInput, IconKey, ItemAction,
     LaunchTarget, MonitorId, MonitorInfo, PlatformEvent, Rect, ScrollDirection, Settings,
@@ -220,11 +220,10 @@ struct Inner {
     icon_cache: Option<DiskIconCache>,
     /// `scroll_item`'s 150 ms gate per dock window.
     scroll_gate: Mutex<ScrollGate>,
-    /// Held across each volume change's read and set, so two
-    /// notches that arrive together (the page sends one command per notch,
-    /// and Tauri runs them on several threads) step from each other's
-    /// result instead of both from the same reading.
-    volume: Mutex<()>,
+    /// The platform's last volume step timed out: later timeouts
+    /// log at `debug` until a step goes through, so a fast spin over a
+    /// stuck volume thread writes one `warn` line, not one per notch.
+    volume_stalled: AtomicBool,
 }
 
 impl std::fmt::Debug for Inner {
@@ -302,7 +301,7 @@ impl DockService {
             stopping: AtomicBool::new(false),
             icon_cache,
             scroll_gate: Mutex::new(ScrollGate::new()),
-            volume: Mutex::new(()),
+            volume_stalled: AtomicBool::new(false),
         });
 
         let worker = {
@@ -492,7 +491,8 @@ impl DockService {
     /// Over the volume item a notch steps the volume, whatever
     /// `behavior.scrollAction` says and without the gate: every notch
     /// counts ([`Self::step_volume`]); it returns `None` (no window was
-    /// activated), and a platform that cannot reach the volume is its error.
+    /// activated). It waits on the platform's volume thread, bounded: call
+    /// it off the UI thread and off an async runtime's workers.
     pub fn scroll_item(
         &self,
         item_key: &str,
@@ -548,41 +548,44 @@ impl DockService {
         Ok(Some(id))
     }
 
-    /// One wheel notch over the volume item (docs/ipc/widget-items.md "The volume
-    /// item"): the volume as the platform reads it now (not the engine's
-    /// last reading, which a burst of notches outruns), then what
-    /// `stem_core::engine::volume_step` makes of it: the level first, then
-    /// the mute when that changes too (a notch up unmutes). Nothing to do
-    /// without an output device, or at the end of the range. Serialised with
-    /// every other volume change, so notches that arrive together add up.
-    /// Returns the volume it asked for, or `None` when it asked for nothing.
+    /// One wheel notch over the volume item (docs/ipc/widget-items.md):
+    /// `Platform::step_volume`, which reads the volume now (not the
+    /// engine's last reading, which a burst of notches outruns), applies
+    /// `stem_core::engine::volume_step` and sets the level, then the mute
+    /// (a notch up unmutes), as one operation on the platform's side, so
+    /// notches that arrive together add up. Returns the volume it set, or
+    /// `None` when there was nothing to do: no output device, the end of
+    /// the range, or a platform that did not answer in time. That last one
+    /// drops the notch with a log line (one `warn` per streak) instead of
+    /// an error, so a fast spin over a stuck volume thread does not send
+    /// the page a failure per notch; the platform does not run the step
+    /// later. Other platform errors are returned.
     pub fn step_volume(&self, direction: ScrollDirection) -> ServiceResult<Option<VolumeStatus>> {
-        let _serial = self.inner.volume.lock();
-        let platform = &self.inner.platform;
-        let Some(current) = platform.volume_status()? else {
-            log::debug!("volume step {direction:?}: no audio output device");
-            return Ok(None);
-        };
-        let next = volume_step(current, direction);
-        if next == current {
-            log::debug!("volume step {direction:?}: already at {current:?}");
-            return Ok(None);
+        match self.inner.platform.step_volume(direction) {
+            Ok(stepped) => {
+                self.inner.volume_stalled.store(false, Ordering::Relaxed);
+                log::debug!("volume step {direction:?}: {stepped:?}");
+                Ok(stepped)
+            }
+            Err(PlatformError::Timeout) => {
+                if self.inner.volume_stalled.swap(true, Ordering::Relaxed) {
+                    log::debug!("volume step {direction:?}: dropped, the platform is still busy");
+                } else {
+                    log::warn!(
+                        "volume step {direction:?}: the platform did not answer in time; the \
+                         notch is dropped (and the next ones, logged at debug, until one goes \
+                         through)"
+                    );
+                }
+                Ok(None)
+            }
+            Err(e) => Err(e.into()),
         }
-        log::debug!("volume step {direction:?}: {current:?} -> {next:?}");
-        if next.percent != current.percent {
-            platform.set_volume(next.percent)?;
-        }
-        if next.muted != current.muted {
-            platform.set_volume_muted(next.muted)?;
-        }
-        Ok(Some(next))
     }
 
     /// Mute or unmute the default output device (the volume item's
-    /// *Mute* and *Unmute* menu entries), serialised with the wheel's
-    /// steps. Fails without an output device.
+    /// *Mute* and *Unmute* menu entries). Fails without an output device.
     pub fn set_volume_muted(&self, muted: bool) -> ServiceResult<()> {
-        let _serial = self.inner.volume.lock();
         Ok(self.inner.platform.set_volume_muted(muted)?)
     }
 
@@ -1536,6 +1539,11 @@ mod tests {
         fn start(&self, sink: EventSink) -> PlatformResult<()> {
             *self.sink.lock() = Some(Arc::clone(&sink));
             self.mock.start(sink)
+        }
+
+        /// A volume thread that never answers in time.
+        fn step_volume(&self, _direction: ScrollDirection) -> PlatformResult<Option<VolumeStatus>> {
+            Err(PlatformError::Timeout)
         }
 
         fn stop(&self) {
@@ -3370,11 +3378,12 @@ mod tests {
             .scroll_item_at("fixed:volume", "dock-DISPLAY3", Next, t0)
             .unwrap();
         assert_eq!(platform.volume_status().unwrap(), level(68, false));
+        // One platform step per notch, never a read-then-set of its own.
         assert_eq!(
             platform.calls(),
-            [62, 64, 66, 68, 70, 68]
+            [Previous, Previous, Previous, Previous, Previous, Next]
                 .into_iter()
-                .map(MockCall::SetVolume)
+                .map(MockCall::StepVolume)
                 .collect::<Vec<_>>()
         );
         assert!(service.inner.scroll_gate.lock().last.is_empty());
@@ -3385,29 +3394,20 @@ mod tests {
     fn a_volume_step_unmutes_going_up_clamps_and_does_nothing_without_a_device() {
         use ScrollDirection::{Next, Previous};
         let (service, platform, _rx) = start_with_volume();
-        // Muted at 99: up raises to 100 and unmutes, in that order.
+        // Muted at 99: up raises to 100 and unmutes.
         platform.change_volume(level(99, true));
         assert_eq!(service.step_volume(Previous).unwrap(), level(100, false));
-        assert_eq!(
-            platform.calls(),
-            vec![MockCall::SetVolume(100), MockCall::SetVolumeMuted(false)]
-        );
-        // At the top already: nothing is asked.
-        platform.clear_calls();
+        assert_eq!(platform.volume_status().unwrap(), level(100, false));
+        // At the top already: nothing changes.
         assert_eq!(service.step_volume(Previous).unwrap(), None);
-        assert_eq!(platform.calls(), vec![]);
+        assert_eq!(platform.volume_status().unwrap(), level(100, false));
         // Muted at 1: down lowers to 0 and stays muted; then nothing more.
         platform.change_volume(level(1, true));
         assert_eq!(service.step_volume(Next).unwrap(), level(0, true));
         assert_eq!(service.step_volume(Next).unwrap(), None);
-        assert_eq!(platform.calls(), vec![MockCall::SetVolume(0)]);
-        // Unmuted at 100: up does nothing at all.
-        platform.change_volume(level(100, false));
-        platform.clear_calls();
-        assert_eq!(service.step_volume(Previous).unwrap(), None);
-        assert_eq!(platform.calls(), vec![]);
+        assert_eq!(platform.volume_status().unwrap(), level(0, true));
 
-        // No output device: the notch resolves and nothing is asked.
+        // No output device: the notch resolves and changes nothing.
         platform.change_volume(None);
         assert_eq!(
             service
@@ -3415,12 +3415,40 @@ mod tests {
                 .unwrap(),
             None
         );
-        assert_eq!(platform.calls(), vec![]);
+        assert_eq!(platform.volume_status().unwrap(), None);
+        assert!(
+            platform
+                .calls()
+                .iter()
+                .all(|c| matches!(c, MockCall::StepVolume(_)))
+        );
         // The menu's Mute fails without a device; with one it is recorded.
         assert!(service.set_volume_muted(true).is_err());
         platform.change_volume(level(30, false));
         service.set_volume_muted(true).unwrap();
         assert_eq!(platform.volume_status().unwrap(), level(30, true));
+        service.shutdown();
+    }
+
+    #[test]
+    fn a_volume_step_the_platform_does_not_answer_in_time_is_dropped_not_an_error() {
+        // The relay's volume thread never answers in time.
+        let relay = Arc::new(Relay::demo());
+        let (service, rx) = start_relay(Arc::clone(&relay));
+        let mut settings = service.settings();
+        settings.items.volume = true;
+        service.update_settings(settings).unwrap();
+        wait_state(&rx, |s| s.items.iter().any(|i| i.key == "fixed:volume"));
+        for direction in [ScrollDirection::Previous, ScrollDirection::Next] {
+            assert_eq!(
+                service
+                    .scroll_item_at("fixed:volume", DOCK, direction, Instant::now())
+                    .unwrap(),
+                None
+            );
+            assert_eq!(service.step_volume(direction).unwrap(), None);
+        }
+        assert!(service.inner.volume_stalled.load(Ordering::Relaxed));
         service.shutdown();
     }
 

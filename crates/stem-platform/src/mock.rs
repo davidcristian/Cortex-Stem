@@ -9,8 +9,8 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use stem_core::{
     AppId, AppIdentity, ClockFormat, IconKey, LaunchTarget, MonitorId, MonitorInfo, PlatformEvent,
-    PowerStatus, RawWindow, Rect, RecycleBinState, ShellAction, ThemeInfo, VolumeStatus,
-    WindowAction, WindowId,
+    PowerStatus, RawWindow, Rect, RecycleBinState, ScrollDirection, ShellAction, ThemeInfo,
+    VolumeStatus, WindowAction, WindowId,
 };
 
 use crate::{
@@ -105,6 +105,8 @@ pub enum MockCall {
     SetVolume(u8),
     /// `set_volume_muted` with this value.
     SetVolumeMuted(bool),
+    /// `step_volume` in this direction, whatever it did.
+    StepVolume(ScrollDirection),
 }
 
 #[derive(Debug, Default)]
@@ -501,6 +503,29 @@ impl Platform for MockPlatform {
     fn set_volume_muted(&self, muted: bool) -> PlatformResult<()> {
         self.record(MockCall::SetVolumeMuted(muted));
         self.change_output(|v| v.muted = muted)
+    }
+
+    /// Recorded; then the scripted device's volume becomes what
+    /// `stem_core::engine::volume_step` makes of it, under the state's lock
+    /// as the real thread does it in one message, reported like an outside
+    /// change. `None` without a scripted device or when nothing changes.
+    fn step_volume(&self, direction: ScrollDirection) -> PlatformResult<Option<VolumeStatus>> {
+        self.record(MockCall::StepVolume(direction));
+        let (next, sink) = {
+            let mut s = self.state.lock();
+            let next = s.volume.and_then(|current| {
+                let next = stem_core::engine::volume_step(current, direction);
+                (next != current).then_some(next)
+            });
+            if next.is_some() {
+                s.volume = next;
+            }
+            (next, s.sink.clone())
+        };
+        if let (Some(next), Some(sink)) = (next, sink) {
+            sink(PlatformEvent::VolumeChanged(Some(next)));
+        }
+        Ok(next)
     }
 
     fn shell_action(&self, action: ShellAction) -> PlatformResult<()> {
@@ -1042,6 +1067,48 @@ mod tests {
         // A pushed reading is kept as well.
         p.push(PlatformEvent::VolumeChanged(level(5, false)));
         assert_eq!(p.volume_status().unwrap(), level(5, false));
+    }
+
+    #[test]
+    fn a_volume_step_applies_the_engines_rule_and_reports_only_a_change() {
+        use ScrollDirection::{Next, Previous};
+        let level = |percent, muted| Some(VolumeStatus { percent, muted });
+        let p = MockPlatform::with_demo_scenario();
+        let seen: Arc<Mutex<Vec<PlatformEvent>>> = Arc::default();
+        let sink_seen = Arc::clone(&seen);
+        p.start(Arc::new(move |ev| sink_seen.lock().push(ev)))
+            .unwrap();
+        seen.lock().clear();
+
+        assert_eq!(p.step_volume(Previous).unwrap(), level(62, false));
+        assert_eq!(p.step_volume(Next).unwrap(), level(60, false));
+        // Muted at 99: up unmutes and stops at 100; then nothing.
+        assert!(p.change_volume(level(99, true)));
+        assert_eq!(p.step_volume(Previous).unwrap(), level(100, false));
+        assert_eq!(p.step_volume(Previous).unwrap(), None);
+        // Without a device: nothing, and no error.
+        assert!(p.change_volume(None));
+        assert_eq!(p.step_volume(Next).unwrap(), None);
+        assert_eq!(
+            *seen.lock(),
+            vec![
+                PlatformEvent::VolumeChanged(level(62, false)),
+                PlatformEvent::VolumeChanged(level(60, false)),
+                PlatformEvent::VolumeChanged(level(99, true)),
+                PlatformEvent::VolumeChanged(level(100, false)),
+                PlatformEvent::VolumeChanged(None),
+            ]
+        );
+        assert_eq!(
+            p.calls(),
+            vec![
+                MockCall::StepVolume(Previous),
+                MockCall::StepVolume(Next),
+                MockCall::StepVolume(Previous),
+                MockCall::StepVolume(Previous),
+                MockCall::StepVolume(Next),
+            ]
+        );
     }
 
     #[test]

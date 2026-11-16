@@ -257,7 +257,7 @@ export type MockCall =
   | { type: 'launch'; target: LaunchTarget }
   | { type: 'deleteToRecycleBin'; paths: string[] }
   | { type: 'shell'; action: ShellAction }
-  | { type: 'setVolume'; percent: number }
+  | { type: 'stepVolume'; direction: ScrollDirection }
   | { type: 'setVolumeMuted'; muted: boolean }
   | { type: 'setDockContentSize'; width: number; height: number; edge: DockPosition }
   | { type: 'setDockHitRegion'; panel: Rect; envelope: Rect; edge: DockPosition }
@@ -1959,8 +1959,8 @@ export class MockBackend implements Backend {
    * recorded, then what the engine decides (`Engine.scrollAction`): with
    * `cycleWindows` the chosen demo window is activated and becomes the
    * foreground one; otherwise nothing. Over the volume item, whatever the
-   * setting, every notch steps the volume (`stepVolume`), as the
-   * service has no gate for it either. An unknown key rejects with the
+   * setting, every notch steps the volume (`stepVolume`, recorded),
+   * as the service has no gate for it either. An unknown key rejects with the
    * Rust error's words. The service's 150 ms gate is not mirrored: every
    * notch the page sends acts, so a test does not depend on its timing.
    */
@@ -2616,7 +2616,7 @@ export class MockBackend implements Backend {
    * device, with the platform's words.
    */
   chooseVolumeMute(muted: boolean): Promise<void> {
-    return this.command(() => this.platformSetVolume({ muted }));
+    return this.command(() => this.platformSetMuted(muted));
   }
 
   /**
@@ -2801,45 +2801,32 @@ export class MockBackend implements Backend {
   }
 
   /**
-   * `DockService::step_volume`: the reading now, then what
-   * `volumeStep` makes of it, the level first and then the mute, each
-   * recorded only when it changes; nothing without an output device or at
-   * the end of the range.
+   * `Platform::step_volume` (the mock platform's, which the service
+   * calls once per notch): recorded, then the reading now becomes what
+   * `volumeStep` makes of it, reported like an outside change; nothing
+   * without an output device or at the end of the range.
    */
   private doVolumeStep(direction: ScrollDirection): void {
+    this.record({ type: 'stepVolume', direction });
     const current = this.engine.volume;
     if (current === null) {
       return;
     }
-    const next = volumeStep(current, direction);
-    if (next.percent !== current.percent) {
-      this.platformSetVolume({ percent: next.percent });
-    }
-    if (next.muted !== current.muted) {
-      this.platformSetVolume({ muted: next.muted });
-    }
+    this.setVolume(volumeStep(current, direction));
   }
 
   /**
-   * `MockPlatform::set_volume` / `set_volume_muted`: recorded, then applied
-   * to the scripted device and reported like an outside change; an error
-   * without a device.
+   * `MockPlatform::set_volume_muted`: recorded, then applied to the
+   * scripted device and reported like an outside change; an error without
+   * a device.
    */
-  private platformSetVolume(change: { percent: number } | { muted: boolean }): void {
-    this.record(
-      'percent' in change
-        ? { type: 'setVolume', percent: change.percent }
-        : { type: 'setVolumeMuted', muted: change.muted },
-    );
+  private platformSetMuted(muted: boolean): void {
+    this.record({ type: 'setVolumeMuted', muted });
     const current = this.engine.volume;
     if (current === null) {
       throw 'no audio output device';
     }
-    const next =
-      'percent' in change
-        ? { ...current, percent: Math.min(100, Math.max(0, Math.round(change.percent))) }
-        : { ...current, muted: change.muted };
-    this.setVolume(next);
+    this.setVolume({ ...current, muted });
   }
 
   private doShellAction(action: ShellAction): void {

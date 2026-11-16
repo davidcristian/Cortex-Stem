@@ -58,7 +58,7 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use stem_core::{
     AppIdentity, ClockFormat, IconKey, LaunchTarget, MonitorInfo, PowerStatus, RawWindow,
-    RecycleBinState, ShellAction, ThemeInfo, VolumeStatus, WindowAction, WindowId,
+    RecycleBinState, ScrollDirection, ShellAction, ThemeInfo, VolumeStatus, WindowAction, WindowId,
 };
 
 use crate::{
@@ -211,6 +211,11 @@ impl Platform for WindowsPlatform {
 
     fn set_volume_muted(&self, muted: bool) -> PlatformResult<()> {
         self.volume_handle()?.set_muted(muted)
+    }
+
+    /// One message to the volume thread, which reads, steps and sets there.
+    fn step_volume(&self, direction: ScrollDirection) -> PlatformResult<Option<VolumeStatus>> {
+        self.volume_handle()?.step(direction)
     }
 
     fn taskbar_auto_hide(&self) -> PlatformResult<bool> {

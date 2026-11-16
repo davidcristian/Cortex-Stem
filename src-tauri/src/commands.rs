@@ -19,7 +19,8 @@
 //! call to Tauri's blocking pool, keeping the async runtime's workers free;
 //! `open_app_folder` (disk checks, then the shell) does the same, and so do
 //! `reload_user_css` (a read of `dock.css`) and `open_user_css` (the
-//! template, then the shell).
+//! template, then the shell), and `scroll_item` (a notch over the
+//! volume item waits on the platform's volume thread).
 
 use std::fmt::{Debug, Display};
 use std::sync::Arc;
@@ -158,7 +159,10 @@ async fn primary_click(
 /// as a click does; one that did nothing (the setting is `none`,
 /// no windows, dropped by the gate) leaves it, and so does one that
 /// stepped the volume over the volume item (IPC v1.30), which
-/// brings no window forward.
+/// brings no window forward. The service call runs on Tauri's blocking
+/// pool: a volume step waits (bounded) on the platform's volume thread, and
+/// a fast spin sends up to ten notches at once, which must not hold the
+/// async runtime's workers that every other command runs on.
 #[tauri::command]
 async fn scroll_item(
     app: AppHandle,
@@ -167,12 +171,21 @@ async fn scroll_item(
     item_key: String,
     direction: ScrollDirection,
 ) -> CmdResult<()> {
-    let dock = window.label();
-    let activated = checked(
-        "scroll_item",
-        &(dock, &item_key, direction),
-        service.0.scroll_item(&item_key, dock, direction),
-    )?;
+    let dock = window.label().to_owned();
+    let args = (dock.clone(), item_key.clone(), direction);
+    let service = Arc::clone(&service.0);
+    let joined = tauri::async_runtime::spawn_blocking(move || {
+        service.scroll_item(&item_key, &dock, direction)
+    })
+    .await;
+    let activated = match joined {
+        Ok(result) => checked("scroll_item", &args, result)?,
+        Err(e) => checked(
+            "scroll_item",
+            &args,
+            Err::<Option<stem_core::WindowId>, _>(format!("the scroll task did not finish: {e}")),
+        )?,
+    };
     if activated.is_some() {
         crate::windows::forget_dock_focus(&app, "a scroll over an item");
     }

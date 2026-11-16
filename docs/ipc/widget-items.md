@@ -107,6 +107,10 @@ Another widget: the default output device's volume as an optional fixed item.
   - `set_volume(percent)` sets the level (more than 100 counts as 100) and leaves the mute alone.
   - `set_volume_muted(muted)` sets the mute and leaves the level alone. Both setters fail without
     an output device.
+  - `step_volume(direction)` handles one wheel notch. It takes the reading now, applies
+    `stem_core::engine::volume_step` to it, and sets the level, then the mute, where they
+    change, as one operation that no other volume request interleaves with. It returns the
+    volume it set, or `null` when there was nothing to do.
 
   On Windows a dedicated thread of the platform layer (`stem-volume`, in the multithreaded
   apartment) follows the default console render endpoint
@@ -122,10 +126,13 @@ Another widget: the default output device's volume as an optional fixed item.
   slider drag) goes out once at the end of the interval, with the value read then, so the last
   value always arrives. A failure reads `null` and is logged at `warn` once, then at `debug`
   while the failures continue. With no device the thread waits for a device notification; any
-  other failure is tried again after 2 s, doubling up to 60 s.
+  other failure is tried again after 2 s, doubling up to 60 s. A failure other than "no device"
+  drops the enumerator and its notification client at once, so the retry builds them again.
 
-  The three methods wait at most 250 ms for the thread (`PlatformError::Timeout`). The first
-  reading is reported once the thread has bound the device at start.
+  Each method is one request to the thread and waits at most 250 ms for it
+  (`PlatformError::Timeout`). A set or a step that the thread takes only after its caller's wait
+  has ended is dropped, not done late. The first reading is reported once the thread has bound
+  the device at start.
 - The page draws the face: a speaker with no wave at 0 %, one wave from 1 % to 33 %, two from
   34 % to 66 % and three from 67 % (Windows' three steps), with the level below as text in the
   page's locale. While `muted`, a cross replaces the waves and the level is still written. For
@@ -136,18 +143,20 @@ Another widget: the default output device's volume as an optional fixed item.
 - The wheel: the page sends `scroll_item` for every notch over the volume item, whatever
   `behavior.scrollAction` says. It counts notches as in
   [Scrolling over an item](scrolling-over-an-item.md); over every other item it still sends only
-  while the setting is not `none`. Rust (`ScrollEffect::StepVolume`) reads the volume now, not
-  from the snapshot, which falls behind during a quick run of notches, and sets what
-  `stem_core::engine::volume_step` makes of it. `previous` (the wheel turned away from the user,
-  up) raises the volume by 2, up to 100, and unmutes, as the volume-up key does. `next` lowers it
-  by 2, down to 0, and keeps the mute. The level is set first, then the mute. The service runs
-  the notches one after the other, so notches that arrive together add up.
+  while the setting is not `none`. Rust (`ScrollEffect::StepVolume`) calls `Platform::step_volume`
+  once per notch, off the async runtime's workers (on Tauri's blocking pool). So each step starts
+  from the volume now, not from the snapshot, which falls behind during a quick run of notches.
+  `previous` (the wheel turned away from the user, up) raises the volume by 2, up to 100, and
+  unmutes, as the volume-up key does. `next` lowers it by 2, down to 0, and keeps the mute. The
+  platform runs the steps one after the other, so notches that arrive together add up.
 
   The 150 ms limit of [Scrolling over an item](scrolling-over-an-item.md) does **not** apply:
-  every notch counts (one page event sends at most ten), as each press of a volume key does.
-  Without an output device, or at the end of the range, a notch does nothing and resolves. With
-  the item off, its key is unknown and the command rejects, as for a click. No window comes to
-  the front, so the focus shortcut's stored window stays.
+  each notch the page sends counts (one page event sends at most ten), as each press of a volume
+  key does. Without an output device, or at the end of the range, a notch does nothing and
+  resolves. So does a notch that the platform did not complete in time (a `warn` line, then
+  `debug` lines until a step succeeds): it is dropped rather than reported to the page, and the
+  failure affects only that notch. With the item off, its key is unknown and the command rejects,
+  as for a click. No window comes to the front, so the focus shortcut's stored window stays.
 - Menu (built by Rust): *Mute*, or *Unmute* while the engine's last reading says muted
   (`set_volume_muted`; disabled without an output device; it does not supersede the focus
   shortcut's stored window), *Sound settings* (`ShellAction` `openSoundSettings`, which launches
@@ -157,6 +166,7 @@ Another widget: the default output device's volume as an optional fixed item.
 - `MockBackend`: `MockOptions.volume` (default: a device at 60 %, not muted; `null` for none),
   `setVolume(status | null)` (a change made outside Stem, which emits a new state when it
   differs) and `chooseVolumeMute(muted)` (what the menu's *Mute* or *Unmute* runs). It records
-  `setVolume` and `setVolumeMuted`, and it steps without the 150 ms limit, like Rust.
+  `stepVolume` (one per notch over the item, as the service calls `Platform::step_volume`) and
+  `setVolumeMuted`, and it steps without the 150 ms limit, like Rust.
   The mock platform's demo has the same device and sends its `VolumeChanged` once at start, after
   `ClockFormatChanged`.
