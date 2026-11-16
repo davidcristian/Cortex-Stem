@@ -17,6 +17,9 @@
 //! Running the export twice produces no change: ts-rs rewrites identical
 //! files, and the barrel is only written when its content differs.
 
+mod scan;
+mod tests;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -33,6 +36,7 @@ use crate::settings::{
     Magnification, MonitorMode, PinnedApp, ScrollAction, Settings, SystemIntegration, ThemeMode,
     ThemePreset,
 };
+use scan::{annotated_types, binding_files};
 
 /// One exported binding, as ts-rs sees it.
 #[derive(Debug)]
@@ -174,77 +178,6 @@ fn write_if_changed(path: &Path, content: &str) -> std::io::Result<bool> {
     Ok(true)
 }
 
-/// Names of every `pub struct`/`pub enum` in this crate's sources that is
-/// preceded by a `ts(export)` attribute. A textual scan, deliberately simple:
-/// it fails loudly when the attribute is not followed by a public item.
-fn annotated_types() -> BTreeSet<String> {
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut names = BTreeSet::new();
-    for file in rust_files(&src) {
-        let text = std::fs::read_to_string(&file)
-            .unwrap_or_else(|e| panic!("cannot read {}: {e}", file.display()));
-        let lines: Vec<&str> = text.lines().collect();
-        for (i, line) in lines.iter().enumerate() {
-            let line = line.trim_start();
-            if !(line.starts_with("#[") && line.contains("ts(export)")) {
-                continue;
-            }
-            let item = lines[i + 1..]
-                .iter()
-                .map(|l| l.trim_start())
-                .find_map(|l| {
-                    l.strip_prefix("pub struct ")
-                        .or_else(|| l.strip_prefix("pub enum "))
-                })
-                .unwrap_or_else(|| {
-                    panic!(
-                        "{}:{}: `ts(export)` is not followed by a `pub struct`/`pub enum`",
-                        file.display(),
-                        i + 1
-                    )
-                });
-            let name: String = item
-                .chars()
-                .take_while(|c| c.is_alphanumeric() || *c == '_')
-                .collect();
-            assert!(
-                !name.is_empty(),
-                "{}:{}: unnamed item",
-                file.display(),
-                i + 1
-            );
-            names.insert(name);
-        }
-    }
-    names
-}
-
-fn rust_files(dir: &Path) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    let entries =
-        std::fs::read_dir(dir).unwrap_or_else(|e| panic!("cannot list {}: {e}", dir.display()));
-    for entry in entries {
-        let path = entry.expect("directory entry").path();
-        if path.is_dir() {
-            files.extend(rust_files(&path));
-        } else if path.extension().is_some_and(|ext| ext == "rs") {
-            files.push(path);
-        }
-    }
-    files.sort();
-    files
-}
-
-/// `*.ts` file names present in the export directory.
-fn binding_files(dir: &Path) -> BTreeSet<PathBuf> {
-    std::fs::read_dir(dir)
-        .unwrap_or_else(|e| panic!("cannot list {}: {e}", dir.display()))
-        .map(|entry| entry.expect("directory entry").path())
-        .filter(|p| p.is_file() && p.extension().is_some_and(|ext| ext == "ts"))
-        .filter_map(|p| p.file_name().map(PathBuf::from))
-        .collect()
-}
-
 /// Exports every listed type, writes the barrel, and fails on any drift
 /// between the list, the `ts(export)` attributes, and the files on disk.
 #[test]
@@ -279,61 +212,4 @@ fn export_barrel_and_detect_drift() {
     );
     let missing: Vec<&PathBuf> = expected.difference(&present).collect();
     assert!(missing.is_empty(), "bindings not written: {missing:?}");
-}
-
-#[test]
-fn barrel_is_sorted_and_deterministic() {
-    let cfg = Config::from_env();
-    let mut entries = exported(&cfg);
-    let a = barrel(&entries);
-    entries.reverse();
-    let b = barrel(&entries);
-    assert_eq!(a, b);
-    let lines: Vec<&str> = a.lines().filter(|l| l.starts_with("export ")).collect();
-    let mut sorted = lines.clone();
-    sorted.sort_unstable();
-    assert_eq!(lines, sorted);
-    assert_eq!(lines.len(), entries.len());
-    assert!(a.contains("export type { DockState } from \"./DockState\";"));
-}
-
-/// Ids are `#[serde(transparent)]` newtypes: the frontend sees the primitive.
-#[test]
-fn ids_cross_ipc_as_plain_number_and_string() {
-    let cfg = Config::from_env();
-    assert_eq!(<WindowId as TS>::decl(&cfg), "type WindowId = number;");
-    assert_eq!(<AppId as TS>::decl(&cfg), "type AppId = string;");
-    assert_eq!(<IconKey as TS>::decl(&cfg), "type IconKey = string;");
-    assert_eq!(<MonitorId as TS>::decl(&cfg), "type MonitorId = string;");
-}
-
-/// JSON numbers are doubles; `u64` fields are annotated `ts(type = "number")`
-/// so no binding asks the frontend for a `bigint`.
-#[test]
-fn no_binding_uses_bigint() {
-    for e in exported(&Config::from_env()) {
-        assert!(
-            !e.decl.contains("bigint"),
-            "{} exports a bigint; add `#[cfg_attr(feature = \"ts\", ts(type = \"number\"))]`: {}",
-            e.name,
-            e.decl
-        );
-    }
-}
-
-#[test]
-fn every_ipc_payload_type_is_exported_and_internal_ones_are_not() {
-    let names: BTreeSet<String> = exported(&Config::from_env())
-        .into_iter()
-        .map(|e| e.name)
-        .collect();
-    for ty in IPC_PAYLOAD_TYPES {
-        assert!(
-            names.contains(*ty),
-            "{ty} is named in docs/ipc/ but not exported"
-        );
-    }
-    // Engine inputs never cross IPC.
-    assert!(!names.contains("PlatformEvent"));
-    assert!(!names.contains("EngineInput"));
 }
