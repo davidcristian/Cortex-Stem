@@ -52,8 +52,9 @@
 //!   `HWND_TOP` / `HWND_TOPMOST`, and shown the same way (`SWP_SHOWWINDOW`),
 //!   never with `ShowWindow`. [`restack`] puts it back under the dock when
 //!   it is not the window right below it (`GetWindow(GW_HWNDNEXT)`).
-//! - Shape: a `CreateRoundRectRgn` region inset by [`REGION_INSET`] px, with
-//!   corners concentric to the panel's ([`region_args`]), and DWM's own
+//! - Shape: a `CreateRoundRectRgn` region inset by
+//!   `rules::backdrop::REGION_INSET` px, with corners concentric to the
+//!   panel's (`rules::backdrop::region_args`), and DWM's own
 //!   rounding off (never both, A7).
 //! - Size and place: [`DockBackdrop::rect`] as given (the app layer rounds
 //!   it inwards); `WM_GETMINMAXINFO` lowers the minimum tracking size a
@@ -74,6 +75,9 @@
 //! ever waits on the other (docs/development/windows-rules.md). The price is
 //! that a move of the dock window and the backdrop's following move are not
 //! one synchronous step; at rest that is invisible.
+//!
+//! The build check's parsing, the switches, the region and the material's
+//! attribute value are `rules::backdrop` (pure, unit-tested on every host).
 //!
 //! Thread safety: the pending requests live in a `Mutex` shared between the
 //! platform object and the thread; the windows, the class and every raw
@@ -120,15 +124,17 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::w;
 
 use super::util;
+use crate::rules::backdrop::{
+    self as rules, MIN_BUILD, RegionArgs, Variant, material_attribute, parse_build, region_args,
+};
 use crate::{BackdropMaterial, DockBackdrop, NativeWindowHandle, PlatformError, PlatformResult};
 
-/// The first build with `DWMWA_SYSTEMBACKDROP_TYPE` (`DWM_SYSTEMBACKDROP_TYPE`
-/// documentation: Windows 11 version 22H2).
-pub const MIN_BUILD: u32 = 22621;
-
-/// How far the window region stays inside the window on every side, so the
-/// region's stair steps sit under the panel's 1 px hairline.
-pub const REGION_INSET: i32 = 1;
+// The host-independent values in `rules::backdrop` mirror dwmapi.h; prove
+// them against the SDK here, where the `windows` crate is available.
+const _: () = {
+    assert!(rules::DWMSBT_MAINWINDOW == DWMSBT_MAINWINDOW.0 as u32);
+    assert!(rules::DWMSBT_TRANSIENTWINDOW == DWMSBT_TRANSIENTWINDOW.0 as u32);
+};
 
 /// Thread message: apply the pending requests.
 const MSG_APPLY: u32 = WM_APP + 0x212;
@@ -196,60 +202,16 @@ fn os_build() -> Option<u32> {
     parse_build(&util::from_wide(&buf[..chars]))
 }
 
-/// `CurrentBuildNumber`'s text as a number (`"26100"` → 26100). Pure.
-fn parse_build(text: &str) -> Option<u32> {
-    text.trim().parse().ok()
-}
-
 // ---------------------------------------------------------------------------
 // The thread, as the platform object sees it
 // ---------------------------------------------------------------------------
 
-/// The window variant for testing (see the module docs).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Variant {
-    /// `WS_EX_LAYERED | WS_EX_TRANSPARENT` (default) or an ordinary window.
-    layered: bool,
-    /// `DwmExtendFrameIntoClientArea(−1)` (default) or not.
-    extend_frame: bool,
-}
-
-impl Variant {
-    fn from_env() -> Self {
-        Self {
-            layered: flag(std::env::var("STEM_BACKDROP_LAYERED").ok().as_deref(), true),
-            extend_frame: flag(
-                std::env::var("STEM_BACKDROP_EXTEND_FRAME").ok().as_deref(),
-                true,
-            ),
-        }
-    }
-
-    fn describe(self) -> String {
-        format!(
-            "{}, frame {}",
-            if self.layered {
-                "layered click-through"
-            } else {
-                "not layered"
-            },
-            if self.extend_frame {
-                "extended"
-            } else {
-                "not extended"
-            }
-        )
-    }
-}
-
-/// An environment switch: `"0"` is off, `"1"` is on, anything else (or
-/// nothing) is `default`. Pure.
-fn flag(value: Option<&str>, default: bool) -> bool {
-    match value.map(str::trim) {
-        Some("0") => false,
-        Some("1") => true,
-        _ => default,
-    }
+/// The window variant the environment asks for (see the module docs).
+fn variant_from_env() -> Variant {
+    Variant::from_switches(
+        std::env::var("STEM_BACKDROP_LAYERED").ok().as_deref(),
+        std::env::var("STEM_BACKDROP_EXTEND_FRAME").ok().as_deref(),
+    )
 }
 
 /// State shared between the platform object and the thread.
@@ -360,7 +322,7 @@ fn thread_main(shared: &Shared, done: &Sender<()>) {
     // SAFETY: `msg` is a live out-pointer; the call only makes the system
     // create this thread's message queue (nothing is removed).
     let _ = unsafe { PeekMessageW(&mut msg, None, WM_USER, WM_USER, PM_NOREMOVE) };
-    match Backdrops::new(Variant::from_env()) {
+    match Backdrops::new(variant_from_env()) {
         Ok(mut backdrops) => {
             // SAFETY: GetCurrentThreadId has no preconditions.
             let id = unsafe { GetCurrentThreadId() };
@@ -865,18 +827,6 @@ impl Drop for BackdropWindow {
     }
 }
 
-/// Name, `DWM_SYSTEMBACKDROP_TYPE` value and constant name of a material.
-fn material_attribute(material: BackdropMaterial) -> (&'static str, u32, &'static str) {
-    match material {
-        BackdropMaterial::Acrylic => (
-            "Acrylic",
-            DWMSBT_TRANSIENTWINDOW.0 as u32,
-            "DWMSBT_TRANSIENTWINDOW",
-        ),
-        BackdropMaterial::Mica => ("Mica", DWMSBT_MAINWINDOW.0 as u32, "DWMSBT_MAINWINDOW"),
-    }
-}
-
 /// `DwmSetWindowAttribute` with a 4-byte payload (every attribute used
 /// here: `BOOL`, `COLORREF` and the two enums are all 32-bit).
 fn set_attribute(hwnd: HWND, attribute: DWMWINDOWATTRIBUTE, value: u32) -> PlatformResult<()> {
@@ -913,46 +863,6 @@ fn frame_changed(hwnd: HWND) {
 // ---------------------------------------------------------------------------
 // The region
 // ---------------------------------------------------------------------------
-
-/// Arguments of `CreateRoundRectRgn` (window-relative; `right` and `bottom`
-/// exclusive, as for `CreateRectRgn`), or of `CreateRectRgn` when `ellipse`
-/// is 0.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct RegionArgs {
-    left: i32,
-    top: i32,
-    right: i32,
-    bottom: i32,
-    /// Width and height of the corner ellipse: twice the region's radius.
-    ellipse: i32,
-}
-
-/// The region of a backdrop window `width` × `height` physical px under a
-/// panel with corners of `radius` px: the window inset by [`REGION_INSET`]
-/// on every side, with corners concentric to the panel's (radius minus the
-/// inset), never rounder than the inset box allows. `None` when nothing is
-/// left. Pure.
-fn region_args(width: i32, height: i32, radius: u32) -> Option<RegionArgs> {
-    let right = width.saturating_sub(REGION_INSET);
-    let bottom = height.saturating_sub(REGION_INSET);
-    let inner_width = right.saturating_sub(REGION_INSET);
-    let inner_height = bottom.saturating_sub(REGION_INSET);
-    if inner_width <= 0 || inner_height <= 0 {
-        return None;
-    }
-    let radius = i32::try_from(radius)
-        .unwrap_or(i32::MAX)
-        .saturating_sub(REGION_INSET)
-        .max(0);
-    let ellipse = radius.saturating_mul(2).min(inner_width).min(inner_height);
-    Some(RegionArgs {
-        left: REGION_INSET,
-        top: REGION_INSET,
-        right,
-        bottom,
-        ellipse,
-    })
-}
 
 /// Give `hwnd` the region `args`. On success the system owns the region.
 fn set_region(hwnd: HWND, args: RegionArgs) -> PlatformResult<()> {
@@ -1028,64 +938,5 @@ unsafe extern "system" fn backdrop_wndproc(
         // SAFETY: forwarding the arguments we were given to the default
         // procedure.
         _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_build_number_parses_from_the_registry_text() {
-        assert_eq!(parse_build("26100"), Some(26100));
-        assert_eq!(parse_build(" 22621 "), Some(22621));
-        assert_eq!(parse_build(""), None);
-        assert_eq!(parse_build("22621.1"), None);
-    }
-
-    #[test]
-    fn a_switch_is_off_only_for_0_and_on_only_for_1() {
-        assert!(flag(None, true));
-        assert!(!flag(Some("0"), true));
-        assert!(!flag(Some(" 0 "), true));
-        assert!(flag(Some("1"), false));
-        assert!(flag(Some("no"), true));
-        assert!(!flag(Some("yes"), false));
-    }
-
-    #[test]
-    fn the_region_is_inset_by_one_pixel_with_concentric_corners() {
-        // A 960 x 96 panel with 33 px corners (22 css at 150 %).
-        assert_eq!(
-            region_args(960, 96, 33),
-            Some(RegionArgs {
-                left: 1,
-                top: 1,
-                right: 959,
-                bottom: 95,
-                ellipse: 64,
-            })
-        );
-        // Square corners: a plain rectangle.
-        assert_eq!(region_args(100, 50, 0).map(|r| r.ellipse), Some(0));
-        assert_eq!(region_args(100, 50, 1).map(|r| r.ellipse), Some(0));
-    }
-
-    #[test]
-    fn the_corner_never_exceeds_the_inset_box_and_a_tiny_panel_has_none() {
-        // A radius larger than half the height gives a pill, not a bulge.
-        assert_eq!(region_args(400, 40, 64).map(|r| r.ellipse), Some(38));
-        assert_eq!(region_args(400, 40, u32::MAX).map(|r| r.ellipse), Some(38));
-        assert_eq!(region_args(2, 40, 8), None);
-        assert_eq!(region_args(40, 2, 8), None);
-        assert_eq!(region_args(0, 0, 0), None);
-        assert_eq!(region_args(-5, 40, 0), None);
-        assert_eq!(region_args(3, 3, 8).map(|r| r.ellipse), Some(1));
-    }
-
-    #[test]
-    fn the_materials_map_to_the_documented_backdrop_types() {
-        assert_eq!(material_attribute(BackdropMaterial::Acrylic).1, 3);
-        assert_eq!(material_attribute(BackdropMaterial::Mica).1, 2);
     }
 }
