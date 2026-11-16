@@ -2669,12 +2669,16 @@ impl DockFocus {
     /// End the session if it is the dock window `label`'s (it closed, or
     /// its activation failed); whether it was.
     pub fn end(&self, label: &str) -> bool {
+        self.take(label).is_some()
+    }
+
+    /// Take the session if it is the dock window `label`'s.
+    fn take(&self, label: &str) -> Option<FocusSession> {
         let mut session = self.0.lock();
         if session.as_ref().is_some_and(|s| s.dock == label) {
-            *session = None;
-            true
+            session.take()
         } else {
-            false
+            None
         }
     }
 
@@ -2684,9 +2688,14 @@ impl DockFocus {
     /// any more, another window took the activation (a click elsewhere,
     /// Alt+Tab, the window Escape brought back) and its session ends; a dock
     /// that is still in front (its own native menu took the focus for a
-    /// moment) keeps it. Whether a session ended.
-    pub fn blurred(&self, label: &str, front: Option<&str>) -> bool {
-        front != Some(label) && self.end(label)
+    /// moment) keeps it. The session that ended, if one did: its `window`
+    /// is `None` when there was nothing to go back to at the press or a
+    /// click or a menu entry already forgot it ([`DockFocus::supersede`]).
+    pub fn blurred(&self, label: &str, front: Option<&str>) -> Option<FocusSession> {
+        if front == Some(label) {
+            return None;
+        }
+        self.take(label)
     }
 
     /// The session as it is now (for the tests).
@@ -3080,10 +3089,24 @@ fn on_dock_blurred(app: &AppHandle, label: &str) {
         return;
     };
     let front = focused_dock(app, service.0.platform().as_ref());
-    if focus.blurred(label, front.as_deref()) {
+    if let Some(ended) = focus.blurred(label, front.as_deref()) {
         log::debug!(
-            "dock window {label:?}: it lost the activation; the window to go back to is forgotten"
+            "dock window {label:?}: it lost the activation; {}",
+            blur_outcome(&ended)
         );
+    }
+}
+
+/// What the end of `session` by a blur ([`DockFocus::blurred`]) forgot,
+/// for its log line: the window to go back to while there still was one,
+/// else (nothing was in front at the press, or a click or a menu entry
+/// forgot it already, with a line of its own) only the keyboard session.
+/// Pure.
+fn blur_outcome(session: &FocusSession) -> &'static str {
+    if session.window.is_some() {
+        "the window to go back to is forgotten"
+    } else {
+        "the keyboard session ended"
     }
 }
 
@@ -4656,20 +4679,47 @@ mod tests {
         let focus = DockFocus::default();
         focus.begin(DOCK_LABEL, app(7));
         // Its own native menu took the focus: the dock is still in front.
-        assert!(!focus.blurred(DOCK_LABEL, Some(DOCK_LABEL)));
+        assert_eq!(focus.blurred(DOCK_LABEL, Some(DOCK_LABEL)), None);
         assert_eq!(focus.session(), session(DOCK_LABEL, Some(7)));
         // Another dock's blur leaves it alone, wherever the foreground is.
-        assert!(!focus.blurred(OTHER_DOCK, None));
-        assert!(!focus.blurred(OTHER_DOCK, Some(DOCK_LABEL)));
+        assert_eq!(focus.blurred(OTHER_DOCK, None), None);
+        assert_eq!(focus.blurred(OTHER_DOCK, Some(DOCK_LABEL)), None);
         assert_eq!(focus.session(), session(DOCK_LABEL, Some(7)));
         // Another dock took the foreground (its menu), or no dock has it (a
-        // click elsewhere, Alt+Tab): the session ends.
-        assert!(focus.blurred(DOCK_LABEL, Some(OTHER_DOCK)));
+        // click elsewhere, Alt+Tab): the session ends, and says what it had.
+        assert_eq!(
+            focus.blurred(DOCK_LABEL, Some(OTHER_DOCK)),
+            session(DOCK_LABEL, Some(7))
+        );
         assert_eq!(focus.session(), None);
         focus.begin(DOCK_LABEL, None);
-        assert!(focus.blurred(DOCK_LABEL, None));
+        assert_eq!(focus.blurred(DOCK_LABEL, None), session(DOCK_LABEL, None));
         assert_eq!(focus.session(), None);
-        assert!(!focus.blurred(DOCK_LABEL, None), "nothing left to end");
+        assert_eq!(focus.blurred(DOCK_LABEL, None), None, "nothing left to end");
+    }
+
+    #[test]
+    fn a_blur_after_a_click_says_that_the_session_ended_not_that_the_window_is_forgotten() {
+        let focus = DockFocus::default();
+        focus.begin(DOCK_LABEL, app(7));
+        let ended = focus.blurred(DOCK_LABEL, None).expect("the session ends");
+        assert_eq!(
+            blur_outcome(&ended),
+            "the window to go back to is forgotten"
+        );
+
+        // A click on an item forgot the window (its own log line); the blur
+        // that follows when the clicked window comes to the front ends the
+        // session and must not say that it forgot the window again.
+        focus.begin(DOCK_LABEL, app(7));
+        assert_eq!(focus.supersede(), Some(DOCK_LABEL.to_owned()));
+        let ended = focus.blurred(DOCK_LABEL, None).expect("the session ends");
+        assert_eq!(blur_outcome(&ended), "the keyboard session ended");
+
+        // Nothing was in front at the press: the same.
+        focus.begin(DOCK_LABEL, None);
+        let ended = focus.blurred(DOCK_LABEL, None).expect("the session ends");
+        assert_eq!(blur_outcome(&ended), "the keyboard session ended");
     }
 
     #[test]
