@@ -16,6 +16,8 @@ import type { UserCss } from '$lib/ipc/generated/UserCss';
 
 import {
   appIdForExe,
+  appsFolderKnows,
+  aumidFallbackName,
   batteryTitle,
   colorFor,
   defaultSettings,
@@ -1284,6 +1286,117 @@ describe('hidden apps (docs/ipc/hidden-apps.md; mirror of hide_app / unhide_app)
       hiddenApp(calc, 'Calculator'),
       // The desktop program keeps its window's exe and that file's icon.
       hiddenApp(tool, 'Tool main', TOOL_EXE, `exe:${TOOL_EXE}`),
+    ]);
+  });
+
+  it('an aumid: app in a frame host resolves to its Store app and, hidden then, still saves no path', async () => {
+    const b = new MockBackend({ latencyMs: [0, 0], identityDelayMs: 60_000, log: false });
+    backends.push(b);
+    const CALCULATOR = 'Microsoft.WindowsCalculator_8wekyb3d8bbwe!App';
+    const FRAME_HOST = 'C:\\Windows\\System32\\ApplicationFrameHost.exe';
+    const FIREFOX_EXE = 'C:\\Program Files\\Mozilla Firefox\\firefox.exe';
+    const FIREFOX_AUMID = '308046B0AF4A39CB';
+    const window = (
+      id: number,
+      title: string,
+      className: string,
+      exePath: string,
+      appUserModelId: string,
+    ): RawWindow => ({
+      id,
+      title,
+      className,
+      processId: 6000 + id,
+      exePath,
+      appUserModelId,
+      isVisible: true,
+      isMinimized: false,
+      isCloaked: false,
+      onCurrentDesktop: true,
+      monitor: 'mock-primary',
+      rect: null,
+      iconKey: `hwnd:${id}:${6000 + id}`,
+    });
+    // Calculator as Windows shows it: a frame of the frame host's process
+    // that names the app's AppUserModelID.
+    b.pushWindow(window(60, 'Calculator', 'ApplicationFrameWindow', FRAME_HOST, CALCULATOR));
+    // A desktop program that names an AppUserModelID of its own, which the
+    // mock's shell does not know (`appsFolderKnows`).
+    b.pushWindow(window(70, 'Mozilla Firefox', 'MozillaWindowClass', FIREFOX_EXE, FIREFOX_AUMID));
+    b.resolveIdentitiesNow();
+    const calc = `aumid:${CALCULATOR}`;
+    const firefox = `aumid:${FIREFOX_AUMID}`;
+    const state = await b.getDockState();
+    // The Store app, as the real platform's identity for a packaged app:
+    // named without the AppsFolder (the real fallback name), the mock's
+    // icon for it, never the frame host's.
+    expect(item(state, app(calc))).toMatchObject({
+      title: 'WindowsCalculator',
+      iconKey: `mock:${calc}`,
+    });
+    expect(item(state, app(firefox))).toMatchObject({
+      title: 'firefox',
+      iconKey: `mock:${firefox}`,
+    });
+    await b.launchApp(calc);
+    await b.launchApp(firefox);
+    expect(b.calls).toEqual([
+      // Launched by its AppUserModelID, not as `ApplicationFrameHost.exe`.
+      { type: 'launch', target: { kind: 'storeApp', appUserModelId: CALCULATOR } },
+      // The desktop program launches its exe.
+      { type: 'launch', target: { kind: 'exe', path: FIREFOX_EXE, args: [], workingDir: null } },
+    ]);
+
+    await b.hideApp(calc);
+    await b.hideApp(firefox);
+    expect((await b.getSettings()).hiddenApps).toEqual([
+      // A `storeApp` target names no file: no path, the identity's icon.
+      hiddenApp(calc, 'WindowsCalculator', null, `mock:${calc}`),
+      // The file its identity launches, and the identity's icon.
+      hiddenApp(firefox, 'firefox', FIREFOX_EXE, `mock:${firefox}`),
+    ]);
+  });
+
+  it("the mock's shell knows packaged AppUserModelIDs only and names them as the real fallback does", () => {
+    for (const known of [
+      'Microsoft.WindowsCalculator_8wekyb3d8bbwe!App',
+      ' Microsoft.WindowsTerminal_8wekyb3d8bbwe!App ',
+      'windows.immersivecontrolpanel_cw5n1h2txyewy!microsoft.windows.immersivecontrolpanel',
+    ]) {
+      expect(appsFolderKnows(known), known).toBe(true);
+    }
+    for (const unknown of [
+      '',
+      '308046B0AF4A39CB',
+      'Chrome.Profile1',
+      'Microsoft.WindowsCalculator_8wekyb3d8bbwe',
+      'Microsoft.WindowsCalculator!App',
+      '_8wekyb3d8bbwe!App',
+      'Microsoft.WindowsCalculator_!App',
+      'Microsoft.WindowsCalculator_8wekyb3d8bbwe!',
+      'Microsoft.WindowsCalculator_1.0_x64__8wekyb3d8bbwe!App',
+    ]) {
+      expect(appsFolderKnows(unknown), unknown).toBe(false);
+    }
+    // The cases of `aumid_fallback_names` in rules/identity.rs.
+    expect(
+      [
+        'Microsoft.WindowsCalculator_8wekyb3d8bbwe!App',
+        'Chrome',
+        'Chrome.Profile1',
+        '!App',
+        'Vendor.Tool.exe',
+        '.exe',
+        '',
+      ].map(aumidFallbackName),
+    ).toEqual([
+      'WindowsCalculator',
+      'Chrome',
+      'Profile1',
+      '!App',
+      'Tool',
+      'Application',
+      'Application',
     ]);
   });
 
