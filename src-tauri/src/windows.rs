@@ -2667,13 +2667,10 @@ impl DockFocus {
     }
 
     /// End the session if it is the dock window `label`'s (it closed, or
-    /// its activation failed); whether it was.
-    pub fn end(&self, label: &str) -> bool {
-        self.take(label).is_some()
-    }
-
-    /// Take the session if it is the dock window `label`'s.
-    fn take(&self, label: &str) -> Option<FocusSession> {
+    /// its activation failed): the session that ended, if one did, whose
+    /// `window` says whether there was still one to go back to
+    /// ([`end_outcome`]).
+    pub fn end(&self, label: &str) -> Option<FocusSession> {
         let mut session = self.0.lock();
         if session.as_ref().is_some_and(|s| s.dock == label) {
             session.take()
@@ -2695,7 +2692,7 @@ impl DockFocus {
         if front == Some(label) {
             return None;
         }
-        self.take(label)
+        self.end(label)
     }
 
     /// The session as it is now (for the tests).
@@ -2919,9 +2916,10 @@ fn activated(focus: &DockFocus, label: &str, result: Result<(), PlatformError>) 
             log::warn!(
                 "focus shortcut: dock window {label:?} could not take the keyboard focus: {e}"
             );
-            if focus.end(label) {
+            if let Some(ended) = focus.end(label) {
                 log::debug!(
-                    "dock window {label:?}: its activation failed; the window to go back to is forgotten"
+                    "dock window {label:?}: its activation failed; {}",
+                    end_outcome(&ended)
                 );
             }
             false
@@ -3073,8 +3071,8 @@ fn forget_session_of(app: &AppHandle, label: &str, why: &str) {
     let Some(focus) = app.try_state::<DockFocus>() else {
         return;
     };
-    if focus.end(label) {
-        log::debug!("dock window {label:?}: {why}; the window to go back to is forgotten");
+    if let Some(ended) = focus.end(label) {
+        log::debug!("dock window {label:?}: {why}; {}", end_outcome(&ended));
     }
 }
 
@@ -3092,17 +3090,18 @@ fn on_dock_blurred(app: &AppHandle, label: &str) {
     if let Some(ended) = focus.blurred(label, front.as_deref()) {
         log::debug!(
             "dock window {label:?}: it lost the activation; {}",
-            blur_outcome(&ended)
+            end_outcome(&ended)
         );
     }
 }
 
-/// What the end of `session` by a blur ([`DockFocus::blurred`]) forgot,
+/// What the end of `session` forgot ([`DockFocus::end`], by a blur
+/// [`DockFocus::blurred`], a closed dock window or a failed activation),
 /// for its log line: the window to go back to while there still was one,
 /// else (nothing was in front at the press, or a click or a menu entry
 /// forgot it already, with a line of its own) only the keyboard session.
 /// Pure.
-fn blur_outcome(session: &FocusSession) -> &'static str {
+fn end_outcome(session: &FocusSession) -> &'static str {
     if session.window.is_some() {
         "the window to go back to is forgotten"
     } else {
@@ -4666,12 +4665,24 @@ mod tests {
     #[test]
     fn only_the_docks_own_close_or_failed_activation_ends_its_session() {
         let focus = DockFocus::default();
-        assert!(!focus.end(DOCK_LABEL));
+        assert_eq!(focus.end(DOCK_LABEL), None);
         focus.begin(DOCK_LABEL, app(7));
-        assert!(!focus.end(OTHER_DOCK));
+        assert_eq!(focus.end(OTHER_DOCK), None);
         assert_eq!(focus.session(), session(DOCK_LABEL, Some(7)));
-        assert!(focus.end(DOCK_LABEL));
+        let ended = focus.end(DOCK_LABEL);
+        assert_eq!(ended, session(DOCK_LABEL, Some(7)));
         assert_eq!(focus.session(), None);
+        assert_eq!(
+            ended.as_ref().map(end_outcome),
+            Some("the window to go back to is forgotten")
+        );
+        // A click had forgotten the window already: only the session ends.
+        focus.begin(DOCK_LABEL, app(7));
+        focus.supersede();
+        assert_eq!(
+            focus.end(DOCK_LABEL).as_ref().map(end_outcome),
+            Some("the keyboard session ended")
+        );
     }
 
     #[test]
@@ -4703,10 +4714,7 @@ mod tests {
         let focus = DockFocus::default();
         focus.begin(DOCK_LABEL, app(7));
         let ended = focus.blurred(DOCK_LABEL, None).expect("the session ends");
-        assert_eq!(
-            blur_outcome(&ended),
-            "the window to go back to is forgotten"
-        );
+        assert_eq!(end_outcome(&ended), "the window to go back to is forgotten");
 
         // A click on an item forgot the window (its own log line); the blur
         // that follows when the clicked window comes to the front ends the
@@ -4714,12 +4722,12 @@ mod tests {
         focus.begin(DOCK_LABEL, app(7));
         assert_eq!(focus.supersede(), Some(DOCK_LABEL.to_owned()));
         let ended = focus.blurred(DOCK_LABEL, None).expect("the session ends");
-        assert_eq!(blur_outcome(&ended), "the keyboard session ended");
+        assert_eq!(end_outcome(&ended), "the keyboard session ended");
 
         // Nothing was in front at the press: the same.
         focus.begin(DOCK_LABEL, None);
         let ended = focus.blurred(DOCK_LABEL, None).expect("the session ends");
-        assert_eq!(blur_outcome(&ended), "the keyboard session ended");
+        assert_eq!(end_outcome(&ended), "the keyboard session ended");
     }
 
     #[test]
