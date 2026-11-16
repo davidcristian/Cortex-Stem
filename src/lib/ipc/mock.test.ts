@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { panelRectReport } from '$lib/dock/geometry';
 import type { ClockFormat } from '$lib/ipc/generated/ClockFormat';
 import type { DockState } from '$lib/ipc/generated/DockState';
+import type { HiddenApp } from '$lib/ipc/generated/HiddenApp';
 import type { PowerStatus } from '$lib/ipc/generated/PowerStatus';
 import type { Settings } from '$lib/ipc/generated/Settings';
 
@@ -43,8 +44,20 @@ const FIREFOX = appIdForExe('C:\\Program Files\\Mozilla Firefox\\firefox.exe');
 const TERMINAL = appIdForExe('C:\\Program Files\\WindowsApps\\Terminal\\WindowsTerminal.exe');
 const NOTEPAD = appIdForExe('C:\\Windows\\notepad.exe');
 const SETTINGS = 'uri:ms-settings:';
-const CODE = appIdForExe('C:\\Users\\me\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe');
+const CODE_EXE = 'C:\\Users\\me\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe';
+const CODE = appIdForExe(CODE_EXE);
 const SPOTIFY = appIdForExe('C:\\Program Files\\Spotify\\Spotify.exe');
+
+/** A hidden app as a settings file names it: no path or icon key unless given. */
+const hiddenApp = (
+  id: string,
+  name: string,
+  path: string | null = null,
+  iconKey: string | null = null,
+): HiddenApp => ({ id, name, path, iconKey });
+
+/** Code as `hideApp` saves it once its identity is known. */
+const CODE_HIDDEN = hiddenApp(CODE, 'Code', CODE_EXE, `mock:${CODE}`);
 
 const app = (id: string): string => `app:${id}`;
 const keys = (state: DockState): string[] => state.items.map((i) => i.key);
@@ -789,15 +802,15 @@ describe('pins (mirror of stem-service pin/unpin/reorder)', () => {
       const s = structuredClone(b['engine'].settings);
       s.iconSize = 300;
       s.hiddenApps = [
-        { id: EXPLORER, name: 'Explorer' },
-        { id: SPOTIFY, name: 'Spotify' },
-        { id: SPOTIFY, name: 'again' },
+        hiddenApp(EXPLORER, 'Explorer'),
+        hiddenApp(SPOTIFY, 'Spotify'),
+        hiddenApp(SPOTIFY, 'again'),
       ];
       return s;
     };
     const valid = (s: Settings | undefined): void => {
       expect(s?.iconSize).toBe(128);
-      expect(s?.hiddenApps).toEqual([{ id: SPOTIFY, name: 'Spotify' }]);
+      expect(s?.hiddenApps).toEqual([hiddenApp(SPOTIFY, 'Spotify')]);
       expect(s).toEqual(validateSettings(s!));
     };
 
@@ -843,8 +856,10 @@ describe('hidden apps (docs/ipc/hidden-apps.md; mirror of hide_app / unhide_app)
 
     await b.hideApp(CODE);
     // The settings first, then the state without the item.
-    expect(settingsEvents.at(-1)?.hiddenApps).toEqual([{ id: CODE, name: 'Code' }]);
-    expect((await b.getSettings()).hiddenApps).toEqual([{ id: CODE, name: 'Code' }]);
+    // With its program's path as the window reported it and its item's
+    // icon key.
+    expect(settingsEvents.at(-1)?.hiddenApps).toEqual([CODE_HIDDEN]);
+    expect((await b.getSettings()).hiddenApps).toEqual([CODE_HIDDEN]);
     const state = states.at(-1)!;
     expect(keys(state)).not.toContain(app(CODE));
     expect(keys(state).slice(-5)).toEqual([
@@ -923,7 +938,10 @@ describe('hidden apps (docs/ipc/hidden-apps.md; mirror of hide_app / unhide_app)
     const b = new MockBackend({ latencyMs: [0, 0], identityDelayMs: 60_000, log: false });
     backends.push(b);
     await b.hideApp(CODE);
-    expect((await b.getSettings()).hiddenApps).toEqual([{ id: CODE, name: 'lib.rs — Stem' }]);
+    // No identity yet: no icon key either (the demo's windows have none).
+    expect((await b.getSettings()).hiddenApps).toEqual([
+      hiddenApp(CODE, 'lib.rs — Stem', CODE_EXE),
+    ]);
   });
 
   it("the fallback name is the item's title: a cloaked window seen first does not name it", async () => {
@@ -950,20 +968,23 @@ describe('hidden apps (docs/ipc/hidden-apps.md; mirror of hide_app / unhide_app)
     const tool = 'exe:c:/tools/tool.exe';
     expect(item(await b.getDockState(), app(tool)).title).toBe('Tool main');
     await b.hideApp(tool);
-    expect((await b.getSettings()).hiddenApps).toEqual([{ id: tool, name: 'Tool main' }]);
+    // The path of the item's window; the cloaked one's would be the same.
+    expect((await b.getSettings()).hiddenApps).toEqual([
+      hiddenApp(tool, 'Tool main', 'C:\\Tools\\tool.exe'),
+    ]);
   });
 
   it('a settings file that hides an app hides it; pinned, blank and repeated entries are dropped', async () => {
     const b = fast();
     const s = await b.getSettings();
     s.hiddenApps = [
-      { id: SPOTIFY, name: 'Spotify' },
-      { id: EXPLORER, name: 'pinned' },
-      { id: ' ', name: 'blank' },
-      { id: SPOTIFY, name: 'again' },
+      hiddenApp(SPOTIFY, 'Spotify'),
+      hiddenApp(EXPLORER, 'pinned'),
+      hiddenApp(' ', 'blank'),
+      hiddenApp(SPOTIFY, 'again'),
     ];
     b.loadSettings(s);
-    expect((await b.getSettings()).hiddenApps).toEqual([{ id: SPOTIFY, name: 'Spotify' }]);
+    expect((await b.getSettings()).hiddenApps).toEqual([hiddenApp(SPOTIFY, 'Spotify')]);
     const state = await b.getDockState();
     expect(keys(state)).not.toContain(app(SPOTIFY));
     expect(item(state, app(EXPLORER)).pinned).toBe(true);
@@ -981,13 +1002,13 @@ describe('hidden apps (docs/ipc/hidden-apps.md; mirror of hide_app / unhide_app)
 
     const saved = await b.updateSettings(stale);
     expect(saved.iconSize).toBe(64);
-    expect(saved.hiddenApps).toEqual([{ id: CODE, name: 'Code' }]);
+    expect(saved.hiddenApps).toEqual([CODE_HIDDEN]);
     expect(saved.pinned.map((p) => p.id)).toEqual(pins);
     // Lists it names itself are ignored too.
-    const foreign = { ...saved, pinned: [], hiddenApps: [{ id: SPOTIFY, name: 'x' }] };
+    const foreign = { ...saved, pinned: [], hiddenApps: [hiddenApp(SPOTIFY, 'x')] };
     const again = await b.updateSettings(foreign);
     expect(again.pinned.map((p) => p.id)).toEqual(pins);
-    expect(again.hiddenApps).toEqual([{ id: CODE, name: 'Code' }]);
+    expect(again.hiddenApps).toEqual([CODE_HIDDEN]);
     const state = await b.getDockState();
     expect(keys(state)).not.toContain(app(CODE));
     expect(item(state, app(SPOTIFY)).pinned).toBe(true);
@@ -2530,16 +2551,13 @@ describe('helpers mirrored from stem-core', () => {
     expect(v.pinned.map((p) => p.id)).toEqual(['a', 'b']);
     // Hidden apps: never a pinned one, a blank id or a repeat.
     s.hiddenApps = [
-      { id: 'c', name: 'C' },
-      { id: 'a', name: 'pinned' },
-      { id: ' \t', name: 'blank' },
-      { id: 'c', name: 'again' },
-      { id: 'd', name: '' },
+      hiddenApp('c', 'C'),
+      hiddenApp('a', 'pinned'),
+      hiddenApp(' \t', 'blank'),
+      hiddenApp('c', 'again'),
+      hiddenApp('d', ''),
     ];
-    expect(validateSettings(s).hiddenApps).toEqual([
-      { id: 'c', name: 'C' },
-      { id: 'd', name: '' },
-    ]);
+    expect(validateSettings(s).hiddenApps).toEqual([hiddenApp('c', 'C'), hiddenApp('d', '')]);
     // Idempotent and non-mutating.
     expect(validateSettings(v)).toEqual(v);
     expect(s.iconSize).toBe(999);

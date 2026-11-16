@@ -97,14 +97,20 @@
     return key === null ? null : store.icon(key, pinIconSize);
   }
 
-  // Request the icon of every pin whose identity the dock has resolved; the
-  // cache makes repeats free, so this may run on every change of the pins,
-  // the dock state or the display scale.
+  // Request the icon of every pin whose identity the dock has resolved, and
+  // of every hidden app that kept one; the cache makes repeats free,
+  // so this may run on every change of the lists, the dock state or the
+  // display scale.
   $effect(() => {
     for (const pin of settings?.pinned ?? []) {
       const key = pinIconKey(pin);
       if (key !== null) {
         store.ensureIcon(key, pinIconSize);
+      }
+    }
+    for (const app of settings?.hiddenApps ?? []) {
+      if (app.iconKey !== null) {
+        store.ensureIcon(app.iconKey, pinIconSize);
       }
     }
   });
@@ -179,28 +185,41 @@
   }
 
   /**
-   * Where a hidden app comes from, for its row's second line, read
-   * from its id (`AppId::for_exe` / `for_app_user_model_id`): a program's
-   * path the Windows way, with backslashes and the drive letter in capitals
-   * (the id keeps the rest in lower case, and the page has nothing that
-   * knows the original case: a hidden app has no item in the dock state);
-   * the package family of a packaged app's AppUserModelID (the part before
-   * its `!`), or the whole AppUserModelID of an app that names its own;
-   * `null` for any other id (a window class), which says nothing readable.
+   * Where a hidden app comes from, for its row's second line:
+   * for an app with an AppUserModelID (`AppId::for_app_user_model_id`)
+   * the package family of a packaged app (the part before its `!`), or the
+   * whole AppUserModelID of an app that names its own; otherwise the
+   * program's path saved when the app was hidden (`HiddenApp.path`, in its
+   * original case); for an entry without one (saved by an older version) the
+   * path read from an `exe:` id the Windows way, with backslashes and the
+   * drive letter in capitals (the id keeps the rest in lower case); `null`
+   * for anything else (a window class), which says nothing readable.
    */
   function hiddenLocation(app: HiddenApp): string | null {
+    if (app.id.startsWith('aumid:')) {
+      const aumid = app.id.slice('aumid:'.length);
+      const bang = aumid.indexOf('!');
+      return bang > 0 ? `Store app · ${aumid.slice(0, bang)}` : `App ID · ${aumid}`;
+    }
+    if (app.path !== null && app.path.trim() !== '') {
+      return app.path;
+    }
     if (app.id.startsWith('exe:')) {
       return app.id
         .slice('exe:'.length)
         .replaceAll('/', '\\')
         .replace(/^([a-z]):/, (_, drive: string) => `${drive.toUpperCase()}:`);
     }
-    if (app.id.startsWith('aumid:')) {
-      const aumid = app.id.slice('aumid:'.length);
-      const bang = aumid.indexOf('!');
-      return bang > 0 ? `Store app · ${aumid.slice(0, bang)}` : `App ID · ${aumid}`;
-    }
     return null;
+  }
+
+  /**
+   * The icon a hidden app's item showed when it was hidden, as for a
+   * pin: a data URL, `null` when it kept none or the key no longer resolves
+   * (one bound to a window that has closed), `undefined` while it loads.
+   */
+  function hiddenIcon(app: HiddenApp): string | null | undefined {
+    return app.iconKey === null ? null : store.icon(app.iconKey, pinIconSize);
   }
 
   /** *Show*: off the list, the focus to a neighbour (`removeRow`). */
@@ -893,9 +912,21 @@
             <ul class="hidden-apps" aria-label="Hidden apps">
               {#each settings.hiddenApps as app (app.id)}
                 {@const location = hiddenLocation(app)}
-                <!-- No icon tile: a hidden app has no item in the dock
-                     state, so the page has no icon key for it. -->
-                <li class="hidden-app" data-id={app.id}>
+                {@const icon = hiddenIcon(app)}
+                <li
+                  class="hidden-app"
+                  data-id={app.id}
+                  data-icon={icon === undefined ? 'loading' : icon === null ? 'none' : 'loaded'}
+                >
+                  <!-- The icon saved with the entry; the pins'
+                       neutral tile without one. Decorative, as for a pin. -->
+                  <span class="pin-icon" aria-hidden="true">
+                    {#if icon}
+                      <img src={icon} alt="" draggable="false" />
+                    {:else}
+                      <span class="placeholder"></span>
+                    {/if}
+                  </span>
                   <div class="pin-text">
                     <span class="pin-name">{hiddenName(app)}</span>
                     {#if location !== null}
@@ -1332,7 +1363,7 @@
     border-top: 1px solid var(--divider);
   }
 
-  /* Hidden apps: a pin's row without the icon, with Show. */
+  /* Hidden apps: a pin's row, its icon included, with Show. */
   .hidden-apps {
     list-style: none;
     margin: 0;
@@ -1341,9 +1372,9 @@
 
   .hidden-app {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: auto minmax(0, 1fr) auto;
     align-items: center;
-    gap: 16px;
+    gap: 14px;
     min-height: 56px;
     box-sizing: border-box;
     padding: 8px 16px;

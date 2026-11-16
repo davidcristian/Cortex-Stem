@@ -1524,7 +1524,15 @@ test.describe('hidden apps on the dock', () => {
     const saved = await page.evaluate(
       async () => (await (window as unknown as DemoWindow).__dockMock!.getSettings()).hiddenApps,
     );
-    expect(saved).toEqual([{ id: CODE_ID, name: 'Code' }]);
+    // With its program's path in its original case and its icon key.
+    expect(saved).toEqual([
+      {
+        id: CODE_ID,
+        name: 'Code',
+        path: 'C:\\Users\\me\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe',
+        iconKey: `mock:${CODE_ID}`,
+      },
+    ]);
 
     // Its window comes to the front: still tracked, but no item lights up.
     await foreground(page, CODE_WINDOW_ID);
@@ -3995,11 +4003,14 @@ test.describe('settings window', () => {
     await expect(rows).toHaveCount(2);
     await expect(none).toHaveCount(0);
     await expect(rows.locator('.pin-name')).toHaveText(['Code', 'Spotify']);
-    // Where each comes from, the Windows way, never the internal id.
+    // Where each comes from, as the window reported it, never the internal
+    // id, in its original case; and the icon each showed.
     await expect(rows.locator('.pin-launch')).toHaveText([
-      'C:\\users\\me\\appdata\\local\\programs\\microsoft vs code\\code.exe',
-      'C:\\program files\\spotify\\spotify.exe',
+      'C:\\Users\\me\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe',
+      'C:\\Program Files\\Spotify\\Spotify.exe',
     ]);
+    await expect(rows.locator('.pin-icon img')).toHaveCount(2);
+    await expect(section.locator('.hidden-app:not([data-icon="loaded"])')).toHaveCount(0);
     await expect(rows.getByRole('button')).toHaveText(['Show', 'Show']);
     await section.scrollIntoViewIfNeeded();
     await section.screenshot({ path: `${OUT}/settings-hidden-apps.png` });
@@ -4009,7 +4020,12 @@ test.describe('settings window', () => {
     await expect(rows).toHaveCount(1);
     await expect(page.locator('.status')).toHaveText('Saved');
     expect((await page.evaluate(SETTINGS_MOCK))?.hiddenApps).toEqual([
-      { id: SPOTIFY_ID, name: 'Spotify' },
+      {
+        id: SPOTIFY_ID,
+        name: 'Spotify',
+        path: 'C:\\Program Files\\Spotify\\Spotify.exe',
+        iconKey: `mock:${SPOTIFY_ID}`,
+      },
     ]);
     await page.getByRole('button', { name: 'Show Spotify on the dock' }).click();
     await expect(none).toBeVisible();
@@ -4077,39 +4093,52 @@ test.describe('settings window', () => {
     await expect(page.locator('#h-hidden')).toBeFocused();
   });
 
-  test('a hidden app shows where it comes from: a path, a package family or nothing', async ({
+  test('a hidden app shows where it comes from: its saved path, a path from its id, a package family or nothing', async ({
     page,
   }) => {
     await page.emulateMedia({ colorScheme: 'dark' });
     await openSettings(page);
-    // A settings file naming one app of each kind of id.
+    // A settings file naming one app of each kind of id, one of them hidden
+    // with its path and icon key, the others as an older Stem wrote
+    // them, without.
     await page.evaluate(async () => {
       const mock = (window as unknown as DemoWindow).__dockMock!;
       const settings = await mock.getSettings();
+      const old = { path: null, iconKey: null };
       settings.hiddenApps = [
-        { id: 'exe:d:/tools/7-zip/7zfm.exe', name: '7-Zip' },
+        {
+          id: 'exe:c:/program files/paint.net/paintdotnet.exe',
+          name: 'paint.net',
+          path: 'C:\\Program Files\\paint.net\\PaintDotNet.exe',
+          iconKey: 'mock:exe:c:/program files/paint.net/paintdotnet.exe',
+        },
+        { id: 'exe:d:/tools/7-zip/7zfm.exe', name: '7-Zip', ...old },
         {
           id: 'aumid:Microsoft.WindowsCalculator_8wekyb3d8bbwe!App',
           name: 'Calculator',
+          ...old,
         },
-        { id: 'aumid:Mozilla.Firefox.Nightly', name: 'Firefox Nightly' },
-        { id: 'class:sunawtframe', name: 'A Java app' },
+        { id: 'aumid:Mozilla.Firefox.Nightly', name: 'Firefox Nightly', ...old },
+        { id: 'class:sunawtframe', name: 'A Java app', ...old },
       ];
       mock.loadSettings(settings);
     });
     const rows = page.locator('section[aria-labelledby="h-hidden"] .hidden-app');
-    await expect(rows).toHaveCount(4);
+    await expect(rows).toHaveCount(5);
     const lines = await rows.evaluateAll((els) =>
       els.map((el) => el.querySelector('.pin-launch')?.textContent ?? null),
     );
     expect(lines).toEqual([
+      'C:\\Program Files\\paint.net\\PaintDotNet.exe',
       'D:\\tools\\7-zip\\7zfm.exe',
       'Store app · Microsoft.WindowsCalculator_8wekyb3d8bbwe',
       'App ID · Mozilla.Firefox.Nightly',
       null,
     ]);
-    // No icon tile: the page has no icon key for an app without an item.
-    await expect(rows.locator('img, .pin-icon')).toHaveCount(0);
+    // The entry with an icon key draws it; the others the pins' neutral tile.
+    await expect(rows.first()).toHaveAttribute('data-icon', 'loaded');
+    await expect(rows.locator('.pin-icon img')).toHaveCount(1);
+    await expect(rows.locator('.pin-icon .placeholder')).toHaveCount(4);
     await page.locator('#h-hidden').scrollIntoViewIfNeeded();
     await page.locator('section[aria-labelledby="h-hidden"]').screenshot({
       path: `${OUT}/settings-hidden-apps-kinds.png`,

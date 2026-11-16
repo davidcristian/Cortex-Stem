@@ -12,6 +12,7 @@ import type { AppId } from '$lib/ipc/generated/AppId';
 import type { AppInfo } from '$lib/ipc/generated/AppInfo';
 import type { DockItem } from '$lib/ipc/generated/DockItem';
 import type { DockState } from '$lib/ipc/generated/DockState';
+import type { HiddenApp } from '$lib/ipc/generated/HiddenApp';
 import type { Settings } from '$lib/ipc/generated/Settings';
 import type { ThemeInfo } from '$lib/ipc/generated/ThemeInfo';
 import type { UserCss } from '$lib/ipc/generated/UserCss';
@@ -24,6 +25,14 @@ import { SettingsStore } from './settings.svelte';
 const THEME: ThemeInfo = { accent: '#0078D4', dark: true, highContrast: false, transparency: true };
 
 const pin = (id: string) => ({ id, label: null, launch: { kind: 'uri' as const, uri: id } });
+
+/** A hidden app as a settings file names it: no path or icon key unless given. */
+const hiddenApp = (
+  id: string,
+  name: string,
+  path: string | null = null,
+  iconKey: string | null = null,
+): HiddenApp => ({ id, name, path, iconKey });
 
 /** The dock's item for a pinned app once the engine has resolved it. */
 const appItem = (appId: string, title: string, iconKey: string | null): DockItem => ({
@@ -159,7 +168,7 @@ class FakeBackend implements Backend {
   async hideApp(appId: AppId): Promise<void> {
     this.log.push(`hide_app:${appId}`);
     this.check();
-    this.stored.hiddenApps.push({ id: appId, name: appId.toUpperCase() });
+    this.stored.hiddenApps.push(hiddenApp(appId, appId.toUpperCase()));
   }
 
   async unhideApp(appId: AppId): Promise<void> {
@@ -602,10 +611,7 @@ describe('SettingsStore', () => {
 
   it('Show for a hidden app flushes pending edits, runs unhide_app and refetches', async () => {
     const backend = new FakeBackend();
-    backend.stored.hiddenApps = [
-      { id: 'x', name: 'X' },
-      { id: 'y', name: 'Y' },
-    ];
+    backend.stored.hiddenApps = [hiddenApp('x', 'X'), hiddenApp('y', 'Y')];
     const store = new SettingsStore(backend, 150);
     await store.start();
     expect(store.settings?.hiddenApps.map((h) => h.id)).toEqual(['x', 'y']);
@@ -618,14 +624,14 @@ describe('SettingsStore', () => {
     backend.settleUpdate();
     await done;
     expect(backend.log.slice(-2)).toEqual(['unhide_app:x', 'get_settings']);
-    expect(store.settings?.hiddenApps).toEqual([{ id: 'y', name: 'Y' }]);
+    expect(store.settings?.hiddenApps).toEqual([hiddenApp('y', 'Y')]);
     expect(store.settings?.iconSize).toBe(60);
     expect(store.status).toBe('saved');
   });
 
   it('a draft made during Show takes over the fresh hidden apps', async () => {
     const backend = new FakeBackend();
-    backend.stored.hiddenApps = [{ id: 'x', name: 'X' }];
+    backend.stored.hiddenApps = [hiddenApp('x', 'X')];
     const store = new SettingsStore(backend, 150);
     await store.start();
     const done = store.unhideApp('x');
@@ -654,13 +660,13 @@ describe('SettingsStore', () => {
       ...structuredClone(backend.stored),
       iconSize: 48,
       pinned: [pin('a'), pin('c')],
-      hiddenApps: [{ id: 'x', name: 'X' }],
+      hiddenApps: [hiddenApp('x', 'X')],
     };
     backend.emit('dock://settings', fromRust);
     // The edit stays; the lists are Rust's, on screen and in what is sent.
     expect(store.settings?.iconSize).toBe(70);
     expect(store.settings?.pinned.map((p) => p.id)).toEqual(['a', 'c']);
-    expect(store.settings?.hiddenApps).toEqual([{ id: 'x', name: 'X' }]);
+    expect(store.settings?.hiddenApps).toEqual([hiddenApp('x', 'X')]);
     expect(store.status).toBe('saving');
     const sent: Settings[] = [];
     const update = backend.updateSettings.bind(backend);
@@ -672,12 +678,12 @@ describe('SettingsStore', () => {
     expect(sent).toHaveLength(1);
     expect(sent[0]?.iconSize).toBe(70);
     expect(sent[0]?.pinned.map((p) => p.id)).toEqual(['a', 'c']);
-    expect(sent[0]?.hiddenApps).toEqual([{ id: 'x', name: 'X' }]);
+    expect(sent[0]?.hiddenApps).toEqual([hiddenApp('x', 'X')]);
   });
 
   /** The dock's menu hides `id` in Rust, which emits the new document. */
   const dockHides = (backend: FakeBackend, id: string): void => {
-    backend.stored.hiddenApps = [...backend.stored.hiddenApps, { id, name: id.toUpperCase() }];
+    backend.stored.hiddenApps = [...backend.stored.hiddenApps, hiddenApp(id, id.toUpperCase())];
     backend.emit('dock://settings', structuredClone(backend.stored));
   };
 
@@ -703,13 +709,13 @@ describe('SettingsStore', () => {
     // after, and that event reaches the page before the answer does.
     backend.settleUpdate();
     dockHides(backend, 'x');
-    expect(store.settings?.hiddenApps).toEqual([{ id: 'x', name: 'X' }]);
+    expect(store.settings?.hiddenApps).toEqual([hiddenApp('x', 'X')]);
     expect(store.settings?.iconSize).toBe(60);
     await tick();
     // The answer (from before the hide) does not take the list back.
     expect(store.status).toBe('saved');
     expect(store.settings?.iconSize).toBe(60);
-    expect(store.settings?.hiddenApps).toEqual([{ id: 'x', name: 'X' }]);
+    expect(store.settings?.hiddenApps).toEqual([hiddenApp('x', 'X')]);
     const sent = captureSent(backend);
     store.edit((s) => {
       s.iconSize = 70;
@@ -717,7 +723,7 @@ describe('SettingsStore', () => {
     await vi.advanceTimersByTimeAsync(150);
     expect(sent).toHaveLength(1);
     expect(sent[0]?.iconSize).toBe(70);
-    expect(sent[0]?.hiddenApps).toEqual([{ id: 'x', name: 'X' }]);
+    expect(sent[0]?.hiddenApps).toEqual([hiddenApp('x', 'X')]);
   });
 
   it("a hide whose event overtakes a command's refetch is kept", async () => {
@@ -734,7 +740,7 @@ describe('SettingsStore', () => {
     };
     await store.unpinApp('b');
     expect(store.settings?.pinned.map((p) => p.id)).toEqual(['a', 'c']);
-    expect(store.settings?.hiddenApps).toEqual([{ id: 'x', name: 'X' }]);
+    expect(store.settings?.hiddenApps).toEqual([hiddenApp('x', 'X')]);
     expect(store.status).toBe('saved');
   });
 
@@ -747,7 +753,7 @@ describe('SettingsStore', () => {
       return defaults;
     };
     await store.reset();
-    expect(store.settings).toEqual({ ...defaultSettings(), hiddenApps: [{ id: 'x', name: 'X' }] });
+    expect(store.settings).toEqual({ ...defaultSettings(), hiddenApps: [hiddenApp('x', 'X')] });
     expect(store.status).toBe('saved');
   });
 

@@ -13,7 +13,9 @@ to the file that covers that section now.
   only then sends `dock://state` and increments the revision. So it no longer sends one for a
   theme change, a setting no item shows, an identity of an app without an item, or a monitor list
   or Recycle Bin size that changes nothing (the [`dock://state` row](events.md)). It validates
-  every settings change, as `mutate_settings` does.
+  every settings change, as `mutate_settings` does. `HiddenApp` gains `path` and `iconKey`,
+  filled by `hide_app` and shown in the settings page's hidden list
+  ([Hidden apps](hidden-apps.md)).
 - **v1.28 (fitting the edge):** The page draws the dock at a smaller fitted icon size when it
   would not fit its edge. No command, event or payload changed. New section
   [Fitting the edge](sizing-protocol.md#fitting-the-edge-v128).

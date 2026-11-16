@@ -379,12 +379,21 @@ impl DockEngine {
         if let Some(identity) = self.identities.get(app_id) {
             return Some(identity.display_name.clone());
         }
+        self.app_window(app_id).map(|w| w.title.clone())
+    }
+
+    /// The window that stands for `app_id` when its item is not at hand:
+    /// its first shown window (the one its item's title
+    /// and icon fall back to, see `app_item`), else its first-seen tracked
+    /// window (an app with none shown has no item). `None` when the engine
+    /// tracks no window of the app.
+    pub fn app_window(&self, app_id: &AppId) -> Option<&RawWindow> {
         let of_app = |t: &&Tracked| app_id_for(&t.raw) == *app_id;
         self.shown_windows()
             .into_iter()
             .find(of_app)
             .or_else(|| self.windows.values().filter(of_app).min_by_key(|t| t.seq))
-            .map(|t| t.raw.title.clone())
+            .map(|t| &t.raw)
     }
 
     /// Apps (pinned or running) with no identity yet, regardless of whether
@@ -3715,6 +3724,8 @@ mod tests {
         crate::settings::HiddenApp {
             id: exe_id(exe),
             name: name.into(),
+            path: None,
+            icon_key: None,
         }
     }
 
@@ -3904,6 +3915,32 @@ mod tests {
         // The identity outlives the windows.
         engine.apply(removed(2));
         engine.apply(removed(4));
+        assert_eq!(engine.app_name(&a).as_deref(), Some("App A"));
+    }
+
+    #[test]
+    fn app_window_is_the_first_shown_window_else_the_first_seen_one() {
+        let mut engine = DockEngine::new(minimal_settings());
+        let a = exe_id(r"C:\a.exe");
+        assert_eq!(engine.app_window(&a), None, "no window");
+        engine.apply(added(cloaked(win(4, r"C:\a.exe", "first, cloaked"))));
+        engine.apply(added(cloaked(win(5, r"C:\a.exe", "second, cloaked"))));
+        assert_eq!(engine.app_window(&a).map(|w| w.id), Some(WindowId(4)));
+        engine.apply(added(win(3, r"C:\a.exe", "shown")));
+        assert_eq!(engine.app_window(&a).map(|w| w.id), Some(WindowId(3)));
+        assert_eq!(
+            engine.app_window(&a).and_then(|w| w.exe_path.clone()),
+            Some(std::path::PathBuf::from(r"C:\a.exe"))
+        );
+        // An identity does not stand in for a window.
+        engine.apply(EngineInput::IdentityResolved {
+            app_id: a.clone(),
+            identity: identity(&a, "App A", "icon:a"),
+        });
+        for id in [3, 4, 5] {
+            engine.apply(removed(id));
+        }
+        assert_eq!(engine.app_window(&a), None);
         assert_eq!(engine.app_name(&a).as_deref(), Some("App A"));
     }
 

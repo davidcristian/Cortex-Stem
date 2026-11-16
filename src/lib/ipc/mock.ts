@@ -35,6 +35,7 @@ import type { DockItem } from '$lib/ipc/generated/DockItem';
 import type { DockItemKind } from '$lib/ipc/generated/DockItemKind';
 import type { DockPosition } from '$lib/ipc/generated/DockPosition';
 import type { DockState } from '$lib/ipc/generated/DockState';
+import type { HiddenApp } from '$lib/ipc/generated/HiddenApp';
 import type { IconKey } from '$lib/ipc/generated/IconKey';
 import type { LaunchTarget } from '$lib/ipc/generated/LaunchTarget';
 import type { MonitorId } from '$lib/ipc/generated/MonitorId';
@@ -1321,12 +1322,38 @@ class Engine {
     if (identity) {
       return identity.displayName;
     }
-    const first =
+    return this.appWindow(appId)?.title ?? null;
+  }
+
+  /**
+   * `DockEngine::app_window`: the app's first shown window, else
+   * its first-seen tracked window (an app with none shown has no item).
+   */
+  appWindow(appId: AppId): RawWindow | undefined {
+    return (
       this.firstWindowOf(appId) ??
       [...this.windows.values()]
         .filter((t) => appIdFor(t.raw) === appId)
-        .sort((a, b) => a.seq - b.seq)[0]?.raw;
-    return first?.title ?? null;
+        .sort((a, b) => a.seq - b.seq)[0]?.raw
+    );
+  }
+
+  /**
+   * `hidden_app_facts` in stem-service: the program's path from the
+   * app's window (`appWindow`), else the file its identity launches (an
+   * `exe` or a `shortcut`); the icon key its item shows, the identity's
+   * else that window's.
+   */
+  hiddenAppFacts(appId: AppId): Pick<HiddenApp, 'path' | 'iconKey'> {
+    const window = this.appWindow(appId);
+    const identity = this.identities.get(appId);
+    const launch = identity?.launch ?? null;
+    const launched =
+      launch !== null && (launch.kind === 'exe' || launch.kind === 'shortcut') ? launch.path : null;
+    return {
+      path: window?.exePath ?? launched,
+      iconKey: identity?.iconKey ?? window?.iconKey ?? null,
+    };
   }
 
   firstWindowOf(appId: AppId): RawWindow | undefined {
@@ -1905,10 +1932,12 @@ export class MockBackend implements Backend {
   }
 
   /**
-   * `hide_app`: `{ id, name }` with the name the app's item shows
-   * now (the id's file name when that is blank), saved like a pin. Hiding
-   * a hidden app again changes nothing; a pinned app and one the engine
-   * knows nothing of are refused with the Rust error's words.
+   * `hide_app`: `{ id, name, path, iconKey }` with the name the
+   * app's item shows now (the id's file name when that is blank) and the
+   * program's path and icon key `Engine.hiddenAppFacts` finds,
+   * saved like a pin. Hiding a hidden app again changes nothing; a pinned
+   * app and one the engine knows nothing of are refused with the Rust
+   * error's words.
    */
   hideApp(appId: AppId): Promise<void> {
     return this.command(() => {
@@ -1927,6 +1956,7 @@ export class MockBackend implements Backend {
       settings.hiddenApps.push({
         id: appId,
         name: name.trim() === '' ? fallbackDisplayName(appId) : name,
+        ...this.engine.hiddenAppFacts(appId),
       });
       this.applySettings(settings);
     });

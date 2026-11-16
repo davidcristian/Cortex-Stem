@@ -22,17 +22,27 @@ example by dragging its `.exe` onto the dock, shows it again as a pin.
 ## The Hidden apps section
 
 The section lists the apps you hid from the dock (see
-[Hiding an app](#hiding-an-app)). Each row has the name the app had when you
-hid it, the app's id and a _Show_ button. _Show_ puts the app back on the
+[Hiding an app](#hiding-an-app)). Each row has the icon and the name the app
+had when you hid it, where the app comes from (the program's path, or a
+Store app's package), and a _Show_ button. _Show_ puts the app back on the
 dock at once. With no app hidden, the section says _No apps are hidden._
 
 In the file, the hidden apps are the [`hiddenApps`](../SETTINGS.md#hiddenapps)
-array, empty by default. Each entry has the app's `id` and its `name`.
+array, empty by default. Each entry has the app's `id`, its `name`, and the
+`path` of its program and its `iconKey` as Stem found them when you hid the
+app. Either of the last two may be `null` or left out. Without an
+`iconKey`, the section shows a plain tile in place of the icon. Without a
+`path`, it shows a location read from the id.
 
 ```json
 {
   "hiddenApps": [
-    { "id": "exe:c:/program files/spotify/spotify.exe", "name": "Spotify" }
+    {
+      "id": "exe:c:/program files/spotify/spotify.exe",
+      "name": "Spotify",
+      "path": "C:\\Program Files\\Spotify\\Spotify.exe",
+      "iconKey": "exe:C:\\Program Files\\Spotify\\Spotify.exe"
+    }
   ]
 }
 ```

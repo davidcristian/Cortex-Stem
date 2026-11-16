@@ -649,14 +649,16 @@ impl DockService {
         }
     }
 
-    /// Stop showing an app on every dock (`docs/ipc/hidden-apps.md`
-    /// ): `{ id, name }` joins `Settings::hidden_apps`, saved like a pin,
-    /// and the engine drops its item when the new settings reach it. `name`
-    /// is what its item shows now (`DockEngine::app_name`: the resolved
-    /// display name, else its first window's title; the id's file name when
-    /// that is blank). Hiding a hidden app again changes nothing. Rejects a
-    /// pinned app (`Pinned`) and an app the engine knows nothing of, with
-    /// neither an identity nor a window (`UnknownApp`).
+    /// Stop showing an app on every dock (`docs/ipc/hidden-apps.md`):
+    /// `{ id, name, path, iconKey }` joins `Settings::hidden_apps`,
+    /// saved like a pin, and the engine drops its item when the new
+    /// settings reach it. `name` is what its item shows now
+    /// (`DockEngine::app_name`: the resolved display name, else its first
+    /// window's title; the id's file name when that is blank); `path` and
+    /// `icon_key` are what [`hidden_app_facts`] finds. Hiding a
+    /// hidden app again changes nothing. Rejects a pinned app (`Pinned`)
+    /// and an app the engine knows nothing of, with neither an identity nor
+    /// a window (`UnknownApp`).
     pub fn hide_app(&self, app_id: &AppId) -> ServiceResult<()> {
         let mut outcome = Ok(());
         let inner = &self.inner;
@@ -669,19 +671,26 @@ impl DockService {
                 return false;
             }
             // Settings, then engine: the lock order `Inner::settings` allows.
-            let Some(name) = inner.engine.lock().app_name(app_id) else {
-                outcome = Err(ServiceError::UnknownApp(app_id.clone()));
-                return false;
+            let (name, path, icon_key) = {
+                let engine = inner.engine.lock();
+                let Some(name) = engine.app_name(app_id) else {
+                    outcome = Err(ServiceError::UnknownApp(app_id.clone()));
+                    return false;
+                };
+                let (path, icon_key) = hidden_app_facts(&engine, app_id);
+                (name, path, icon_key)
             };
             let name = if name.trim().is_empty() {
                 fallback_display_name(app_id)
             } else {
                 name
             };
-            log::info!("hiding {app_id:?} ({name:?}) from the dock");
+            log::info!("hiding {app_id:?} ({name:?}, {path:?}) from the dock");
             settings.hide(stem_core::settings::HiddenApp {
                 id: app_id.clone(),
                 name,
+                path,
+                icon_key,
             })
         })?;
         outcome
@@ -1112,6 +1121,30 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
         .copied()
         .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
         .unwrap_or("<non-string panic payload>")
+}
+
+/// What a hidden app keeps besides its name (`HiddenApp::path` and
+/// `HiddenApp::icon_key`): the program's path as Windows reported it, from
+/// the window that stands for the app (`DockEngine::app_window`), else the
+/// file its identity launches (an `exe` or a shortcut); and the icon its
+/// item showed, its identity's else that window's, as the engine picks it
+/// for the item. Pure.
+fn hidden_app_facts(engine: &DockEngine, app_id: &AppId) -> (Option<String>, Option<IconKey>) {
+    let window = engine.app_window(app_id);
+    let identity = engine.identity(app_id);
+    let path = window
+        .and_then(|w| w.exe_path.as_deref())
+        .or_else(|| match identity.and_then(|i| i.launch.as_ref()) {
+            Some(LaunchTarget::Exe { path, .. } | LaunchTarget::Shortcut { path }) => {
+                Some(path.as_path())
+            }
+            _ => None,
+        })
+        .map(|path| path.to_string_lossy().into_owned());
+    let icon_key = identity
+        .and_then(|i| i.icon_key.clone())
+        .or_else(|| window.and_then(|w| w.icon_key.clone()));
+    (path, icon_key)
 }
 
 fn fallback_display_name(app_id: &AppId) -> String {
@@ -1906,6 +1939,8 @@ mod tests {
         from_page.hidden_apps.push(stem_core::settings::HiddenApp {
             id: AppId::for_exe(Path::new(r"C:\Apps\other.exe")),
             name: "other".into(),
+            path: Some(r"C:\Apps\other.exe".into()),
+            icon_key: None,
         });
         let saved = service.update_settings(stale).unwrap();
         assert_eq!(saved.icon_size, 64, "the rest of the document applies");
@@ -1952,10 +1987,23 @@ mod tests {
         let spotify_id = spotify.app_id.clone().unwrap();
 
         service.hide_app(&spotify_id).unwrap();
-        // The authoritative copy and the file both have it, with its name.
+        // The authoritative copy and the file both have it, with its name,
+        // its program's path as the platform reported it and its icon.
         let settings = service.settings();
         assert_eq!(hidden_ids(&settings), vec![spotify_id.as_str()]);
         assert_eq!(settings.hidden_apps[0].name, "Spotify");
+        let exe = platform.windows().unwrap()[5].exe_path.clone().unwrap();
+        assert_eq!(
+            settings.hidden_apps[0].path.as_deref(),
+            Some(exe.to_string_lossy().as_ref())
+        );
+        assert_ne!(
+            settings.hidden_apps[0].path.as_deref(),
+            Some(&spotify_id.as_str()["exe:".len()..]),
+            "the original case, not the id's"
+        );
+        assert!(spotify.icon_key.is_some());
+        assert_eq!(settings.hidden_apps[0].icon_key, spotify.icon_key);
         let saved = Settings::from_json(&document.document().unwrap()).unwrap();
         assert_eq!(saved, settings);
         // The page hears of it as of any settings change, then of the state.
@@ -2743,6 +2791,74 @@ mod tests {
                 app_user_model_id: TERMINAL_AUMID.into(),
             }),
         }
+    }
+
+    #[test]
+    fn a_hidden_apps_path_and_icon_come_from_its_window_else_its_identity() {
+        let mut engine = DockEngine::new(Settings::default());
+        let exe = TERMINAL_EXE;
+        let id = AppId::for_app_user_model_id(TERMINAL_AUMID);
+        assert_eq!(hidden_app_facts(&engine, &id), (None, None));
+
+        // A window without an icon of its own and no identity yet: its path.
+        engine.apply(EngineInput::Platform(PlatformEvent::WindowAdded(
+            terminal_window(),
+        )));
+        assert_eq!(hidden_app_facts(&engine, &id), (Some(exe.into()), None));
+        // With a window icon: that icon.
+        let with_icon = RawWindow {
+            icon_key: Some(IconKey("hwnd:50:5050".into())),
+            ..terminal_window()
+        };
+        engine.apply(EngineInput::Platform(PlatformEvent::WindowUpdated(
+            with_icon,
+        )));
+        assert_eq!(
+            hidden_app_facts(&engine, &id).1,
+            Some(IconKey("hwnd:50:5050".into()))
+        );
+        // The identity's icon wins, as on the item; the path stays the window's.
+        engine.apply(EngineInput::IdentityResolved {
+            app_id: id.clone(),
+            identity: terminal_identity(),
+        });
+        assert_eq!(
+            hidden_app_facts(&engine, &id),
+            (
+                Some(exe.into()),
+                Some(IconKey(format!("aumid:{TERMINAL_AUMID}")))
+            )
+        );
+        // No window left: a Store app's identity names no file.
+        engine.apply(EngineInput::Platform(PlatformEvent::WindowRemoved(
+            WindowId(50),
+        )));
+        assert_eq!(
+            hidden_app_facts(&engine, &id),
+            (None, Some(IconKey(format!("aumid:{TERMINAL_AUMID}"))))
+        );
+
+        // An app known only by its identity, which launches a program: that
+        // program's path, as written.
+        let program = Path::new(r"C:\Tools\Foo.EXE");
+        let foo = AppId::for_exe(program);
+        engine.apply(EngineInput::IdentityResolved {
+            app_id: foo.clone(),
+            identity: AppIdentity {
+                id: foo.clone(),
+                display_name: "Foo".into(),
+                icon_key: None,
+                launch: Some(LaunchTarget::Exe {
+                    path: program.to_path_buf(),
+                    args: vec![],
+                    working_dir: None,
+                }),
+            },
+        });
+        assert_eq!(
+            hidden_app_facts(&engine, &foo),
+            (Some(r"C:\Tools\Foo.EXE".into()), None)
+        );
     }
 
     /// A running Terminal window: package identity, exe under WindowsApps.

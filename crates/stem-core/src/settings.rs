@@ -17,7 +17,7 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::model::{AppId, LaunchTarget};
+use crate::model::{AppId, IconKey, LaunchTarget};
 
 /// The document format version this build writes. Increase it when a
 /// breaking change needs a migration step in [`Settings::migrate`].
@@ -658,6 +658,21 @@ pub struct HiddenApp {
     /// the app by this name.
     #[serde(default)]
     pub name: String,
+    /// The path of the app's program when it was hidden, as Windows
+    /// reported it, or else the `.exe` or `.lnk` file Stem launches the app
+    /// from. It keeps its original case, while an `exe:` id has the path in
+    /// lower case. The settings page shows it under the name. `null` when Stem
+    /// did not know a path (for an app known only by its window class, or
+    /// a Store app), or when the entry has no `path` key.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// The icon the app's item showed when it was hidden. The settings page
+    /// draws it beside the name. `null` when the item had no icon, or when
+    /// the entry has no `iconKey` key. The icon of a single window (which an
+    /// item shows when Windows does not let Stem read the app's own icon)
+    /// means nothing once that window is gone.
+    #[serde(default)]
+    pub icon_key: Option<IconKey>,
 }
 
 /// Windows integration settings.
@@ -849,6 +864,8 @@ mod tests {
                             .to_owned(),
                     ),
                     name: rng.pick(&["", "Name", "Other"]).to_owned(),
+                    path: rng.bool().then(|| r"C:\Program Files\X\X.exe".to_owned()),
+                    icon_key: rng.bool().then(|| IconKey("exe:C:\\x.exe".to_owned())),
                 })
                 .collect(),
             system: SystemIntegration {
@@ -1137,6 +1154,8 @@ mod tests {
         HiddenApp {
             id: AppId(id.to_owned()),
             name: name.to_owned(),
+            path: None,
+            icon_key: None,
         }
     }
 
@@ -1175,6 +1194,46 @@ mod tests {
             Settings::from_json(r#"{"hiddenApps": [{"name": "B"}]}"#),
             Err(SettingsError::Parse(_))
         ));
+    }
+
+    #[test]
+    fn a_hidden_app_keeps_its_path_and_icon_key_and_old_entries_load_without_them() {
+        // An older entry: no path, no icon key.
+        let old = Settings::from_json(r#"{"hiddenApps": [{"id": "exe:c:/b.exe", "name": "B"}]}"#)
+            .unwrap();
+        assert_eq!(old.hidden_apps, vec![hidden("exe:c:/b.exe", "B")]);
+
+        let full = HiddenApp {
+            path: Some(r"C:\Program Files\B\B.exe".to_owned()),
+            icon_key: Some(IconKey(r"exe:C:\Program Files\B\B.exe".to_owned())),
+            ..hidden("exe:c:/program files/b/b.exe", "B")
+        };
+        let mut s = Settings {
+            hidden_apps: vec![full.clone()],
+            ..Default::default()
+        };
+        s.validate();
+        assert_eq!(s.hidden_apps, vec![full.clone()], "validate keeps both");
+        let json = s.to_json_pretty();
+        assert!(
+            json.contains(r#""iconKey": "exe:C:\\Program Files\\B\\B.exe""#),
+            "{json}"
+        );
+        assert!(
+            json.contains(r#""path": "C:\\Program Files\\B\\B.exe""#),
+            "{json}"
+        );
+        assert_eq!(Settings::from_json(&json).unwrap(), s);
+        // `null` written out reads back as unknown.
+        let unknown = HiddenApp {
+            path: None,
+            icon_key: None,
+            ..full
+        };
+        let json = serde_json::to_value(&unknown).unwrap();
+        assert_eq!(json["path"], serde_json::Value::Null);
+        assert_eq!(json["iconKey"], serde_json::Value::Null);
+        assert_eq!(serde_json::from_value::<HiddenApp>(json).unwrap(), unknown);
     }
 
     #[test]
