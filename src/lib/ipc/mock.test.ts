@@ -1357,6 +1357,39 @@ describe('hidden apps (docs/ipc/hidden-apps.md; mirror of hide_app / unhide_app)
     ]);
   });
 
+  it('a Store-app pin and its frame-host window are one item', async () => {
+    const b = new MockBackend({ latencyMs: [0, 0], identityDelayMs: 60_000, log: false });
+    backends.push(b);
+    const CALCULATOR = 'Microsoft.WindowsCalculator_8wekyb3d8bbwe!App';
+    const calc = await b.pinTarget({ kind: 'storeApp', appUserModelId: CALCULATOR });
+    expect(calc).toBe(`aumid:${CALCULATOR}`);
+    // Calculator as Windows shows it: a frame of the frame host's process
+    // that names the app's AppUserModelID.
+    b.pushWindow({
+      id: 60,
+      title: 'Calculator',
+      className: 'ApplicationFrameWindow',
+      processId: 6060,
+      exePath: 'C:\\Windows\\System32\\ApplicationFrameHost.exe',
+      appUserModelId: CALCULATOR,
+      isVisible: true,
+      isMinimized: false,
+      isCloaked: false,
+      onCurrentDesktop: true,
+      monitor: 'mock-primary',
+      rect: null,
+      iconKey: 'hwnd:60:6060',
+    });
+    b.resolveIdentitiesNow();
+    const state = await b.getDockState();
+    expect(keys(state).filter((k) => k === app(calc))).toHaveLength(1);
+    const calcItem = item(state, app(calc));
+    expect(calcItem).toMatchObject({ pinned: true, title: 'WindowsCalculator' });
+    expect(calcItem.windows.map((w) => w.id)).toEqual([60]);
+    // No other item took the frame host's window.
+    expect(state.items.filter((i) => i.windows.some((w) => w.id === 60))).toHaveLength(1);
+  });
+
   it("the mock's shell knows packaged AppUserModelIDs only and names them as the real fallback does", () => {
     for (const known of [
       'Microsoft.WindowsCalculator_8wekyb3d8bbwe!App',
