@@ -556,10 +556,12 @@ impl DockService {
     /// notches that arrive together add up. Returns the volume it set, or
     /// `None` when there was nothing to do: no output device, the end of
     /// the range, or a platform that did not answer in time. That last one
-    /// drops the notch with a log line (one `warn` per streak) instead of
-    /// an error, so a fast spin over a stuck volume thread does not send
-    /// the page a failure per notch; the platform does not run the step
-    /// later. Other platform errors are returned.
+    /// is a log line (one `warn` per streak) instead of an error, so a fast
+    /// spin over a stuck volume thread does not send the page a failure per
+    /// notch. Such a notch may or may not have been applied: the platform
+    /// skips a step it takes only after the caller's deadline, but one it
+    /// started in time finishes even when the answer comes too late; the
+    /// next `VolumeChanged` says which. Other platform errors are returned.
     pub fn step_volume(&self, direction: ScrollDirection) -> ServiceResult<Option<VolumeStatus>> {
         match self.inner.platform.step_volume(direction) {
             Ok(stepped) => {
@@ -569,12 +571,15 @@ impl DockService {
             }
             Err(PlatformError::Timeout) => {
                 if self.inner.volume_stalled.swap(true, Ordering::Relaxed) {
-                    log::debug!("volume step {direction:?}: dropped, the platform is still busy");
+                    log::debug!(
+                        "volume step {direction:?}: no answer in time again; it may or may not \
+                         have been applied"
+                    );
                 } else {
                     log::warn!(
                         "volume step {direction:?}: the platform did not answer in time; the \
-                         notch is dropped (and the next ones, logged at debug, until one goes \
-                         through)"
+                         notch may or may not have been applied (later timeouts are logged at \
+                         debug until a step goes through)"
                     );
                 }
                 Ok(None)

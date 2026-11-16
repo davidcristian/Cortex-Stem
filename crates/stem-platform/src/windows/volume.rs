@@ -57,9 +57,11 @@
 //!   interleave with another request), each waiting at most
 //!   [`REQUEST_TIMEOUT`] for the thread. A set or a step carries its
 //!   caller's deadline: one the thread takes after it (the thread was
-//!   busy) is dropped, not done late, since its caller has already given
-//!   up. The sets pass no event context, so their own notification is
-//!   reported like any other.
+//!   busy) is not done late, since its caller has already given up, and is
+//!   answered with `PlatformError::Timeout` (as is a caller that finds its
+//!   reply channel closed after its deadline). One the thread started in
+//!   time finishes even when its answer comes too late. The sets pass no
+//!   event context, so their own notification is reported like any other.
 //! - [`VolumeThread::stop`] asks the thread to quit and waits at most
 //!   [`STOP_TIMEOUT`]; the thread unregisters the endpoint callback, then
 //!   the notification client, releases every COM object and leaves the
@@ -242,6 +244,9 @@ impl VolumeHandle {
             })?;
         reply_rx.recv_deadline(deadline).map_err(|e| match e {
             RecvTimeoutError::Timeout => PlatformError::Timeout,
+            // The thread drops a reply channel it no longer answers on; past
+            // the deadline that is a late request, not a stopped thread.
+            RecvTimeoutError::Disconnected if Instant::now() >= deadline => PlatformError::Timeout,
             RecvTimeoutError::Disconnected => {
                 PlatformError::Other("the volume thread stopped before it answered".into())
             }
@@ -519,19 +524,28 @@ fn thread_main(sink: &EventSink, tx: Sender<Msg>, rx: &Receiver<Msg>) {
                 let _ = reply.send(follower.read());
             }
             Ok(Msg::SetLevel(percent, deadline, reply)) => {
-                if !too_late(deadline, "set_volume") {
-                    let _ = reply.send(follower.set_level(percent));
-                }
+                let answer = if too_late(deadline, "set_volume") {
+                    Err(PlatformError::Timeout)
+                } else {
+                    follower.set_level(percent)
+                };
+                let _ = reply.send(answer);
             }
             Ok(Msg::SetMuted(muted, deadline, reply)) => {
-                if !too_late(deadline, "set_volume_muted") {
-                    let _ = reply.send(follower.set_muted(muted));
-                }
+                let answer = if too_late(deadline, "set_volume_muted") {
+                    Err(PlatformError::Timeout)
+                } else {
+                    follower.set_muted(muted)
+                };
+                let _ = reply.send(answer);
             }
             Ok(Msg::Step(direction, deadline, reply)) => {
-                if !too_late(deadline, "step_volume") {
-                    let _ = reply.send(follower.step(direction));
-                }
+                let answer = if too_late(deadline, "step_volume") {
+                    Err(PlatformError::Timeout)
+                } else {
+                    follower.step(direction)
+                };
+                let _ = reply.send(answer);
             }
             Err(RecvTimeoutError::Timeout) => {}
         }
@@ -546,8 +560,9 @@ fn thread_main(sink: &EventSink, tx: Sender<Msg>, rx: &Receiver<Msg>) {
 }
 
 /// Whether a request the thread takes now came after its caller's
-/// `deadline` (the caller has given up with a timeout): then it is dropped
-/// rather than done late, with a debug line.
+/// `deadline` (the caller has given up with a timeout): then it is not
+/// done but answered with [`PlatformError::Timeout`], which a caller woken
+/// just after its deadline reads as the timeout it is, with a debug line.
 fn too_late(deadline: Instant, what: &str) -> bool {
     let late = Instant::now() > deadline;
     if late {
