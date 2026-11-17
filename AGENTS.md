@@ -93,9 +93,11 @@ rung's command and what it proves, the scripts that run the rungs and the Rust t
 - Run the rungs in order; a task is done only when every rung its brief lists passes. Rungs 1 to 7
   are required for every task that touches the matching area.
 - Rung 4 cannot prove runtime behaviour; anything it cannot prove gets a manual test (rung 9, §11).
-- **A markdown file is at most 250 lines.** `scripts/linecap.mjs` checks every tracked markdown
-  file in rung 5 (`pnpm lint`). Split by responsibility as you write: a file over the limit covers
-  more than one topic, so give each topic its own file and link to it.
+- **A markdown file is at most 250 lines, and a source file at most 300.** `scripts/linecap.mjs`
+  checks every tracked markdown and source file (`.rs`, `.ts`, `.svelte`, `.js`, `.mjs`) in rung 5
+  (`pnpm lint`); test files and the generated bindings have no limit. Split by responsibility as
+  you write: a file over the limit covers more than one topic, so give each topic its own file (a
+  doc page, a module, a component) and link to it or re-export it.
 - **Look at your screenshots.** When a UI task produces screenshots, open each image (the `Read`
   tool shows images) and compare it with the brief. "It rendered" is not "it looks right".
 
