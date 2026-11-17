@@ -20,6 +20,6 @@ If option 6 of the [backdrop research](index.md), a
   or Battery Saver on, Windows draws the solid fallback
   ([Acrylic][acrylic]).
 - The Playwright assertions that the two choices are disabled
-  (`e2e/screenshots.spec.ts`) change when the choices are offered.
+  (`ui/e2e/screenshots.spec.ts`) change when the choices are offered.
 
 [acrylic]: https://learn.microsoft.com/en-us/windows/apps/design/style/acrylic

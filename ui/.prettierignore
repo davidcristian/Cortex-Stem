@@ -1,0 +1,11 @@
+# Not ours to format.
+*.md
+
+# Generated / build output.
+node_modules/
+dist/
+src/lib/ipc/generated/
+pnpm-lock.yaml
+e2e/output/
+playwright-report/
+test-results/

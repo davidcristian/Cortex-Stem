@@ -9,7 +9,7 @@ HTML5 `dragover` or `drop` for it. Tauri's drag-drop handler, on by default for 
 command or event to this contract; a drop on the bin calls `delete_to_recycle_bin`.
 
 - **Subscription.** `Backend.onFileDrag(handler): Unsubscribe` delivers `FileDragEvent`
-  (`src/lib/ipc/backend.ts`): `{ type: 'enter' | 'drop', paths: string[], position }`,
+  (`ui/src/lib/ipc/backend.ts`): `{ type: 'enter' | 'drop', paths: string[], position }`,
   `{ type: 'over', position }` and `{ type: 'leave' }`. `position` is in CSS px relative to the
   viewport, like `MouseEvent.clientX/Y`: Tauri reports physical pixels relative to the webview,
   and `TauriBackend` divides them by `window.devicePixelRatio` (once, there). `paths` are the

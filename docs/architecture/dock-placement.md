@@ -122,7 +122,7 @@ without one goes to the primary's dock.
 Each page finds its monitor in its URL (the primary's page uses the primary
 of `get_monitors`) and reads its own facts. With
 `behavior.showOnlyCurrentMonitor` it narrows the snapshot's items to the
-windows on its monitor (`src/lib/dock/monitor.ts`, pure). Pinned and fixed
+windows on its monitor (`ui/src/lib/dock/monitor.ts`, pure). Pinned and fixed
 items stay on every dock, and separators are collapsed; the order and the
 click semantics stay Rust's. The toggle (the tray icon, or the toggle
 shortcut, `Ctrl+Alt+D` by default) decides from the primary's window and
@@ -131,14 +131,14 @@ applies to all dock windows.
 ## DPI changes
 
 Nothing is pushed to the UI when the DPI changes. The page watches the
-device pixel ratio itself (`src/lib/dock/dpr.ts`: a
+device pixel ratio itself (`ui/src/lib/dock/dpr.ts`: a
 `(resolution: <ratio>dppx)` media query on the current ratio, replaced
 after each change; the settings page uses it too, for its pin icons). On a
 change the page:
 
 - computes new request sizes: the rest bitmap at exactly
   `iconSize × ratio`, the magnified one from `ICON_SIZE_LADDER` (32, 48, 64,
-  96, 128, 192 or 256 px, in `src/lib/dock/icon-size.ts`);
+  96, 128, 192 or 256 px, in `ui/src/lib/dock/icon-size.ts`);
 - keeps the old bitmaps on screen until the new ones have arrived;
 - measures the panel again (the snap to whole device pixels, redone for
   the new grid);

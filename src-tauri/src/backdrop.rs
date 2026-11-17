@@ -76,7 +76,7 @@ use state::{Facts, Inputs};
 use crate::windows::DOCK_LABEL;
 
 /// How long the panel's slide (or fade) takes: the UI's
-/// `AUTO_HIDE_SLIDE_MS` (`src/lib/dock/autohide/state.ts`, ADR-0008).
+/// `AUTO_HIDE_SLIDE_MS` (`ui/src/lib/dock/autohide/state.ts`, ADR-0008).
 pub const REVEAL_DELAY: Duration = Duration::from_millis(200);
 
 /// What the primary dock's backdrop is computed from, and what the platform

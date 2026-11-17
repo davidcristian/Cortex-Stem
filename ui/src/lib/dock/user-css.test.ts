@@ -4,7 +4,7 @@ import type { UserCss } from '$lib/ipc/generated/UserCss';
 import type { UserCssProblem } from '$lib/ipc/generated/UserCssProblem';
 
 // The sources themselves, as text (Vite's `?raw`), for the drift checks.
-import theming from '../../../docs/THEMING.md?raw';
+import theming from '../../../../docs/THEMING.md?raw';
 import dock from '../../dock/Dock.svelte?raw';
 
 import {

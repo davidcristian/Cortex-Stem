@@ -10,8 +10,8 @@ converts its `tauri://drag-*` events to CSS px
 target only while the [hit-test thread](threads.md) lets it take the
 pointer, so a drag counts from the moment the cursor enters the panel.
 
-`src/dock/file-drag.svelte.ts` measures where the slots are drawn and asks
-the pure module `src/lib/dock/filedrop.ts` (unit-tested) what to do. The
+`ui/src/dock/file-drag.svelte.ts` measures where the slots are drawn and asks
+the pure module `ui/src/lib/dock/filedrop.ts` (unit-tested) what to do. The
 item under the pointer and the index of the pin gap are kept apart, so the
 Recycle Bin can take a drop instead of the gap (below). The gap is a real
 `.drop-gap` element in the row. It grows and shrinks like an item (160 ms,

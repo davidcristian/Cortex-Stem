@@ -2,7 +2,7 @@
 //!
 //! `cargo test -p stem-core --features ts` *is* the exporter: every type with
 //! a `ts(export)` attribute gets an `export_bindings_*` test from ts-rs that
-//! writes `<Name>.ts` into `TS_RS_EXPORT_DIR` (`src/lib/ipc/generated/`, set
+//! writes `<Name>.ts` into `TS_RS_EXPORT_DIR` (`ui/src/lib/ipc/generated/`, set
 //! in `.cargo/config.toml`; never add `export_to` paths). This module adds
 //! what ts-rs does not do:
 //!

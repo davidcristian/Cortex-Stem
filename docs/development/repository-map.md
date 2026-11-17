@@ -18,10 +18,11 @@ Cortex-Stem/
 │                           semantics. No tauri. Tested on Linux with the mock.
 ├── src-tauri/              App crate `stem-app` (binary `stem`): a thin layer that creates
 │                           windows, maps commands to the service and sends events.
-├── src/                    Svelte 5 and TypeScript frontend (Vite): dock/ and settings/
-│                           windows, lib/ipc/ (the `Backend` interface, Tauri and mock
-│                           implementations), lib/ipc/generated/ (ts-rs output; never edit).
-├── e2e/                    Playwright specs: mock-mode screenshots and the idle check.
+├── ui/                     Svelte 5 and TypeScript frontend (Vite, pnpm): package.json and the
+│                           configs, src/dock/ and src/settings/ windows, src/lib/ipc/ (the
+│                           `Backend` interface, Tauri and mock implementations),
+│                           src/lib/ipc/generated/ (ts-rs output; never edit), e2e/
+│                           (Playwright specs: mock-mode screenshots and the idle check).
 ├── scripts/                check-all.sh and check-all.ps1 (the ladder), prosecheck.mjs and
 │                           linecap.mjs (run by `pnpm lint`).
 ├── docs/                   architecture/ (read before writing code), ipc/ (the IPC contract,

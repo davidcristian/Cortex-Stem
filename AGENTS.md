@@ -61,7 +61,7 @@ Code structure:
   boundary uses only `stem-core` types. `stem-core` depends on nothing platform-specific and never
   on `tauri`.
 - Frontend code never calls `invoke` or `listen` directly. It goes through the `Backend` interface
-  in `src/lib/ipc/`, so the mock backend stays complete.
+  in `ui/src/lib/ipc/`, so the mock backend stays complete.
 - Behaviour decisions (what a click does, how items are ordered, what counts as a taskbar window)
   live in Rust: `stem-core` where pure, `stem-platform` where OS-specific. The frontend renders
   state and reports intent.
@@ -108,15 +108,15 @@ Code under `crates/stem-platform/src/windows/` follows the
 COM, handles, UIPI and elevation, DPI, foreground activation, panics, and timeouts and bounds.
 Every behaviour that depends on Win32 gets a manual test on Windows (§11).
 
-## 7. Frontend rules (src/)
+## 7. Frontend rules (ui/)
 
-Code in `src/` follows the [frontend rules](docs/development/frontend-rules.md) on Svelte 5 runes,
+Code in `ui/` follows the [frontend rules](docs/development/frontend-rules.md) on Svelte 5 runes,
 TypeScript and `any`, backend access, the generated IPC types, animations and idle CPU, keyboard
 access, and the dev server, package manager and script names.
 
 ## 8. IPC contract change control
 
-[docs/ipc/](docs/ipc/index.md) is the contract between `src-tauri` and `src/`. To change it:
+[docs/ipc/](docs/ipc/index.md) is the contract between `src-tauri` and `ui/`. To change it:
 
 1. Propose the change (a new command or event, a changed payload) in your report or brief. Tasks
    the orchestrator runs may edit it directly.
@@ -138,7 +138,7 @@ hook checks them, so check your message against these rules before you commit.
   72 characters. Types: `feat`, `fix`, `docs`, `test`, `refactor`, `perf`, `build`, `ci`, `chore`,
   `revert`; a breaking change adds `!` after the type or scope and a `BREAKING CHANGE:` footer.
 - Scopes are optional and used only when the change stays inside one area: `core`, `platform` and
-  `service` (the crates), `app` (`src-tauri/`), `ui` (`src/`), `e2e`, `ci` (`.github/`), `scripts`
+  `service` (the crates), `app` (`src-tauri/`), `ui` (`ui/`), `e2e`, `ci` (`.github/`), `scripts`
   and `docs`. Never repeat the type as its own scope (`docs(docs)`).
 - **The body is at most 50 words**, wrapped at 72 columns: the problem, what the change does about
   it, and anything left for a manual test on Windows. Write no body when the subject says it all.

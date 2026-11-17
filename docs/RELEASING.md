@@ -14,7 +14,7 @@ to push a release tag.
      name and is the version Windows shows under Installed apps.
    - `Cargo.toml`: `version` under `[workspace.package]`. Every crate
      inherits it, and Settings → About shows the app crate's version.
-   - `package.json`: `"version"`.
+   - `ui/package.json`: `"version"`.
 
    Run any cargo command (for example `cargo check -p stem-core`) so that
    Cargo writes the new workspace version into `Cargo.lock`. Commit the four
@@ -104,7 +104,7 @@ Stem has neither. Each needs the following.
   and its password as the repository secrets `TAURI_SIGNING_PRIVATE_KEY` and
   `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, set for the `tauri build` step of
   `release.yml`; and a `latest.json` manifest uploaded with the installer.
-  The maintainer generates the key pair (`pnpm tauri signer generate`) and
+  The maintainer generates the key pair (`pnpm --dir ui tauri signer generate`) and
   keeps the private key safe: without it, existing installations can no
   longer update. This key is not a code-signing certificate; see
   [code-signing/updater-key.md](code-signing/updater-key.md).

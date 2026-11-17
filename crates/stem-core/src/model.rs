@@ -19,7 +19,7 @@ mod system;
 mod tests;
 mod window;
 
-// TypeScript bindings are exported to `src/lib/ipc/generated/` (relative to
+// TypeScript bindings are exported to `ui/src/lib/ipc/generated/` (relative to
 // the repository root) by `cargo test -p stem-core --features ts`.
 
 pub use actions::{ScrollDirection, ShellAction, WindowAction};

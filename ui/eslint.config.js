@@ -26,11 +26,6 @@ export default defineConfig(
       'e2e/output/**',
       'playwright-report/**',
       'test-results/**',
-      'target/**',
-      'src-tauri/**',
-      'crates/**',
-      // Local git worktrees (git-ignored) live inside the repository directory.
-      '.claude/**',
     ],
   },
   js.configs.recommended,
@@ -56,7 +51,9 @@ export default defineConfig(
     },
   },
   {
-    // Repository scripts run under Node, not in the page.
+    // The repository scripts in ../scripts run under Node, not in the page.
+    // `pnpm lint` lints them from the repository root with this config
+    // (`-c ui/eslint.config.js`), so this pattern is relative to that root.
     files: ['scripts/**/*.mjs'],
     languageOptions: {
       globals: { ...globals.node },

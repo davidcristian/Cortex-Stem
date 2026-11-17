@@ -21,12 +21,6 @@ export default defineConfig({
   server: {
     port: DEV_PORT,
     strictPort: true,
-    watch: {
-      // Cargo's build output and local git worktrees hold hundreds of
-      // thousands of files the page never imports; watching them slowed the
-      // dev server enough to time out the idle spec on the main checkout.
-      ignored: ['**/target/**', '**/.claude/**'],
-    },
   },
   // Tauri exposes build facts as TAURI_ENV_* variables.
   envPrefix: ['VITE_', 'TAURI_ENV_*'],

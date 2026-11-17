@@ -26,7 +26,7 @@ machine (ADR-0008).
 - The frame fades in over 120 ms (no fade under reduced motion). The page
   reports the slots when the fade ends, so the image never appears before
   its card. On close, it reports the empty list first.
-- The machine is a pure module, `src/lib/dock/preview.ts`, unit-tested like
+- The machine is a pure module, `ui/src/lib/dock/preview.ts`, unit-tested like
   `autohide.ts`.
 
 ## Hit region

@@ -50,7 +50,7 @@ impl DockEngine {
     /// on. With `Settings.monitors = all` and
     /// `behavior.showOnlyCurrentMonitor` on, each dock's page lists only the
     /// windows on its own monitor (`itemsForMonitor` in
-    /// src/lib/dock/monitor.ts), so only the windows on
+    /// ui/src/lib/dock/monitor.ts), so only the windows on
     /// [`Self::dock_monitor`] are kept (a window whose monitor is unknown is
     /// on none). With one dock (`monitors = primary`), the setting off, or a
     /// dock whose monitor is unknown (an unplaced window, a label the app

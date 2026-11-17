@@ -69,7 +69,7 @@ pub(super) fn identity_for_aumid(aumid: &str) -> AppIdentity {
 /// and no desktop program's own AppUserModelID (`308046B0AF4A39CB`,
 /// `Chrome.Profile1`), which therefore takes the exe branch as an AUMID the
 /// shell does not know does on Windows. The TS mirror is `appsFolderKnows`
-/// in `src/lib/ipc/mock/identity.ts`.
+/// in `ui/src/lib/ipc/mock/identity.ts`.
 pub(super) fn apps_folder_knows(aumid: &str) -> bool {
     let Some((family, app)) = aumid.trim().split_once('!') else {
         return false;

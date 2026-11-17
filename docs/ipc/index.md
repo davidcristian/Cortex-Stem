@@ -2,7 +2,7 @@
 
 **Contract version: 1.32 (the clock format while no clock is shown).**
 The files in this folder are the contract between the Rust app (`src-tauri`) and the pages in
-`src/`. A change to the contract follows the contract change rules in `AGENTS.md` ("IPC contract
+`ui/`. A change to the contract follows the contract change rules in `AGENTS.md` ("IPC contract
 change control") and is logged in the [changelog](changelog.md).
 
 ## Principles
@@ -11,7 +11,7 @@ change control") and is logged in the [changelog](changelog.md).
   ("the user clicked item X"). Click semantics, ordering, grouping and filtering are in
   `stem-core` and `stem-service`.
 - **Payload types are `stem-core` types.** serde serialises them with `camelCase` fields, and
-  ts-rs mirrors them in `src/lib/ipc/generated/*.ts` (`cargo test -p stem-core --features ts`).
+  ts-rs mirrors them in `ui/src/lib/ipc/generated/*.ts` (`cargo test -p stem-core --features ts`).
   The Rust doc comments document the types; these files document the *flows*.
 - **Commands** are `invoke(name, args)`. Argument keys are the Rust parameter names in
   `camelCase` (Tauri converts them). A failed command rejects with a `string`.
@@ -24,7 +24,7 @@ change control") and is logged in the [changelog](changelog.md).
   every dock page. A listener without a target (`{ kind: 'Any' }`, the default of `listen`) would
   also receive the events sent to other windows.
 - The frontend never calls `invoke` or `listen` directly. It uses the `Backend` interface in
-  `src/lib/ipc/backend.ts`. `MockBackend` implements the same contract for runs in a browser and
+  `ui/src/lib/ipc/backend.ts`. `MockBackend` implements the same contract for runs in a browser and
   in Playwright.
 
 ## Files

@@ -43,7 +43,7 @@ Each window of the app has a label and loads one page:
   `dock://monitors` (the same rule as the app layer's). The monitor selects the page's entry in
   `DockState.docks` ([The state snapshot](state-snapshot.md#dockstatedocks)). With
   `Settings.monitors = all` and `Settings.behavior.showOnlyCurrentMonitor`, it also narrows the
-  snapshot's items (`src/lib/dock/monitor.ts`, pure and unit-tested):
+  snapshot's items (`ui/src/lib/dock/monitor.ts`, pure and unit-tested):
   - each app item keeps only the windows whose `WindowInfo.monitor` is this monitor;
   - an item left with no windows stays only if it is pinned (fixed items always stay);
   - `isActive` and `needsAttention` follow the remaining windows' `WindowInfo.isActive` and

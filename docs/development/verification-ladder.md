@@ -11,12 +11,12 @@ The rules for running it, and which rungs a task needs, are in
 | 1 | `cargo fmt --all --check` | formatting |
 | 2 | `cargo clippy -p stem-core -p stem-platform -p stem-service --all-targets -- -D warnings` | lints on the host target (the Tauri crate needs WebKitGTK to build on Linux, so rung 4 covers it) |
 | 3 | `cargo test -p stem-core -p stem-platform -p stem-service` | every Linux-runnable test (core, mock, service) |
-| 3b | `cargo test -p stem-core --features ts`, then `git status --porcelain -- src/lib/ipc/generated` prints nothing | the TypeScript bindings are regenerated and committed |
+| 3b | `cargo test -p stem-core --features ts`, then `git status --porcelain -- ui/src/lib/ipc/generated` prints nothing | the TypeScript bindings are regenerated and committed |
 | 3c | `STEM_UPDATE_SETTINGS_REFERENCE=1 cargo test -p stem-core --test settings_reference`, then `git status --porcelain -- docs/SETTINGS.md` prints nothing | `docs/SETTINGS.md` is regenerated from `settings.rs` and `settings/` and committed |
 | 4 | `cargo clippy --workspace --all-targets --target x86_64-pc-windows-msvc -- -D warnings`, plus `cargo clippy -p stem-platform --all-targets --features probes --target x86_64-pc-windows-msvc -- -D warnings` for the diagnostic probes (and, on a Windows host, `cargo test -p stem-platform --features probes --lib windows::probe::`) | the **real** Windows code, the Tauri crate and the probes included, type-checks and lints |
 | 5 | `pnpm install --frozen-lockfile && pnpm check && pnpm lint && pnpm test` | frontend types; lint (ESLint, Prettier, `scripts/prosecheck.mjs` and `scripts/linecap.mjs`); unit tests |
 | 6 | `pnpm build` | the production frontend bundle builds |
-| 7 | `pnpm e2e:screenshots` | the pages render in mock mode (screenshots in `e2e/output/`) and the dock idles |
+| 7 | `pnpm e2e:screenshots` | the pages render in mock mode (screenshots in `ui/e2e/output/`) and the dock idles |
 | 8 | GitHub Actions `windows` job | `pnpm tauri build` links and bundles on Windows; the probe unit tests pass |
 | 9 | A person on Windows runs the manual tests ([AGENTS.md §11](../../AGENTS.md#11-manual-tests-on-windows)) | the behaviour works |
 
@@ -24,7 +24,8 @@ The rules for running it, and which rungs a task needs, are in
 
 `scripts/check-all.sh` runs rungs 1 to 7 on Linux, and CI's `linux` job runs the same commands as
 separate steps. `scripts/check-all.ps1` runs the same rungs on a Windows host, then
-`pnpm tauri build --debug`.
+`pnpm tauri build --debug`. The `pnpm` commands of rungs 5 to 7 and the Tauri build run in `ui/`;
+the scripts and CI call them as `pnpm --dir ui <script>` from the repository root.
 
 ## Rung 4 on a host other than Windows
 

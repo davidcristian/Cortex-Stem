@@ -20,7 +20,7 @@ reference][tauri-config]):
 
 `tauri build --no-sign` skips signing. `tauri build --config <file or JSON>`
 merges extra configuration over `tauri.conf.json`. Both options are listed in
-the help of `@tauri-apps/cli` 2.12.4, the version that `package.json` sets
+the help of `@tauri-apps/cli` 2.12.4, the version that `ui/package.json` sets
 exactly.
 
 **Do not put signing into `src-tauri/tauri.conf.json`**, nor into
@@ -100,8 +100,8 @@ secrets are set in the environment of the `tauri build` step only:
           # TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           # (the existing retry loop, with this build command; assumes the CLI
-          # reads the --config path relative to the repository root)
-          pnpm tauri build --config src-tauri/tauri.signing.conf.json
+          # reads the --config path relative to ui/, where pnpm runs it)
+          pnpm --dir ui tauri build --config ../src-tauri/tauri.signing.conf.json
 
       # Fail the run, before the draft release exists, if anything came out
       # unsigned or without a timestamp.

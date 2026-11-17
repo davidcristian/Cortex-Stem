@@ -32,7 +32,7 @@ of the work area instead).
   ([Detecting the reveal](../research/auto-hide.md#detecting-the-reveal)).
 - **The state machine is presentation and lives in the UI**, as a pure,
   unit-tested module beside the magnification maths
-  (`src/lib/dock/autohide.ts` and `autohide/`), like magnification itself:
+  (`ui/src/lib/dock/autohide.ts` and `autohide/`), like magnification itself:
   `shown` → (the pointer left the panel) → `pending` → (`delayMs` passed) →
   `hidden` → (the pointer in the strip) → `shown`. It never hides while a
   hold is on: an icon lifted for a drag, a native context menu from the dock

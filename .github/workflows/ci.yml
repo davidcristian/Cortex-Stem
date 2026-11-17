@@ -62,14 +62,14 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # pnpm/action-setup reads package.json#packageManager when `version` is
+      # pnpm/action-setup reads ui/package.json#packageManager when `version` is
       # empty, and fails when both are given and differ; so the fixed major is
       # only a fallback for a package.json without that field.
       - name: Resolve pnpm version
         id: pnpm
         shell: bash
         run: |
-          if grep -Eq '"packageManager"[[:space:]]*:[[:space:]]*"pnpm@' package.json; then
+          if grep -Eq '"packageManager"[[:space:]]*:[[:space:]]*"pnpm@' ui/package.json; then
             echo "version=" >> "$GITHUB_OUTPUT"
           else
             echo "version=10" >> "$GITHUB_OUTPUT"
@@ -78,17 +78,19 @@ jobs:
       - uses: pnpm/action-setup@v5
         with:
           version: ${{ steps.pnpm.outputs.version }}
+          package_json_file: ui/package.json
 
       - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
 
       - name: pnpm install
-        run: pnpm install --frozen-lockfile
+        run: pnpm --dir ui install --frozen-lockfile
 
       - name: Install Playwright Chromium (rung 7)
-        run: pnpm exec playwright install --with-deps chromium
+        run: pnpm --dir ui exec playwright install --with-deps chromium
 
       - name: "1/7 rustfmt"
         run: cargo fmt --all --check
@@ -99,16 +101,16 @@ jobs:
       - name: "3/7 tests (host target)"
         run: cargo test -p stem-core -p stem-platform -p stem-service
 
-      # The `ts` feature's tests export the bindings into src/lib/ipc/generated/
+      # The `ts` feature's tests export the bindings into ui/src/lib/ipc/generated/
       # (TS_RS_EXPORT_DIR in .cargo/config.toml). The files are tracked, so any
       # modified, added or deleted file after the export means stale bindings.
       - name: "3b/7 TypeScript bindings are up to date"
         run: |
           cargo test -p stem-core --features ts --quiet
-          if [[ -n "$(git status --porcelain -- src/lib/ipc/generated)" ]]; then
-            echo "::error::src/lib/ipc/generated/ changed after export; run 'cargo test -p stem-core --features ts' and commit the result."
-            git --no-pager status --short -- src/lib/ipc/generated
-            git --no-pager diff -- src/lib/ipc/generated
+          if [[ -n "$(git status --porcelain -- ui/src/lib/ipc/generated)" ]]; then
+            echo "::error::ui/src/lib/ipc/generated/ changed after export; run 'cargo test -p stem-core --features ts' and commit the result."
+            git --no-pager status --short -- ui/src/lib/ipc/generated
+            git --no-pager diff -- ui/src/lib/ipc/generated
             exit 1
           fi
 
@@ -138,20 +140,20 @@ jobs:
         run: cargo clippy -p stem-platform --all-targets --features probes --target x86_64-pc-windows-msvc -- -D warnings
 
       - name: "5/7 pnpm check"
-        run: pnpm check
+        run: pnpm --dir ui check
 
       - name: "5/7 pnpm lint"
-        run: pnpm lint
+        run: pnpm --dir ui lint
 
       - name: "5/7 pnpm test"
-        run: pnpm test
+        run: pnpm --dir ui test
 
       - name: "6/7 pnpm build"
-        run: pnpm build
+        run: pnpm --dir ui build
 
       - name: "7/7 Playwright screenshots (mock mode)"
         id: e2e
-        run: pnpm e2e:screenshots
+        run: pnpm --dir ui e2e:screenshots
 
       # Uploaded whenever rung 7 ran (also when it failed, for diagnosis);
       # skipped when an earlier rung already stopped the job.
@@ -160,7 +162,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: stem-screenshots
-          path: e2e/output/**
+          path: ui/e2e/output/**
           if-no-files-found: warn
 
   windows:
@@ -182,7 +184,7 @@ jobs:
         id: pnpm
         shell: bash
         run: |
-          if grep -Eq '"packageManager"[[:space:]]*:[[:space:]]*"pnpm@' package.json; then
+          if grep -Eq '"packageManager"[[:space:]]*:[[:space:]]*"pnpm@' ui/package.json; then
             echo "version=" >> "$GITHUB_OUTPUT"
           else
             echo "version=10" >> "$GITHUB_OUTPUT"
@@ -191,14 +193,16 @@ jobs:
       - uses: pnpm/action-setup@v5
         with:
           version: ${{ steps.pnpm.outputs.version }}
+          package_json_file: ui/package.json
 
       - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
 
       - name: pnpm install
-        run: pnpm install --frozen-lockfile
+        run: pnpm --dir ui install --frozen-lockfile
 
       # The thumbnail probe's own unit tests only exist on Windows
       # (the module is Windows-only) and only with the feature, so neither
@@ -214,7 +218,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/AppData/Local/tauri
-          key: tauri-tools-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          key: tauri-tools-${{ runner.os }}-${{ hashFiles('ui/pnpm-lock.yaml') }}
           restore-keys: tauri-tools-${{ runner.os }}-
 
       # `tauri build` runs `pnpm build` first (tauri.conf.json
@@ -232,7 +236,7 @@ jobs:
         shell: bash
         run: |
           for attempt in 1 2 3; do
-            if pnpm tauri build 2>&1 | tee tauri-build.log; then
+            if pnpm --dir ui tauri build 2>&1 | tee tauri-build.log; then
               exit 0
             fi
             if [ "$attempt" -eq 3 ] || ! grep -Eq 'http status: 5[0-9][0-9]|error sending request|operation timed out|failed to download' tauri-build.log; then

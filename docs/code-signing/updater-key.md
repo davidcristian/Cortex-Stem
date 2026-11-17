@@ -5,7 +5,7 @@ it is signed with the key pair the app was built with; this check "cannot be
 disabled". To set up the updater, the maintainer:
 
 1. generates the pair, with a password, for example
-   `pnpm tauri signer generate -w ~/.tauri/stem.key`;
+   `pnpm --dir ui tauri signer generate -w ~/.tauri/stem.key`;
 2. puts the content of the **public** key (not a path) into
    `plugins.updater.pubkey` in `src-tauri/tauri.conf.json`, and sets
    `bundle.createUpdaterArtifacts: true` so that `tauri build` writes the

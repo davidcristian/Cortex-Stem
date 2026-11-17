@@ -7,7 +7,7 @@ This file describes the dock's fixed items and how an item that needs attention 
 Start, Task View, Show Desktop, Quick Settings, Notification Center, the
 volume, battery and clock items and the Recycle Bin are ordinary
 `DockItem`s of their own kinds, drawn from the built-in `shell:` vector art
-(`src/lib/icons/ShellIcon.svelte` and `FixedShellIcon.svelte`). A click is
+(`ui/src/lib/icons/ShellIcon.svelte` and `FixedShellIcon.svelte`). A click is
 `primary_click` (the engine maps the key to its `ShellAction`), and a
 right-click is `show_item_menu` (Rust builds the menu), as for any item. The
 `items.*` settings add and remove them live.

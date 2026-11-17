@@ -21,7 +21,7 @@ events thread is rejected for the same duplication.
 "Layout on each edge"). The window is flush with that edge of its
 monitor's work area and spans its length; the panel is anchored to the
 window's edge side. The auto-hide machine
-(`src/lib/dock/autohide/state.ts` and `autohide/machine.ts`) has phases,
+(`ui/src/lib/dock/autohide/state.ts` and `autohide/machine.ts`) has phases,
 holds and facts, and nothing about edges. Only the rectangles and the
 motion follow the edge:
 

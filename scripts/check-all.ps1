@@ -24,8 +24,8 @@
     Skip the final `pnpm tauri build --debug`.
 
 .PARAMETER CI
-    CI mode: implies -NoInstall when node_modules\ exists, and a missing
-    package.json is an error instead of a skip.
+    CI mode: implies -NoInstall when ui\node_modules\ exists, and a missing
+    ui\package.json is an error instead of a skip.
 
 .EXAMPLE
     pwsh scripts/check-all.ps1
@@ -74,18 +74,18 @@ Step '3/7 tests (host target)'
 Run cargo (@('test') + $LinuxCrates)
 
 Step '3b/7 TypeScript bindings are up to date'
-# The `ts` feature's tests export the bindings into src/lib/ipc/generated/
+# The `ts` feature's tests export the bindings into ui/src/lib/ipc/generated/
 # (TS_RS_EXPORT_DIR in .cargo/config.toml). The files are tracked, so any
 # modified, added or deleted file after the export means stale bindings.
 Run cargo @('test', '-p', 'stem-core', '--features', 'ts', '--quiet')
-$changed = @(git status --porcelain src/lib/ipc/generated)
+$changed = @(git status --porcelain ui/src/lib/ipc/generated)
 if ($LASTEXITCODE -ne 0) {
     throw "'git status' failed with exit code $LASTEXITCODE"
 }
 if ($changed.Count -gt 0) {
-    Write-Host "src/lib/ipc/generated/ changed after export; run 'cargo test -p stem-core --features ts' and commit the result:" -ForegroundColor Red
-    git --no-pager status --short src/lib/ipc/generated
-    git --no-pager diff src/lib/ipc/generated
+    Write-Host "ui/src/lib/ipc/generated/ changed after export; run 'cargo test -p stem-core --features ts' and commit the result:" -ForegroundColor Red
+    git --no-pager status --short ui/src/lib/ipc/generated
+    git --no-pager diff ui/src/lib/ipc/generated
     exit 1
 }
 
@@ -128,40 +128,40 @@ else {
 }
 
 $Install = -not $NoInstall
-if ($CI -and (Test-Path -LiteralPath 'node_modules')) {
+if ($CI -and (Test-Path -LiteralPath 'ui/node_modules')) {
     $Install = $false
 }
 
 if ($NoFrontend) {
     Write-Host '(frontend rungs 5-7 and the Tauri build skipped: -NoFrontend)'
 }
-elseif (-not (Test-Path -LiteralPath 'package.json')) {
+elseif (-not (Test-Path -LiteralPath 'ui/package.json')) {
     if ($CI) {
-        throw 'package.json not found; frontend rungs 5-7 cannot run'
+        throw 'ui/package.json not found; frontend rungs 5-7 cannot run'
     }
     Write-Host '(frontend rungs 5-7 and the Tauri build skipped: no package.json yet)'
 }
 else {
     Step '5/7 frontend: install, check, lint, test'
     if ($Install) {
-        Run pnpm @('install', '--frozen-lockfile')
+        Run pnpm @('--dir', 'ui', 'install', '--frozen-lockfile')
     }
     else {
         Write-Host '(pnpm install skipped)'
     }
-    Run pnpm @('check')
-    Run pnpm @('lint')
-    Run pnpm @('test')
+    Run pnpm @('--dir', 'ui', 'check')
+    Run pnpm @('--dir', 'ui', 'lint')
+    Run pnpm @('--dir', 'ui', 'test')
 
     Step '6/7 frontend: production build'
-    Run pnpm @('build')
+    Run pnpm @('--dir', 'ui', 'build')
 
     if ($NoE2E) {
         Write-Host '(rung 7 skipped: -NoE2E)'
     }
     else {
         Step '7/7 frontend: Playwright screenshots (mock mode)'
-        Run pnpm @('e2e:screenshots')
+        Run pnpm @('--dir', 'ui', 'e2e:screenshots')
     }
 
     if ($NoTauriBuild) {
@@ -171,7 +171,7 @@ else {
         # Runs `pnpm build` again via beforeBuildCommand, then a debug cargo
         # build and the NSIS bundler; output under target/debug/.
         Step '8/8 tauri build --debug (links and bundles the real app)'
-        Run pnpm @('tauri', 'build', '--debug')
+        Run pnpm @('--dir', 'ui', 'tauri', 'build', '--debug')
     }
 }
 

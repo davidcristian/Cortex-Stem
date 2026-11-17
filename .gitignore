@@ -4,9 +4,9 @@
 
 # Node / frontend
 node_modules/
-/dist/
+/ui/dist/
 *.tsbuildinfo
-/.vite/
+/ui/.vite/
 .svelte-kit/
 
 # Tauri
@@ -14,10 +14,10 @@ node_modules/
 /src-tauri/target/
 
 # Test output
-/playwright-report/
-/test-results/
-/e2e/output/
-/coverage/
+/ui/playwright-report/
+/ui/test-results/
+/ui/e2e/output/
+/ui/coverage/
 
 # Local git worktrees
 .claude/worktrees/

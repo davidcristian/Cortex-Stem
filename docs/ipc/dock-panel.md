@@ -46,7 +46,7 @@ show and hide in a loop. So the UI reports the resting panel separately:
 
   `MockOptions.position` sets the initial `Settings.position`, and `setPosition(edge)` changes it
   as a settings change would. In mock mode the dock page takes `?position=bottom|top|left|right`
-  for it (`src/lib/ipc/demo.ts`). The mock's demo windows have frames on their monitor, none
+  for it (`ui/src/lib/ipc/demo.ts`). The mock's demo windows have frames on their monitor, none
   within the 250 px along the bottom, left or right edge of the work area, where a panel rests on
   those edges. The top band is not kept clear, so a `top` dock with *When a window overlaps*
   hides at once in the demo. `moveWindow(id, rect)` moves one window (a rect-only

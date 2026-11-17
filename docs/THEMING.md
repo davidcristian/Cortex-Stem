@@ -210,9 +210,9 @@ What that means for a `dock.css`:
 ## For maintainers
 
 - The variables are also listed in `STEM_CSS_VARIABLES`
-  (`src/lib/dock/user-css.ts`) and in the template (`TEMPLATE`,
+  (`ui/src/lib/dock/user-css.ts`) and in the template (`TEMPLATE`,
   `src-tauri/src/user_css/template.rs`). Unit tests on both sides fail when
-  one of them, this page or `src/dock/Dock.svelte` names a variable the
+  one of them, this page or `ui/src/dock/Dock.svelte` names a variable the
   others do not. A new stable variable needs all four, and an entry in
   `docs/ipc/changelog.md`.
 - The user's `<style>` element works because the dock's HTML has no inline
@@ -221,6 +221,6 @@ What that means for a `dock.css`:
   ignores `'unsafe-inline'`, which would block the element. Keep the page's
   own styles in the bundle (Vite's `<link>`). Before an inline `<style>` is
   added to the page, the user's element needs another way to be allowed.
-- The preset values are in `src/dock/DockStage.svelte` as `--preset-*`
+- The preset values are in `ui/src/dock/DockStage.svelte` as `--preset-*`
   variables on `.dock-stage`; `standard` uses the colour tokens of
-  `src/app.css`.
+  `ui/src/app.css`.

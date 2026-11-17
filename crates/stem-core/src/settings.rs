@@ -10,7 +10,7 @@
 //! with the keys its `kind` requires. Unknown fields are ignored.
 //!
 //! The doc comments of the settings types are user-facing text. ts-rs copies
-//! them into the TypeScript bindings in `src/lib/ipc/generated/`, and
+//! them into the TypeScript bindings in `ui/src/lib/ipc/generated/`, and
 //! `tests/settings_reference.rs` builds the settings reference,
 //! `docs/SETTINGS.md`, from them.
 

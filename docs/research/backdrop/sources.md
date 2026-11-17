@@ -31,9 +31,9 @@ Code read (this repository and the locked dependencies):
   `plan_dock_rect`, `edge_rect`), `src-tauri/src/windows/panel.rs`
   (`panel_on_screen`) and `src-tauri/src/commands/dock_window.rs`
   (`set_dock_panel_rect`)
-- `src/dock/Dock.svelte`, `src/dock/DockStage.svelte`,
-  `src/dock/magnifier.svelte.ts`, `src/dock/measure.svelte.ts`,
-  `src/lib/components/DockItem.svelte`, `src/lib/dock/magnify.ts` (panel
+- `ui/src/dock/Dock.svelte`, `ui/src/dock/DockStage.svelte`,
+  `ui/src/dock/magnifier.svelte.ts`, `ui/src/dock/measure.svelte.ts`,
+  `ui/src/lib/components/DockItem.svelte`, `ui/src/lib/dock/magnify.ts` (panel
   styles, magnification, measurement, slide)
 - tao 0.37.2 `src/platform_impl/windows/window.rs` and `event_loop.rs`
   (transparency, `WM_NCCALCSIZE`)

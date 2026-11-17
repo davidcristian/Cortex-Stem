@@ -52,7 +52,7 @@ jobs:
 
       # Fails fast, before the toolchain and the build, when the tag does not
       # name the version the three manifests carry (docs/RELEASING.md step 1).
-      - name: Tag matches tauri.conf.json, Cargo.toml and package.json
+      - name: Tag matches tauri.conf.json, Cargo.toml and ui/package.json
         shell: bash
         run: |
           case "$TAG" in
@@ -61,7 +61,7 @@ jobs:
           esac
           want="${TAG#v}"
           conf=$(node -p "require('./src-tauri/tauri.conf.json').version")
-          pkg=$(node -p "require('./package.json').version")
+          pkg=$(node -p "require('./ui/package.json').version")
           # The first `version = "..."` line of the [workspace.package] table.
           cargo=$(awk '
             { sub(/\r$/, "") }
@@ -74,7 +74,7 @@ jobs:
               exit
             }
           ' Cargo.toml)
-          echo "tag $TAG -> $want; src-tauri/tauri.conf.json $conf; Cargo.toml [workspace.package] $cargo; package.json $pkg"
+          echo "tag $TAG -> $want; src-tauri/tauri.conf.json $conf; Cargo.toml [workspace.package] $cargo; ui/package.json $pkg"
           fail=0
           check() {
             if [ "$2" != "$want" ]; then
@@ -84,7 +84,7 @@ jobs:
           }
           check src-tauri/tauri.conf.json "$conf"
           check Cargo.toml "$cargo"
-          check package.json "$pkg"
+          check ui/package.json "$pkg"
           if [ "$fail" -ne 0 ]; then exit 1; fi
           echo "VERSION=$want" >> "$GITHUB_ENV"
 
@@ -100,7 +100,7 @@ jobs:
         id: pnpm
         shell: bash
         run: |
-          if grep -Eq '"packageManager"[[:space:]]*:[[:space:]]*"pnpm@' package.json; then
+          if grep -Eq '"packageManager"[[:space:]]*:[[:space:]]*"pnpm@' ui/package.json; then
             echo "version=" >> "$GITHUB_OUTPUT"
           else
             echo "version=10" >> "$GITHUB_OUTPUT"
@@ -109,14 +109,16 @@ jobs:
       - uses: pnpm/action-setup@v5
         with:
           version: ${{ steps.pnpm.outputs.version }}
+          package_json_file: ui/package.json
 
       - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
 
       - name: pnpm install
-        run: pnpm install --frozen-lockfile
+        run: pnpm --dir ui install --frozen-lockfile
 
       # The NSIS bundler downloads its toolset (NSIS and Tauri's plugin) from
       # GitHub releases into %LOCALAPPDATA%\tauri when it is not there yet.
@@ -126,7 +128,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/AppData/Local/tauri
-          key: tauri-tools-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          key: tauri-tools-${{ runner.os }}-${{ hashFiles('ui/pnpm-lock.yaml') }}
           restore-keys: tauri-tools-${{ runner.os }}-
 
       # `tauri build` runs `pnpm build` first (tauri.conf.json
@@ -142,7 +144,7 @@ jobs:
         shell: bash
         run: |
           for attempt in 1 2 3; do
-            if pnpm tauri build 2>&1 | tee tauri-build.log; then
+            if pnpm --dir ui tauri build 2>&1 | tee tauri-build.log; then
               exit 0
             fi
             if [ "$attempt" -eq 3 ] || ! grep -Eq 'http status: 5[0-9][0-9]|error sending request|operation timed out|failed to download' tauri-build.log; then

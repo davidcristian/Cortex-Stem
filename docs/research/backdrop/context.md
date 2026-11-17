@@ -15,7 +15,7 @@ everywhere except the rounded panel, which the page centres
 `position` setting picks the edge, `bottom` by default. This note describes
 the dock on `bottom`; on the other edges the same holds along that edge. The
 window's height is the panel plus room for magnified icons, tooltips and
-the bounce (`HEADROOM` in `src/dock/layout.ts`, and `SIDE_HEADROOM` on
+the bounce (`HEADROOM` in `ui/src/dock/layout.ts`, and `SIDE_HEADROOM` on
 `left` and `right`). Every system backdrop Windows offers is drawn behind
 a whole window. On the dock window it would paint a band across the bottom
 of the screen, not a panel.
@@ -47,10 +47,10 @@ What the code does, as far as it matters here:
 - The dock window's subclass sets `HWND_TOPMOST` again when an ordinary
   window is above the dock. This note calls that the topmost re-assert.
 - The panel changes size often. A slot is `icon × --scale + gap` wide
-  (`src/lib/components/DockItem.svelte`), so magnification widens the panel
+  (`ui/src/lib/components/DockItem.svelte`), so magnification widens the panel
   through layout: at once when the pointer enters, over a 120 ms CSS
   transition when it leaves (the settle), and near the ends of the row. In
-  the middle of the row the width hardly changes (`src/lib/dock/magnify.ts`:
+  the middle of the row the width hardly changes (`ui/src/lib/dock/magnify.ts`:
   the growth is the same whatever the pointer offset). Items grow in and
   out, a file drag opens a gap, and a drag grows the window. The UI reports
   the panel only at rest (`set_dock_panel_rect`); nothing reports the live

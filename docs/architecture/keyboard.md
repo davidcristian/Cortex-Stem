@@ -8,7 +8,7 @@ tabindex on the item the focus was on last. The arrows of the dock's main
 axis move the focus (Left and Right on a horizontal dock, Up and Down on a
 vertical one; the other pair does nothing), and Home and End go to the
 first and last item. The focus skips separators and stops at the ends
-(`src/lib/dock/keyboard.ts`, pure and unit-tested). When an item with the
+(`ui/src/lib/dock/keyboard.ts`, pure and unit-tested). When an item with the
 focus leaves the dock, the focus moves to its neighbour.
 
 Enter and Space are `primary_click`. Shift+F10 and the menu key are

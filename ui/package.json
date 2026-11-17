@@ -13,11 +13,11 @@
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings && tsc -p tsconfig.node.json",
-    "lint": "eslint . && prettier --check . && node scripts/prosecheck.mjs && node scripts/linecap.mjs",
+    "lint": "eslint . && prettier --check . && cd .. && eslint -c ui/eslint.config.js scripts && node scripts/prosecheck.mjs && node scripts/linecap.mjs",
     "format": "prettier --write .",
     "test": "vitest run",
     "e2e:screenshots": "playwright test",
-    "tauri": "tauri"
+    "tauri": "TAURI_APP_PATH=../src-tauri tauri"
   },
   "dependencies": {
     "@tauri-apps/api": "2.12.4"

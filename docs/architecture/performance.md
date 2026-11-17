@@ -5,7 +5,7 @@ times measured on one test PC.
 
 | Metric                                  | Target |
 |-----------------------------------------|--------|
-| Idle CPU (no window changes)            | ≈ 0 % (nothing polls except the Recycle Bin query every 5 s on `dock-recycle-bin`, the hit-test thread's 4 Hz `GetCursorPos` safety poll and, with no audio output device, the volume thread's retry once a minute; the dock page, in the dev build, does no work once settled, which `e2e/idle.spec.ts` checks, see "The dock page at idle") |
+| Idle CPU (no window changes)            | ≈ 0 % (nothing polls except the Recycle Bin query every 5 s on `dock-recycle-bin`, the hit-test thread's 4 Hz `GetCursorPos` safety poll and, with no audio output device, the volume thread's retry once a minute; the dock page, in the dev build, does no work once settled, which `ui/e2e/idle.spec.ts` checks, see "The dock page at idle") |
 | Event → UI update                       | < 50 ms |
 | Startup to dock visible                 | < 1 s |
 | Memory (Rust side)                      | < 30 MB; WebView2 uses far more |
@@ -13,7 +13,7 @@ times measured on one test PC.
 
 ## The dock page at idle
 
-`e2e/idle.spec.ts`, part of `pnpm e2e:screenshots`, opens the dock page in
+`ui/e2e/idle.spec.ts`, part of `pnpm e2e:screenshots`, opens the dock page in
 mock mode in headless Chromium, one browser context per scenario. It runs
 against the dev build (`pnpm dev`). It checks that once the page has
 settled it does no work over a 3 s window:
@@ -69,7 +69,7 @@ window is activated, so it is checked against its own limits: no layout,
 no frame, timer or idle callback, script and tasks within the budgets, at
 most 2 style recalculations per window, and nothing running but the
 wiggle. Vite's dev client (a 30 s WebSocket ping) is not counted. The
-bundle (`dist/`) can be measured with the same spec through `pnpm preview`
+bundle (`ui/dist/`) can be measured with the same spec through `pnpm preview`
 (see the spec's header comment); this is not part of the verification
 ladder in `AGENTS.md`. Headless Chromium is not WebView2. The idle CPU of
 the real processes can only be measured on Windows, in the same states:

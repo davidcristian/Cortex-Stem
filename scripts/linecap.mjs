@@ -1,7 +1,7 @@
 // Checks the file size limits of AGENTS.md: a markdown file has at most 250 lines, and a source
 // file (.rs, .ts, .svelte, .js, .mjs) has at most 300. Test files (tests.rs, *_tests.rs, anything
-// under a tests/ folder, *.test.ts, *.spec.ts, e2e/) and the generated bindings in
-// src/lib/ipc/generated/ have no limit.
+// under a tests/ folder, *.test.ts, *.spec.ts, ui/e2e/) and the generated bindings in
+// ui/src/lib/ipc/generated/ have no limit. Run it from the repository root.
 // Usage: node scripts/linecap.mjs [file ...]   (default: every tracked markdown and source file)
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -10,7 +10,7 @@ const MARKDOWN_LIMIT = 250;
 const SOURCE_LIMIT = 300;
 const SOURCE = /\.(rs|ts|svelte|js|mjs)$/;
 const EXEMPT =
-  /(^|\/)tests\.rs$|_tests\.rs$|(^|\/)tests\/|\.test\.ts$|\.spec\.ts$|^e2e\/|^src\/lib\/ipc\/generated\//;
+  /(^|\/)tests\.rs$|_tests\.rs$|(^|\/)tests\/|\.test\.ts$|\.spec\.ts$|^ui\/e2e\/|^ui\/src\/lib\/ipc\/generated\//;
 
 function limitOf(file) {
   if (file.endsWith('.md')) return MARKDOWN_LIMIT;

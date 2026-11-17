@@ -23,7 +23,7 @@ screenshots, ESLint and Prettier. No component libraries.
 - The compiled output is small, and animation written in CSS fits the
   framework.
 - Components use runes syntax (`$state`, `$derived`, `$props`).
-  `svelte.config.js` compiles in runes mode, and Svelte 4 syntax
-  (`export let`, `$:`) is a lint error (`eslint.config.js`).
+  `ui/svelte.config.js` compiles in runes mode, and Svelte 4 syntax
+  (`export let`, `$:`) is a lint error (`ui/eslint.config.js`).
 - Types that cross IPC are generated from Rust with ts-rs into
-  `src/lib/ipc/generated/`; there are no hand-written copies.
+  `ui/src/lib/ipc/generated/`; there are no hand-written copies.

@@ -191,21 +191,21 @@ You need Windows 11 with:
 
 - Rust through `rustup`. [`rust-toolchain.toml`](rust-toolchain.toml) sets the toolchain to an
   exact version; `rustup toolchain install`, run in the repository, installs it if it is missing.
-- Node.js 22 or newer, and pnpm at the version `package.json` names (`corepack enable` provides it
-  with Node 22 and 24).
+- Node.js 22 or newer, and pnpm at the version `ui/package.json` names (`corepack enable`
+  provides it with Node 22 and 24).
 - The Tauri prerequisites for Windows: the Microsoft C++ Build Tools with the Windows SDK, and the
   WebView2 runtime (part of Windows 11).
 
 Then:
 
 ```bat
+cd ui
 pnpm install
 pnpm tauri dev
 ```
 
-`pnpm tauri` runs the Tauri CLI at the version `package.json` names. `cargo tauri dev` does the
-same with a Tauri CLI installed through Cargo (`cargo install tauri-cli --version "^2"`).
-`pnpm tauri build` builds the release `stem.exe` and the NSIS installer under `target/release/`.
+`pnpm tauri` runs the Tauri CLI at the version `ui/package.json` names. `pnpm tauri build` builds
+the release `stem.exe` and the NSIS installer under `target/release/`.
 
 ## Development
 
@@ -215,14 +215,14 @@ Most of the code (everything except the final binary) can be developed and teste
 `x86_64-pc-windows-msvc` target type-checks the Windows code, and the page runs in a browser against
 `MockBackend`. The [development hosts](docs/architecture/development-hosts.md) page explains how.
 
-| Command | What it does |
+| Command (`pnpm` in `ui/`) | What it does |
 | ------- | ------------ |
 | `pnpm dev` | Serves the page alone at `http://localhost:1420/dock.html` and `http://localhost:1420/settings.html`, against the mock backend, in any browser |
 | `pnpm tauri dev` | Builds and starts the app in debug, with the page served by `pnpm dev` |
 | `set STEM_PLATFORM=mock && pnpm tauri dev` | Starts the app on the mock platform, which shows demo data and saves nothing, so your real windows and settings are untouched (Command Prompt; in PowerShell, set `$env:STEM_PLATFORM = 'mock'` first) |
 | `scripts/check-all.sh` | The verification ladder on Linux or macOS: formatting, lints, tests, the generated TypeScript bindings and settings reference, the Windows-target lint, frontend checks and the Playwright suite |
 | `scripts/check-all.ps1` | The same ladder on Windows, then `pnpm tauri build --debug` |
-| `pnpm e2e:screenshots` | The Playwright suite in mock mode: screenshots in `e2e/output/` and the idle checks of the dock page |
+| `pnpm e2e:screenshots` | The Playwright suite in mock mode: screenshots in `ui/e2e/output/` and the idle checks of the dock page |
 
 ## Documentation
 

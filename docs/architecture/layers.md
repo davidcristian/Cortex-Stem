@@ -6,7 +6,7 @@ each part depends on and how it is tested.
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
-│  src/  (Svelte 5 + TypeScript, WebView2)                               │
+│  ui/   (Svelte 5 + TypeScript, WebView2)                               │
 │  dock.html  settings.html     Backend interface → TauriBackend | Mock   │
 └───────────────▲───────────────────────────────┬────────────────────────┘
                 │ events (dock://*)             │ commands (invoke)
@@ -35,4 +35,4 @@ each part depends on and how it is tested.
 | `stem-platform`  | core; `windows` on Windows   | mock: yes      | mock tests; the Windows code is type-checked for the Windows target |
 | `stem-service`   | core, platform               | yes (mock)     | integration tests with `MockPlatform` |
 | `stem-app`       | all + tauri                  | type-check only (a Linux build needs WebKitGTK) | `cargo clippy --target x86_64-pc-windows-msvc`, CI build on Windows |
-| `src/`           | `@tauri-apps/api`            | yes (mock)     | Vitest, Playwright screenshots in mock mode |
+| `ui/`            | `@tauri-apps/api`            | yes (mock)     | Vitest, Playwright screenshots in mock mode |
