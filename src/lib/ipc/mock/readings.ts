@@ -1,6 +1,7 @@
 /**
  * The power, volume and regional-format readings of the mock platform, and
- * the titles and the wheel step the engine makes of them (engine.rs).
+ * the titles and the wheel step the engine makes of them (engine/snapshot.rs,
+ * engine/scroll.rs).
  */
 
 import type { ClockFormat } from '$lib/ipc/generated/ClockFormat';
@@ -10,7 +11,7 @@ import type { VolumeStatus } from '$lib/ipc/generated/VolumeStatus';
 
 /**
  * The demo's power reading: a laptop at 76 %, on battery; the same
- * as `demo_power` in `crates/stem-platform/src/mock.rs`.
+ * as `demo_power` in `crates/stem-platform/src/mock/demo.rs`.
  */
 export const DEMO_POWER: Readonly<PowerStatus> = Object.freeze({
   hasBattery: true,
@@ -31,19 +32,19 @@ export const NO_POWER: Readonly<PowerStatus> = Object.freeze({
 
 /**
  * The demo's output device: at 60 %, not muted; the same as
- * `demo_volume` in `crates/stem-platform/src/mock.rs`.
+ * `demo_volume` in `crates/stem-platform/src/mock/demo.rs`.
  */
 export const DEMO_VOLUME: Readonly<VolumeStatus> = Object.freeze({ percent: 60, muted: false });
 
 /**
  * How far one wheel notch over the volume item moves the volume, in
- * percentage points (`VOLUME_STEP` in engine.rs).
+ * percentage points (`VOLUME_STEP` in engine/scroll.rs).
  */
 export const VOLUME_STEP = 2;
 
 /**
  * What one wheel notch over the volume item makes of `current`
- * (`volume_step` in engine.rs): `previous` (the wheel turned away
+ * (`volume_step` in engine/scroll.rs): `previous` (the wheel turned away
  * from the user, up) raises it by `VOLUME_STEP` up to 100 and unmutes;
  * `next` lowers it by `VOLUME_STEP` down to 0 and keeps the mute.
  */
@@ -55,7 +56,7 @@ export function volumeStep(current: VolumeStatus, direction: ScrollDirection): V
 }
 
 /**
- * The volume item's title (`volume_title` in engine.rs):
+ * The volume item's title (`volume_title` in engine/snapshot.rs):
  * `Volume 45 %`, `Volume muted` while muted, `No audio output` without a
  * default output device.
  */
@@ -70,7 +71,7 @@ export function volumeTitle(volume: VolumeStatus | null): string {
 export const NO_CLOCK_FORMAT: Readonly<ClockFormat> = Object.freeze({ locale: null, hour12: null });
 
 /**
- * The battery item's title (`battery_title` in engine.rs):
+ * The battery item's title (`battery_title` in engine/snapshot.rs):
  * `Battery 73 %`, then `, charging` or `, plugged in` (on AC, not charging),
  * then `, battery saver on`; `Battery` alone, whatever else is known, without
  * a known percent.

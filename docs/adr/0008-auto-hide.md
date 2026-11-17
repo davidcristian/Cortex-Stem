@@ -32,17 +32,16 @@ of the work area instead).
   ([Detecting the reveal](../research/auto-hide.md#detecting-the-reveal)).
 - **The state machine is presentation and lives in the UI**, as a pure,
   unit-tested module beside the magnification maths
-  (`src/lib/dock/autohide.ts`), like magnification itself: `shown` → (the
-  pointer left the panel) → `pending` → (`delayMs` passed) → `hidden` →
-  (the pointer in the strip) → `shown`. It never hides while a hold is on:
-  an icon lifted for a drag, a native context menu from the dock open, an
-  item bouncing for a launch the dock started, an item with keyboard focus,
-  or a file dragged over the dock. An item that needs attention (its window
-  flashed its taskbar button) is the one hold that also reveals a hidden
-  dock, and it keeps the dock up until no item needs attention, as the
-  stock taskbar does. A file dragged over
-  the reveal strip also reveals the dock, because an OLE drag sends no
-  pointer events.
+  (`src/lib/dock/autohide.ts` and `autohide/`), like magnification itself:
+  `shown` → (the pointer left the panel) → `pending` → (`delayMs` passed) →
+  `hidden` → (the pointer in the strip) → `shown`. It never hides while a
+  hold is on: an icon lifted for a drag, a native context menu from the dock
+  open, an item bouncing for a launch the dock started, an item with keyboard
+  focus, or a file dragged over the dock. An item that needs attention (its
+  window flashed its taskbar button) is the one hold that also reveals a
+  hidden dock, and it keeps the dock up until no item needs attention, as the
+  stock taskbar does. A file dragged over the reveal strip also reveals the
+  dock, because an OLE drag sends no pointer events.
 - **Motion:** the panel slides out towards its edge by its own thickness
   plus its margin to the edge and its shadow, with `transform: translateY`
   over 200 ms (`ease-in` out, `ease-out` back in; `translateX` on `left`

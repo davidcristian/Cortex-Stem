@@ -1,5 +1,5 @@
 /**
- * App identities as the mock platform resolves them (mock.rs), and the
+ * App identities as the mock platform resolves them (mock/identity.rs), and the
  * display names `rules::identity` and stem-service fall back to.
  */
 
@@ -11,7 +11,7 @@ import type { RawWindow } from '$lib/ipc/generated/RawWindow';
 import { appIdFor, appIdForAppUserModelId, appIdForExe, fileStem } from './model';
 
 /**
- * `identity_for` in mock.rs: a window whose AppUserModelID the
+ * `identity_for` in mock/identity.rs: a window whose AppUserModelID the
  * shell knows (`appsFolderKnows`) is that app (`identityForAumid`), so
  * Calculator in an `ApplicationFrameHost` frame launches the Store app and
  * names no file. Any other window, a desktop program with an
@@ -34,7 +34,7 @@ export function identityForWindow(raw: RawWindow): AppIdentity {
 }
 
 /**
- * `identity_for_aumid` in mock.rs: the `aumid:` id, a `storeApp`
+ * `identity_for_aumid` in mock/identity.rs: the `aumid:` id, a `storeApp`
  * launch by the AppUserModelID and no file. With no AppsFolder to name the
  * app, its name is the real platform's fallback (`aumidFallbackName`), its
  * icon key the mock's (`mock:<id>`).
@@ -51,7 +51,7 @@ function identityForAumid(appUserModelId: string): AppIdentity {
 }
 
 /**
- * `apps_folder_knows` in mock.rs: the mock's shell knows exactly
+ * `apps_folder_knows` in mock/identity.rs: the mock's shell knows exactly
  * the packaged form of an AppUserModelID, `<package family name>!<application
  * id>` with the family `<name>_<publisher id>`
  * (`Microsoft.WindowsCalculator_8wekyb3d8bbwe!App`), and no desktop
@@ -103,7 +103,10 @@ export function aumidFallbackName(aumid: string): string {
   return cleanDisplayName(chosen) ?? cleanDisplayName(cleaned) ?? PLACEHOLDER_DISPLAY_NAME;
 }
 
-/** `identify_target` in mock.rs: a `storeApp` target is the same identity as the app's windows. */
+/**
+ * `identify_target` in mock/platform.rs: a `storeApp` target is the same
+ * identity as the app's windows.
+ */
 export function identityForTarget(target: LaunchTarget): AppIdentity {
   switch (target.kind) {
     case 'exe':

@@ -59,7 +59,7 @@ function settle(next: AutoHideState, restart = false): AutoHideStep {
 /**
  * One transition. Never mutates `state`. When it ends auto-hide (the mode,
  * the end of fullscreen or of an overlap), the pointer is forgotten: see
- * the module comment.
+ * the module comment of `../autohide.ts`.
  */
 export function autoHideStep(state: AutoHideState, event: AutoHideEvent): AutoHideStep {
   const next = transition(state, event);

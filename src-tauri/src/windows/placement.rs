@@ -45,7 +45,8 @@ pub fn is_vertical(edge: DockPosition) -> bool {
 /// it (its width on `bottom` and `top`, its height on `left` and `right`),
 /// and `thickness` pixels across it, clamped to the work area and never
 /// empty (a degenerate work area still gives a 1×1 window flush with its
-/// edge). The placement rule every dock window follows, unit-tested below.
+/// edge). The placement rule every dock window follows, unit-tested in
+/// `windows/tests/placement.rs`.
 pub fn edge_rect(work_area: Rect, edge: DockPosition, thickness: i32) -> Rect {
     let width = work_area.width.max(1);
     let height = work_area.height.max(1);

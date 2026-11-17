@@ -3,9 +3,9 @@
 The [thumbnail probe](index.md) is made of these files, and these checks
 lint and test it:
 
-- `crates/stem-platform/src/windows/probe/thumbnails.rs`: the probe. All
-  of its `unsafe` code is in this file, each block with a `// SAFETY:`
-  comment.
+- `crates/stem-platform/src/windows/probe/thumbnails.rs` and `thumbnails/`:
+  the probe. All of its `unsafe` code is in these files, each block with a
+  `// SAFETY:` comment.
 - `crates/stem-platform/examples/thumbnail-probe.rs`: the entry point.
 - `crates/stem-platform/Cargo.toml`: the `probes` feature (off by default,
   never enabled by the app) and the example's `required-features`.

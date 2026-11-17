@@ -25,14 +25,16 @@ Microsoft documentation:
 
 Code read (this repository and the locked dependencies):
 
-- `crates/stem-platform/src/windows/dock_window.rs` (styles, corner
-  preference, pass-through toggle, topmost re-assert)
-- `src-tauri/src/windows.rs` (the window along its edge: `plan_dock_rect`,
-  `edge_rect`; `panel_on_screen`) and `src-tauri/src/commands.rs`
+- `crates/stem-platform/src/windows/dock_window.rs` and `dock_window/`
+  (styles, corner preference, pass-through toggle, topmost re-assert)
+- `src-tauri/src/windows/placement.rs` (the window along its edge:
+  `plan_dock_rect`, `edge_rect`), `src-tauri/src/windows/panel.rs`
+  (`panel_on_screen`) and `src-tauri/src/commands/dock_window.rs`
   (`set_dock_panel_rect`)
-- `src/dock/Dock.svelte`, `src/lib/components/DockItem.svelte`,
-  `src/lib/dock/magnify.ts` (panel styles, magnification, measurement,
-  slide)
+- `src/dock/Dock.svelte`, `src/dock/DockStage.svelte`,
+  `src/dock/magnifier.svelte.ts`, `src/dock/measure.svelte.ts`,
+  `src/lib/components/DockItem.svelte`, `src/lib/dock/magnify.ts` (panel
+  styles, magnification, measurement, slide)
 - tao 0.37.2 `src/platform_impl/windows/window.rs` and `event_loop.rs`
   (transparency, `WM_NCCALCSIZE`)
 - tauri 2.12.5 `src/vibrancy/windows.rs`; window-vibrancy 0.8.1

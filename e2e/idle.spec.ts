@@ -120,7 +120,7 @@ const PANEL = '.dock-panel';
 const SIDE_VIEWPORT = { width: 360, height: 800 };
 /** Above a bottom dock, in the transparent part of the 1280 × 240 window. */
 const AWAY = { x: 640, y: 10 };
-/** The demo's Explorer window (src/lib/ipc/mock.ts). */
+/** The demo's Explorer window (src/lib/ipc/mock/scenarios.ts). */
 const EXPLORER_WINDOW = 1;
 const EXPLORER = `${APP_SLOT}[data-key="app:exe:c:/windows/explorer.exe"]`;
 /** The clock item, shown with `items.clock`. */
@@ -136,7 +136,7 @@ const EXPLORER_KEY = 'app:exe:c:/windows/explorer.exe';
 const BIN = '.slot[data-kind="recycleBin"]';
 /** The gap a file drag opens among the pinned apps. */
 const GAP = '.drop-gap';
-/** The mock's `twoMonitors` scenario, and its second monitor (`SECOND_MONITOR_ID` in src/lib/ipc/mock.ts). */
+/** The mock's `twoMonitors` scenario, and its second monitor (`SECOND_MONITOR_ID` in src/lib/ipc/mock/scenarios.ts). */
 const TWO_MONITORS = 'scenario=twoMonitors';
 const DISPLAY3 = '\\\\.\\DISPLAY3';
 /** Paint's item: its one window is on the second monitor in `twoMonitors`. */
@@ -768,7 +768,7 @@ function presetScenario(theme: ThemePreset): Scenario {
   };
 }
 
-/** Windows' theme as the mock starts with it (`DEFAULT_THEME` in src/lib/ipc/mock.ts). */
+/** Windows' theme as the mock starts with it (`DEFAULT_THEME` in src/lib/ipc/mock/scenarios.ts). */
 const OS_THEME: ThemeInfo = {
   accent: '#0078D4',
   dark: true,

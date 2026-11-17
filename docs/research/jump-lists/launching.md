@@ -29,5 +29,5 @@ on are listed in [Assumptions](assumptions.md).
     ActivateApplication`, with the context as its arguments (Open-Shell's
     route). This is a later stage ([work item 9](work-items.md)).
 - Every launch runs on Tauri's blocking pool, like the menu's other actions
-  (`menus.rs` `perform`). The app's icon bounces, as for *New window*
+  (`menus/actions.rs` `perform`). The app's icon bounces, as for *New window*
   (`ServiceEvent::Bounce`).

@@ -6,7 +6,7 @@
 //! was rejected). The table mirrors what the stock Windows 11 taskbar shows.
 //! Keep the rule table and its tests here so the decision can be read and
 //! tested on any host; the OS calls that produce the facts live in
-//! `windows/enumerate.rs`.
+//! `windows/enumerate.rs` and `windows/enumerate/`.
 //!
 //! Rule table (first match wins, top to bottom):
 //!
@@ -46,7 +46,7 @@
 //! `RawWindow::on_current_desktop`, which the engine prefers to the
 //! cloak state when it is known.
 //!
-//! The constants mirror `dwmapi.h`; `windows/enumerate.rs` asserts at
+//! The constants mirror `dwmapi.h`; `windows/enumerate/facts.rs` asserts at
 //! compile time that they equal the SDK values.
 
 /// `DWM_CLOAKED_APP`: the window cloaked itself.

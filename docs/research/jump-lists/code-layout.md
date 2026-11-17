@@ -24,8 +24,8 @@ in [Assumptions](assumptions.md).
   `SIGDN_DESKTOPABSOLUTEPARSING` name, so the platform can rebuild the item
   on any thread (`SHCreateItemFromParsingName`), and the name can be logged
   and tested.
-- `crates/stem-platform/src/lib.rs`: two trait methods whose default
-  returns `Unsupported("jump lists")`:
+- `crates/stem-platform/src/platform/interface.rs`: two trait methods whose
+  default returns `Unsupported("jump lists")`:
 
   ```rust
   /// The jump list of `app`, or Timeout after `budget`. Never blocks longer.
@@ -51,7 +51,7 @@ in [Assumptions](assumptions.md).
     existence checks.
   - `open_jump_entry` rebuilds the item, takes its ID list
     (`SHGetIDListFromObject`; freed by a new RAII guard appended to
-    `util.rs`) and calls `ShellExecuteExW(SEE_MASK_INVOKEIDLIST |
+    `util/handles.rs`) and calls `ShellExecuteExW(SEE_MASK_INVOKEIDLIST |
     SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI)`. `Launch` targets go to the
     existing `launch::launch`.
   - `crates/stem-platform/Cargo.toml` needs the `Win32_UI_Shell_Common`
@@ -63,16 +63,16 @@ in [Assumptions](assumptions.md).
     already enabled; the compiler names any other missing feature.
   - Later stages add `crates/stem-platform/src/rules/jump_list.rs` (pure):
     the AppID hash, the custom-file framing, then `DestList`.
-- `crates/stem-platform/src/mock.rs`: scripted lists per app and a configurable
-  delay, so service tests cover the budget and the caps.
-- `crates/stem-service/src/lib.rs`:
+- `crates/stem-platform/src/mock.rs` and `mock/`: scripted lists per app and a
+  configurable delay, so service tests cover the budget and the caps.
+- `crates/stem-service/src/lib.rs` and the modules beside it:
   - `jump_list(&AppId) -> ServiceResult<JumpList>`. It returns an empty list
     unless the id is `aumid:`. It calls the platform with a 150 ms budget
     (**A7**) and applies `for_menu`. It keeps the last good list per app (at
     most 32 apps) and returns that list when the platform times out.
   - `open_jump_entry(&AppId, &JumpEntry)`. It looks up the owner with
     `launch_target_for` and emits `Bounce`.
-- `src-tauri/src/menus.rs`:
+- `src-tauri/src/menus.rs` and `src-tauri/src/menus/`:
   - `show_item_menu` becomes `async`, so its body runs off the main thread.
     It fetches the jump list first, then builds and shows the menu inside
     `app.run_on_main_thread`, and awaits a one-shot channel that receives a

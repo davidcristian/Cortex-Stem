@@ -1,4 +1,4 @@
-/** Pure helpers mirrored from stem-core (model.rs): app ids and file names. */
+/** Pure helpers mirrored from stem-core (model/ids.rs): app ids and file names. */
 
 import type { AppId } from '$lib/ipc/generated/AppId';
 import type { RawWindow } from '$lib/ipc/generated/RawWindow';
@@ -32,7 +32,7 @@ export function appIdFor(raw: RawWindow): AppId {
   return appIdForWindowClass(raw.className);
 }
 
-/** File name without extension; `/` and `\` both separate (mock.rs `file_stem`). */
+/** File name without extension; `/` and `\` both separate (mock/identity.rs `file_stem`). */
 export function fileStem(path: string): string {
   const name = path.split(/[/\\]/).pop() ?? path;
   const dot = name.lastIndexOf('.');

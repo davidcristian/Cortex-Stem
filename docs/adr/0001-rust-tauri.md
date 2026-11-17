@@ -33,6 +33,7 @@ stable.
   either, the platform subclasses the dock window (its window procedure
   returns `MA_NOACTIVATE` for `WM_MOUSEACTIVATE`) and sets
   `WS_EX_NOACTIVATE` on the WebView2 child windows
-  (`crates/stem-platform/src/windows/dock_window.rs`).
+  (`crates/stem-platform/src/windows/dock_window/subclass.rs` and
+  `children.rs`).
 - Everything OS-specific is behind a trait (ADR-0003), so most code is
   testable without Windows (ADR-0004).

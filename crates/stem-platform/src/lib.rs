@@ -7,7 +7,7 @@
 //! - [`windows::WindowsPlatform`] (`cfg(windows)` only): the real thing.
 //!
 //! Boundary rules (`AGENTS.md` §4, `docs/development/windows-rules.md`):
-//! - no OS types in this file or in the trait;
+//! - no OS types in this file, in `src/platform/` or in the trait;
 //! - `unsafe` only under `src/windows/`;
 //! - blocking or message-loop work happens on threads owned by this crate.
 

@@ -81,7 +81,7 @@ In its favour:
 - The icons can be drawn. Handles to user objects are public to every
   process in the session, and the 32-bit handle value in the message is
   enough on 64-bit Windows. `GetIconInfo` and `GetDIBits` turn them into
-  pixels, as `windows/icons.rs` already does for window icons.
+  pixels, as `windows/icons/bitmap.rs` already does for window icons.
 - A crash leaves the tray intact. If Stem exits unexpectedly (release
   builds abort on a panic), its window is destroyed, `FindWindow` returns
   Explorer's again, and Explorer still has every icon because everything
@@ -129,8 +129,8 @@ Against it:
   icons to show.
 - **Its own traffic.** Stem's tray icon (`src-tauri/src/tray.rs`), its
   taskbar calls (`windows/taskbar.rs`) and its app-bar calls
-  (`windows/appbar.rs`) would go through Stem's own window, from other
-  threads of the same process.
+  (`windows/appbar/win32_shell.rs`) would go through Stem's own window, from
+  other threads of the same process.
 - **Testing.** Each of these behaviours exists only at run time on
   Windows: a dozen manual tests that no check on Linux can replace, to be
   run again after every Windows feature update.

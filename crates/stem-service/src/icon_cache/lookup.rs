@@ -38,8 +38,8 @@ impl DiskIconCache {
     /// from `load` (the platform), whose `Some` result is queued for
     /// writing when the key is cacheable and the source file did not change
     /// meanwhile. A (key, size) this session already answered touches no
-    /// file (module docs, "Within a session"). `load`'s errors are returned
-    /// unchanged; the cache itself never fails.
+    /// file (the `icon_cache` module docs, "Within a session"). `load`'s
+    /// errors are returned unchanged; the cache itself never fails.
     pub fn get_or_load(
         &self,
         key: &IconKey,

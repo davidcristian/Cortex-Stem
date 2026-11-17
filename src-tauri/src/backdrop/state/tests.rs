@@ -34,7 +34,7 @@ fn report() -> PanelReport {
     }
 }
 
-/// What `windows::push_dock_panel` hands over for `report` in a window
+/// What `windows::panel::push_dock_panel` hands over for `report` in a window
 /// whose top-left corner is `origin` and whose client area is
 /// `physical` px at `scale`: the rect re-anchored to that viewport.
 fn converted(
@@ -231,7 +231,7 @@ fn a_thickness_change_keeps_the_material_on_every_edge() {
         };
         assert_eq!(facts.step().send, Some((DOCK, Some(material))), "{edge:?}");
 
-        // The resize (`windows::place`) converts the same report again.
+        // The resize (`windows::layout::place`) converts the same report again.
         let (origin, size) = case.after;
         assert!(
             !facts.panel_converted(converted(report, origin, size, 1.5)),

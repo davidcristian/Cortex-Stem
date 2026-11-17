@@ -20,7 +20,7 @@ to the app. Claims marked **[A1]** and so on are listed in
   and 3 as a `Shell_NotifyIconGetRect` query **[A1]**. So the same window
   also handles every app bar's messages in the session, including Stem's
   own: the taskbar auto-hide state (`windows/taskbar.rs`) and the dock's
-  app bar while *Reserve screen space* is on (`windows/appbar.rs`).
+  app bar while *Reserve screen space* is on (`windows/appbar/win32_shell.rs`).
 - Events go back the documented way: the tray sends `uCallbackMessage` to
   `hWnd`. With `NOTIFYICON_VERSION_4`, `LOWORD(lParam)` is the event
   (`NIN_SELECT`, `NIN_KEYSELECT`, `WM_CONTEXTMENU`, mouse messages),

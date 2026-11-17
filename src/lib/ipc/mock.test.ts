@@ -105,7 +105,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('demo scenario (mirror of crates/stem-platform/src/mock.rs)', () => {
+describe('demo scenario (mirror of crates/stem-platform/src/mock.rs and mock/demo.rs)', () => {
   it('orders items like the Rust engine: fixed, pinned, running, recycle bin', async () => {
     const b = fast();
     const state = await b.getDockState();
@@ -1411,7 +1411,7 @@ describe('hidden apps (docs/ipc/hidden-apps.md; mirror of hide_app / unhide_app)
     ]) {
       expect(appsFolderKnows(unknown), unknown).toBe(false);
     }
-    // The cases of `aumid_fallback_names` in rules/identity.rs.
+    // The cases of `aumid_fallback_names` in rules/identity/tests/names.rs.
     expect(
       [
         'Microsoft.WindowsCalculator_8wekyb3d8bbwe!App',
@@ -1928,7 +1928,7 @@ describe('revisions and events', () => {
     const utf8 = (text: string): Uint8Array => new TextEncoder().encode(text);
     expect(readUserCss(utf8(`${bom}a {}`))).toEqual({ css: 'a {}', problem: null });
     expect(readUserCss(utf8(`a${bom}`))).toEqual({ css: `a${bom}`, problem: null });
-    // UTF-16 (Notepad's "Unicode"), with its byte order mark, as in user_css.rs.
+    // UTF-16 (Notepad's "Unicode"), with its byte order mark, as in user_css/tests.rs.
     const utf16 = new Uint8Array([0xff, 0xfe, 0x61, 0, 0x7b, 0, 0x7d, 0]);
     expect(readUserCss(utf16)).toEqual({ css: null, problem: 'notUtf8' });
     expect(readUserCss(new Uint8Array([0xc3, 0x28]))).toEqual({ css: null, problem: 'notUtf8' });
@@ -2538,7 +2538,7 @@ describe('a window over the dock (mirror of crates/stem-core/src/overlap.rs)', (
   });
 });
 
-describe('report provenance (mirror of src-tauri/src/windows.rs)', () => {
+describe('report provenance (mirror of src-tauri/src/windows/viewport.rs)', () => {
   const row: Rect = { x: 960, y: 16, width: 640, height: 64 };
   const topRow: Rect = { x: 960, y: 8, width: 640, height: 64 };
   const column: Rect = { x: 8, y: 400, width: 64, height: 640 };

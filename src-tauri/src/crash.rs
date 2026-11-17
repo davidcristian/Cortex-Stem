@@ -14,7 +14,7 @@
 //!   at `warn` and nothing else happens.
 //! - `crash.json` (`{"kind": "panic", "message": "…", "location":
 //!   "file:line:col", "time": "<RFC 3339 UTC>"}`) is written by the panic
-//!   hook ([`record_panic`], called by `install_panic_hook` in `lib.rs`
+//!   hook ([`record_panic`], called by `install_panic_hook` in `app/panic_hook.rs`
 //!   before its log line). One found at the next start is shown to the user
 //!   in a native, topmost *Yes* / *No* box (`Platform::ask_yes_no`) that
 //!   says when, where and what, and offers to open the log folder; *Yes*

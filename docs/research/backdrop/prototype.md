@@ -7,9 +7,9 @@ The prototype of the [backdrop research](index.md) is
 ([Assumptions](assumptions.md)) through steps 2 to 15 of the
 [manual test plan](manual-test-plan.md). It consists of:
 
-- `crates/stem-platform/src/windows/backdrop.rs`: the window of option 6,
-  with the styles, attributes, `WM_NCACTIVATE` handling, layered input rule,
-  z-order rule and region of "What the window needs" in
+- `crates/stem-platform/src/windows/backdrop.rs` and `backdrop/`: the window
+  of option 6, with the styles, attributes, `WM_NCACTIVATE` handling, layered
+  input rule, z-order rule and region of "What the window needs" in
   [option 6](backdrop-window.md). The region is `CreateRoundRectRgn` inset
   by 1 px, with corners concentric to the panel's (radius minus 1), or
   `CreateRectRgn` for square corners.
@@ -25,7 +25,7 @@ The prototype of the [backdrop research](index.md) is
   re-assert ([context](context.md)). The backdrop thread moves the backdrop
   under the dock only when `GetWindow(dock, GW_HWNDNEXT)` is not already the
   backdrop.
-- `src-tauri/src/backdrop.rs`: the primary dock only. It reads
+- `src-tauri/src/backdrop.rs` and `backdrop/`: the primary dock only. It reads
   `appearance.backdrop` from the settings (`acrylic` →
   `DWMSBT_TRANSIENTWINDOW`, `mica` → `DWMSBT_MAINWINDOW`, `css` → none; the
   settings page still shows the two disabled), `appearance.cornerRadius`

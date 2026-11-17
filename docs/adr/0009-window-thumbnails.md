@@ -36,13 +36,14 @@ rectangle, an optional source rectangle, an opacity, a visibility flag and
   and `WS_EX_NOACTIVATE` (tao keeps the bit from `focusable(false)`). The
   platform subclass returns `MA_NOACTIVATE` for `WM_MOUSEACTIVATE`, and
   the WebView2 child windows have `WS_EX_NOACTIVATE` too
-  (`windows/dock_window.rs`). Clicking the dock never takes the foreground.
+  (`windows/dock_window/subclass.rs`, `windows/dock_window/children.rs`).
+  Clicking the dock never takes the foreground.
 - Click-through: the hit-test thread tracks the cursor and the
   subclass toggles `WS_EX_LAYERED | WS_EX_TRANSPARENT` on the window's own
   thread. The window becomes clickable when the cursor enters `panel` and
   click-through again only after it leaves `envelope`. When the window
   turns click-through under a pointer that does not move, no
-  `pointerleave` arrives (`Dock.svelte`).
+  `pointerleave` arrives (`measure.svelte.ts`).
 - The window can grow: during a drag it grows to the work area's height and
   shrinks back afterwards. That path resizes the window.
 - The engine stores, per window, whether it is minimised, cloaked, on the
@@ -54,9 +55,10 @@ rectangle, an optional source rectangle, an opacity, a visibility flag and
 - The locked `windows` crate (0.62.2) has the four functions and
   `DWM_THUMBNAIL_PROPERTIES` under `Win32_Graphics_Dwm`, which
   `stem-platform` enables. The thumbnail probe
-  (`windows/probe/thumbnails.rs`) calls all four, and it compiles for
-  `x86_64-pc-windows-msvc`. The struct is `#[repr(C, packed(1))]`, so it
-  must be built by value and its fields never borrowed.
+  (`windows/probe/thumbnails.rs` and `thumbnails/`) calls all four, and it
+  compiles for `x86_64-pc-windows-msvc`. The struct is
+  `#[repr(C, packed(1))]`, so it must be built by value and its fields never
+  borrowed.
 
 ## Recommendation
 
@@ -125,7 +127,7 @@ on.
 - With `behavior.clickThrough` off, the whole window takes clicks, so a
   reserved band would swallow clicks across the screen. Previews are
   therefore off while click-through is off. Click-through off is a
-  diagnostic switch (`settings.rs`). The settings row says so.
+  diagnostic switch (`settings/behavior.rs`). The settings row says so.
 
 ### Who decides what (ADR-0006, ADR-0007)
 

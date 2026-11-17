@@ -6,8 +6,8 @@ use crate::model::{AppId, LaunchTarget};
 impl Settings {
     /// A realistic, fully valid document: a few pinned apps that use every
     /// [`LaunchTarget`] kind, and a handful of non-default options. The
-    /// tests of this module check that it validates unchanged and survives
-    /// a round trip through JSON.
+    /// tests in `settings/tests.rs` check that it validates unchanged and
+    /// survives a round trip through JSON.
     pub fn example() -> Self {
         use std::path::PathBuf;
 

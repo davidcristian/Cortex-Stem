@@ -47,7 +47,8 @@ export interface AutoHideState {
   readonly phase: AutoHidePhase;
   /**
    * The last pointer event put the pointer over the panel or the reveal
-   * strip. Cleared when auto-hide stops applying (see the module comment).
+   * strip. Cleared when auto-hide stops applying (see the module comment of
+   * `../autohide.ts`).
    */
   readonly pointerInside: boolean;
   readonly holds: Readonly<Record<AutoHideHold, boolean>>;

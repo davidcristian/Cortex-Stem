@@ -10,8 +10,8 @@
 //!
 //! tao also rewrites `GWL_STYLE` / `GWL_EXSTYLE` from its own flags on every
 //! flag change (`show`, `hide`, `set_always_on_top`, …), which discarded the
-//! extended styles set here. The subclass (`SetWindowSubclass`, comctl32)
-//! makes those rewrites harmless:
+//! extended styles `prepare` sets. The subclass (`SetWindowSubclass`,
+//! comctl32) makes those rewrites harmless:
 //! - `WM_STYLECHANGING` for `GWL_EXSTYLE`: `STYLESTRUCT.styleNew` is
 //!   corrected so the required bits are always present and
 //!   `WS_EX_LAYERED | WS_EX_TRANSPARENT` match the current pass-through

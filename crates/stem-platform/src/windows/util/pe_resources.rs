@@ -45,7 +45,7 @@ impl Drop for LoadedLibrary {
     fn drop(&mut self) {
         // SAFETY: the handle came from a successful LoadLibraryExW and is
         // freed exactly once, here; no pointer into the mapping outlives
-        // the guard (`read_resource` in `icons` copies the bytes out).
+        // the guard (`read_resource` in `icons::pe` copies the bytes out).
         if let Err(e) = unsafe { FreeLibrary(self.0) } {
             log::trace!("FreeLibrary failed: {e}");
         }

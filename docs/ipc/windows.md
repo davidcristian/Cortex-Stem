@@ -14,8 +14,8 @@ Each window of the app has a label and loads one page:
 `dock` window, and none of the per-monitor behaviour below takes effect.
 
 - **Windows.** The app layer plans the set of windows from the monitor list
-  (`windows::plan_docks`): `dock` on the primary monitor (the flagged one, else the first), and
-  `dock-<id>` for each other monitor, with every character outside `[A-Za-z0-9_-]` dropped from
+  (`windows::plan::plan_docks`): `dock` on the primary monitor (the flagged one, else the first),
+  and `dock-<id>` for each other monitor, with every character outside `[A-Za-z0-9_-]` dropped from
   the id (Tauri labels allow `a-zA-Z0-9-/:_`). Two monitors whose ids sanitise to the same label
   get one dock, and a warning names the other monitor.
 

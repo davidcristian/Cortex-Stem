@@ -1,6 +1,7 @@
 /**
- * The demo scenarios (mirror of crates/stem-platform/src/mock.rs): the
- * monitors, windows, Recycle Bin, settings and theme a `MockBackend` starts with.
+ * The demo scenarios (mirror of crates/stem-platform/src/mock.rs and
+ * mock/demo.rs): the monitors, windows, Recycle Bin, settings and theme a
+ * `MockBackend` starts with.
  */
 
 import type { MonitorId } from '$lib/ipc/generated/MonitorId';
@@ -58,7 +59,7 @@ function secondMonitor(): MonitorInfo {
  * near the top as on a real desktop, and the demo has no room for windows
  * of these sizes between two bands, so a dock on `top` with
  * `whenOverlapped` hides in the demo. `demoWindows` has the same frames
- * as the Rust demo (`demo_windows` in `crates/stem-platform/src/mock.rs`).
+ * as the Rust demo (`demo_windows` in `crates/stem-platform/src/mock/demo.rs`).
  */
 function demoWindow(
   id: number,

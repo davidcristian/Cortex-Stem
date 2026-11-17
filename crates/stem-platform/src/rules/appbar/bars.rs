@@ -15,7 +15,8 @@ use crate::{AppBarRequest, AppBarSink};
 
 /// The shell as [`Bars`] sees it: one method per `SHAppBarMessage` it
 /// sends, plus whether the shell runs at all. `windows::appbar` implements
-/// it with the real messages on its thread; the tests here script it.
+/// it with the real messages on its thread; the tests in
+/// `rules/appbar/tests/bars.rs` script it.
 /// Handles are the dock windows' raw `HWND` values.
 pub trait AppBarShell {
     /// Whether the shell runs (its tray window exists). Sends nothing.

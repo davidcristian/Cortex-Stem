@@ -17,7 +17,7 @@ import {
 } from './fit';
 import { maxGrowth } from './magnify';
 
-/** Dock.svelte's constants: an 8 px slot gap and padding, a 1 px separator with 6 px margins. */
+/** layout.ts's constants: an 8 px slot gap and padding, a 1 px separator with 6 px margins. */
 const LAYOUT = { slotGap: 8, panelPadding: 8, separatorLength: 13 };
 const MAGNIFY = { maxScale: 1.6, rangeIcons: 3 };
 const FLAT = { maxScale: 1, rangeIcons: 3 };

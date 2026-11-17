@@ -12,8 +12,8 @@ list.
 ## Context
 
 The stock taskbar shows an app's **jump list** when the user right-clicks its
-button. Stem's right-click menu does not. `src-tauri/src/menus.rs` builds that
-menu again on every open, from the service's snapshot and settings. For an
+button. Stem's right-click menu does not. `src-tauri/src/menus/build.rs` builds
+that menu again on every open, from the service's snapshot and settings. For an
 app item it lists the app's windows, *New window*, *Pin to Stem* or *Unpin
 from Stem*, *Hide from Stem* (unpinned apps only) and *Close all windows*,
 then a separator, *Stem settings…* and *Quit Stem*

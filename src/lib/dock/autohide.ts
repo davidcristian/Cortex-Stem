@@ -1,10 +1,10 @@
 /**
  * Auto-hide (ADR-0008): when the dock slides out of view and when it
  * comes back. Pure presentation logic, like the magnification maths:
- * `Dock.svelte` reports what happened (the pointer is over the panel or the
- * reveal strip or not, a hold such as a drag began or ended, the delay timer
- * fired, the settings changed) and applies what comes back: the phase to
- * render, and whether to arm or clear its one timer.
+ * `auto-hide.svelte.ts` reports what happened (the pointer is over the panel
+ * or the reveal strip or not, a hold such as a drag began or ended, the delay
+ * timer fired, the settings changed) and applies what comes back: the phase
+ * to render, and whether to arm or clear its one timer.
  *
  * ```text
  *   shown ──pointer out, nothing held──▶ pending ──delayMs──▶ hidden
@@ -88,9 +88,10 @@
  * overlap): `strip` and `show` set it without the pointer being over the
  * panel, and the strip can go from under the pointer with no `pointerleave`
  * (none comes from a removed element), so a stale `true` would leave the
- * next fullscreen or overlap unable to hide the dock. `Dock.svelte` tells
- * it where the pointer is again: the next move over the panel does, and so
- * does the panel's `:hover` when auto-hide comes on again.
+ * next fullscreen or overlap unable to hide the dock. `Dock.svelte` and
+ * `auto-hide.svelte.ts` tell it where the pointer is again: the next move
+ * over the panel does, and so does the panel's `:hover` when auto-hide comes
+ * on again.
  */
 
 export * from './autohide/machine';

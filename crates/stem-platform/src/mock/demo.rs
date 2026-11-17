@@ -19,8 +19,8 @@ pub(super) fn demo_monitor() -> MonitorInfo {
 }
 
 /// The demo's power reading: a laptop at 76 %, on battery. The TS
-/// mirror (`MockOptions.power` in `src/lib/ipc/mock.ts`) defaults to the
-/// same.
+/// mirror (`MockOptions.power` in `src/lib/ipc/mock/options.ts`) defaults to
+/// the same.
 pub(super) fn demo_power() -> PowerStatus {
     PowerStatus {
         has_battery: true,
@@ -32,7 +32,8 @@ pub(super) fn demo_power() -> PowerStatus {
 }
 
 /// The demo's output device: at 60 %, not muted. The TS mirror
-/// (`MockOptions.volume` in `src/lib/ipc/mock.ts`) defaults to the same.
+/// (`MockOptions.volume` in `src/lib/ipc/mock/options.ts`) defaults to the
+/// same.
 pub(super) fn demo_volume() -> VolumeStatus {
     VolumeStatus {
         percent: 60,
@@ -71,7 +72,7 @@ pub(super) fn demo_window(
 /// (`move_window`). The top band is not kept clear (the frames start near
 /// the top, as on a real desktop). A minimised window keeps the frame it
 /// would be restored to; the overlap rule ignores it while it is minimised.
-/// The TS mirror (`src/lib/ipc/mock.ts`) uses the same frames.
+/// The TS mirror (`src/lib/ipc/mock/scenarios.ts`) uses the same frames.
 pub(super) fn demo_windows() -> Vec<RawWindow> {
     vec![
         demo_window(

@@ -6,8 +6,9 @@ use std::time::{Duration, Instant};
 
 use crate::rules::backoff::{SlowCallBackoff, Verdict};
 
-/// The pause after a slow call (see *Not bounded, only paused*), shared by
-/// every thread: a slow Explorer is slow for all of them.
+/// The pause after a slow call (see *Not bounded, only paused* in the
+/// parent module), shared by every thread: a slow Explorer is slow for all
+/// of them.
 static BACKOFF: Mutex<SlowCallBackoff> = Mutex::new(SlowCallBackoff::new());
 
 /// The origin of [`BACKOFF`]'s millisecond clock.

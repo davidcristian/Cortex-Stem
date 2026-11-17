@@ -144,7 +144,7 @@ impl std::fmt::Debug for ThreadManager {
     }
 }
 
-/// The answers for one query context (`enumerate::QueryContext`): a
+/// The answers for one query context (`enumerate::query::QueryContext`): a
 /// reference (`AddRef`) to the thread's manager when the thread has one,
 /// released with this value.
 pub struct DesktopQuery {

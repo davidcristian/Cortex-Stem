@@ -1,7 +1,8 @@
 /**
  * Dropping files on the dock: pinning them, or recycling them on
  * the Recycle Bin item. Pure pieces, so the file drag controller in
- * `Dock.svelte` only measures, calls these, and renders the gap or the
+ * `file-drag.svelte.ts` and `file-landing.svelte.ts` only measures and calls
+ * these, and `Dock.svelte` and `PanelItem.svelte` render the gap or the
  * highlighted bin.
  *
  * Which files can be pinned is Rust's decision (`pin_target`). The UI only

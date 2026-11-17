@@ -1,6 +1,6 @@
 /**
- * The app layer's dock windows (src-tauri/src/windows.rs): their labels, and
- * where on the screen the panel a page reports rests.
+ * The app layer's dock windows (src-tauri/src/windows.rs and windows/): their
+ * labels, and where on the screen the panel a page reports rests.
  */
 
 import type { Viewport } from '$lib/dock/geometry';
@@ -10,15 +10,16 @@ import type { Rect } from '$lib/ipc/generated/Rect';
 
 /**
  * The app layer's conversion of the UI's resting panel (CSS px of the dock
- * window's viewport) to screen pixels (`windows::panel_on_screen` with the
- * dock window where `windows::layout` puts it: flush with `edge` of the
- * work area and spanning its length along it, docs/ipc/sizing-protocol.md,
- * v1.16). The viewport's corner on the edge side is the work area's: its
- * bottom-left corner on `bottom`, its top-left corner on `top` and `left`,
- * its top-right corner on `right`. At a `scale` other than 1 the app layer
- * scales the CSS rect (rounded outwards, like a hit region) and the
- * viewport before placing them on the physical work area (`scale_rect`,
- * `panel_on_screen` in src-tauri/src/windows.rs).
+ * window's viewport) to screen pixels (`windows::panel::panel_on_screen` with
+ * the dock window where `windows::layout::layout` puts it: flush with `edge`
+ * of the work area and spanning its length along it,
+ * docs/ipc/sizing-protocol.md, v1.16). The viewport's corner on the edge side
+ * is the work area's: its bottom-left corner on `bottom`, its top-left corner
+ * on `top` and `left`, its top-right corner on `right`. At a `scale` other
+ * than 1 the app layer scales the CSS rect (rounded outwards, like a hit
+ * region) and the viewport before placing them on the physical work area
+ * (`scale_rect` in src-tauri/src/windows/placement.rs, `panel_on_screen` in
+ * src-tauri/src/windows/panel.rs).
  */
 export function panelOnScreen(
   rect: Rect,
@@ -45,14 +46,14 @@ export function panelOnScreen(
 }
 
 /**
- * `windows::VIEWPORT_SLACK_CSS`: two viewports that differ by less than
+ * `windows::viewport::VIEWPORT_SLACK_CSS`: two viewports that differ by less than
  * this on an axis (CSS px) are the same on it (`reanchorPanel`).
  */
 export const VIEWPORT_SLACK_CSS = 1;
 
 /**
  * The app layer's re-anchoring of a reported panel rect
- * (`windows::reanchor_panel`; docs/ipc/report-provenance.md): `rect`,
+ * (`windows::viewport::reanchor_panel`; docs/ipc/report-provenance.md): `rect`,
  * measured in the viewport `from` for a dock on `edge`, moved to where the
  * page's layout puts it in the viewport `to`. Across the edge it keeps its
  * distance to the viewport's edge side (on `bottom` it moves by the change
@@ -91,7 +92,7 @@ export function viewportError(viewport: Viewport): string | null {
 
 /**
  * The label of the dock window on `monitor` (`dock_label` in
- * src-tauri/src/windows.rs): `dock` for the primary monitor's, else `dock-`
+ * src-tauri/src/windows/plan.rs): `dock` for the primary monitor's, else `dock-`
  * and the id with every character outside `[A-Za-z0-9_-]` dropped.
  */
 export function dockLabel(monitor: MonitorId | null, primary: MonitorId | null): string {

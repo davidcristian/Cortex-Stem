@@ -56,7 +56,8 @@ pub fn build_id() -> io::Result<String> {
 }
 
 /// The file whose contents alone decide `key`'s bitmap, if there is one;
-/// `None` for every key that must not be cached (see the module docs).
+/// `None` for every key that must not be cached (see the `icon_cache`
+/// module docs).
 pub fn source_file(key: &IconKey) -> Option<&Path> {
     let (namespace, value) = key.0.split_once(':')?;
     if !matches!(namespace, "exe" | "file") || key.0.len() > MAX_KEY_BYTES {

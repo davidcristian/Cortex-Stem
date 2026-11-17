@@ -18,7 +18,7 @@ import type { VolumeStatus } from '../src/lib/ipc/generated/VolumeStatus';
 const OUT = 'e2e/output';
 const APP_SLOT = '.slot[data-kind="app"]';
 
-// The dock's layout constants (src/dock/Dock.svelte) the assertions below rely on.
+// The dock's layout constants (src/dock/layout.ts) the assertions below rely on.
 const ICON = 48;
 const SLOT_GAP = 8;
 const PANEL_PADDING = 8;
@@ -170,10 +170,10 @@ async function installMediaQueryShim(page: Page): Promise<void> {
   });
 }
 
-/** The mock monitor's work area (`demoMonitor` in src/lib/ipc/mock.ts). */
+/** The mock monitor's work area (`demoMonitor` in src/lib/ipc/mock/scenarios.ts). */
 const WORK_AREA: Rect = { x: 0, y: 0, width: 2560, height: 1392 };
 
-/** The mock's demo theme facts (`DEFAULT_THEME` in src/lib/ipc/mock.ts). */
+/** The mock's demo theme facts (`DEFAULT_THEME` in src/lib/ipc/mock/scenarios.ts). */
 const OS_THEME: ThemeInfo = {
   accent: '#0078D4',
   dark: true,
@@ -2091,7 +2091,7 @@ test.describe('clock and battery', () => {
   const TRAILING = ['sep:3', 'fixed:battery', 'fixed:clock', 'fixed:recycle-bin'];
   /** The full date and time, as `Intl` writes it (a narrow no-break space before AM is `\s`). */
   const FULL = /^Sunday, November 15, 2026 at 10:42\sAM$/;
-  /** The demo's laptop (`DEMO_POWER` in src/lib/ipc/mock.ts). */
+  /** The demo's laptop (`DEMO_POWER` in src/lib/ipc/mock/readings.ts). */
   const ON_BATTERY: PowerStatus = {
     hasBattery: true,
     percent: 76,
@@ -2901,7 +2901,7 @@ test.describe('drop files on the dock to pin', () => {
     'C:\\Users\\me\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Paint.lnk';
   const EXE = 'C:\\Tools\\PuTTY\\putty.exe';
   const TXT = 'C:\\Users\\me\\Documents\\notes.txt';
-  /** The mock's canonical id for a dropped path (`identify_target` of mock.rs). */
+  /** The mock's canonical id for a dropped path (`identify_target` of mock/platform.rs). */
   const idOf = (path: string): string => `exe:${path.replace(/\\/g, '/').toLowerCase()}`;
   const appKey = (id: string): string => `app:${id}`;
   const SLOT = ICON + SLOT_GAP;
@@ -3118,7 +3118,7 @@ test.describe('drop files on the Recycle Bin', () => {
   const BIN = '.slot[data-kind="recycleBin"]';
   const PINNED = '.slot[data-pinned="true"]';
   const GAP = '.drop-gap';
-  /** The bin's lid only tilts on the full icon (ShellIcon.svelte). */
+  /** The bin's lid only tilts on the full icon (FixedShellIcon.svelte). */
   const FULL_LID = `${BIN} svg g[transform*="rotate"]`;
   const TXT = 'C:\\Users\\me\\Desktop\\notes.txt';
   const FOLDER = 'C:\\Users\\me\\Desktop\\Old photos';
@@ -5044,7 +5044,7 @@ test.describe('settings window', () => {
 });
 
 test.describe('one dock per monitor', () => {
-  /** The second monitor of the mock's `twoMonitors` scenario (`SECOND_MONITOR_ID` in src/lib/ipc/mock.ts). */
+  /** The second monitor of the mock's `twoMonitors` scenario (`SECOND_MONITOR_ID` in src/lib/ipc/mock/scenarios.ts). */
   const DISPLAY3 = '\\\\.\\DISPLAY3';
   const DISPLAY3_WORK_AREA: Rect = { x: 2560, y: 0, width: 1920, height: 1032 };
   const DISPLAY3_SCALE = 1.5;
@@ -5926,7 +5926,7 @@ test.describe('the dock on the left, right and top edges', () => {
   /** A window on a side edge: as thick as the page asks for (341 CSS px), shown a little wider. */
   const SIDE_VIEWPORT = { width: 360, height: 800 };
   const TOP_VIEWPORT = { width: 1280, height: 240 };
-  /** `EDGE_MARGIN`, `SIDE_HEADROOM` and `HEADROOM` of Dock.svelte; the demo's magnification. */
+  /** `EDGE_MARGIN`, `SIDE_HEADROOM` and `HEADROOM` of layout.ts; the demo's magnification. */
   const EDGE_MARGIN = 8;
   const SIDE_HEADROOM = 240;
   const HEADROOM = 48;
@@ -6558,7 +6558,7 @@ test.describe('the dock on the left, right and top edges', () => {
     const nextKey = vertical ? 'ArrowDown' : 'ArrowRight';
     const NOTEPAD = 'app:exe:c:/windows/notepad.exe';
     const EXPLORER_WINDOW = 1;
-    /** The bounce's first and highest keyframe (DockItem.svelte): 42 % of the icon at offset 0.17. */
+    /** The bounce's first and highest keyframe (ItemBouncer.svelte): 42 % of the icon at offset 0.17. */
     const PEAK = 0.42 * ICON;
 
     test(`on ${edge}: a launch bounces away from the edge, attention wiggles along the dock, the keyboard menu opens on the side away from the edge`, async ({
@@ -6886,7 +6886,7 @@ test.describe('fitting the dock to its edge', () => {
   };
   /** The hands-on check's icon size. */
   const SETTING = 40;
-  /** Dock.svelte's and fit.ts's constants; the demo's magnification. */
+  /** layout.ts's and fit.ts's constants; the demo's magnification. */
   const EDGE_MARGIN = 8;
   const FIT_END_MARGIN = 8;
   const SIDE_HEADROOM = 240;
@@ -7358,7 +7358,7 @@ test.describe('theme presets and the user dock.css', () => {
     pill: string;
   }
 
-  /** What each preset draws, per colour mode: the computed colours of Dock.svelte's preset rules. */
+  /** What each preset draws, per colour mode: the computed colours of DockStage.svelte's preset rules. */
   const LOOK: Record<'dark' | 'light', Record<ThemePreset, Look>> = {
     dark: {
       standard: {

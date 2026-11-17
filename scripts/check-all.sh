@@ -62,10 +62,10 @@ fi
 
 step "3c/7 settings reference (docs/SETTINGS.md) is up to date"
 # crates/stem-core/tests/settings_reference.rs rewrites docs/SETTINGS.md from
-# the doc comments and defaults in crates/stem-core/src/settings.rs when
-# STEM_UPDATE_SETTINGS_REFERENCE=1 (without it, rung 3 already fails on a
-# stale page). The file is tracked, so a change after the rewrite means it was
-# stale or never committed.
+# the doc comments and defaults in crates/stem-core/src/settings.rs and
+# settings/ when STEM_UPDATE_SETTINGS_REFERENCE=1 (without it, rung 3 already
+# fails on a stale page). The file is tracked, so a change after the rewrite
+# means it was stale or never committed.
 STEM_UPDATE_SETTINGS_REFERENCE=1 cargo test -p stem-core --test settings_reference --quiet
 if [[ -n "$(git status --porcelain -- docs/SETTINGS.md)" ]]; then
   echo "docs/SETTINGS.md changed after regeneration; run 'STEM_UPDATE_SETTINGS_REFERENCE=1 cargo test -p stem-core --test settings_reference' and commit the result:" >&2

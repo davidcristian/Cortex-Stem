@@ -10,7 +10,7 @@ paths at startup); the UI shows them and never parses them.
   - `settingsPath` is the settings file the service reads and writes
     (`%APPDATA%\dev.davidcristian.stem\settings.json`), or a note in parentheses when nothing is
     saved in this run: `(demo: not saved)` under the mock platform, `(not saved this session)`
-    when the profile could not be used (see `start_service` in `src-tauri/src/lib.rs`).
+    when the profile could not be used (see `start_service` in `src-tauri/src/app/service.rs`).
   - `logPath` is the log file (`%LOCALAPPDATA%\dev.davidcristian.stem\logs\stem.log`) while file
     logging is on in this run, else `""`. `system.fileLogging` is read once at startup, so a
     change shows here after the next start.

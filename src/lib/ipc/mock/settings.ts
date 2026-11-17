@@ -1,4 +1,7 @@
-/** `Settings` helpers mirrored from stem-core (settings.rs): defaults, validation, pin order. */
+/**
+ * `Settings` helpers mirrored from stem-core (settings.rs and settings/):
+ * defaults, validation, pin order.
+ */
 
 import type { AppId } from '$lib/ipc/generated/AppId';
 import type { PinnedApp } from '$lib/ipc/generated/PinnedApp';
@@ -57,7 +60,7 @@ export function defaultSettings(): Settings {
 
 export const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
 
-/** `finite_or` in settings.rs: `value` unless it is NaN or ±Infinity, then `fallback`. */
+/** `finite_or` in settings/document.rs: `value` unless it is NaN or ±Infinity, then `fallback`. */
 const finiteOr = (value: number, fallback: number): number =>
   Number.isFinite(value) ? value : fallback;
 

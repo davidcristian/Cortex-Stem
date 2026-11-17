@@ -1,8 +1,8 @@
 /**
  * Rectangle helpers for the sizing and hit-region protocols
  * (docs/ipc/sizing-protocol.md, docs/ipc/hit-region.md). Pure, in CSS px
- * of the dock window's viewport, so `Dock.svelte` can compute what it
- * reports without touching a backend module and the maths can be
+ * of the dock window's viewport, so `reports.svelte.ts` can compute what
+ * it reports without touching a backend module and the maths can be
  * unit-tested.
  */
 

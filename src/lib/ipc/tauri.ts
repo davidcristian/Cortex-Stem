@@ -1,7 +1,7 @@
 /**
  * `Backend` over Tauri's `invoke` / `listen`. Command names and argument keys
- * are exactly those of docs/ipc/commands.md (`src-tauri/src/commands.rs`):
- * Tauri maps camelCase argument keys to the Rust parameter names.
+ * are exactly those of docs/ipc/commands.md (`src-tauri/src/commands.rs` and
+ * `commands/`): Tauri maps camelCase argument keys to the Rust parameter names.
  */
 
 import { invoke } from '@tauri-apps/api/core';

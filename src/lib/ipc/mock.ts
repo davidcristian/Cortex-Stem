@@ -5,21 +5,22 @@
  * It mirrors the Rust pieces the UI would otherwise be talking to, one module
  * in `mock/` per piece so that each can be compared with its Rust side:
  *
- * 1. the demo scenario of `crates/stem-platform/src/mock.rs` (windows with
- *    their frames, monitor, recycle bin, deterministic icon colours), plus a
- *    second monitor with two windows (`twoMonitors`): `scenarios.ts`,
- *    `identity.ts` and `icons.ts`;
- * 2. the ordering and click rules of `crates/stem-core/src/engine.rs`, the
- *    overlap rule of `crates/stem-core/src/overlap.rs`, and the
- *    per-dock facts of `DockState.docks`: `engine.ts` and `engine/`, with
- *    `overlap.ts`, `model.ts`, `settings.ts` and `readings.ts`;
+ * 1. the demo scenario of `crates/stem-platform/src/mock.rs` and `mock/`
+ *    (windows with their frames, monitor, recycle bin, deterministic icon
+ *    colours), plus a second monitor with two windows (`twoMonitors`):
+ *    `scenarios.ts`, `identity.ts` and `icons.ts`;
+ * 2. the ordering and click rules of `crates/stem-core/src/engine/snapshot.rs`
+ *    and `engine/clicks.rs`, the overlap rule of
+ *    `crates/stem-core/src/overlap.rs`, and the per-dock facts of
+ *    `DockState.docks`: `engine.ts` and `engine/`, with `overlap.ts`,
+ *    `model.ts`, `settings.ts` and `readings.ts`;
  * 3. the command semantics and lazy identity resolution of
- *    `crates/stem-service/src/lib.rs`, and the app layer's conversion of the
- *    dock panel to screen coordinates and its registration under the dock
- *    window's label and monitor (`src-tauri/src/windows.rs`); one backend
- *    serves one page, so it knows which dock window it stands for
- *    (`MockOptions.monitor`): `backend.ts` and `backend/`, with `panel.ts`
- *    and `app-files.ts`;
+ *    `crates/stem-service/src/`, and the app layer's conversion of the dock
+ *    panel to screen coordinates and its registration under the dock window's
+ *    label and monitor (`src-tauri/src/windows/panel.rs`); one backend serves
+ *    one page, so it knows which dock window it stands for
+ *    (`MockOptions.monitor`): `backend.ts` and `backend/`, with `panel.ts` and
+ *    `app-files.ts`;
  * 4. which dropped paths go to the Recycle Bin
  *    (`crates/stem-platform/src/rules/recycle.rs`): `recycle.ts`.
  *

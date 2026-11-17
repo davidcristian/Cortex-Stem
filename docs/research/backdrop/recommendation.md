@@ -23,7 +23,7 @@ Either way:
   contrast themes and any failure of the window. The rule that picks the
   effective backdrop (setting, build, contrast theme) belongs in
   `stem-core` as pure Rust, like other behaviour. In the prototype,
-  `effective` in `src-tauri/src/backdrop.rs` applies the setting and the
+  `effective` in `src-tauri/src/backdrop/rules.rs` applies the setting and the
   contrast theme, and `stem-platform` checks the build.
 - Do not use `window-vibrancy`; remove it from `[workspace.dependencies]`.
   Tauri keeps its own copy.

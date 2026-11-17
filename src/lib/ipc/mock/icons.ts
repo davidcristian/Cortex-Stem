@@ -1,6 +1,6 @@
-/** Icons (mirror of `color_for` and `solid_png` in mock.rs, as inline SVG). */
+/** Icons (mirror of `color_for` and `solid_png` in mock/icon.rs, as inline SVG). */
 
-/** FNV-1a 64 → hue, exactly as `color_for` in mock.rs, so colours match Rust. */
+/** FNV-1a 64 → hue, exactly as `color_for` in mock/icon.rs, so colours match Rust. */
 export function colorFor(key: string): [number, number, number] {
   let hash = 0xcbf29ce484222325n;
   for (const byte of new TextEncoder().encode(key)) {

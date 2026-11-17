@@ -45,7 +45,7 @@ pub struct DockWindowState {
     /// From that panel's far side to the viewport's edge side, CSS px, read
     /// against the viewport the page measured it in: the
     /// thickness of the band *Reserve screen space* asks for, scaled when
-    /// the request is made (`appbar::request_for`). The distance to the edge
+    /// the request is made (`appbar::rules::request_for`). The distance to the edge
     /// side is what re-anchoring keeps, so it holds in the window's viewport
     /// of any moment: a report handled after a resize (a drop, a smaller
     /// icon size) gives the band its right thickness at once, and a window

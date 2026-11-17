@@ -24,7 +24,8 @@ value when its field loses the focus. So that closing the window loses
 neither, a close request hides the settings window, sends its page
 `dock://settings-closing` (the page commits the focused field and saves at
 once), and destroys the window 250 ms later
-(`windows::on_settings_close_requested` in `src-tauri/src/windows.rs`).
+(`windows::settings_window::on_settings_close_requested` in
+`src-tauri/src/windows/settings_window.rs`).
 
 `system.fileLogging` is read once at startup; a change applies after a
 restart. `STEM_PLATFORM=mock` uses an in-memory store, so demo runs never
@@ -35,8 +36,8 @@ The app shell (`src-tauri`) applies the settings that belong to it on every
 startup. Each one acts only when its own value changed, and none blocks the
 worker:
 
-- `behavior.clickThrough` (`windows.rs`): the work is posted to the main
-  thread.
+- `behavior.clickThrough` (`windows/hit_region.rs`): the work is posted to
+  the main thread.
 - The tray's check mark (`tray.rs`): the same.
 - `system.autostart` (`autostart.rs`): `tauri-plugin-autostart`'s Run-key
   entry. It is compared with `is_enabled()` and written only when they
@@ -72,7 +73,8 @@ worker:
   both shortcuts again, unregistering first. A focus shortcut on the
   toggle's key combination registers nothing. A press runs
   `windows::toggle_dock` (what the tray icon's left click runs) or
-  `windows::on_focus_shortcut`, both in `src-tauri/src/windows.rs`.
+  `windows::on_focus_shortcut`, in `src-tauri/src/windows/visibility.rs`
+  and `src-tauri/src/windows/focus_shortcut.rs`.
 
 Both plugins are registered in `setup` rather than in the builder, so a
 plugin that fails to start disables only its own feature, and their own

@@ -31,7 +31,7 @@ the next start.
   right after logging is up, and deleted at `RunEvent::Exit`, after the
   taskbar restore.
 
-At the next start the pure `crash::assess` reads both. A crash marker means
+At the next start the pure `crash::markers::assess` reads both. A crash marker means
 the previous run panicked. 2 s later (so the dock is on screen first), a
 task on Tauri's blocking pool shows one native, topmost *Yes* / *No* box
 (`Platform::ask_yes_no`) with the time, location and message, and offers to

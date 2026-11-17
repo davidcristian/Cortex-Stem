@@ -149,7 +149,7 @@ fn push_dock_panel(
     Ok(())
 }
 
-/// The window was moved or resized by this module (`place`), or shown
+/// The window was moved or resized by `layout::place`, or shown
 /// again: convert the UI's latest panel report for the window's new place
 /// and viewport ([`push_dock_panel`]). `origin` is the window's top-left
 /// corner in physical pixels when known (just placed), else it is read from

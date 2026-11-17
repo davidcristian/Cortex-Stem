@@ -1,7 +1,7 @@
 /**
- * The state of the mock's engine (mirror of crates/stem-core/src/engine.rs):
- * the tracked windows, identities, dock panels and readings, and the queries
- * the commands make of them.
+ * The state of the mock's engine (mirror of crates/stem-core/src/engine.rs and
+ * engine/): the tracked windows, identities, dock panels and readings, and the
+ * queries the commands make of them.
  */
 
 import type { AppId } from '$lib/ipc/generated/AppId';

@@ -74,7 +74,7 @@ macro_rules! exported_types {
 }
 
 exported_types! {
-    // model.rs
+    // model.rs and model/
     AppFolder,
     AppId,
     AppIdentity,
@@ -101,7 +101,7 @@ exported_types! {
     WindowAction,
     WindowId,
     WindowInfo,
-    // settings.rs
+    // settings.rs and settings/
     Appearance,
     AutoHide,
     AutoHideMode,

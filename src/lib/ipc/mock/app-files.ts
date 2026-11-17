@@ -30,7 +30,7 @@ export const USER_CSS_MAX_BYTES = 64 * 1024;
 
 /**
  * What `open_user_css` writes when there is no file (a stand-in: the real
- * template is `user_css::TEMPLATE` in src-tauri). Comments only, like the
+ * template is `user_css::template::TEMPLATE` in src-tauri). Comments only, like the
  * real one, so creating it changes nothing.
  */
 export const MOCK_USER_CSS_TEMPLATE =
@@ -45,7 +45,7 @@ export const MOCK_USER_CSS_TEMPLATE =
 export type MockUserCssFile = string | Uint8Array | { readonly unreadable: string } | null;
 
 /**
- * `user_css::read_file` and `report` for the mock's file: what the page
+ * `user_css::read::read_file` and `report` for the mock's file: what the page
  * gets (`UserCss` without its path). No file is `notFound`; over 64 KiB
  * is `tooLarge` (checked first, as Rust checks the size before it
  * decodes); bytes that are not UTF-8 are `notUtf8`; `{ unreadable }` is
@@ -69,7 +69,7 @@ export function readUserCss(file: MockUserCssFile): Pick<UserCss, 'css' | 'probl
   let text: string;
   try {
     // `ignoreBOM` keeps a byte order mark in the text, so that only a
-    // leading one is dropped below, as `user_css::decode` drops it.
+    // leading one is dropped below, as `user_css::read::decode` drops it.
     text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
   } catch {
     return refused('notUtf8');

@@ -110,7 +110,7 @@ export function workAreaCss(monitor: MonitorInfo | null | undefined): Extent | n
   return { width: monitor.workArea.width / scale, height: monitor.workArea.height / scale };
 }
 
-/** The page's layout constants along the main axis (CSS px; Dock.svelte). */
+/** The page's layout constants along the main axis (CSS px; layout.ts). */
 export interface PanelLayout {
   /** Added to the icon's size in every item's slot. */
   slotGap: number;

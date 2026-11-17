@@ -1,6 +1,7 @@
 /**
  * Magnification maths: pure functions so the per-frame controller in
- * `Dock.svelte` does nothing but measure, call these, and write transforms.
+ * `magnifier.svelte.ts` does nothing but measure, call these, and write
+ * transforms.
  *
  * Everything runs along the dock's main axis (`edge.ts`): the
  * pointer's x and the slots' horizontal centres on a dock on `bottom` or

@@ -29,7 +29,7 @@ import { DOCK_EDGES } from './edge';
 import { hitRegionFor, rectContains, rectContainsPoint, type HitRegion } from './geometry';
 
 /**
- * Drives the machine like `Dock.svelte` does: one timer, armed and cleared
+ * Drives the machine like `auto-hide.svelte.ts` does: one timer, armed and cleared
  * as the steps say, firing when the clock passes its deadline.
  */
 class Harness {
@@ -219,7 +219,7 @@ describe('autoHideStep', () => {
   );
 
   it('a file dragged onto the strip reveals; the drag holds it; its leave starts the countdown', () => {
-    // What Dock.svelte sends for an OLE drag: the hold on enter, `strip`
+    // What file-drag.svelte.ts sends for an OLE drag: the hold on enter, `strip`
     // when the drag is over the strip, the pointer away and the hold off on
     // leave (no pointer events come during such a drag).
     const h = always(250).advance(250);
@@ -280,7 +280,7 @@ describe('autoHideStep', () => {
   });
 
   it('an item with keyboard focus keeps the dock up; once focus leaves it hides after the delay', () => {
-    // What Dock.svelte sends: the hold on the panel's focusin, off on its
+    // What keyboard.svelte.ts sends: the hold on the panel's focusin, off on its
     // focusout (moving between items sends nothing). The pointer is away
     // throughout, as when the keyboard is used alone.
     const h = always(250).send({ type: 'hold', hold: 'focus', active: true });
@@ -1444,8 +1444,9 @@ describe('the pointer is forgotten when auto-hide stops applying', () => {
   });
 
   it('a pointer reported over the panel again counts, and keeps the next fullscreen from hiding it', () => {
-    // What `Dock.svelte` sends from the panel's `:hover` (or its next
-    // `pointermove`) once the machine has forgotten the pointer.
+    // What `auto-hide.svelte.ts` and `Dock.svelte` send from the panel's
+    // `:hover` (or its next `pointermove`) once the machine has forgotten the
+    // pointer.
     const h = off()
       .send({ type: 'pointer', inside: true })
       .send({ type: 'fullscreen', active: true });

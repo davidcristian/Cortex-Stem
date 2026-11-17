@@ -14,7 +14,7 @@
 //!   `push_dock_panel` and `sync_dock_panel`), rounded inwards
 //!   ([`panel_inwards`]: the material must never stick out of the panel);
 //!   `None` while the window is hidden by the tray or the toggle shortcut,
-//!   and from a position change (`windows::on_position_setting`)
+//!   and from a position change (`windows::changes::on_position_setting`)
 //!   until the UI reports the panel on the new edge.
 //!   Every conversion carries the UI's rect re-anchored to the window's
 //!   viewport of the moment (`windows::PanelReport::now`), so when
@@ -76,7 +76,7 @@ use state::{Facts, Inputs};
 use crate::windows::DOCK_LABEL;
 
 /// How long the panel's slide (or fade) takes: the UI's
-/// `AUTO_HIDE_SLIDE_MS` (`src/lib/dock/autohide.ts`, ADR-0008).
+/// `AUTO_HIDE_SLIDE_MS` (`src/lib/dock/autohide/state.ts`, ADR-0008).
 pub const REVEAL_DELAY: Duration = Duration::from_millis(200);
 
 /// What the primary dock's backdrop is computed from, and what the platform
@@ -108,7 +108,7 @@ pub fn on_theme_changed(app: &AppHandle, theme: &ThemeInfo) {
 }
 
 /// The panel of the dock window `window` was converted for the engine
-/// (`windows::push_dock_panel`): `Some` after a report, a move or resize of
+/// (`windows::panel::push_dock_panel`): `Some` after a report, a move or resize of
 /// the window or a show, with the UI's latest resting panel re-anchored to
 /// the window's viewport, or `None` while the window is hidden and
 /// while its page's panel rect is withdrawn (a position change, until the

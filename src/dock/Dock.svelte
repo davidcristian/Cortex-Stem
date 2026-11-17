@@ -172,9 +172,10 @@
 </DockStage>
 
 <style>
-  /* The dots and the title pills are DockItem's: they read the accent and
-     the tooltip tokens, which take the variables here, for their subtree
-     only (the drop outline and the Start icon keep the accent). */
+  /* The dots and the title pills are ItemDots.svelte's and
+     ItemTooltip.svelte's: they read the accent and the tooltip tokens,
+     which take the variables here, for their subtree only (the drop
+     outline and the Start icon keep the accent). */
   .dock-panel :global(.dots) {
     --accent: var(--stem-dot, var(--preset-dot));
   }

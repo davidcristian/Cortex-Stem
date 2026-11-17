@@ -12,7 +12,8 @@ each part depends on and how it is tested.
                 │ events (dock://*)             │ commands (invoke)
 ┌───────────────┴───────────────────────────────▼────────────────────────┐
 │  src-tauri/  crate stem-app  — THIN SHELL                              │
-│  windows.rs (create/position dock windows)  commands.rs  lib.rs (wiring)│
+│  windows.rs + windows/ (create/position dock windows)                  │
+│  commands.rs + commands/   lib.rs + app.rs + app/ (wiring)             │
 └───────────────────────────────┬────────────────────────────────────────┘
                                 │ Rust API
 ┌───────────────────────────────▼────────────────────────────────────────┐

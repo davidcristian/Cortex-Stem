@@ -170,7 +170,7 @@ export class EngineInputs extends EngineSnapshot {
     return this.input(() => {
       const t = this.windows.get(id);
       if (t) {
-        // As `PlatformEvent::WindowAttention` in engine.rs: the window
+        // As `PlatformEvent::WindowAttention` in engine/platform.rs: the window
         // in front already has the user's attention, so its flash flags nothing.
         t.attention = flashing && this.foreground !== id;
       }

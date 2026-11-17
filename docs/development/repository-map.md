@@ -10,10 +10,10 @@ Cortex-Stem/
 ├── Cargo.toml              Workspace root; every third-party Rust crate is declared here.
 ├── crates/stem-core/       Pure domain logic: no platform code, no unsafe, no tauri. Fully
 │                           tested on Linux.
-├── crates/stem-platform/   `Platform` trait and implementations: src/lib.rs (trait, errors,
-│                           `create_platform()`), src/mock.rs (scripted fake, every host),
-│                           src/rules/ (pure rules the Windows code calls), src/windows/ (all
-│                           unsafe and Win32 code).
+├── crates/stem-platform/   `Platform` trait and implementations: src/lib.rs and src/platform/
+│                           (trait, errors, `create_platform()`), src/mock.rs and src/mock/
+│                           (scripted fake, every host), src/rules/ (pure rules the Windows
+│                           code calls), src/windows/ (all unsafe and Win32 code).
 ├── crates/stem-service/    Engine thread, identity resolution, settings persistence, command
 │                           semantics. No tauri. Tested on Linux with the mock.
 ├── src-tauri/              App crate `stem-app` (binary `stem`): a thin layer that creates

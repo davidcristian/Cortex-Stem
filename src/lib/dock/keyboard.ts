@@ -1,6 +1,7 @@
 /**
  * Keyboard navigation along the dock's toolbar: pure functions, so
- * `Dock.svelte` only finds the focused item, calls these and moves the focus.
+ * `keyboard.svelte.ts` only finds the focused item, calls these and moves the
+ * focus.
  *
  * The toolbar is one tab stop (a roving tabindex): exactly one item has
  * `tabindex="0"`, the one the focus was on last (`tabStopKey`), the others

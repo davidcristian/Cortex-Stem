@@ -16,7 +16,7 @@ export class Magnifier {
   centres = new Float64Array(0);
   scales = new Float64Array(0);
   applied = new Float64Array(0);
-  /** Which slots show their magnified bitmap (`data-magnified`, DockItem.svelte). */
+  /** Which slots show their magnified bitmap (`data-magnified`, ItemIcon.svelte). */
   magnified: boolean[] = [];
   /** The pointer's latest position over the panel (viewport CSS px); only its coordinate along the dock counts. */
   pointerX = 0;

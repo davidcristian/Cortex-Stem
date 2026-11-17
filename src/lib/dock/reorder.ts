@@ -1,6 +1,7 @@
 /**
  * Drag-to-reorder maths: pure functions so the pointer controller in
- * `Dock.svelte` only measures, calls these, and writes transforms.
+ * `reorder.svelte.ts` and `reorder-pointer.svelte.ts` only measures, calls
+ * these, and writes transforms.
  *
  * Positions are the *rest* centres of the pinned slots, in dock order, along
  * the dock's main axis (`edge.ts`: x on a horizontal dock, y on a

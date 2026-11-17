@@ -31,8 +31,8 @@
 //! its own, so it is one more chance to judge a window whose create/show
 //! WinEvents were evaluated too early.
 //!
-//! The constants mirror `winuser.h`; `windows/events.rs` asserts at compile
-//! time that they equal the SDK values from the `windows` crate.
+//! The constants mirror `winuser.h`; `windows/events/hooks.rs` asserts at
+//! compile time that they equal the SDK values from the `windows` crate.
 
 mod codes;
 mod desktop;

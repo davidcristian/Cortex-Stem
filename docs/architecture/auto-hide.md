@@ -4,9 +4,10 @@ This file describes how the dock hides its panel and brings it back, and how it 
 while a fullscreen app covers the screen.
 
 Auto-hide ([ADR-0008](../adr/0008-auto-hide.md)) is presentation, so the UI
-implements it: a pure state machine (`src/lib/dock/autohide.ts`, unit-tested)
-that `Dock.svelte` drives from pointer events, holds and one timer. A hold
-is a condition that keeps the dock on screen.
+implements it: a pure state machine (`src/lib/dock/autohide.ts` and
+`autohide/`, unit-tested) that `src/dock/auto-hide.svelte.ts` drives from
+pointer events, holds and one timer. A hold is a condition that keeps the
+dock on screen.
 
 With `autoHide.mode = always` the panel hides `delayMs` after the pointer
 left it. It never hides while an icon is lifted for a drag, a native menu

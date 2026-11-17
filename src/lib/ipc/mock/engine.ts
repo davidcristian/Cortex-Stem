@@ -1,7 +1,7 @@
 /**
- * The mock's engine (mirror of crates/stem-core/src/engine.rs): what a click
- * or a wheel notch over an item does. Its state, snapshot and inputs are the
- * classes in `engine/` it extends.
+ * The mock's engine (mirror of crates/stem-core/src/engine.rs and engine/):
+ * what a click or a wheel notch over an item does. Its state, snapshot and
+ * inputs are the classes in `engine/` it extends.
  */
 
 import type { AppId } from '$lib/ipc/generated/AppId';

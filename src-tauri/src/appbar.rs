@@ -28,7 +28,7 @@
 //!   which the window keeps: it reaches past the band into the work area,
 //!   transparent and click-through there as before.
 //! - The window goes with its edge side on the band the shell granted
-//!   (`rules::appbar::window_rect`, in `windows::layout`) instead of on the
+//!   (`rules::appbar::window_rect`, in `windows::layout::layout`) instead of on the
 //!   work area's edge, which is the band's far side once the band is
 //!   reserved. A band is used only while it answers the request in effect
 //!   (same edge, same monitor bounds): a grant for an old edge or monitor
@@ -137,7 +137,7 @@ pub fn on_settings_changed(app: &AppHandle, settings: &Settings) {
 /// Bring the band of `window` in line with what it should reserve now
 /// ([`request_for`]): hand a changed request to the platform, which queues
 /// it. Called on the main thread whenever an input may have changed: the
-/// window placed (`windows::place`), shown or hidden, its page's panel
+/// window placed (`windows::layout::place`), shown or hidden, its page's panel
 /// report, the setting. Cheap when nothing changed. The bar always speaks
 /// for the window's handle of the moment ([`Bar::rebind`]): an entry a
 /// destroyed window of the same label left behind gives its band back and
@@ -196,7 +196,7 @@ pub fn forget(app: &AppHandle, label: &str) {
 }
 
 /// The band the dock window `label` goes on for `edge` of `monitor`, which
-/// `windows::layout` places it on instead of the work area's edge: the band
+/// `windows::layout::layout` places it on instead of the work area's edge: the band
 /// the shell granted for exactly that place while it is asked for, or the
 /// band given back last for that place while `monitor`'s work area, as the
 /// platform last reported it, still leaves it out (the shell has not taken

@@ -15,8 +15,8 @@ assumptions listed in the ADR's
 - It crops the invisible resize borders of Windows 11 frames through
   `rcSource`, using the extended frame bounds against the window rectangle
   ([`DwmGetWindowAttribute`][dga] with `DWMWA_EXTENDED_FRAME_BOUNDS`,
-  [`GetWindowRect`][gwr]). Both are already read by `windows/enumerate.rs`
-  (A7).
+  [`GetWindowRect`][gwr]). Both are already read by
+  `windows/enumerate/facts.rs` (A7).
 - `rcDestination` is "the area in the destination window" ([props]). For
   the dock window, tao removes the non-client frame, so client and window
   coordinates are the same (A2).

@@ -15,8 +15,9 @@ use stem_core::WindowId;
 /// ([`DockFocus::supersede`]): the dock may still have the keyboard, and
 /// then a second press still lets go ([`DockFocus::holder`]). Kept in
 /// Tauri's managed state. The rules are its methods, which touch nothing
-/// but the lock, so they are tested without an app; the functions below
-/// that take an `AppHandle` only gather their inputs and log.
+/// but the lock, so they are tested without an app; the functions in
+/// `windows/focus_shortcut.rs` and `windows/focus_release.rs` that take an
+/// `AppHandle` only gather their inputs and log.
 #[derive(Debug, Default)]
 pub struct DockFocus(Mutex<Option<FocusSession>>);
 

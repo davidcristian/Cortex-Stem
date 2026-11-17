@@ -54,10 +54,12 @@ Reverse-engineered and third-party sources (not Microsoft, not guaranteed):
 - Files, issue 17488 (undocumented jump-list interfaces):
   https://github.com/files-community/Files/issues/17488
 
-Repository sources: `src-tauri/src/menus.rs`, `src-tauri/src/commands.rs`
-(threading notes), `crates/stem-platform/src/lib.rs`,
-`crates/stem-platform/src/windows/{launch,identity,util,mod}.rs`,
-`crates/stem-service/src/lib.rs`, the architecture pages
+Repository sources: `src-tauri/src/menus.rs` and `src-tauri/src/menus/`,
+`src-tauri/src/commands.rs` (threading notes),
+`crates/stem-platform/src/platform/interface.rs`,
+`crates/stem-platform/src/windows/{launch,identity,util,mod}.rs` and
+`crates/stem-platform/src/windows/{identity,util}/`,
+`crates/stem-service/src/`, the architecture pages
 [Layers](../../architecture/layers.md), [Threads](../../architecture/threads.md),
 [Identity and grouping](../../architecture/identity.md) and
 [The dock window](../../architecture/dock-window.md), the IPC contract's

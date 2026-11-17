@@ -1,9 +1,9 @@
 /**
  * The mouse wheel over the dock's items
- * (docs/ipc/scrolling-over-an-item.md): pure, so `Dock.svelte` only finds
- * the item under the pointer, feeds each `wheel` event in here and sends a
- * `scroll_item` for every notch that comes out. What a notch does is Rust's
- * business.
+ * (docs/ipc/scrolling-over-an-item.md): pure, so `intents.svelte.ts` only
+ * finds the item under the pointer, feeds each `wheel` event in here and
+ * sends a `scroll_item` for every notch that comes out. What a notch does
+ * is Rust's business.
  *
  * Vertical travel is added up in CSS pixels: `deltaY` as it is for
  * `deltaMode` 0 (pixels), times 40 for 1 (lines) and times the viewport's

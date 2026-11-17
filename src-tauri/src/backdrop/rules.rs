@@ -54,7 +54,7 @@ pub struct PanelPlace {
 
 /// The resting panel `css` (CSS px of the viewport) in physical pixels of
 /// the virtual desktop, for a window whose top-left corner is `origin`
-/// (physical px) at `scale`: like `windows::panel_on_screen`, but rounded
+/// (physical px) at `scale`: like `windows::panel::panel_on_screen`, but rounded
 /// **inwards** (left and top up, right and bottom down), so the material
 /// never covers a pixel the panel does not. Pure.
 pub fn panel_inwards(origin: (i32, i32), css: Rect, scale: f64) -> Rect {

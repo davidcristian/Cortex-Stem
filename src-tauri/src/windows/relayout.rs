@@ -94,7 +94,7 @@ pub(crate) fn relayout_later(app: &AppHandle, label: &str) {
 }
 
 /// What decides the band the dock window asks for
-/// (`appbar::request_for`): whether it is shown, the bounds of the monitor
+/// (`appbar::rules::request_for`): whether it is shown, the bounds of the monitor
 /// and the edge it was placed on, the edge in effect, the panel's distance
 /// to its edge side from the page's latest report, and its scale. Main
 /// thread (the getters are window calls).

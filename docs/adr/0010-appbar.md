@@ -36,7 +36,7 @@ or in a command handler (the Windows engineering rules in `AGENTS.md`).
 ## Decision
 
 - **When.** A band is reserved only while `system.reserveScreenSpace` is on
-  **and** `autoHide.mode` is `off` (`appbar::reservation_wanted`). An
+  **and** `autoHide.mode` is `off` (`appbar::rules::reservation_wanted`). An
   auto-hiding dock reserves nothing, so a hidden dock never leaves an empty
   band; a dock window hidden by the tray or the toggle shortcut gives its
   band back too and takes it again when shown. Changing either setting
