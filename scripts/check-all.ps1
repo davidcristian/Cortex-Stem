@@ -64,6 +64,18 @@ function Run([string]$Exe, [string[]]$Arguments) {
     }
 }
 
+# pnpm runs in ui/: Corepack takes the pnpm version from the nearest
+# package.json, and only ui/ has one.
+function RunPnpm([string[]]$Arguments) {
+    Push-Location -LiteralPath 'ui'
+    try {
+        Run pnpm $Arguments
+    }
+    finally {
+        Pop-Location
+    }
+}
+
 Step '1/7 rustfmt'
 Run cargo @('fmt', '--all', '--check')
 
@@ -144,24 +156,24 @@ elseif (-not (Test-Path -LiteralPath 'ui/package.json')) {
 else {
     Step '5/7 frontend: install, check, lint, test'
     if ($Install) {
-        Run pnpm @('--dir', 'ui', 'install', '--frozen-lockfile')
+        RunPnpm @('install', '--frozen-lockfile')
     }
     else {
         Write-Host '(pnpm install skipped)'
     }
-    Run pnpm @('--dir', 'ui', 'check')
-    Run pnpm @('--dir', 'ui', 'lint')
-    Run pnpm @('--dir', 'ui', 'test')
+    RunPnpm @('check')
+    RunPnpm @('lint')
+    RunPnpm @('test')
 
     Step '6/7 frontend: production build'
-    Run pnpm @('--dir', 'ui', 'build')
+    RunPnpm @('build')
 
     if ($NoE2E) {
         Write-Host '(rung 7 skipped: -NoE2E)'
     }
     else {
         Step '7/7 frontend: Playwright screenshots (mock mode)'
-        Run pnpm @('--dir', 'ui', 'e2e:screenshots')
+        RunPnpm @('e2e:screenshots')
     }
 
     if ($NoTauriBuild) {
@@ -171,7 +183,7 @@ else {
         # Runs `pnpm build` again via beforeBuildCommand, then a debug cargo
         # build and the NSIS bundler; output under target/debug/.
         Step '8/8 tauri build --debug (links and bundles the real app)'
-        Run pnpm @('--dir', 'ui', 'tauri', 'build', '--debug')
+        RunPnpm @('tauri', 'build', '--debug')
     }
 }
 

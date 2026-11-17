@@ -104,7 +104,7 @@ Stem has neither. Each needs the following.
   and its password as the repository secrets `TAURI_SIGNING_PRIVATE_KEY` and
   `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, set for the `tauri build` step of
   `release.yml`; and a `latest.json` manifest uploaded with the installer.
-  The maintainer generates the key pair (`pnpm --dir ui tauri signer generate`) and
+  The maintainer generates the key pair (`pnpm tauri signer generate`, in `ui/`) and
   keeps the private key safe: without it, existing installations can no
   longer update. This key is not a code-signing certificate; see
   [code-signing/updater-key.md](code-signing/updater-key.md).

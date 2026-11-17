@@ -24,8 +24,8 @@ The rules for running it, and which rungs a task needs, are in
 
 `scripts/check-all.sh` runs rungs 1 to 7 on Linux, and CI's `linux` job runs the same commands as
 separate steps. `scripts/check-all.ps1` runs the same rungs on a Windows host, then
-`pnpm tauri build --debug`. The `pnpm` commands of rungs 5 to 7 and the Tauri build run in `ui/`;
-the scripts and CI call them as `pnpm --dir ui <script>` from the repository root.
+`pnpm tauri build --debug`. The `pnpm` commands of rungs 5 to 7 and the Tauri build run in `ui/`,
+where Corepack picks the pnpm version that `ui/package.json` sets.
 
 ## Rung 4 on a host other than Windows
 

@@ -16,6 +16,6 @@ These rules apply to the Svelte 5 and TypeScript frontend in `ui/`
   which `ui/e2e/idle.spec.ts` checks.
 - Dock items are keyboard-reachable and have `role` and `aria-label`.
 - The dev server port is **1420** (Tauri's `devUrl`); the build output is `ui/dist/`. The package
-  manager is **pnpm**, and its commands run in `ui/` (`pnpm --dir ui <script>` from the
-  repository root). The script names `dev`, `build`, `check`, `lint`, `format`, `test` and
+  manager is **pnpm**. Its commands run in `ui/`, where Corepack picks the pnpm version that
+  `ui/package.json` sets. The script names `dev`, `build`, `check`, `lint`, `format`, `test` and
   `e2e:screenshots` are a contract.

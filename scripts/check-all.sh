@@ -105,22 +105,24 @@ elif [[ ! -f ui/package.json ]]; then
   fi
   echo "(frontend rungs 5-7 skipped: no package.json yet)"
 else
+  # pnpm runs in ui/: Corepack takes the pnpm version from the nearest
+  # package.json, and only ui/ has one.
   step "5/7 frontend: install, check, lint, test"
   if [[ $INSTALL -eq 1 ]]; then
-    pnpm --dir ui install --frozen-lockfile
+    (cd ui && pnpm install --frozen-lockfile)
   else
     echo "(pnpm install skipped)"
   fi
-  pnpm --dir ui check
-  pnpm --dir ui lint
-  pnpm --dir ui test
+  (cd ui && pnpm check)
+  (cd ui && pnpm lint)
+  (cd ui && pnpm test)
 
   step "6/7 frontend: production build"
-  pnpm --dir ui build
+  (cd ui && pnpm build)
 
   if [[ $E2E -eq 1 ]]; then
     step "7/7 frontend: Playwright screenshots (mock mode)"
-    pnpm --dir ui e2e:screenshots
+    (cd ui && pnpm e2e:screenshots)
   else
     echo "(rung 7 skipped: --no-e2e)"
   fi
