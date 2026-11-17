@@ -1447,11 +1447,12 @@ test.describe('dock in mock mode', () => {
     expect(request?.y).toBeLessThan(slot.y + slot.height);
 
     // The panel's own padding (no item under the pointer): the dock menu.
-    // Measured at rest: after the item's right-click the panel is still
-    // magnified around Firefox, and moving the pointer to its left edge
-    // shrinks it, so a click 3 px inside the magnified box could land
-    // outside the panel on a slow host. From rest the panel only grows
-    // under the pointer, so the point stays inside.
+    // Magnification is off for this click. With it on, the pointer in the
+    // left padding magnifies the first icon, which grows over the click
+    // point when a frame runs between the move and the press (Chromium on
+    // Linux sends `contextmenu` on the press), and the icon takes the click.
+    // The panel is measured once it has stopped changing.
+    await patchSettings(page, { magnification: { enabled: false } });
     await page.mouse.move(10, 10);
     let rest = (await page.locator('.dock-panel').boundingBox())!;
     await expect
