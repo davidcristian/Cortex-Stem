@@ -106,7 +106,7 @@ jobs:
             echo "version=10" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: pnpm/action-setup@v5
+      - uses: pnpm/action-setup@v6
         with:
           version: ${{ steps.pnpm.outputs.version }}
           package_json_file: ui/package.json
